@@ -157,8 +157,11 @@ rather than left to be inferred:
 - **`inkentry harvest`**: LLM-based decision extraction. All three sources
   need an LLM: `--source git` (commits), `--source claude-code` (agent session
   history), and `--source failures`.
-- **`inkentry index` chunk summaries**: LLM-written summaries of each indexed
-  chunk.
+
+**That is the whole list.** `harvest` is the only feature in inkentry that
+reaches for an LLM. In particular `inkentry index` does not: its chunk summaries
+are composed deterministically from the parse, with no model, no key and no
+network. Everything on this page is about `harvest` alone.
 
 ### How inkentry finds an LLM
 
@@ -189,20 +192,20 @@ being able to answer LLM calls. That case is detected — availability is keyed 
 `llm.complete` alone — and treated as "no LLM here", so an older team server does
 not turn into a broken route.
 
-### Why your summaries were skipped
+### Why `harvest` could not run
 
-`inkentry index` prints one of three notices to stderr and **exits 0**: summaries
-are optional, and a missing LLM never fails an index run. The notice is ordinary
-output, not a log line, so you do not need `RUST_LOG` to see it.
+When routing finds no LLM, `inkentry harvest` **fails** rather than degrading:
+it cannot do its job without one. It prints one of three messages, each opening
+`'inkentry harvest' cannot run: `, naming the cause and the next step. They are
+ordinary output rather than log lines, so you do not need `RUST_LOG` to see them.
 
 **No LLM anywhere** (rule 5):
 
 ```
-Skipping chunk summaries: no LLM is available.
+'inkentry harvest' cannot run: no LLM is available.
 There are two ways to get one:
   set `llm_url` in ~/.config/inkentry/config.toml to your own chat-completions endpoint, then run `inkentry server stop` and `inkentry server start`;
   or set `server_url` to a inkentry server that already provides one.
-Pass `--no-summaries` to `inkentry index` to skip this step without the notice.
 ```
 
 **A local LLM is configured, but the running server does not serve it** (rule 3).
@@ -210,33 +213,19 @@ This is the stale-daemon case: you set `llm_url` after the daemon was already
 running.
 
 ```
-Skipping chunk summaries: your local inkentry server is running without the LLM endpoint you set in `llm_url`, so it cannot answer LLM requests.
+'inkentry harvest' cannot run: your local inkentry server is running without the LLM endpoint you set in `llm_url`, so it cannot answer LLM requests.
 A running server keeps the settings it started with, so restart it to pick yours up:
   inkentry server stop
   inkentry server start
 ```
 
-**Offline mode** (rule 1):
+**Offline mode** (rule 1) has a message, but in practice you will not reach it:
+`harvest` stops earlier on the embedding requirement, with the pre-existing
+`requires inkentry-server` error.
 
 ```
-Skipping chunk summaries: offline mode is on, so no inference will run.
+'inkentry harvest' cannot run: offline mode is on, so no inference will run.
 Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove `mode = "offline"` from your inkentry config.
-```
-
-`inkentry harvest` uses the same three messages with its own opening line
-(`'inkentry harvest' cannot run: ...`), and it **fails** rather than
-skipping, because it cannot do its job without an LLM. One difference is worth
-knowing: in offline mode it never reaches the LLM rule at all. It stops earlier,
-on the embedding requirement, with the pre-existing `requires inkentry-server`
-error. The offline notice above is something only `inkentry index` prints.
-
-If summaries do run but a batch fails (the endpoint is up but returns an error,
-say), the run reports how many batches produced nothing and points you at
-`RUST_LOG=warn` for the underlying cause, which is a log line rather than
-ordinary output:
-
-```
-Warning: 1 of 1 summary batch(es) produced no summary; those chunks are indexed without one. Re-run with `inkentry index --force` to retry (`RUST_LOG=warn` shows the cause).
 ```
 
 ### The local-LLM guarantee, and where it stops
