@@ -37,14 +37,6 @@ pub struct ConventionRow {
 }
 
 impl Database {
-    /// Apply the conventions table migration. Idempotent (`IF NOT EXISTS`).
-    pub fn apply_conventions_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/019_conventions.sql"))
-            .map_err(|e| anyhow::anyhow!("running conventions migration: {e}"))?;
-        Ok(())
-    }
-
     /// Return all chunks in a compact form suitable for convention extraction.
     ///
     /// Detects whether a chunk has a doc comment by checking whether its

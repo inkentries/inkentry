@@ -163,7 +163,8 @@ search/
   tokens.rs      — token-budget helpers
 
 migrations/  (crates/inkentry-core/migrations/)
-  001_initial.sql – 018_graph_edges_compound_idx.sql — incremental DB schema
+  index_001_initial.sql  — index.db at its final shape (no ladder; see storage/db.rs)
+  memory_001_initial.sql — memory.db at its final shape
 ```
 
 ### inkentry-cli (`crates/inkentry-cli/src/`)
@@ -401,8 +402,17 @@ Chunk embeddings are stored as `INT8[896]` (F2LLM vectors are
 L2-normalised, so int8 is lossless enough for ranking and ~4x smaller on disk);
 the int8 L2 distance is rescaled back to the f32 scale by `INT8_SCALE` on read
 (`storage/search.rs`). Memory-entry embeddings stay
-`FLOAT[896]`. On first open, `db.rs` detects pre-0.9 `FLOAT[768]` `vec0` tables
-and drops and recreates them as `INT8[896]` (re-index required).
+`FLOAT[896]`.
+
+Neither store migrates. Each declares its final shape in one schema file and
+stamps `PRAGMA user_version`; anything else is refused or rebuilt, never
+converted. `memory.db` **refuses** an earlier product's store and points at
+`inkentry import`, because its rows are authored. `index.db` **rebuilds** —
+discarding the old file and recreating it empty, carrying only `usage` across —
+because everything else in it is derived from the source tree and `inkentry
+index` reproduces it. Both constants sit above the highest version their old
+ladders ever stamped, so a store from an older build reads as older rather than
+as one from the future.
 
 ### Incremental indexing
 Each file is hashed with blake3. On re-index, unchanged files are skipped.
