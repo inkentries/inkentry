@@ -67,6 +67,7 @@ before it.
 - [Architecture](architecture.md) and [capability tiers](architecture/capability-tiers.md)
 - [Plumbing and porcelain](plumbing-and-porcelain.md): JSONL commands for scripts and agents
 - [Portable dump format](dump-format.md): the readable, re-importable file your data writes out to, for backup, inspection, moving machines, or leaving
+- [Upgrading](upgrading.md): 1.0.0 does not open an older store, so the upgrade is a repository-wide event your team plans together
 - [Stability contract](stability.md): what a version bump may change, per surface, and what it may not
 - [Security](security/THREAT-MODEL.md): threat model and boundaries (secret scanning is defense-in-depth, not a boundary)
 

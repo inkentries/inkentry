@@ -387,3 +387,10 @@ entity type, a new relationship type, or a new required field, is a
 
 Under the [stability contract](stability.md), the dump format is a **stable**
 surface: `format_version` 1 stays readable for the life of the major version.
+
+## Where this matters most
+
+A dump is also how memory crosses a build boundary that nothing else crosses.
+1.0.0 refuses a store an earlier build wrote, and a dump is the only form that
+carries every entry together with its `supersedes`, `relates_to` and
+`contradicts` links. See [Upgrading](upgrading.md).

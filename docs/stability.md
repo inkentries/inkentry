@@ -226,57 +226,57 @@ The same three steps apply to CLI flags and to `/v1/` request fields.
 
 ## On-disk formats
 
-The promise here is **forward compatibility of your data**: an upgrade must
-never require you to delete a store and rebuild it, and must never lose a
-recorded memory. The promise is *not* that the SQL schema stays fixed.
+The promise here is **that no recorded memory is lost**, and that a store this
+build cannot read is refused or rebuilt rather than opened and damaged. The
+promise is *not* that the SQL schema stays fixed, and from 1.0.0 it is also
+**not** that an upgrade never requires you to move your data across: neither
+store migrates, and the one that holds authored data has to be exported and
+imported. See [Upgrading](upgrading.md) for the sequence, which is a team-wide
+one rather than a personal one.
 
 | Store | Versioning | Level |
 |---|---|---|
-| `.inkentry/index.db` | `PRAGMA user_version`, migrated forward on open | **Stable**: migrations are forward-only and run automatically. The index is derived data, so a rebuild is always a valid recovery. |
-| `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index | **Stable**, and stricter: memory is not derived data and cannot be rebuilt. A store from a newer inkentry is refused with an upgrade message rather than opened and damaged. |
+| `.inkentry/index.db` | `PRAGMA user_version`, no ladder | **Stable**: a store this build did not write is discarded and rebuilt empty, carrying the `usage` table across, and one from a newer build is refused. The index is derived from your source tree, so `inkentry index` is always a valid recovery. |
+| `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index, no ladder | **Stable**, and stricter: memory is authored and cannot be rebuilt, so a store this build did not write is refused outright and left untouched on disk. An older one is refused with a message naming the export and [import](commands.md#inkentry-import) path; a newer one is refused with a message to upgrade. |
 | `~/.config/inkentry/registry.db` | none | **Best-effort**. Tables are created idempotently. It holds project registrations, which are re-derivable by re-registering. |
 | git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not inkentry records are left untouched, so the ref can be shared with other tooling. |
 | server-side database | sequential migration files | **Internal** to a server deployment, and not a client-facing surface. |
 | [portable dump](dump-format.md) | `format_version` in the header record | **Stable**. Version 1 stays readable for the life of the major version; change within a version is additive only, and anything a version 1 reader could not handle is a version bump. A dump is refused whole rather than partially read, so an unreadable one never turns into a partial import. |
 
-Migrations are **forward-only**. Downgrading inkentry after an upgrade has
-migrated a store is not supported.
+There are no migrations. Downgrading inkentry after an upgrade is not
+supported, and the next section says what each store actually does when you try
+it anyway.
 
-### Downgrading, and why `user_version` can go backwards
+### Downgrading, and what each store does
 
-"Not supported" does not mean "prevented", and the two stores behave
-differently when an older binary opens a newer one. Both behaviours below were
-**measured** against real released binaries rather than inferred. The artifacts
-that measured them are no longer retained: the
-[upgrade corpus](../scripts/upgrade-corpus/README.md) keeps a wing only for a
-path real data takes, and no database written by an earlier release is opened by
-this one. What is recorded here is the finding, not a live assertion.
+"Not supported" does not mean "prevented", so it is worth being exact about the
+two stores, which behave differently in both directions.
 
-**`memory.db` refuses.** A store stamped above the build's own
-`MEMORY_SCHEMA_VERSION` is rejected with an upgrade message, which is the row
-in the table above. Memory is not derived data, so refusing is the designed
-outcome.
+**Both refuse a store from a newer build.** The stamp is compared against the
+opening build's own constant, and anything above it stops with a message to
+upgrade rather than being opened. The file is left as it was.
 
-**`index.db` does not refuse.** It reads cleanly and re-stamps its
-`PRAGMA user_version` down to its own. If you are debugging an `index.db` whose
-`user_version` appears to have gone *backwards*, this is what happened: an
-older inkentry opened it. It is not corruption, and nothing was lost.
+**Below its own stamp, the two diverge.** `index.db` is discarded and rebuilt
+empty, carrying only `usage`; `memory.db` is refused and left untouched, with
+its message naming the export and import path. That is the whole of the
+compatibility behaviour: neither store is ever converted in place.
 
-The rewind is not a quirk of one release. It falls out of how the migration
-runner works in every build: it returns early only when the stamp already
-equals its own `CURRENT_SCHEMA_VERSION`, and otherwise runs whatever steps are
-above the value it read and stamps its own version at the end. A stamp *above*
-its own is therefore written back down. Concretely, v0.9.3 rewinds an
-`index.db` that a current build had stamped 15 back to 14.
+Each store's constant sits **above** the highest `user_version` its old
+migration ladder ever stamped, and nothing may reclaim that range. `PRAGMA
+user_version` is one integer per file, shared with every stamp those ladders
+wrote, so a numbering that restarted at 1 would make a store from an older
+release read as one from a *newer* build, and be refused with advice to upgrade
+to something that does not exist. Both constants are asserted against that
+bound at compile time.
 
-It self-heals. The steps above the rewound version are individually idempotent,
-so the next open by a current build re-runs them as no-ops and re-stamps the
-current version. No row is lost in either direction.
-
-What makes this safe rather than merely survivable is the invariant that a
-binary never leaves the stamp *above* its own version. If it did, a newer build
-would skip migrations it had never actually run, and that is the case where
-data would be damaged. The corpus asserts that bound directly.
+An older release opening a current store is the case with no guard on this
+side, because those binaries are frozen. A released build that still carries a
+ladder will read a current store as one it can migrate forward, since its own
+`CURRENT_SCHEMA_VERSION` is below the current stamp, and will re-stamp the
+`user_version` down to its own on the way. It is not corruption in itself, but
+it is not a supported configuration and the current build's answer to what it
+leaves behind is to rebuild (`index.db`) or refuse (`memory.db`) like any other
+store it did not write.
 
 ### `.inkentry/` layout
 
@@ -307,7 +307,7 @@ that fails CI when it is broken.
 | Plumbing exit codes 0/1/2 | `crates/inkentry-cli/tests/plumbing_exit_codes.rs`, covering all three codes for every command, including the stdout-is-empty guarantee on exit 2 and the three documented exceptions. |
 | `/v1/` matches `docs/openapi.json` | The `openapi-snapshot` job in `.github/workflows/ci.yml`. The spec is generated from the running binary (`cargo run -p inkentry-server -- --print-openapi`) and diffed against the committed file, so a route or schema change that skips regenerating the snapshot fails CI. |
 | The git-notes record format, across every era that wrote it | `crates/inkentry-cli/tests/upgrade_corpus.rs`, run by `.github/workflows/upgrade-corpus.yml`. A ref written by **real released binaries** across three writing eras is read with the current build and checked entry for entry, including that the era which wrote every entry twice is folded rather than surfaced twice. Every other migration test in the repo builds an old shape by hand, which tests what we believe the old format was; this one tests what it is. The same suite carries a tripwire that fires when a store's schema version advances past what the corpus covers, so a release whose databases *do* need to survive an upgrade cannot ship without one being captured. See [the upgrade corpus](../scripts/upgrade-corpus/README.md). |
-| The stamp is never left above the opening build's version | The same suite, against a pinned older release opening a current store. This is the bound that keeps the `user_version` rewind safe, since a newer build must never skip migrations it has not run. |
+| Neither store's version constant reclaims a range an old ladder stamped | A compile-time assertion in each store's module, against the recorded highest legacy stamp. Reclaiming it would make an older release's store read as one from the future, and be refused with advice to upgrade to a build that does not exist. |
 | The above run on every change | `.github/workflows/stability-contract.yml`. |
 
 ### Changing a stable surface deliberately
