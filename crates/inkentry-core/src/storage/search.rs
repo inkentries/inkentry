@@ -36,7 +36,7 @@ impl Database {
              FROM knn k
              JOIN chunks c ON c.id = k.chunk_id
              JOIN files  f ON f.id = c.file_id
-             ORDER BY k.distance, f.path, c.start_line, k.chunk_id"
+             ORDER BY k.distance, f.path, c.start_line, c.end_line, k.chunk_id"
         );
 
         const GRAPH_RANK_ALPHA: f32 = 0.15;
@@ -99,7 +99,7 @@ impl Database {
              JOIN chunks c ON chunks_fts.rowid = c.id
              JOIN files  f ON c.file_id = f.id
              WHERE chunks_fts MATCH ?1
-             ORDER BY score, f.path, c.start_line, c.id
+             ORDER BY score, f.path, c.start_line, c.end_line, c.id
              LIMIT ?2",
         )?;
         let fts_query = crate::utils::fts5_match_query(query);
@@ -192,15 +192,18 @@ impl Database {
 /// Source position of a chunk, as the final sort key for equal scores.
 ///
 /// Deliberately not the bare `chunk_id`: that rowid is assigned by indexing
-/// order, so two machines indexing the same tree can disagree on it. Path plus
-/// start line is a property of the source, and the id only settles the residual
-/// case of two chunks starting on one line.
+/// order, so two machines indexing the same tree can disagree on it. The full
+/// span is a property of the source. `end_line` earns its place because the
+/// walker emits a matched node and then recurses into it, so a nested node
+/// beginning on its parent's line yields two chunks sharing `(path,
+/// start_line)` that only the end distinguishes. The id settles the residual
+/// case of two chunks over one identical span.
 fn tie_break_key(
     by_id: &std::collections::HashMap<i64, crate::search::SearchResult>,
     chunk_id: i64,
-) -> (&str, usize, i64) {
-    by_id.get(&chunk_id).map_or(("", 0, chunk_id), |r| {
-        (r.file_path.as_str(), r.start_line, chunk_id)
+) -> (&str, usize, usize, i64) {
+    by_id.get(&chunk_id).map_or(("", 0, 0, chunk_id), |r| {
+        (r.file_path.as_str(), r.start_line, r.end_line, chunk_id)
     })
 }
 
@@ -248,6 +251,58 @@ mod tests {
         v[0] = first;
         v[1] = (1.0 - first * first).max(0.0).sqrt();
         v
+    }
+
+    fn seed_span(db: &Database, path: &str, start: usize, end: usize, content: &str) -> i64 {
+        let file_id = db
+            .upsert_file(path, Some("rust"), path, 0)
+            .expect("upsert file");
+        db.insert_chunk(file_id, "function", Some("f"), start, end, content, None, 4)
+            .expect("insert chunk")
+    }
+
+    // `ts_walker` emits a matched node and then recurses into it, so a nested
+    // node beginning on its parent's line yields two chunks that share
+    // (path, start_line) and differ only in end_line — `impl Foo { fn bar() ->
+    // u32 { 1 }` followed by a closing brace parses to Impl 1..2 and Function
+    // 1..1. The span must therefore outrank the rowid, which is assigned by
+    // indexing order and disagrees between machines. Both fixtures insert the
+    // wider span FIRST, so rowid order is the opposite of span order and a key
+    // that stopped at start_line would return them the other way round.
+    #[test]
+    fn search_text_breaks_ties_on_end_line_before_rowid() {
+        let db = open_db();
+        let outer = seed_span(&db, "src/a.rs", 1, 2, "fn nestedspanterm() {}");
+        let inner = seed_span(&db, "src/a.rs", 1, 1, "fn nestedspanterm() {}");
+
+        let hits = db.search_text("nestedspanterm", 10).expect("search ok");
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(
+            ids,
+            vec![inner, outer],
+            "equal BM25 over one start line must order by end_line, not by rowid"
+        );
+    }
+
+    #[test]
+    fn search_hybrid_breaks_rrf_ties_on_end_line_before_rowid() {
+        let db = open_db();
+        let text_only = seed_span(&db, "src/h.rs", 1, 20, "fn hybridspanterm() {}");
+        let vec_only = seed_span(&db, "src/h.rs", 1, 5, "fn other() { alpha beta gamma; }");
+        db.insert_embedding(vec_only, &unit_vec(1.0))
+            .expect("embed");
+
+        // Each is rank 1 in exactly one list, so the RRF scores are identical
+        // and the tie-break alone orders them.
+        let hits = db
+            .search_hybrid("hybridspanterm", &unit_vec(1.0), 10)
+            .expect("hybrid ok");
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert_eq!(
+            ids,
+            vec![vec_only, text_only],
+            "an RRF tie over one start line must order by end_line, not by rowid"
+        );
     }
 
     // Two chunks with byte-identical content score identical BM25, so only the

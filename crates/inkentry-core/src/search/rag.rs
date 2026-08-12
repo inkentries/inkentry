@@ -253,11 +253,18 @@ pub fn linearrag_search(
     // first of each id, so the tie-break decides survivors, not just placement.
     scored.sort_by(|a, b| {
         b.0.total_cmp(&a.0).then_with(|| {
-            (a.1.file_path.as_str(), a.1.start_line, a.1.chunk_id).cmp(&(
-                b.1.file_path.as_str(),
-                b.1.start_line,
-                b.1.chunk_id,
-            ))
+            (
+                a.1.file_path.as_str(),
+                a.1.start_line,
+                a.1.end_line,
+                a.1.chunk_id,
+            )
+                .cmp(&(
+                    b.1.file_path.as_str(),
+                    b.1.start_line,
+                    b.1.end_line,
+                    b.1.chunk_id,
+                ))
         })
     });
     let mut seen_ids: HashSet<i64> = HashSet::new();
