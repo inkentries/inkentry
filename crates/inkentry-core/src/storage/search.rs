@@ -36,7 +36,7 @@ impl Database {
              FROM knn k
              JOIN chunks c ON c.id = k.chunk_id
              JOIN files  f ON f.id = c.file_id
-             ORDER BY k.distance"
+             ORDER BY k.distance, f.path, c.start_line, k.chunk_id"
         );
 
         const GRAPH_RANK_ALPHA: f32 = 0.15;
@@ -99,7 +99,7 @@ impl Database {
              JOIN chunks c ON chunks_fts.rowid = c.id
              JOIN files  f ON c.file_id = f.id
              WHERE chunks_fts MATCH ?1
-             ORDER BY score
+             ORDER BY score, f.path, c.start_line, c.id
              LIMIT ?2",
         )?;
         let fts_query = crate::utils::fts5_match_query(query);
@@ -161,8 +161,18 @@ impl Database {
             by_id.entry(result.chunk_id).or_insert(result);
         }
 
+        // `scores` is a HashMap, so its iteration order is reseeded per instance
+        // and differs between two calls in ONE process. RRF ties are the norm,
+        // not the exception — with disjoint lists, vector rank i and text rank i
+        // always score identically — so a sort keyed on score alone would leave
+        // most of the result order to that reseeding. The tie-break makes the
+        // order total, and keys it on the corpus position rather than the rowid
+        // so two machines indexing the same tree agree.
         let mut ranked: Vec<(i64, f64)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then_with(|| tie_break_key(&by_id, a.0).cmp(&tie_break_key(&by_id, b.0)))
+        });
         ranked.truncate(limit);
 
         let results = ranked
@@ -177,6 +187,21 @@ impl Database {
 
         Ok(results)
     }
+}
+
+/// Source position of a chunk, as the final sort key for equal scores.
+///
+/// Deliberately not the bare `chunk_id`: that rowid is assigned by indexing
+/// order, so two machines indexing the same tree can disagree on it. Path plus
+/// start line is a property of the source, and the id only settles the residual
+/// case of two chunks starting on one line.
+fn tie_break_key(
+    by_id: &std::collections::HashMap<i64, crate::search::SearchResult>,
+    chunk_id: i64,
+) -> (&str, usize, i64) {
+    by_id.get(&chunk_id).map_or(("", 0, chunk_id), |r| {
+        (r.file_path.as_str(), r.start_line, chunk_id)
+    })
 }
 
 #[cfg(test)]
@@ -208,6 +233,83 @@ mod tests {
             .expect("upsert file");
         db.insert_chunk(file_id, "function", Some("f"), 1, 5, content, None, 4)
             .expect("insert chunk");
+    }
+
+    fn seed_chunk_in(db: &Database, path: &str, content: &str) -> i64 {
+        let file_id = db
+            .upsert_file(path, Some("rust"), path, 0)
+            .expect("upsert file");
+        db.insert_chunk(file_id, "function", Some("f"), 1, 5, content, None, 4)
+            .expect("insert chunk")
+    }
+
+    fn unit_vec(first: f32) -> Vec<f32> {
+        let mut v = vec![0.0_f32; crate::embeddings::EMBEDDING_DIM];
+        v[0] = first;
+        v[1] = (1.0 - first * first).max(0.0).sqrt();
+        v
+    }
+
+    // Two chunks with byte-identical content score identical BM25, so only the
+    // tie-break decides their order. Pinned to source position, not to whatever
+    // SQLite's sorter happens to emit.
+    #[test]
+    fn search_text_breaks_bm25_ties_by_source_position() {
+        let db = open_db();
+        for path in ["src/c.rs", "src/a.rs", "src/b.rs"] {
+            seed_chunk_in(&db, path, "fn handler() { tiebreakterm(); }");
+        }
+
+        let hits = db.search_text("tiebreakterm", 10).expect("search ok");
+        let paths: Vec<&str> = hits.iter().map(|h| h.file_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["src/a.rs", "src/b.rs", "src/c.rs"],
+            "equal BM25 scores must order by path, not by insertion or scan order"
+        );
+    }
+
+    // Issue #47. A chunk reachable only by vector and a chunk reachable only by
+    // text land at the same rank in their respective lists, so RRF scores them
+    // identically — the pervasive tie in hybrid search. Before the tie-break,
+    // the winner was decided by `HashMap` iteration order, which is reseeded per
+    // instance and so differed between two calls in ONE process.
+    #[test]
+    fn search_hybrid_breaks_rrf_ties_by_source_position() {
+        let db = open_db();
+
+        // Text-only: matches the FTS query, never embedded.
+        for path in ["src/t1.rs", "src/t2.rs", "src/t3.rs"] {
+            seed_chunk_in(&db, path, "fn f() { rrftieterm(); }");
+        }
+        // Vector-only: embedded at increasing distance, no query term in content.
+        for (path, w) in [("src/v1.rs", 1.0), ("src/v2.rs", 0.98), ("src/v3.rs", 0.95)] {
+            let id = seed_chunk_in(&db, path, "fn f() { alpha beta gamma; }");
+            db.insert_embedding(id, &unit_vec(w)).expect("embed");
+        }
+
+        let query_vec = unit_vec(1.0);
+        let expected = vec![
+            "src/t1.rs",
+            "src/v1.rs",
+            "src/t2.rs",
+            "src/v2.rs",
+            "src/t3.rs",
+            "src/v3.rs",
+        ];
+
+        // Repeated in-process: each call builds a fresh HashMap with a fresh
+        // hash seed, which is exactly what used to reshuffle the tied pairs.
+        for i in 0..40 {
+            let hits = db
+                .search_hybrid("rrftieterm", &query_vec, 10)
+                .expect("hybrid ok");
+            let paths: Vec<&str> = hits.iter().map(|h| h.file_path.as_str()).collect();
+            assert_eq!(
+                paths, expected,
+                "hybrid order must be identical on every call (call {i})"
+            );
+        }
     }
 
     /// A search term containing FTS5-special punctuation (unbalanced `"`,

@@ -32,7 +32,7 @@ impl MemoryStore {
              FROM   knn k
              JOIN   notes n ON n.id = k.note_id
              {where_clause}
-             ORDER  BY k.distance"
+             ORDER  BY k.distance, n.uuid"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let notes = if let Some(ts) = as_of {
@@ -66,7 +66,7 @@ impl MemoryStore {
              JOIN notes n ON memory_fts.rowid = n.id
              WHERE memory_fts MATCH ?1
                AND {live_clause}
-             ORDER BY bm25_score
+             ORDER BY bm25_score, n.uuid
              LIMIT {limit}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -131,9 +131,14 @@ impl MemoryStore {
             by_id.entry(note.id.clone()).or_insert(note);
         }
 
-        // Sort descending by RRF score, take top `limit`.
+        // Sort descending by RRF score, take top `limit`. `scores` is a HashMap
+        // whose iteration order is reseeded per instance, and RRF ties are the
+        // norm (vector rank i and text rank i score identically on disjoint
+        // lists), so the id tie-break is what makes this order reproducible
+        // rather than a reshuffle per call. NoteId is the backend-minted UUID,
+        // so the order agrees across machines too.
         let mut ranked: Vec<(NoteId, f64)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         ranked.truncate(limit);
 
         let results = ranked
@@ -181,10 +186,10 @@ impl MemoryStore {
                  FROM   memory_fts
                  JOIN   notes n ON memory_fts.rowid = n.id
                  WHERE  memory_fts MATCH ?1
-                 ORDER  BY bm25(memory_fts)
+                 ORDER  BY bm25(memory_fts), n.uuid
                  LIMIT  {limit}
              )
-             ORDER BY COALESCE(valid_at, created_at) ASC"
+             ORDER BY COALESCE(valid_at, created_at) ASC, uuid"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let fts_query = crate::utils::fts5_quote_literal(query);
@@ -216,6 +221,82 @@ mod tests {
         register_sqlite_vec();
         MemoryStore::open(std::path::Path::new(":memory:"))
             .expect("failed to open in-memory MemoryStore")
+    }
+
+    fn unit_vec(first: f32) -> Vec<f32> {
+        let mut v = vec![0.0_f32; crate::embeddings::EMBEDDING_DIM];
+        v[0] = first;
+        v[1] = (1.0 - first * first).max(0.0).sqrt();
+        v
+    }
+
+    // Issue #47, memory side. A note reachable only by text and one reachable
+    // only by vector share a rank, so RRF scores them identically; before the
+    // tie-break the pair's order came from `HashMap` iteration, reseeded per
+    // call. Expected order is derived from the two input lists — at each rank,
+    // the tied pair ordered by NoteId — so it pins the rule, not the output.
+    #[test]
+    fn search_hybrid_breaks_rrf_ties_by_note_id() {
+        let store = open_store();
+
+        for i in 0..3 {
+            store
+                .add_note(
+                    "note",
+                    &format!("Text hit {i}"),
+                    "rrftieterm appears here",
+                    &[],
+                    &[],
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+
+        for (i, w) in [1.0_f32, 0.98, 0.95].into_iter().enumerate() {
+            let (id, _) = store
+                .add_note(
+                    "note",
+                    &format!("Vector hit {i}"),
+                    "alpha beta gamma",
+                    &[],
+                    &[],
+                    None,
+                    None,
+                )
+                .unwrap();
+            store
+                .insert_embedding(&id, &crate::embeddings::vec_to_blob(&unit_vec(w)))
+                .unwrap();
+        }
+
+        let query_blob = crate::embeddings::vec_to_blob(&unit_vec(1.0));
+
+        // Take the two per-corpus rankings as given and apply the RRF rule to
+        // them: the lists are disjoint and equal-length, so rank i ties, and the
+        // tie must resolve to the lower NoteId.
+        let text_rank = store.search_text("rrftieterm", 20, None).expect("text ok");
+        let vec_rank = store.search(&query_blob, 20, None).expect("knn ok");
+        assert_eq!(text_rank.len(), 3, "text list feeds the tie at each rank");
+        assert_eq!(vec_rank.len(), 3, "vector list feeds the tie at each rank");
+        let expected: Vec<String> = (0..3)
+            .flat_map(|i| {
+                let mut pair = [text_rank[i].id.clone(), vec_rank[i].id.clone()];
+                pair.sort();
+                pair
+            })
+            .map(|id| id.to_string())
+            .collect();
+        for call in 0..40 {
+            let hits = store
+                .search_hybrid(&query_blob, "rrftieterm", 10, None)
+                .expect("hybrid ok");
+            let got: Vec<String> = hits.iter().map(|n| n.id.to_string()).collect();
+            assert_eq!(
+                got, expected,
+                "memory hybrid order must be identical on every call (call {call})"
+            );
+        }
     }
 
     /// A search term containing FTS5-special punctuation must never surface a

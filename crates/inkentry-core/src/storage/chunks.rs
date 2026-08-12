@@ -137,7 +137,8 @@ impl Database {
                         c.content, f.path, f.language, c.token_count
                  FROM chunks c
                  JOIN files f ON f.id = c.file_id
-                 WHERE c.id IN ({ph})"
+                 WHERE c.id IN ({ph})
+                 ORDER BY f.path, c.start_line, c.id"
             );
             let mut stmt = self.conn.prepare(&sql)?;
             let params: Vec<&dyn rusqlite::ToSql> =

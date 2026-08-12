@@ -135,9 +135,12 @@ pub fn linearrag_search(
 
     // ── Stage 2: Personalised PageRank ────────────────────────────────────────
     // Cap to top-N symbols by activation score to bound PPR graph size.
+    // The truncate makes this a selection, not just an ordering: without the
+    // name tie-break, symbols with equal activation straddling the cap would be
+    // kept or dropped according to HashMap order, changing the PPR graph itself.
     let mut active_syms_scored: Vec<(&str, f32)> =
         aq.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    active_syms_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    active_syms_scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     active_syms_scored.truncate(MAX_ACTIVE_SYMBOLS);
     let active_syms: Vec<&str> = active_syms_scored.iter().map(|(s, _)| *s).collect();
 
@@ -162,8 +165,21 @@ pub fn linearrag_search(
 
     // Edges from expanded chunks (those not in the initial KNN pool).
     // Cap per-symbol and total to keep PPR graph manageable.
+    // Both caps below cut mid-iteration, so iteration order decides which
+    // chunks become candidates at all. Walk symbols and their chunks in sorted
+    // order rather than the HashMap's (and SQLite's unordered) own, so the
+    // candidate set is a function of the index instead of of this run.
+    let mut expansion: Vec<(String, Vec<i64>)> = sym_to_chunks
+        .into_iter()
+        .map(|(sym, mut ids)| {
+            ids.sort_unstable();
+            (sym, ids)
+        })
+        .collect();
+    expansion.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
     let mut total_extra: usize = 0;
-    for (sym, chunk_ids) in &sym_to_chunks {
+    for (sym, chunk_ids) in &expansion {
         if total_extra >= MAX_EXPANDED_CHUNKS {
             break;
         }
@@ -188,11 +204,14 @@ pub fn linearrag_search(
 
     // ── Combine scores ────────────────────────────────────────────────────────
     // Fetch full SearchResult data for expanded (non-KNN) chunks.
-    let extra_ids: Vec<i64> = all_candidate_ids
+    // Sorted: this drives `chunks_by_ids`, whose result order becomes the push
+    // order into `scored` and therefore the order equal scores settle in.
+    let mut extra_ids: Vec<i64> = all_candidate_ids
         .iter()
         .filter(|id| !knn_by_id.contains_key(id))
         .copied()
         .collect();
+    extra_ids.sort_unstable();
     let extra_results = if extra_ids.is_empty() {
         vec![]
     } else {
@@ -230,8 +249,17 @@ pub fn linearrag_search(
         scored.push((score, result));
     }
 
-    // Sort descending by score; deduplicate by chunk_id.
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort descending by score; deduplicate by chunk_id. The dedupe keeps the
+    // first of each id, so the tie-break decides survivors, not just placement.
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0).then_with(|| {
+            (a.1.file_path.as_str(), a.1.start_line, a.1.chunk_id).cmp(&(
+                b.1.file_path.as_str(),
+                b.1.start_line,
+                b.1.chunk_id,
+            ))
+        })
+    });
     let mut seen_ids: HashSet<i64> = HashSet::new();
     let results = scored
         .into_iter()
