@@ -113,7 +113,6 @@ inkentry search "how are errors propagated"       # code and memory, best availa
 inkentry search "handleRequest" --only-text       # full-text only, no server needed
 inkentry search "auth middleware" --graph         # expand with 1-hop callers/callees
 inkentry search "why sqlite-vec" --only-memory    # memory corpus only
-inkentry search "request handling" --budget 4000  # fit results within a token budget
 ```
 
 `search` needs the index built by `inkentry init`; an uninitialised directory
@@ -143,8 +142,11 @@ Set `AGENT=true` for JSON output on every command:
 ```bash
 AGENT=true inkentry memory list --kind decision
 AGENT=true inkentry plumbing graph-edges --symbol validate_token
-AGENT=true inkentry search "auth flow" | jq '.[0].code.file_path'
+AGENT=true inkentry search "auth flow" | jq -r '.[] | select(.type=="code") | .code.file_path'
 ```
+
+Results interleave code and memory, so select on `.type` rather than indexing
+into the array: `.[0]` is just as likely to be a memory entry.
 
 Install git hooks to auto-harvest memory on every commit:
 

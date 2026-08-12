@@ -9,50 +9,53 @@ You need to change the signature of a core function — say, adding a required p
 ## Step 1: Find everything that calls it
 
 ```bash
-inkentry graph validate_token --kind calls
+inkentry plumbing graph-edges --symbol validate_token
 ```
 
+```json
+{"source_file":"auth/middleware.go","source_name":"handler","target_name":"validate_token","kind":"calls","line":45}
+{"source_file":"api/routes.go","source_name":"apply_auth","target_name":"validate_token","kind":"calls","line":112}
+{"source_file":"grpc/interceptor.go","source_name":"unary_auth","target_name":"validate_token","kind":"calls","line":67}
 ```
-Incoming to 'validate_token':
-  calls  auth/middleware.go  (handler:45)
-  calls  api/routes.go       (apply_auth:112)
-  calls  grpc/interceptor.go (unary_auth:67)
-```
+
+Edges are emitted in both directions for the named symbol, so filter on
+`target_name` for callers and `source_name` for callees. `kind` is one of
+`calls`, `imports`, `extends`, `implements`, or `mentions`.
 
 ## Step 2: Understand each call site
 
 ```bash
 # Full-text — no server needed
-inkentry search "validate_token" --mode text --limit 20
+inkentry search "validate_token" --only-text --limit 20
 
-# Semantic — requires server + index
-# inkentry search "validate_token call site usage" --graph --limit 20
+# Best available ranking, plus the symbol's 1-hop neighbours
+inkentry search "validate_token" --graph --limit 20
 ```
 
 ## Step 3: Check memory for prior context
 
 ```bash
-inkentry memory search "validate_token authentication"
+inkentry search "validate_token authentication" --only-memory
 ```
 
-To trace the blast radius across the codebase, follow the call graph and read the sites yourself:
+Plain `inkentry search` returns both corpora at once, so a prior decision on the
+symbol surfaces alongside the code:
 
 ```bash
-inkentry graph validate_token --kind calls
 inkentry search "validate_token callers scope parameter" --graph
 ```
 
 ## Step 4: Find the tests
 
 ```bash
-inkentry search "validate_token test" --mode text
+inkentry search "validate_token test" --only-text
 ```
 
 ## Step 5: Check for related documentation
 
 ```bash
-inkentry search "validate_token" --mode text
-inkentry memory search "validate_token authentication"
+inkentry search "validate_token" --only-text
+inkentry search "validate_token authentication" --only-memory
 ```
 
 ## Step 6: Write a plan
@@ -66,9 +69,9 @@ Create a checklist as a plain markdown file in `docs/plans/`. It should cover:
 ## Step 7: After the change, verify
 
 ```bash
-# Confirm all call sites are updated
-inkentry graph validate_token --kind calls
-
-# If the project is indexed, re-index changed files
+# Re-index changed files first — graph edges come from the index
 inkentry index .
+
+# Confirm all call sites are updated
+inkentry plumbing graph-edges --symbol validate_token
 ```

@@ -12,20 +12,23 @@
 This project uses [inkentry](https://github.com/inkentries/inkentry) for code graph traversal, memory, and search.
 
 ```bash
-# Trace a symbol's callers and callees (no server needed)
-inkentry graph verify_token
-
-# Full-text search (no server needed)
-inkentry search "error handling" --mode text
-
-# Semantic search: finds code by meaning (requires embedding server + index)
+# One search over code and memory, best available ranking (requires index)
 inkentry search "how does authentication work"
 
-# Answer an open question by looping search + graph + chunks yourself (no explore command)
+# Full-text only — no embedding, no server needed
+inkentry search "error handling" --only-text
+
+# A symbol's chunk plus its 1-hop callers and callees
+inkentry search "verify_token" --graph
+
+# Exact call-graph edges as JSONL
+inkentry plumbing graph-edges --symbol verify_token
+
+# Answer an open question by looping search + graph-edges + chunks yourself
 inkentry search "what does the retry logic do when the upstream times out?" --graph
 ```
 
-**Rule:** run `inkentry graph <symbol>` and `inkentry search "<topic>" --mode text` before opening files you haven't read this session. Fall back to `Read`/`Grep`/`Glob` when these return nothing useful.
+**Rule:** run `inkentry search "<topic>"` (add `--graph` for a symbol's neighbours) before opening files you haven't read this session. Fall back to `Read`/`Grep`/`Glob` when it returns nothing useful.
 
 ---
 
@@ -38,7 +41,7 @@ inkentry memory. Check them at the start of every session:
 inkentry memory list --kind decision --limit 10   # prior design decisions
 inkentry memory list --kind handoff --limit 3     # where last session left off
 inkentry memory list --kind question              # open questions
-inkentry memory search "topic you care about"    # semantic search over memory
+inkentry search "topic you care about" --only-memory   # search the memory corpus
 ```
 
 Store new decisions as you make them; don't wait until the end:
@@ -81,9 +84,10 @@ All plumbing commands emit JSONL. Exit 0 = results, 1 = no results, 2 = error.
 
 ---
 
-## Re-indexing (if project uses semantic search)
+## Re-indexing
 
-inkentry indexes are incremental. Re-run after significant changes:
+`search` reads the index, so keep it current. inkentry indexes are incremental —
+re-run after significant changes:
 
 ```bash
 inkentry index .            # index the current directory (idempotent — also refreshes a stale index)
@@ -107,6 +111,6 @@ A post-commit hook can do this automatically; see `inkentry hooks install`.
 ## What inkentry cannot do
 
 - It cannot run your tests or build the project; use shell commands for that
-- Semantic search results are only as fresh as the last `inkentry index` run
-- `inkentry memory harvest` requires a running `inkentry-server` with an LLM backend configured
-- `inkentry search` (semantic) requires an embedding server and a built index; use `--mode text` for full-text search without either
+- Search results are only as fresh as the last `inkentry index` run
+- `inkentry harvest` requires a running `inkentry-server` with an LLM backend configured
+- `inkentry search` requires an index (`inkentry init`); its semantic ranking also requires the server. Without the server it degrades to full-text, which `--only-text` selects explicitly

@@ -14,11 +14,11 @@ used; the binary is the same in both tiers.
 | | Tier 0 — Offline | Tier 1 — Server-connected |
 |---|---|---|
 | **Condition** | No `server_url` configured, or server unreachable | `server_url` set and health probe succeeds |
-| **Search** | ast-grep + BM25 text | + semantic KNN (server encodes query, CLI does local KNN) |
+| **Search** | BM25 text over the local index | + semantic KNN (server encodes query, CLI does local KNN) |
 | **Index** | Parse + AST chunk + graph (no embeddings) | + embedding phase: server generates vectors, CLI stores in local DB |
 | **Memory add/list/show/archive** | sqlite (local) | Same |
 | **Memory transfer** (`plumbing push`/`pull`, `sync`) | Not available | Push/pull entries to/from the server DB |
-| **Memory search** | Not available | Server encodes query, does KNN over server-side memory DB |
+| **Memory corpus of `search`** | Text matching over the local `memory.db` | Server encodes query, CLI does KNN over the local `memory.db` |
 | **Memory harvest** | Not available | LLM extraction via server |
 
 **The CLI never calls embedding or LLM APIs directly, regardless of
@@ -29,7 +29,9 @@ configuration.** All inference routes through `inkentry-server`.
 > server route. The CLI parses a `plan` capability from the server health
 > response but deliberately keeps it out of all output, so it never surfaces.
 
-**Tier 0 requires no external tools.** Uses `ast-grep` structural search.
+**Tier 0 requires no external tools.** It reads the local index built by
+`inkentry init`; `search` in an uninitialised directory funnels there rather
+than scanning the working tree.
 
 ---
 
@@ -171,7 +173,7 @@ User-facing behaviour for these tiers is documented in
 
 ```
 Capability tier:  Offline
-  search          ast-grep + text  [set server_url to enable semantic search]
+  search          text  [set server_url to enable semantic search]
   memory          sqlite (local)
 ```
 
@@ -184,7 +186,7 @@ project, `inkentry status` reports `No inkentry project here` instead (see
 
 ```
 Capability tier:  Server  (https://inkentry.internal.example.com)
-  search          ast-grep + text + semantic
+  search          text + semantic
   embedder        ready
   memory          sqlite (local)
 ```
@@ -235,12 +237,18 @@ Error: 'inkentry sync' requires inkentry-server.
 Set server_url in ~/.config/inkentry/config.toml to enable this feature.
 ```
 
-The inference-only commands (`memory search`, `harvest`) point the user
-at the local server instead, and also exit 1:
+`harvest` points the user at the local server instead, and also exits 1:
 
 ```
-Error: 'inkentry memory search' requires inkentry-server.
+Error: 'inkentry harvest' requires inkentry-server.
 Run `inkentry server start` to enable this feature.
+```
+
+`search` is not gated this way. It degrades to full-text and says so on stderr,
+because a text answer over the index is still a useful answer:
+
+```
+[no server running — start one with `inkentry server start` to enable semantic ranking; using full-text search]
 ```
 
 ---
@@ -250,8 +258,8 @@ Run `inkentry server start` to enable this feature.
 ### Phase 1 (always, Tier 0 and Tier 1)
 
 Parse files → produce chunks → extract AST graph edges → store in local DB.
-No embeddings generated. Existing behaviour for text/ast-grep search is fully
-preserved.
+No embeddings generated. Full-text search over the parsed chunks is available as
+soon as this phase completes.
 
 ### Phase 2 (Tier 1 only)
 
@@ -290,9 +298,12 @@ Embedding chunks via server... 1 024 / 3 812  [====>     ] 27%
 
 ---
 
-## Memory search (Tier 1 only)
+## Memory corpus of `search` (semantic ranking is Tier 1 only)
 
-`inkentry memory search "<query>"` sends the query text to the server. The
-server encodes the text and runs KNN over its memory DB. The raw-vector
-interface (`SearchRequest.embedding`) is deprecated; see server-api.md for the
-updated `SearchRequest` schema.
+`inkentry search "<query>"` (and `--only-memory`) sends the query text to the
+server, which encodes it and returns the vector; the CLI then runs KNN over the
+project's local `memory.db`. Note text never leaves the local store. When the
+memory backend is an explicit team `server_url`, the server runs the KNN over
+its own memory DB instead. The raw-vector interface
+(`SearchRequest.embedding`) is deprecated; see server-api.md for the updated
+`SearchRequest` schema.
