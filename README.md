@@ -19,12 +19,12 @@ Semantic search works out of the box: `inkentry` autostarts a local `inkentry-se
 **1. Install**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/spelunk-cloud/spelunk/refs/heads/main/install.sh | sh
+curl -fsSL https://get.inkentry.com/install.sh | sh
 ```
 
-> Also available via Homebrew (`brew install spelunk-cloud/spelunk/spelunk`), a
+> Also available via Homebrew (`brew install inkentries/inkentry/inkentry`), a
 > Debian `.deb`, or a tarball from the
-> [releases page](https://github.com/spelunk-cloud/spelunk/releases). See
+> [releases page](https://github.com/inkentries/inkentr/releases). See
 > [Getting Started](docs/getting-started.md) for all install paths.
 
 **2. Initialise the project**
