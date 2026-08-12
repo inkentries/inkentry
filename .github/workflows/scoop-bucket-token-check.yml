@@ -1,0 +1,50 @@
+# Proves SCOOP_BUCKET_TOKEN can read and write inkentries/scoop-inkentry,
+# without publishing anything.
+#
+# The release job that uses the token only runs on stable tags, so without this
+# its first exercise would be the 1.0.0 tag itself — and a scope problem would
+# surface after the release was already published. Run this once after minting
+# or rotating the token.
+#
+# Deliberately a separate workflow rather than a `workflow_dispatch` on
+# release.yml: that would make every release job manually triggerable,
+# including the one that publishes a GitHub release.
+name: Scoop bucket token check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Verify SCOOP_BUCKET_TOKEN against the bucket
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # Fails here if the token is missing, expired, or not scoped to the
+      # bucket — the same step, with the same inputs, that release.yml runs.
+      - name: Checkout scoop-inkentry bucket
+        uses: actions/checkout@v7
+        with:
+          repository: inkentries/scoop-inkentry
+          path: bucket-repo
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+
+      - name: Confirm the manifest is where the release job writes it
+        working-directory: bucket-repo
+        run: |
+          set -euo pipefail
+          test -f bucket/inkentry.json
+          node -e 'JSON.parse(require("fs").readFileSync("bucket/inkentry.json","utf8"))'
+          echo "bucket/inkentry.json present and parses"
+
+      # Read access is not enough: a fine-grained token can clone a public repo
+      # and still be unable to push. `--dry-run` performs the authorization
+      # exchange and stops before writing a ref.
+      - name: Confirm the token is authorised to push
+        working-directory: bucket-repo
+        run: |
+          set -euo pipefail
+          git push --dry-run origin HEAD:main
+          echo "push authorised — release.yml can update the bucket"
