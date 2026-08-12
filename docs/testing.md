@@ -95,53 +95,51 @@ network dependency.
 
 Every other migration test in this repo builds an old database shape by hand.
 That tests what we *believe* the old format was. The upgrade corpus tests what
-it **is**: artifacts written by real, downloaded, released inkentry binaries,
-checked in and opened with the current build on every relevant change.
+it **is**: artifacts written by real, downloaded, released binaries, checked in
+and opened with the current build.
 
 ```
 crates/inkentry-cli/tests/upgrade_corpus.rs                the suite
-crates/inkentry-cli/tests/fixtures/upgrade-corpus/         MANIFEST.json + gzipped wings
-scripts/upgrade-corpus/                                   the generator
-.github/workflows/upgrade-corpus.yml                      CI job
+crates/inkentry-cli/tests/fixtures/upgrade-corpus/         MANIFEST.json + wings
+scripts/upgrade-corpus/                                    the generator
+.github/workflows/upgrade-corpus.yml                       CI job
 ```
 
-Six wings, all produced by actual releases, covering the pre-`user_version`
-`index.db` whose version has to be inferred from its table shapes, a real
-`FLOAT[768]` vector table, memory stores either side of the entity-id backfill,
-a registry with a dependency link, and all three git-notes eras on one ref.
+**One wing, and that is the interesting part.** A wing earns its place by
+covering a path a real user's data actually takes, and neither local database is
+such a path: `index.db` is not carried across at all (the user reindexes) and
+`memory.db` crosses as a portable dump into a store this binary creates. No
+database written by an earlier release is ever opened in place, so wings for
+them tested migrations nothing performs; they were removed along with the
+migration ladders they were defending.
+
+The notes ref is the exception, and it is why the harness outlived them. It is
+renamed in place rather than exported, so a migrating user hands this binary a
+ref carrying blobs from three older writing eras — and `git-notes-eras` is what
+proves all three still read, including the era that wrote every entry twice and
+must be folded rather than surfaced twice.
 
 ```sh
 INKENTRY_SECRET_STORE=file cargo test -p inkentry-cli --test upgrade_corpus
 ```
 
-It needs no network and no server: the fixtures are checked in, and the suite
-expands each gzipped wing into a temp dir, since opening a database migrates it
-and would otherwise destroy the fixture on first run. One test is `#[ignore]`d
-because it needs a downloaded release binary in `INKENTRY_OLD_BINARY`; CI runs
-that leg separately.
+No network, no server, no downloaded binary: the fixtures are checked in and the
+suite expands each into a temp dir.
+
+**The harness is kept whole for the wings that do not exist yet.** The first
+release whose databases have to survive a move to a newer schema is the first
+one worth capturing here, and
+`a_schema_version_that_advances_past_the_corpus_fails_here` is what asks that
+question at the moment it stops being hypothetical. It fires when either store's
+schema version moves past what the corpus was last checked against, and it
+exists because an empty corpus and a corpus that quietly stopped collecting look
+identical from the inside. That is not a hypothetical failure: it is what
+happened here once already, when the wing list stopped at the last release
+before `user_version` existed and stayed there through four more releases while
+the suite went on passing.
 
 This suite is what enforces the on-disk half of the
-[stability contract](stability.md#on-disk-formats). If you change a migration,
-this is the test that tells you whether real field data survives it, and its
-assertions are deliberately specific: they were built by injecting each
-data-destroying regression into the real migration paths and confirming the
-suite went red, so weakening one to make it pass is almost always the wrong
-move.
-
-Two things it documents that are easy to hit and hard to guess:
-
-- an older binary opening a newer `index.db` re-stamps `PRAGMA user_version`
-  **downwards**, which is not corruption. See
-  [Downgrading, and why `user_version` can go backwards](stability.md#downgrading-and-why-user_version-can-go-backwards).
-- adding a wing at each release, and the one assertion that is expected to flip
-  when a release carrying the `memory.db` version guard is captured, are covered
-  in [the corpus README](../scripts/upgrade-corpus/README.md).
-
-Regenerating a wing is scripted but not reproducible byte for byte (wall-clock
-timestamps, epoch-milli ids, absolute capture paths), so regenerate only the
-wing you mean to change, with `generate.sh --only <wing-id>`.
-
----
+[stability contract](stability.md#on-disk-formats).
 
 ## sqlite-vec in tests
 
