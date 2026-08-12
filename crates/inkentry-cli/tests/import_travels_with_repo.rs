@@ -135,20 +135,20 @@ fn run_init(dir: &Path) {
     );
 }
 
-// Titles of every entry (archived included) in `dir`'s own memory store.
-fn local_titles(dir: &Path) -> Vec<String> {
+// Entries in `dir`'s own memory store. `include_archived` selects between the
+// default live view and the full one, which is what distinguishes "the entry
+// arrived, marked archived" from "the entry arrived and reads as live".
+fn local_entries(dir: &Path, include_archived: bool) -> Vec<serde_json::Value> {
+    let mut args = vec!["memory", "list"];
+    if include_archived {
+        args.push("--archived");
+    }
+    args.extend(["--format", "jsonl", "--limit", "100"]);
+
     let out = inkentry_bin_in(dir)
         .current_dir(dir)
         .env("INKENTRY_NO_SERVER", "1")
-        .args([
-            "memory",
-            "list",
-            "--archived",
-            "--format",
-            "jsonl",
-            "--limit",
-            "100",
-        ])
+        .args(&args)
         .output()
         .expect("spawn inkentry memory list");
     assert!(
@@ -156,14 +156,40 @@ fn local_titles(dir: &Path) -> Vec<String> {
         "memory list failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let mut titles: Vec<String> = stdout
+    String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect()
+}
+
+fn titles_of(entries: &[serde_json::Value]) -> Vec<String> {
+    let mut titles: Vec<String> = entries
+        .iter()
         .filter_map(|v| Some(v.get("title")?.as_str()?.to_string()))
         .collect();
     titles.sort();
     titles
+}
+
+// Titles of every entry (archived included) in `dir`'s own memory store.
+fn local_titles(dir: &Path) -> Vec<String> {
+    titles_of(&local_entries(dir, true))
+}
+
+fn entry_titled<'a>(entries: &'a [serde_json::Value], title: &str) -> &'a serde_json::Value {
+    entries
+        .iter()
+        .find(|v| v.get("title").and_then(|t| t.as_str()) == Some(title))
+        .unwrap_or_else(|| panic!("no entry titled {title:?} in {entries:#?}"))
+}
+
+fn carrier_record_titled(dir: &Path, title: &str) -> serde_json::Value {
+    let records = carrier_records(dir);
+    records
+        .iter()
+        .find(|v| v.get("title").and_then(|t| t.as_str()) == Some(title))
+        .unwrap_or_else(|| panic!("no carrier record titled {title:?} in {records:#?}"))
+        .clone()
 }
 
 // Every inkentry record on the notes ref, across all reachable commits, as raw
@@ -388,5 +414,41 @@ fn an_imported_log_clones_with_the_repository_and_does_not_duplicate() {
         local_titles(&b),
         vec!["the newer decision", "the older decision"],
         "reading again must not grow the store"
+    );
+
+    // Status is the half of the supersede fact that a reader acts on, and it
+    // is the one the fold could silently drop on the receiving side: a copy
+    // that came back active would resurrect a decision the sender retired.
+    let all = local_entries(&b, true);
+    assert_eq!(
+        entry_titled(&all, "the older decision")["status"],
+        "archived",
+        "the archived entry must still read as archived after hydrating"
+    );
+    assert_eq!(
+        entry_titled(&all, "the newer decision")["status"],
+        "active",
+        "its successor must not have been archived along with it"
+    );
+    assert_eq!(
+        titles_of(&local_entries(&b, false)),
+        vec!["the newer decision"],
+        "the archived entry must not come back live in the default view"
+    );
+
+    // The supersede edge in its portable spelling, on the receiving repo's own
+    // carrier: the predecessor's record must name the successor's entity_id,
+    // which is what lets any reader resolve the edge without a shared rowid.
+    let older = carrier_record_titled(&b, "the older decision");
+    let newer = carrier_record_titled(&b, "the newer decision");
+    assert_eq!(
+        older["superseded_by_entity_id"], newer["entity_id"],
+        "the supersede edge must survive the clone, resolving to the \
+         successor's entity_id"
+    );
+    assert!(
+        !newer["entity_id"].as_str().unwrap_or_default().is_empty(),
+        "negative control: the successor must actually carry an entity_id, so \
+         the comparison above is not two absent fields matching"
     );
 }
