@@ -258,6 +258,13 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   entry UUID for memory — rather than on SQLite rowids, so two machines that
   indexed the same tree agree. The property also holds on a partially embedded
   index, where RRF ties are pervasive rather than incidental.
+- **`import` no longer implies text search covers the entries it could not
+  embed.** The completion message said full-text "already finds them, so results
+  will look complete", but the memory text matcher requires the query as a
+  contiguous phrase and was never a fallback for the ranking those entries are
+  missing. The message and `docs/commands.md` now say what actually reaches them:
+  `memory list` and `context`, which take no query, and `inkentry memory reindex`
+  to finish the job.
 
 ## [0.9.8] — 2026-08-07
 
