@@ -4116,3 +4116,221 @@ async fn racing_supersedes_of_the_same_old_both_land_conflicting_state_updates()
         "must fold to archived regardless of which successor's copy is newer"
     );
 }
+
+// ── the batch carrier write `inkentry import` rides (#51) ────────────────────
+//
+// `append_new_to_git_notes` is the write-through for a whole back catalogue
+// arriving at once. Two properties beyond the single-record helper's are load
+// bearing: it must not write an entity the ref already carries, and it must
+// hold the same D8 lock contract while doing the whole batch in one guarded
+// section.
+
+use inkentry_core::storage::append_new_to_git_notes;
+
+fn carrier_records(titles: &[&str]) -> Vec<NoteRecord> {
+    titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| make_note_record(i as i64 + 1, t))
+        .collect()
+}
+
+/// The records on `refs/notes/inkentry` across every reachable commit, as
+/// (title, entity_id) pairs — one per raw line, deliberately unfolded, so a
+/// duplicate append shows up instead of being collapsed by the reader.
+fn raw_carrier_lines(root: &std::path::Path) -> Vec<(String, String)> {
+    let listing = git_stdout_ok(root, &["notes", "--ref=inkentry", "list"]);
+    let mut out = Vec::new();
+    for line in listing.lines() {
+        let blob = line.split_whitespace().next().expect("blob sha");
+        let body = git_stdout_ok(root, &["cat-file", "-p", blob]);
+        for l in body.lines() {
+            if let Ok(r) = serde_json::from_str::<NoteRecord>(l.trim()) {
+                out.push((r.title.clone(), r.resolve_entity_id()));
+            }
+        }
+    }
+    out
+}
+
+#[tokio::test]
+#[serial]
+async fn a_batch_append_carries_every_record() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let outcome =
+        append_new_to_git_notes(Some(root), &carrier_records(&["first", "second", "third"]))
+            .await
+            .expect("batch append");
+
+    assert_eq!(outcome.written, 3);
+    assert_eq!(outcome.already_carried, 0);
+
+    let titles: Vec<String> = raw_carrier_lines(root)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert_eq!(titles, vec!["first", "second", "third"]);
+}
+
+/// The gate the issue asks for: a dump whose entries came off this carrier is
+/// not written back to it. Re-appending would still converge (the fold
+/// collapses by `entity_id`), so the assertion is on the raw lines — the ref
+/// must not grow a second copy of the log.
+#[tokio::test]
+#[serial]
+async fn a_record_already_on_the_ref_is_not_appended_again() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let records = carrier_records(&["first", "second"]);
+
+    append_new_to_git_notes(Some(root), &records)
+        .await
+        .expect("first append");
+    let outcome = append_new_to_git_notes(Some(root), &records)
+        .await
+        .expect("second append");
+
+    assert_eq!(outcome.written, 0, "nothing new to carry");
+    assert_eq!(outcome.already_carried, 2);
+    assert_eq!(
+        raw_carrier_lines(root).len(),
+        2,
+        "the ref must not grow a duplicate copy of an entry it already carries"
+    );
+}
+
+/// The partial case: some of the dump is already here, some is not. Only the
+/// part that is missing may be written, and the entries that were already
+/// carried must not be duplicated to get it there.
+#[tokio::test]
+#[serial]
+async fn only_the_records_the_ref_lacks_are_appended() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_new_to_git_notes(Some(root), &carrier_records(&["first"]))
+        .await
+        .expect("seed");
+    let outcome = append_new_to_git_notes(Some(root), &carrier_records(&["first", "second"]))
+        .await
+        .expect("overlapping append");
+
+    assert_eq!(outcome.written, 1);
+    assert_eq!(outcome.already_carried, 1);
+
+    let mut titles: Vec<String> = raw_carrier_lines(root)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    titles.sort();
+    assert_eq!(titles, vec!["first", "second"]);
+}
+
+/// An entity carried on an *earlier* commit still counts as carried: the gate
+/// reads every reachable note, not just HEAD's. A HEAD-only gate would
+/// re-append the whole log on the next commit.
+#[tokio::test]
+#[serial]
+async fn an_entity_carried_on_an_earlier_commit_is_recognised() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_new_to_git_notes(Some(root), &carrier_records(&["first"]))
+        .await
+        .expect("seed on the first commit");
+    commit_file(root, "a.txt", "second commit");
+
+    let outcome = append_new_to_git_notes(Some(root), &carrier_records(&["first"]))
+        .await
+        .expect("append after moving HEAD");
+
+    assert_eq!(outcome.written, 0);
+    assert_eq!(outcome.already_carried, 1);
+    assert_eq!(raw_carrier_lines(root).len(), 1);
+}
+
+/// Sibling records and foreign content on HEAD's note survive the batch, as
+/// ADR-059 D1 requires of every writer.
+#[tokio::test]
+#[serial]
+async fn a_batch_append_preserves_foreign_lines_and_siblings() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    append_to_git_notes(Some(root), &make_note_record(9, "written by memory add"))
+        .await
+        .expect("seed a sibling record");
+    let with_prose = format!(
+        "# a human note\n\n{}",
+        note_on_head(root).expect("note").trim_end()
+    );
+    std::process::Command::new("git")
+        .current_dir(root)
+        .args([
+            "notes",
+            "--ref=inkentry",
+            "add",
+            "-f",
+            "-m",
+            &with_prose,
+            "HEAD",
+        ])
+        .output()
+        .expect("git notes add");
+
+    append_new_to_git_notes(Some(root), &carrier_records(&["imported"]))
+        .await
+        .expect("batch append");
+
+    let blob = note_on_head(root).expect("note");
+    assert!(
+        blob.contains("# a human note"),
+        "prose must survive: {blob:?}"
+    );
+    assert!(
+        blob.contains("written by memory add"),
+        "the sibling record must survive: {blob:?}"
+    );
+    assert!(
+        blob.contains("imported"),
+        "the new record must land: {blob:?}"
+    );
+}
+
+/// The batch carries the same D8 contract as every other writer: a contended
+/// lock fails it and nothing is written. Doing the batch in one guarded
+/// section must not become an excuse to skip the lock.
+#[tokio::test]
+#[serial]
+async fn a_batch_append_fails_when_the_lock_is_contended() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+
+    let held = open_lock_file(&notes_lock_path(root));
+    held.lock()
+        .expect("hold the notes lock for the whole write");
+
+    let started = std::time::Instant::now();
+    let result = append_new_to_git_notes(Some(root), &carrier_records(&["must not land"])).await;
+    let waited = started.elapsed();
+
+    drop(held);
+
+    let err = result.expect_err("a contended lock must fail the batch, never write unlocked (D8)");
+    // Negative control: too fast means the writer took the lock uncontended.
+    assert!(
+        waited >= LOCK_WAIT_BUDGET,
+        "the writer must have waited out the {LOCK_WAIT_BUDGET:?} budget; \
+         returned after {waited:?}, so it never contended"
+    );
+    assert!(
+        format!("{err:#}").contains("notes lock"),
+        "the error must name the lock; got: {err:#}"
+    );
+    assert!(
+        note_on_head(root).is_none(),
+        "nothing may be written when the lock is contended"
+    );
+}

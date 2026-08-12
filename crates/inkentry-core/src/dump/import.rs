@@ -21,6 +21,7 @@ use super::reader::Dump;
 use super::record::{Entity, RelationshipKind};
 use crate::registry::Registry;
 use crate::storage::memory::{MemoryStore, NoteId, uuid_v7_at};
+use crate::storage::note_record::{NoteRecord, now_millis};
 
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ImportSummary {
@@ -43,12 +44,36 @@ pub struct ImportSummary {
     /// them, since a dump carries no vectors. Reported so the caller can say
     /// so rather than let semantic recall quietly degrade.
     pub entries_needing_embedding: usize,
+    /// Entries appended to `refs/notes/inkentry`, so they clone with the
+    /// repository. Filled in by the caller that owns the carrier write, which
+    /// runs after this transaction commits.
+    pub memory_entries_carried: usize,
+    /// Entries the carrier already held, so nothing was appended for them.
+    pub memory_entries_already_carried: usize,
+}
+
+/// What one `apply` produced: the counts a user is shown, and the records the
+/// git-notes carrier is offered.
+pub struct ImportOutcome {
+    pub summary: ImportSummary,
+    /// Every memory entry the dump carried, in the shape the carrier writes.
+    ///
+    /// Built for entries that were already rows here as well as for new ones:
+    /// the local store and the carrier are separate surfaces, and presence in
+    /// one says nothing about presence in the other. Deciding what the carrier
+    /// already holds is the carrier's own job.
+    pub carrier_records: Vec<NoteRecord>,
 }
 
 /// Where each entity landed, indexed the same as `Dump::entities`, so a
 /// relationship resolves its endpoints without a second lookup.
 enum Landed {
-    Memory(NoteId),
+    Memory {
+        id: NoteId,
+        /// Index into [`ImportOutcome::carrier_records`], so a supersede
+        /// relationship can reach the record for either of its endpoints.
+        carrier: usize,
+    },
     Project(i64),
     CommandUsage,
 }
@@ -143,7 +168,7 @@ impl Drop for OpenWrites<'_> {
     }
 }
 
-pub fn apply(dump: &Dump, targets: &ImportTargets<'_>) -> Result<ImportSummary> {
+pub fn apply(dump: &Dump, targets: &ImportTargets<'_>) -> Result<ImportOutcome> {
     let mut summary = ImportSummary {
         memory_entries_merged: dump.merged_memory_entries,
         ..ImportSummary::default()
@@ -173,12 +198,14 @@ pub fn apply(dump: &Dump, targets: &ImportTargets<'_>) -> Result<ImportSummary> 
     let open = OpenWrites::begin(targets.memory, targets.registry, usage_conn.as_ref())?;
 
     let mut landed = Vec::with_capacity(dump.entities.len());
+    let mut carrier_records = Vec::new();
     for entity in &dump.entities {
         landed.push(insert_entity(
             entity,
             targets,
             usage_conn.as_ref(),
             &mut summary,
+            &mut carrier_records,
         )?);
     }
     for rel in &dump.relationships {
@@ -189,6 +216,7 @@ pub fn apply(dump: &Dump, targets: &ImportTargets<'_>) -> Result<ImportSummary> 
             rel.created_at,
             targets,
             &mut summary,
+            &mut carrier_records,
         )?;
     }
 
@@ -199,7 +227,10 @@ pub fn apply(dump: &Dump, targets: &ImportTargets<'_>) -> Result<ImportSummary> 
         .notes_missing_embeddings(false)
         .context("counting entries still needing an embedding")?
         .len();
-    Ok(summary)
+    Ok(ImportOutcome {
+        summary,
+        carrier_records,
+    })
 }
 
 /// Open the store recorded commands go to, refusing before any write if it
@@ -238,6 +269,7 @@ fn insert_entity(
     targets: &ImportTargets<'_>,
     usage: Option<&rusqlite::Connection>,
     summary: &mut ImportSummary,
+    carrier_records: &mut Vec<NoteRecord>,
 ) -> Result<Landed> {
     match entity {
         Entity::MemoryEntry(e) => {
@@ -247,6 +279,13 @@ fn insert_entity(
             // minting from the wall clock would stamp all of history with a
             // single instant and destroy the ordering v7 exists to carry.
             let uuid = e.uuid.clone().unwrap_or_else(|| uuid_v7_at(e.created_at));
+            // Resolved once and shared with the carrier record below, so the
+            // row and the note line can never disagree about which entity
+            // this is.
+            let entity_id = e.entity_id.clone().unwrap_or_else(|| {
+                crate::storage::entity_id::entity_id(&e.kind, &e.title, &e.body)
+            });
+            let status = e.status.as_deref().unwrap_or("active");
             let (id, created) = targets
                 .memory
                 .import_entry(
@@ -257,11 +296,11 @@ fn insert_entity(
                     &e.tags,
                     &e.linked_files,
                     e.created_at,
-                    e.status.as_deref().unwrap_or("active"),
+                    status,
                     e.source_ref.as_deref(),
                     e.valid_at,
                     e.invalid_at,
-                    e.entity_id.as_deref(),
+                    Some(&entity_id),
                     e.remote_id.as_deref(),
                 )
                 .with_context(|| format!("importing memory entry {:?}", e.title))?;
@@ -270,7 +309,9 @@ fn insert_entity(
             } else {
                 summary.memory_entries_already_present += 1;
             }
-            Ok(Landed::Memory(id))
+            let carrier = carrier_records.len();
+            carrier_records.push(carrier_record(e, entity_id, status, carrier));
+            Ok(Landed::Memory { id, carrier })
         }
         Entity::Project(p) => {
             let registry = targets.registry.expect(
@@ -303,6 +344,50 @@ fn insert_entity(
     }
 }
 
+/// The dump's entry as the git-notes carrier records it.
+///
+/// Every field the dump carried is copied verbatim — above all `created_at`,
+/// which the carrier's fold orders on. Stamping the wall clock here (as
+/// `memory add` rightly does for an entry minted this instant) would make the
+/// same entry sort differently on every machine that imported the dump, and
+/// the fold would pick a different base copy on each.
+///
+/// `id` is the exception, because there is nothing to carry: it is the
+/// writer's machine-local rowid, which the format documents as **not** an
+/// identity, and the entry's real identity is a UUID that does not fit an
+/// `i64`. `entity_id` carries the identity instead. The offset keeps one
+/// import's records distinct from one another so the `--backend git-notes`
+/// read path does not display one id for several entries; nothing else reads
+/// it.
+fn carrier_record(
+    e: &super::record::MemoryEntry,
+    entity_id: String,
+    status: &str,
+    offset: usize,
+) -> NoteRecord {
+    NoteRecord {
+        schema_version: 1,
+        id: now_millis().saturating_add(offset as i64),
+        kind: e.kind.clone(),
+        title: e.title.clone(),
+        body: e.body.clone(),
+        tags: e.tags.clone(),
+        linked_files: e.linked_files.clone(),
+        created_at: e.created_at,
+        status: status.to_string(),
+        source_ref: e.source_ref.clone(),
+        valid_at: e.valid_at,
+        invalid_at: e.invalid_at,
+        // The machine-local rowid link, which no dump carries and this side
+        // could not resolve anyway; `superseded_by_entity_id` is the portable
+        // encoding and is set from the dump's relationships.
+        superseded_by: None,
+        remote_id: e.remote_id.clone(),
+        entity_id: Some(entity_id),
+        superseded_by_entity_id: None,
+    }
+}
+
 fn insert_relationship(
     kind: RelationshipKind,
     from: &Landed,
@@ -310,6 +395,7 @@ fn insert_relationship(
     created_at: Option<i64>,
     targets: &ImportTargets<'_>,
     summary: &mut ImportSummary,
+    carrier_records: &mut [NoteRecord],
 ) -> Result<()> {
     match (kind, from, to) {
         (RelationshipKind::DependsOn, Landed::Project(from), Landed::Project(to)) => {
@@ -322,7 +408,17 @@ fn insert_relationship(
             summary.project_dependencies += 1;
             Ok(())
         }
-        (RelationshipKind::Supersedes, Landed::Memory(successor), Landed::Memory(predecessor)) => {
+        (
+            RelationshipKind::Supersedes,
+            Landed::Memory {
+                id: successor,
+                carrier: successor_carrier,
+            },
+            Landed::Memory {
+                id: predecessor,
+                carrier: predecessor_carrier,
+            },
+        ) => {
             targets
                 .memory
                 .import_edge(successor, predecessor, kind.as_str(), created_at)?;
@@ -334,14 +430,19 @@ fn insert_relationship(
                 .memory
                 .set_superseded_by(predecessor, successor)
                 .context("linking a superseded entry to its successor")?;
+            // The same inverse encoding on the carrier, where the portable
+            // spelling is the successor's `entity_id`: without it the edge
+            // stays in this store and only the entries themselves travel.
+            carrier_records[*predecessor_carrier].superseded_by_entity_id =
+                Some(carrier_records[*successor_carrier].resolve_entity_id());
             summary.memory_edges += 1;
             summary.supersede_links += 1;
             Ok(())
         }
         (
             RelationshipKind::RelatesTo | RelationshipKind::Contradicts,
-            Landed::Memory(a),
-            Landed::Memory(b),
+            Landed::Memory { id: a, .. },
+            Landed::Memory { id: b, .. },
         ) => {
             targets
                 .memory

@@ -1057,6 +1057,22 @@ entries that landed rather than counting both. Records whose entry is already
 in this store — a second run of the same import — are reported apart again, so
 "imported" never includes something that was already there.
 
+**Imported entries travel with the repository.** Once the rows are committed,
+the import appends them to `refs/notes/inkentry` — the same
+[git-notes carrier](memory.md#sharing-memory-across-clones-via-git-notes)
+`memory add` writes through
+to — so a teammate cloning the repo gets the imported decisions along with the
+code. Each record carries the dump's own `created_at`, status and `entity_id`
+verbatim, and a `supersedes` relationship travels as the successor's
+`entity_id`, so the log converges the same way on every machine that receives
+it. Entries the repo's notes ref already holds are **not** written to it again,
+so re-importing a dump that came off this carrier adds nothing; the summary
+reports that count separately. The carry is best-effort — the local store is
+the store of record and already holds the entries — so a repo without a commit
+to anchor a note to, or a `--db` outside any repository, imports normally and a
+failure is a warning rather than a refusal. Set `store_in_git_notes = false` to
+turn the carry off.
+
 **Embeddings are not carried in a dump**, so imported entries are not in
 semantic search until they are embedded. The import runs its writes in one
 transaction with no embedding inside it, then runs `memory reindex`'s pass

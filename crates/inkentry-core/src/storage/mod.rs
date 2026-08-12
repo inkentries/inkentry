@@ -23,9 +23,10 @@ pub use db::Database;
 pub use entity_id::{entity_id, note_entity_id};
 pub use files::FileRecord;
 pub use git_notes::{
-    AppendOutcome, GitNotesBackend, LOCK_WAIT_BUDGET, LockAttempt, NotesLock, NotesMergeOutcome,
-    NotesRefs, PublishOutcome, RewriteRefStatus, SkipReason, append_state_update,
-    append_to_git_notes, ensure_notes_rewrite_ref, lock_notes, merge_tracking_notes, publish_notes,
+    AppendOutcome, BatchAppendOutcome, GitNotesBackend, LOCK_WAIT_BUDGET, LockAttempt, NotesLock,
+    NotesMergeOutcome, NotesRefs, PublishOutcome, RewriteRefStatus, SkipReason,
+    append_new_to_git_notes, append_state_update, append_to_git_notes, ensure_notes_rewrite_ref,
+    lock_notes, merge_tracking_notes, publish_notes,
 };
 pub use graph::GraphEdge;
 pub use memory::{
