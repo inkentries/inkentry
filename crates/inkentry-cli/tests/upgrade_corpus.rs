@@ -310,7 +310,7 @@ async fn git_notes_reads_every_era_on_the_ref() {
 //
 // The numbers below are an acknowledgement, not a derivation. Deriving them
 // from the crate constants would make the check tautological.
-const CORPUS_COVERS_INDEX_SCHEMA: i32 = 16;
+const CORPUS_COVERS_INDEX_SCHEMA: i32 = 17;
 const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 11;
 
 #[test]

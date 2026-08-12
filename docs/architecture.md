@@ -146,16 +146,13 @@ If memory ever grows to corpus scale, migrating `note_embeddings` to int8 would
 be the obvious follow-up — but until then the int8 cost (a second quantised path
 to maintain, plus a forced memory re-embed/re-harvest on migration) buys nothing.
 
-The dimension upgrade for pre-0.9 `FLOAT[768]` databases is handled **per store**:
-`Database::apply_dim_upgrade_migration` rebuilds the chunk table as
-`INT8[896]`, while `MemoryStore::apply_dim_upgrade_migration` (one step in
-`MemoryStore::run_migrations`, the same forward-only `PRAGMA user_version`-gated
-runner `index.db` uses) rebuilds `note_embeddings` as `FLOAT[896]` (each still
-guarded by its own marker table). There is no path that leaves
-memory stranded on the stale 768-dim layout. The `note_embeddings` rebuild is
-empty rather than converting the old vectors, so semantic recall on pre-upgrade
-notes is lost until they are re-embedded with `inkentry memory reindex`; a
-one-line notice after the upgrade points the user at that command.
+There is no dimension-upgrade path any more, in either store, because there is
+no migration path at all. Each store declares its final shape in a single schema
+file and stamps `PRAGMA user_version` at creation; a file carrying anything else
+is never converted in place. `memory.db` refuses one and points at `inkentry
+import`; `index.db` discards and rebuilds, carrying only `usage`. A stale 768-dim
+vector table therefore cannot reach a read path: it is not upgraded, it is gone
+with the file that held it.
 
 ### Backend abstraction
 

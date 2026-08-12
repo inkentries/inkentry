@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Wraps the SQLite connection and provides typed access to the schema.
 /// Methods are implemented across sub-modules in the `storage` package.
@@ -8,14 +8,32 @@ pub struct Database {
     pub(super) conn: Connection,
 }
 
-/// Latest local schema version. Append-only: never renumber an existing step.
-/// The runner in `Database::open` gates each migration on this via
-/// `PRAGMA user_version`; steps are numbered in the order they run (the field
-/// order), not filename order.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 16;
+/// Version stamped into `PRAGMA user_version` by [`Database::open`].
+///
+/// There is no migration ladder. Every index this binary opens was created by
+/// this binary at the shape `index_001_initial.sql` declares; anything else is
+/// discarded and rebuilt, because an index is derived from the user's source
+/// tree. The constant survives so an index written by a future build is refused
+/// rather than silently misread.
+///
+/// It continues the old ladder's numbering rather than restarting at 1, for the
+/// reason [`LAST_LEGACY_SCHEMA_VERSION`] records.
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 17;
 
-/// One entry in the migration runner: (target version, migration body).
-type MigrationStep = (i32, fn(&Database) -> Result<()>);
+/// The highest `user_version` the old migration ladder ever stamped.
+///
+/// `user_version` is one i32 per file, shared with every stamp the ladder wrote,
+/// so a fresh numbering starting at 1 would make an index from an older build
+/// read as one from a *newer* build — and be refused with advice to upgrade to
+/// something that does not exist. Nothing may reclaim this range:
+/// `CURRENT_SCHEMA_VERSION` only ever moves up from here.
+pub(super) const LAST_LEGACY_SCHEMA_VERSION: i32 = 16;
+
+const _: () = assert!(
+    CURRENT_SCHEMA_VERSION > LAST_LEGACY_SCHEMA_VERSION,
+    "the index schema version must stay above every stamp the old ladder wrote, or an index \
+     from an older build is misread as one from a newer build"
+);
 
 impl Database {
     /// Open (or create) the database at `path` and run all migrations.
@@ -30,92 +48,149 @@ impl Database {
 
         let conn = Connection::open(path)
             .with_context(|| format!("opening database at {}", path.display()))?;
+        Self::apply_connection_pragmas(&conn)?;
 
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        super::apply_test_page_cap(&conn)?;
-
-        let db = Self { conn };
-        db.run_migrations()?;
+        let mut db = Self { conn };
+        db.create_schema(path)?;
         Ok(db)
     }
 
-    /// Forward-only migration runner gated on `PRAGMA user_version`.
-    ///
-    /// A `user_version=0` DB is either brand-new (no user tables) or a
-    /// pre-`user_version` field DB. New DBs run every step from 1. Field DBs
-    /// have their true version inferred from table shapes / the
-    /// `schema_int8_embeddings` marker, stamped, and only later steps run —
-    /// blindly re-running all steps would drive the guarded 008–010 ALTERs
-    /// through their `duplicate column name` branch needlessly. Each step is
-    /// idempotent, so a conservative (one-low) inference stays safe.
-    ///
-    /// Returns immediately, before any write, when the on-disk header
-    /// already reads `CURRENT_SCHEMA_VERSION`: `PRAGMA user_version = N`
-    /// opens a write transaction even to re-set an unchanged value, so an
-    /// unconditional stamp on every open would make every `Database::open`,
-    /// including a read-only command, contend for the write lock against a
-    /// concurrent writer instead of only doing so for a genuine migration.
-    fn run_migrations(&self) -> Result<()> {
-        // Read the RAW on-disk value before any inference below adjusts the
-        // working `version`: the skip-write gate further down must key on
-        // what is actually stamped in the file header, not on an in-memory
-        // value that was only just inferred and has not been persisted yet
-        // (a legacy pre-user_version DB reads 0 here but may infer straight
-        // to `CURRENT_SCHEMA_VERSION` - that inference still needs writing).
-        let raw_version: i32 = self
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .context("reading user_version")?;
-        if raw_version == CURRENT_SCHEMA_VERSION {
-            return Ok(());
-        }
-
-        let mut version = raw_version;
-        if version == 0 && !self.is_fresh_db()? {
-            version = self.infer_legacy_version()?;
-        }
-
-        // Each entry: (target_version, migration body). Ordered by call order.
-        // Append new steps at the end; never renumber.
-        let steps: &[MigrationStep] = &[
-            (1, Self::migrate),
-            (2, Self::apply_vector_migration),
-            (3, Self::apply_graph_migration),
-            (4, Self::apply_spec_migration),
-            (5, Self::apply_fts_migration),
-            (6, Self::apply_token_count_migration),
-            (7, Self::apply_graph_rank_migration),
-            (8, Self::apply_summary_migration),
-            (9, Self::apply_usage_migration),
-            (10, Self::apply_compound_graph_idx_migration),
-            (11, Self::apply_conventions_migration),
-            (12, Self::apply_dim_upgrade_migration),
-            (13, Self::apply_drop_snapshots_migration),
-            (14, Self::apply_index_meta_migration),
-            (15, Self::apply_file_mtime_migration),
-            (16, Self::apply_embed_pending_migration),
-        ];
-        debug_assert_eq!(
-            steps.last().map(|(v, _)| *v),
-            Some(CURRENT_SCHEMA_VERSION),
-            "steps table must end at CURRENT_SCHEMA_VERSION"
-        );
-
-        for (target, body) in steps {
-            if *target > version {
-                body(self)?;
-            }
-        }
-        // user_version is a header i32; the value is a code-controlled constant.
-        self.conn
-            .execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))
-            .context("stamping user_version")?;
+    /// Per-connection settings, applied on every connection this type opens —
+    /// including the second one a rebuild makes, which would otherwise come up
+    /// without foreign-key enforcement or the WAL.
+    fn apply_connection_pragmas(conn: &Connection) -> Result<()> {
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        super::apply_test_page_cap(conn)?;
         Ok(())
     }
 
-    /// True when the file has no user tables — a freshly created DB that must
-    /// run every migration from step 1.
-    fn is_fresh_db(&self) -> Result<bool> {
+    /// Create the index schema on a new file, accept one already at it, and
+    /// rebuild anything else.
+    ///
+    /// There is no ladder. An index is derived from the user's source tree, so
+    /// the answer to a shape this build did not write is to reindex, not to
+    /// convert: reindexing reproduces the store exactly, and a conversion path
+    /// would be code carrying a description of every old shape forever. That
+    /// is the same reasoning ADR-078 applies to `memory.db`, reaching the
+    /// opposite action because the two stores hold different things — memory
+    /// is authored and refuses rather than rebuild, an index is not.
+    ///
+    /// `usage` is the exception that stops "purely derived" being true, and it
+    /// is carried across the rebuild.
+    fn create_schema(&mut self, path: &Path) -> Result<()> {
+        let version: i32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .context("reading user_version")?;
+
+        if version == CURRENT_SCHEMA_VERSION {
+            return Ok(());
+        }
+        if version > CURRENT_SCHEMA_VERSION {
+            anyhow::bail!(
+                "index.db schema version {version} is newer than this build of inkentry \
+                 supports (max {CURRENT_SCHEMA_VERSION}); upgrade inkentry to open this index."
+            );
+        }
+        // Below this build's stamp: an index written by an older ladder, or one
+        // predating the stamp entirely and recognisable only by holding tables.
+        if version > 0 || !self.is_empty_file()? {
+            return self.rebuild(path, version);
+        }
+
+        self.create_fresh()
+    }
+
+    /// Replace an index this build did not write, carrying `usage` across.
+    ///
+    /// The file is removed and recreated rather than having its tables
+    /// dropped. Two of them are virtual — an FTS5 index and a vec0 table — and
+    /// each owns a set of shadow tables that must not be dropped directly and
+    /// whose names have changed across the shapes this might encounter. Taking
+    /// the file out removes the need to know any of them.
+    fn rebuild(&mut self, path: &Path, found: i32) -> Result<()> {
+        let carried = self.read_usage().unwrap_or_default();
+
+        tracing::warn!(
+            found_version = found,
+            carried_usage_rows = carried.len(),
+            "index.db was written by an older schema and cannot be read by this build; \
+             rebuilding it empty. Run `inkentry index` to repopulate it."
+        );
+
+        // Close this connection before the file goes: an open handle to a
+        // deleted file keeps writing to an inode nothing can find again.
+        self.conn = Connection::open_in_memory().context("parking the connection")?;
+        for suffix in ["", "-wal", "-shm"] {
+            let victim = PathBuf::from(format!("{}{suffix}", path.display()));
+            match std::fs::remove_file(&victim) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| format!("removing {}", victim.display()));
+                }
+            }
+        }
+
+        self.conn = Connection::open(path)
+            .with_context(|| format!("reopening database at {}", path.display()))?;
+        Self::apply_connection_pragmas(&self.conn)?;
+        self.create_fresh()?;
+        self.write_usage(&carried)?;
+        Ok(())
+    }
+
+    fn create_fresh(&self) -> Result<()> {
+        // Creation and its stamp commit together. Split across two
+        // transactions, a crash between them would leave a fully-formed index
+        // carrying no stamp — which the check above would then rebuild,
+        // discarding a perfectly good index.
+        self.conn
+            .execute_batch(&format!(
+                "BEGIN;\n{}\nPRAGMA user_version = {CURRENT_SCHEMA_VERSION};\nCOMMIT;",
+                include_str!("../../migrations/index_001_initial.sql")
+            ))
+            .context("creating index schema")?;
+
+        // The scheme an empty index composes its embedding input under. Stamped
+        // at creation, not on first index, because `ensure_*` readers treat an
+        // absent stamp as "written by something older" and would recompose a
+        // store that has nothing in it yet.
+        self.conn
+            .execute(
+                "INSERT INTO index_meta (key, value) VALUES ('summary_scheme', ?1)",
+                rusqlite::params![crate::indexer::summariser::SUMMARY_SCHEME],
+            )
+            .context("stamping the summary scheme")?;
+        Ok(())
+    }
+
+    /// Best effort by design: an index old enough to predate the `usage` table
+    /// has nothing to carry, and failing the whole open over telemetry would
+    /// be the wrong trade.
+    fn read_usage(&self) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare("SELECT command, called_at FROM usage")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn write_usage(&self, rows: &[(String, i64)]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare("INSERT INTO usage (command, called_at) VALUES (?1, ?2)")?;
+            for (command, called_at) in rows {
+                stmt.execute(rusqlite::params![command, called_at])?;
+            }
+        }
+        tx.commit().context("carrying usage across the rebuild")?;
+        Ok(())
+    }
+
+    /// True when the file has no user tables.
+    fn is_empty_file(&self) -> Result<bool> {
         let n: i64 = self
             .conn
             .query_row(
@@ -126,351 +201,6 @@ impl Database {
             )
             .context("counting user tables")?;
         Ok(n == 0)
-    }
-
-    /// Infer the schema version of a pre-`user_version` field DB from its table
-    /// shapes. Walks the ladder top-down; the first unmet predicate fixes the
-    /// version. A conservative (one-low) result is safe: the re-run step is a
-    /// no-op guard that then advances the version.
-    fn infer_legacy_version(&self) -> Result<i32> {
-        let has_table = |name: &str| -> Result<bool> {
-            Ok(self
-                .conn
-                .query_row(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-                    rusqlite::params![name],
-                    |_| Ok(()),
-                )
-                .optional()
-                .context("probing table")?
-                .is_some())
-        };
-        let has_index = |name: &str| -> Result<bool> {
-            Ok(self
-                .conn
-                .query_row(
-                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
-                    rusqlite::params![name],
-                    |_| Ok(()),
-                )
-                .optional()
-                .context("probing index")?
-                .is_some())
-        };
-        let chunks_has_column = |col: &str| -> Result<bool> {
-            let mut stmt = self.conn.prepare("PRAGMA table_info(chunks)")?;
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                if row.get::<_, String>(1)? == col {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        };
-        let files_has_column = |col: &str| -> Result<bool> {
-            let mut stmt = self.conn.prepare("PRAGMA table_info(files)")?;
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                if row.get::<_, String>(1)? == col {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        };
-
-        let ladder: [(i32, bool); 16] = [
-            (1, has_table("chunks")?),
-            (2, has_table("embeddings")?),
-            (3, has_table("graph_edges")?),
-            (4, has_table("specs")?),
-            (5, has_table("chunks_fts")?),
-            (6, chunks_has_column("token_count")?),
-            (7, chunks_has_column("graph_rank")?),
-            (8, chunks_has_column("summary")?),
-            (9, has_table("usage")?),
-            (10, has_index("graph_edges_source_name_kind")?),
-            (11, has_table("conventions")?),
-            (12, has_table("schema_int8_embeddings")?),
-            (13, !has_table("snapshots")?),
-            (14, has_table("index_meta")?),
-            (15, files_has_column("mtime")?),
-            (16, chunks_has_column("embed_pending")?),
-        ];
-        // Highest version whose predicate and all lower ones hold.
-        let mut version = 0;
-        for (v, satisfied) in ladder {
-            if !satisfied {
-                break;
-            }
-            version = v;
-        }
-        Ok(version)
-    }
-
-    fn migrate(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/001_initial.sql"))
-            .context("running base migrations")?;
-        Ok(())
-    }
-
-    /// Create the sqlite-vec virtual table. Idempotent (`IF NOT EXISTS`).
-    pub fn apply_vector_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/002_vectors.sql"))
-            .context("running vector migration (is the sqlite-vec extension loaded?)")?;
-        Ok(())
-    }
-
-    /// Create the graph_edges table. Idempotent (`IF NOT EXISTS`).
-    pub fn apply_graph_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/003_graph.sql"))
-            .context("running graph migration")?;
-        Ok(())
-    }
-
-    /// Create the specs and spec_links tables. Idempotent (`IF NOT EXISTS`).
-    pub fn apply_spec_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/006_specs.sql"))
-            .context("running spec migration")?;
-        Ok(())
-    }
-
-    /// Create the FTS5 virtual table and sync triggers. Idempotent (`IF NOT EXISTS`).
-    /// Also backfills any existing chunks not yet in the FTS index.
-    pub fn apply_fts_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/007_fts.sql"))
-            .context("running FTS migration")?;
-        self.conn
-            .execute_batch(
-                "INSERT INTO chunks_fts(rowid, name, content, node_type)
-                 SELECT id, name, content, node_type FROM chunks
-                 WHERE id NOT IN (SELECT rowid FROM chunks_fts);",
-            )
-            .context("backfilling FTS index")?;
-        Ok(())
-    }
-
-    /// Add token_count column to chunks table.
-    /// `ALTER TABLE` has no `IF NOT EXISTS`; only the already-applied error is
-    /// tolerated so a genuine failure propagates out of `Database::open`.
-    pub fn apply_token_count_migration(&self) -> Result<()> {
-        match self
-            .conn
-            .execute_batch(include_str!("../../migrations/008_token_counts.sql"))
-        {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => return Err(e).context("running token_count migration"),
-        }
-        Ok(())
-    }
-
-    /// Add graph_rank column to chunks table.
-    pub fn apply_graph_rank_migration(&self) -> Result<()> {
-        match self
-            .conn
-            .execute_batch(include_str!("../../migrations/009_graph_rank.sql"))
-        {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => return Err(e).context("running graph_rank migration"),
-        }
-        Ok(())
-    }
-
-    /// Add summary column to chunks table.
-    pub fn apply_summary_migration(&self) -> Result<()> {
-        match self
-            .conn
-            .execute_batch(include_str!("../../migrations/010_summaries.sql"))
-        {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => return Err(e).context("running summary migration"),
-        }
-        Ok(())
-    }
-
-    /// Create the usage table. Idempotent (`IF NOT EXISTS`).
-    pub fn apply_usage_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/011_usage.sql"))
-            .context("running usage migration")?;
-        Ok(())
-    }
-
-    /// Upgrade the sqlite-vec embedding tables from 768-dim (Nomic) to 896-dim (F2LLM-v2-330M).
-    ///
-    /// Idempotent — guarded by the `schema_v896_embeddings` marker table. On
-    /// fresh databases the table is already created at 896-dim by
-    /// `apply_vector_migration`, so this is a fast no-op. On existing 768-dim
-    /// databases the table is dropped and recreated; a full `inkentry index`
-    /// re-run is required afterwards.
-    pub fn apply_dim_upgrade_migration(&self) -> Result<()> {
-        let already: bool = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_int8_embeddings'",
-                [],
-                |_| Ok(true),
-            )
-            .optional()
-            .context("checking v896 migration marker")?
-            .is_some();
-        if already {
-            return Ok(());
-        }
-
-        // Detect whether existing vec0 tables were created with FLOAT[768].
-        let upgrade_needed = |table: &str| -> Result<bool> {
-            Ok(self
-                .conn
-                .query_row(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
-                    rusqlite::params![table],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .context("querying sqlite_master")?
-                // Any float-typed vector table (768 or 896 dim) is rebuilt as
-                // int8[896]; F2LLM embeddings are L2-normalised so int8 is
-                // lossless enough for ranking and 4× smaller on disk.
-                .map(|sql| sql.contains("FLOAT["))
-                .unwrap_or(false))
-        };
-
-        if upgrade_needed("embeddings")? {
-            self.conn
-                .execute_batch(
-                    "DROP TABLE IF EXISTS embeddings; \
-                     CREATE VIRTUAL TABLE embeddings USING vec0(\
-                         chunk_id INTEGER PRIMARY KEY, embedding INT8[896]\
-                     );",
-                )
-                .context("upgrading embeddings table to int8[896]")?;
-            tracing::info!(
-                "embedding storage upgraded to int8[896] (F2LLM-v2-330M); \
-                 re-run `inkentry index` to rebuild"
-            );
-        }
-        self.conn
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS schema_int8_embeddings \
-                 (sentinel INTEGER PRIMARY KEY);",
-            )
-            .context("creating int8 migration marker")?;
-        Ok(())
-    }
-
-    /// Create compound indexes on graph_edges for LinearRAG mention lookups. Idempotent.
-    pub fn apply_compound_graph_idx_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!(
-                "../../migrations/018_graph_edges_compound_idx.sql"
-            ))
-            .context("running compound graph index migration")?;
-        Ok(())
-    }
-
-    /// Drop the snapshot storage tables.
-    ///
-    /// `snapshots`/`snapshot_files`/`snapshot_chunks` were created by
-    /// `016_snapshots.sql` and `snapshot_embeddings` by
-    /// `017_snapshot_vectors.sql`, but nothing ever populated them (`inkentry
-    /// search --as-of` always errored with "no snapshot found"). Removed for
-    /// v1.0 rather than gated behind a flag. `IF EXISTS` makes this a no-op on
-    /// fresh databases, which never create these tables in the first place.
-    pub fn apply_drop_snapshots_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/021_drop_snapshots.sql"))
-            .context("running drop-snapshots migration")?;
-        Ok(())
-    }
-
-    /// Add the `mtime` column to the files table (unix seconds; recency signal
-    /// for the embed queue). `ALTER TABLE` has no `IF NOT EXISTS`, so only the
-    /// already-applied error is tolerated; a genuine failure propagates.
-    pub fn apply_file_mtime_migration(&self) -> Result<()> {
-        match self
-            .conn
-            .execute_batch(include_str!("../../migrations/024_file_mtime.sql"))
-        {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => return Err(e).context("running file mtime migration"),
-        }
-        Ok(())
-    }
-
-    /// Create the index_meta KV table (embedding provenance). Idempotent.
-    pub fn apply_index_meta_migration(&self) -> Result<()> {
-        self.conn
-            .execute_batch(include_str!("../../migrations/022_index_meta.sql"))
-            .context("running index_meta migration")?;
-        Ok(())
-    }
-
-    /// Add the `chunks.embed_pending` dirty flag and, on the one-time transition
-    /// to the structural-summary composition, null the stale (LLM-scheme) summary
-    /// on every already-embedded chunk and mark it for in-place re-embedding.
-    /// Nulling the summary is what lets the structural recompose and tier-3
-    /// selection — both gated on `summary IS NULL` — actually run; otherwise the
-    /// chunk would re-embed from its old summary yet be stamped as the new scheme.
-    ///
-    /// This deliberately departs from the FLOAT→INT8 precedent
-    /// ([`apply_dim_upgrade_migration`](Self::apply_dim_upgrade_migration)),
-    /// which dropped the vector table so search went dark until re-index. Here
-    /// only the embedding *input text* changed, not the vector space, so every
-    /// existing vector is kept and re-embedded in place (delete-then-insert per
-    /// chunk under the batch transaction); coverage never regresses to zero.
-    ///
-    /// The marking is gated on the **absence** of the `summary_scheme` marker,
-    /// stamped in the same transaction as the marking, so it runs exactly once
-    /// per index and is idempotent across reopens (and across a crash between
-    /// the two writes). A DB already stamped with a *different* scheme — an
-    /// index written by a newer binary, opened by this one — is left untouched:
-    /// same-space input drift is a warning, never a downgrade or a hard error.
-    /// A fresh index has no embedded chunks, so it is only stamped, never marks
-    /// anything.
-    pub fn apply_embed_pending_migration(&self) -> Result<()> {
-        match self
-            .conn
-            .execute_batch(include_str!("../../migrations/026_embed_pending.sql"))
-        {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("duplicate column name") => {}
-            Err(e) => return Err(e).context("running embed_pending migration"),
-        }
-
-        if self.summary_scheme()?.is_none() {
-            let tx = self.conn.unchecked_transaction()?;
-            // Invalidate any old-scheme summary (LLM prose, or `""` from a
-            // failed LLM batch) on already-embedded chunks. The structural
-            // recompose and tier-3 selection are both gated on `summary IS NULL`,
-            // so without this an existing LLM-summary index would re-embed from
-            // its stale summary and get mislabelled `structural_v1`. Named chunks
-            // then recompose structurally; title-less ones re-enter tier-3.
-            tx.execute(
-                "UPDATE chunks SET summary = NULL \
-                 WHERE id IN (SELECT chunk_id FROM embeddings)",
-                [],
-            )?;
-            tx.execute(
-                "UPDATE chunks SET embed_pending = 1 \
-                 WHERE id IN (SELECT chunk_id FROM embeddings)",
-                [],
-            )?;
-            tx.execute(
-                "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('summary_scheme', ?1)",
-                rusqlite::params![crate::indexer::summariser::SUMMARY_SCHEME],
-            )?;
-            tx.commit()?;
-        }
-        Ok(())
     }
 
     /// Read the recorded embedding-input composition scheme
@@ -681,7 +411,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::{CURRENT_SCHEMA_VERSION, Database};
-    use rusqlite::{Connection, OptionalExtension};
+    use rusqlite::Connection;
     use std::sync::OnceLock;
 
     fn register_sqlite_vec() {
@@ -722,270 +452,133 @@ mod tests {
         assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
     }
 
-    /// A DB built by the previous binary reports `user_version = 0` but has all
-    /// tables. It must be inferred at the latest version, stamped, and re-run
-    /// zero erroring migration bodies.
-    #[test]
-    fn legacy_fully_migrated_db_is_inferred_and_stamped() {
-        register_sqlite_vec();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        {
-            let db = Database::open(tmp.path()).expect("build via runner");
-            // Simulate a pre-user_version binary: reset the header stamp.
-            db.conn
-                .execute_batch("PRAGMA user_version = 0")
-                .expect("reset version");
-        }
-        let db = Database::open(tmp.path()).expect("reopen legacy");
-        assert_eq!(
-            user_version(&db.conn),
-            CURRENT_SCHEMA_VERSION,
-            "a fully-migrated legacy DB must be inferred at the latest version"
-        );
+    // Build something shaped like an index the old ladder wrote: real tables,
+    // real rows, stamped at a version this build no longer knows how to read.
+    fn legacy_index_at(path: &std::path::Path, stamp: i32) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, hash TEXT); \
+             CREATE TABLE chunks (id INTEGER PRIMARY KEY, file_id INTEGER, content TEXT); \
+             CREATE VIRTUAL TABLE chunks_fts USING fts5(content); \
+             CREATE VIRTUAL TABLE embeddings USING vec0(\
+                 chunk_id INTEGER PRIMARY KEY, embedding FLOAT[768]); \
+             CREATE TABLE usage (command TEXT NOT NULL, called_at INTEGER NOT NULL); \
+             INSERT INTO files (path, hash) VALUES ('a.rs', 'h'); \
+             INSERT INTO chunks (file_id, content) VALUES (1, 'fn a() {{}}'); \
+             INSERT INTO usage (command, called_at) VALUES ('search', 11), ('index', 22); \
+             PRAGMA user_version = {stamp};"
+        ))
+        .unwrap();
     }
 
-    // `run_migrations` used to stamp `PRAGMA user_version` unconditionally on
-    // every open, even when nothing needed migrating - and setting that
-    // pragma always opens a write transaction, so a concurrent reader
-    // (`inkentry search` while `inkentry index` runs) could fail with
-    // "database is locked" on this alone, never touching a genuine
-    // migration. Reopening an already-current DB while another connection
-    // holds an open writer transaction must now succeed.
     #[test]
-    fn opening_an_already_current_db_never_writes_so_a_concurrent_writer_cannot_lock_it_out() {
+    fn an_index_from_the_old_ladder_is_rebuilt_at_the_current_schema() {
         register_sqlite_vec();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        Database::open(tmp.path()).expect("build and fully migrate");
-        assert_eq!(
-            user_version(&Database::open(tmp.path()).unwrap().conn),
-            CURRENT_SCHEMA_VERSION
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        legacy_index_at(&path, super::LAST_LEGACY_SCHEMA_VERSION);
 
-        let locker = Connection::open(tmp.path()).expect("open locker connection");
-        locker
-            .execute_batch(
-                "BEGIN IMMEDIATE; \
-                 INSERT INTO files (path, hash, indexed_at) VALUES ('x', 'y', 0);",
-            )
-            .expect("take the write lock");
+        let db = Database::open(&path).expect("an old index must open, not refuse");
 
-        let reopened = Database::open(tmp.path());
-        locker.execute_batch("ROLLBACK;").expect("release the lock");
-
-        reopened.expect(
-            "opening an already-migrated DB must never attempt a write, so it must succeed even \
-             while another connection holds the write lock",
-        );
-    }
-
-    /// A partially-migrated legacy DB (chunks without `summary`, no index_meta,
-    /// version 0) is inferred at 7 and only the later steps run to reach the
-    /// latest version.
-    #[test]
-    fn partially_migrated_legacy_db_is_inferred_then_completed() {
-        register_sqlite_vec();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        {
-            // Build a real DB, then strip it back to a version-7 shape: drop the
-            // later columns/tables so inference lands at 7.
-            let db = Database::open(tmp.path()).expect("build");
-            db.conn
-                .execute_batch(
-                    "ALTER TABLE chunks DROP COLUMN summary; \
-                     DROP TABLE IF EXISTS usage; \
-                     DROP INDEX IF EXISTS graph_edges_source_name_kind; \
-                     DROP TABLE IF EXISTS conventions; \
-                     DROP TABLE IF EXISTS schema_int8_embeddings; \
-                     DROP TABLE IF EXISTS index_meta; \
-                     PRAGMA user_version = 0;",
-                )
-                .expect("strip to v7 shape");
-            assert!(super::Database::infer_legacy_version(&db).unwrap() == 7);
-        }
-        let db = Database::open(tmp.path()).expect("reopen partial");
         assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
-        // The later step (index_meta) actually ran.
-        assert!(db.embedding_model().unwrap().is_none());
-        db.ensure_embedding_model("m").unwrap();
-        assert_eq!(db.embedding_model().unwrap().as_deref(), Some("m"));
-    }
-
-    /// A genuine failure in the guarded 008–010 ALTERs (not a duplicate column)
-    /// propagates out rather than being swallowed. We exercise the guard by
-    /// dropping the whole `chunks` table so the ALTER fails with "no such
-    /// table", which must surface as an `Err`.
-    #[test]
-    fn token_count_migration_propagates_non_duplicate_error() {
-        register_sqlite_vec();
-        let conn = Connection::open_in_memory().unwrap();
-        let db = Database { conn };
-        // No `chunks` table exists → the ALTER fails with "no such table".
-        let err = db
-            .apply_token_count_migration()
-            .expect_err("missing chunks table must surface as an error");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("no such table") || msg.contains("token_count migration"),
-            "a real migration failure must propagate, got: {msg}"
+        assert_eq!(
+            db.stats().unwrap().chunk_count,
+            0,
+            "the old index's derived rows must not survive into a schema that never held them"
         );
-    }
-
-    /// The `files.mtime` migration is idempotent: applying it to a pre-existing
-    /// (pre-column) index adds the column with default 0 without error, and
-    /// applying it again on an already-migrated DB is a tolerated no-op.
-    #[test]
-    fn file_mtime_migration_is_idempotent() {
-        register_sqlite_vec();
-        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
-
-        let has_mtime = |db: &Database| -> bool {
-            let mut stmt = db.conn.prepare("PRAGMA table_info(files)").unwrap();
-            let mut rows = stmt.query([]).unwrap();
-            while let Some(row) = rows.next().unwrap() {
-                if row.get::<_, String>(1).unwrap() == "mtime" {
-                    return true;
-                }
-            }
-            false
-        };
-
-        // Fresh DB already has the column from the full migration run.
-        assert!(has_mtime(&db), "fresh DB has the mtime column");
-
-        // Simulate a pre-column index: drop the column, then re-run the migration.
-        db.conn
-            .execute_batch("ALTER TABLE files DROP COLUMN mtime")
-            .expect("drop mtime to simulate a pre-migration index");
-        assert!(!has_mtime(&db), "column dropped to model a legacy index");
-
-        db.apply_file_mtime_migration()
-            .expect("migration must add the column to a pre-column index without error");
-        assert!(has_mtime(&db), "migration re-added the mtime column");
-
-        // A legacy row inserted before the column existed reads back as 0.
-        db.conn
-            .execute(
-                "INSERT INTO files (path, language, hash, indexed_at) VALUES ('legacy.rs', 'rust', 'h', 1)",
-                [],
-            )
-            .unwrap();
-        let mtime: i64 = db
+        // The vec0 table has to be the current one, not the FLOAT[768] the old
+        // file carried: a stale dimension is the failure the deleted upgrade
+        // path existed to prevent, and rebuilding has to cover it too.
+        let vec_sql: String = db
             .conn
             .query_row(
-                "SELECT mtime FROM files WHERE path = 'legacy.rs'",
+                "SELECT sql FROM sqlite_master WHERE name = 'embeddings'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(mtime, 0, "a row lacking an explicit mtime defaults to 0");
-
-        // Re-applying on the already-migrated DB is a tolerated no-op.
-        db.apply_file_mtime_migration()
-            .expect("re-applying the migration on a migrated DB is a no-op");
-        assert!(has_mtime(&db));
-    }
-
-    /// Exercises the actual legacy-inference rung for this migration (ladder
-    /// entry `(15, files_has_column("mtime"))`), not just the direct
-    /// `apply_file_mtime_migration` idempotency check above. A DB frozen at v14
-    /// (every table/column through `index_meta` present, `files.mtime` not yet
-    /// added, `user_version` reset to 0 — the real shape of an index built by
-    /// the previous binary) must be inferred at exactly 14 through
-    /// `Database::open`'s normal migration runner, and only step 15 must run to
-    /// bring it current.
-    #[test]
-    fn legacy_db_frozen_at_v14_infers_14_and_applies_only_mtime_step() {
-        register_sqlite_vec();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        {
-            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
-            // Roll back to the pre-024 shape: drop only the mtime column,
-            // leaving every other v1..14 table/column intact, then reset the
-            // version stamp so `Database::open` must re-infer it from shape.
-            db.conn
-                .execute_batch("ALTER TABLE files DROP COLUMN mtime; PRAGMA user_version = 0;")
-                .expect("roll back to pre-mtime shape");
-            assert_eq!(
-                Database::infer_legacy_version(&db).unwrap(),
-                14,
-                "with every v1..14 predicate true and only the mtime rung false, \
-                 inference must land exactly at 14"
-            );
-            // A row inserted while at this legacy shape has no mtime column at
-            // all yet (pre-migration data).
-            db.conn
-                .execute(
-                    "INSERT INTO files (path, language, hash, indexed_at) VALUES ('old.rs', 'rust', 'h', 1)",
-                    [],
-                )
-                .unwrap();
-        }
-
-        // Reopen through the normal runner (not calling apply_file_mtime_migration
-        // directly): this is the real "agent upgrades the binary" path.
-        let db = Database::open(tmp.path()).expect("reopen legacy v14 DB");
-        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
-
-        let mtime: i64 = db
-            .conn
-            .query_row("SELECT mtime FROM files WHERE path = 'old.rs'", [], |r| {
-                r.get(0)
-            })
-            .expect("mtime column must exist and be queryable after inferred upgrade");
-        assert_eq!(
-            mtime, 0,
-            "a pre-existing row defaults to mtime 0, not an error"
-        );
-    }
-
-    /// Defends the ladder's early-break behaviour against a hand-tampered /
-    /// corrupted DB where a *later* rung's predicate is true but an *earlier*
-    /// one is false — a state the normal forward-only migration path can never
-    /// produce, but one a manual `ALTER TABLE` (or a hand-restored backup)
-    /// could. `Database::open` must still complete without error or data
-    /// corruption: the ladder takes the lowest satisfied version (ignoring the
-    /// spuriously-true later rung), and every step from there re-applies
-    /// idempotently rather than double-erroring on the already-present column.
-    #[test]
-    fn migration_ladder_tolerates_out_of_order_manually_tampered_state() {
-        register_sqlite_vec();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        {
-            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
-            // Simulate tampering: drop the `usage` table (rung 9) while
-            // `files.mtime` (rung 15) is left present — a combination the real
-            // forward-only runner would never produce on its own.
-            db.conn
-                .execute_batch("DROP TABLE IF EXISTS usage; PRAGMA user_version = 0;")
-                .expect("tamper: drop usage, keep mtime");
-            assert_eq!(
-                Database::infer_legacy_version(&db).unwrap(),
-                8,
-                "the ladder must break at the first false predicate (rung 9, usage table) \
-                 and ignore the spuriously-true rung 15"
-            );
-        }
-
-        // Reopening must not error even though this replays step 15
-        // (files.mtime already exists) on top of a version-8 inference.
-        let db = Database::open(tmp.path())
-            .expect("reopening a tampered-but-recoverable DB must not error or corrupt state");
-        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
-
-        let has_usage: bool = db
-            .conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage'",
-                [],
-                |_| Ok(true),
-            )
-            .optional()
-            .unwrap()
-            .is_some();
         assert!(
-            has_usage,
-            "the usage table must be recreated by the replayed step 9"
+            vec_sql.contains("INT8[896]"),
+            "rebuilt vector table kept an old dimension: {vec_sql}"
         );
+    }
+
+    #[test]
+    fn a_rebuild_carries_usage_across_because_no_reindex_can_reproduce_it() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        legacy_index_at(&path, 9);
+
+        let db = Database::open(&path).expect("open");
+
+        let mut stmt = db
+            .conn
+            .prepare("SELECT command, called_at FROM usage ORDER BY called_at")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![("search".to_string(), 11), ("index".to_string(), 22)],
+            "usage is the one authored table here; losing it in a rebuild is silent data loss"
+        );
+    }
+
+    #[test]
+    fn an_index_predating_the_stamp_is_rebuilt_rather_than_read_as_fresh() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        // user_version 0 with tables present: the shape every pre-stamp release
+        // wrote. Reading this as "brand new" would run the schema over live
+        // tables and fail on the first CREATE.
+        legacy_index_at(&path, 0);
+
+        let db = Database::open(&path).expect("open");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+        assert_eq!(db.stats().unwrap().file_count, 0);
+    }
+
+    #[test]
+    fn an_index_from_a_newer_build_is_refused_rather_than_rebuilt() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        legacy_index_at(&path, CURRENT_SCHEMA_VERSION + 1);
+
+        let msg = match Database::open(&path) {
+            Ok(_) => panic!("a future index must not be silently discarded"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("newer than this build"),
+            "wrong refusal for a future index: {msg}"
+        );
+        // Refused, not damaged.
+        let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "a refused open must leave the index untouched");
+    }
+
+    #[test]
+    fn a_rebuild_leaves_no_stale_sidecar_behind() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        legacy_index_at(&path, 12);
+        // A -wal from the old file. Left in place it would be replayed into the
+        // new database, which is a different schema entirely.
+        std::fs::write(path.with_extension("db-wal"), b"stale").unwrap();
+
+        let db = Database::open(&path).expect("open");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+        assert_eq!(db.stats().unwrap().chunk_count, 0);
     }
 
     /// Model provenance round-trips through index_meta, and a mismatch is a hard
@@ -1136,264 +729,6 @@ mod tests {
             Some(crate::indexer::summariser::SUMMARY_SCHEME)
         );
         assert_eq!(db.refresh_pending_count().unwrap(), 0);
-    }
-
-    /// The one-time structural-summary transition marks every already-embedded
-    /// chunk (and only those — a never-embedded chunk is coverage-pending, not
-    /// refresh-pending), stamps the scheme, and never re-marks on a re-run.
-    #[test]
-    fn embed_pending_migration_marks_embedded_chunks_once_then_is_idempotent() {
-        register_sqlite_vec();
-        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
-        let dim = crate::embeddings::EMBEDDING_DIM;
-        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
-        let embedded = db
-            .insert_chunk(file_id, "function", Some("a"), 1, 2, "fn a(){}", None, 4)
-            .unwrap();
-        let never_embedded = db
-            .insert_chunk(file_id, "function", Some("b"), 3, 4, "fn b(){}", None, 4)
-            .unwrap();
-        db.insert_embedding(embedded, &vec![0.1f32; dim]).unwrap();
-
-        // Model a pre-scheme existing index: no marker, nothing flagged yet.
-        db.conn
-            .execute("DELETE FROM index_meta WHERE key = 'summary_scheme'", [])
-            .unwrap();
-        db.conn
-            .execute("UPDATE chunks SET embed_pending = 0", [])
-            .unwrap();
-
-        db.apply_embed_pending_migration().unwrap();
-        assert_eq!(
-            chunk_pending(&db, embedded),
-            1,
-            "an already-embedded chunk is marked for in-place re-embed"
-        );
-        assert_eq!(
-            chunk_pending(&db, never_embedded),
-            0,
-            "a never-embedded chunk is coverage-pending, not refresh-pending"
-        );
-        assert_eq!(db.refresh_pending_count().unwrap(), 1);
-        assert_eq!(
-            db.summary_scheme().unwrap().as_deref(),
-            Some(crate::indexer::summariser::SUMMARY_SCHEME)
-        );
-
-        // Re-running after a partial drain must not re-mark: the marker gates it.
-        db.conn
-            .execute("UPDATE chunks SET embed_pending = 0", [])
-            .unwrap();
-        db.apply_embed_pending_migration().unwrap();
-        assert_eq!(
-            db.refresh_pending_count().unwrap(),
-            0,
-            "the marker is stamped, so a re-run marks nothing (idempotent)"
-        );
-    }
-
-    /// The transition off an LLM-summary index must NULL each embedded chunk's
-    /// stale summary, not just flag it. The structural recompose is gated on
-    /// `summary IS NULL`; if the migration left the old LLM prose in place, the
-    /// chunk would re-embed from that stale, non-deterministic summary yet be
-    /// stamped `structural_v1`. After the migration the chunk must (a) have a
-    /// NULL summary, (b) re-appear as a recompose candidate, and (c) recompose
-    /// to a deterministic structural summary that is not the old prose.
-    #[test]
-    fn embed_pending_migration_nulls_stale_llm_summaries_so_they_recompose() {
-        use crate::indexer::graph::{Edge, EdgeKind};
-        use crate::indexer::summariser::compose_structural_summary;
-
-        register_sqlite_vec();
-        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
-        let dim = crate::embeddings::EMBEDDING_DIM;
-        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
-        let content = "pub fn parse_config(path: &str) { open(path); read(path); }";
-        let metadata = r#"{"docstring":"Parses the config file.","parent_scope":null}"#;
-        let chunk = db
-            .insert_chunk(
-                file_id,
-                "function",
-                Some("parse_config"),
-                1,
-                2,
-                content,
-                Some(metadata),
-                12,
-            )
-            .unwrap();
-        db.replace_edges(
-            "a.rs",
-            &[
-                Edge {
-                    source_file: "a.rs".to_string(),
-                    source_name: Some("parse_config".to_string()),
-                    target_name: "open".to_string(),
-                    kind: EdgeKind::Calls,
-                    line: 1,
-                },
-                Edge {
-                    source_file: "a.rs".to_string(),
-                    source_name: Some("parse_config".to_string()),
-                    target_name: "read".to_string(),
-                    kind: EdgeKind::Calls,
-                    line: 1,
-                },
-            ],
-        )
-        .unwrap();
-        db.insert_embedding(chunk, &vec![0.1f32; dim]).unwrap();
-
-        // Model a pre-scheme LLM-summary index: a non-NULL prose summary the old
-        // path wrote, and no scheme marker yet.
-        let stale_prose = "This function does some configuration parsing, probably.";
-        db.update_chunk_summary(chunk, stale_prose).unwrap();
-        db.conn
-            .execute("DELETE FROM index_meta WHERE key = 'summary_scheme'", [])
-            .unwrap();
-        db.conn
-            .execute("UPDATE chunks SET embed_pending = 0", [])
-            .unwrap();
-
-        db.apply_embed_pending_migration().unwrap();
-
-        // (a) the stale summary is nulled, and the chunk is flagged for re-embed.
-        let summary_after: Option<String> = db
-            .conn
-            .query_row(
-                "SELECT summary FROM chunks WHERE id = ?1",
-                rusqlite::params![chunk],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            summary_after, None,
-            "the migration must NULL the stale LLM summary, not leave it in place"
-        );
-        assert_eq!(chunk_pending(&db, chunk), 1);
-
-        // (b) it re-enters the structural recompose queue.
-        let candidates: Vec<i64> = db
-            .named_chunks_needing_summary()
-            .unwrap()
-            .into_iter()
-            .map(|(id, ..)| id)
-            .collect();
-        assert!(
-            candidates.contains(&chunk),
-            "a nulled summary must make the chunk a recompose candidate again"
-        );
-
-        // (c) it recomposes to the deterministic structural form, not the prose,
-        // and that form is byte-identical across runs.
-        let callees = db.callees_for_symbol("parse_config").unwrap();
-        let recomposed = compose_structural_summary(
-            "parse_config",
-            Some("Parses the config file."),
-            &callees,
-            content,
-        );
-        assert_ne!(
-            recomposed, stale_prose,
-            "the recomposed summary must be the structural form, not the old prose"
-        );
-        assert!(recomposed.contains("Parses the config file."));
-        assert!(recomposed.contains("parse config"));
-        assert_eq!(
-            recomposed,
-            compose_structural_summary(
-                "parse_config",
-                Some("Parses the config file."),
-                &callees,
-                content
-            ),
-            "the structural recompose must be byte-identical across runs"
-        );
-    }
-
-    /// A DB stamped with a newer, unknown scheme (a newer binary wrote it, this
-    /// one opened it) is left untouched: no downgrade, no marking, no error —
-    /// same-space input drift warns and continues, never the hard
-    /// `embedding_model` error.
-    #[test]
-    fn embed_pending_migration_leaves_a_newer_scheme_untouched() {
-        register_sqlite_vec();
-        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
-        let dim = crate::embeddings::EMBEDDING_DIM;
-        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
-        let c = db
-            .insert_chunk(file_id, "function", Some("a"), 1, 2, "fn a(){}", None, 4)
-            .unwrap();
-        db.insert_embedding(c, &vec![0.1f32; dim]).unwrap();
-        db.conn
-            .execute(
-                "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('summary_scheme', 'structural_v99')",
-                [],
-            )
-            .unwrap();
-        db.conn
-            .execute("UPDATE chunks SET embed_pending = 0", [])
-            .unwrap();
-
-        db.apply_embed_pending_migration()
-            .expect("an unknown newer scheme must not error");
-        assert_eq!(
-            db.summary_scheme().unwrap().as_deref(),
-            Some("structural_v99"),
-            "a newer scheme must not be downgraded"
-        );
-        assert_eq!(
-            db.refresh_pending_count().unwrap(),
-            0,
-            "a newer scheme must not trigger a re-mark"
-        );
-    }
-
-    /// A legacy index built by the previous binary (no `embed_pending` column,
-    /// no `summary_scheme` marker, `user_version` reset) is inferred at 15 and
-    /// only step 16 runs to bring it current — adding the column and, since it
-    /// has embedded chunks, marking them for one in-place re-embed.
-    #[test]
-    fn legacy_v15_index_infers_15_and_applies_only_embed_pending_step() {
-        register_sqlite_vec();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let dim = crate::embeddings::EMBEDDING_DIM;
-        let embedded;
-        {
-            let db = Database::open(tmp.path()).expect("build fully-migrated DB");
-            let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
-            embedded = db
-                .insert_chunk(file_id, "function", Some("a"), 1, 2, "fn a(){}", None, 4)
-                .unwrap();
-            db.insert_embedding(embedded, &vec![0.1f32; dim]).unwrap();
-            // Roll back to the pre-026 shape: drop the column and the marker,
-            // reset the stamp so the runner must re-infer from shape.
-            db.conn
-                .execute_batch(
-                    "ALTER TABLE chunks DROP COLUMN embed_pending; \
-                     DELETE FROM index_meta WHERE key = 'summary_scheme'; \
-                     PRAGMA user_version = 0;",
-                )
-                .expect("roll back to pre-embed_pending shape");
-            assert_eq!(
-                Database::infer_legacy_version(&db).unwrap(),
-                15,
-                "with every v1..15 predicate true and only the embed_pending rung false, \
-                 inference must land at 15"
-            );
-        }
-
-        let db = Database::open(tmp.path()).expect("reopen legacy v15 DB");
-        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
-        assert_eq!(
-            chunk_pending(&db, embedded),
-            1,
-            "the embedded chunk is marked once by the inferred upgrade"
-        );
-        assert_eq!(
-            db.summary_scheme().unwrap().as_deref(),
-            Some(crate::indexer::summariser::SUMMARY_SCHEME)
-        );
     }
 
     /// The re-embed flag is cleared in the same transaction as the vector write:
