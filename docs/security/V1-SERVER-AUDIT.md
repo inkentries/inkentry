@@ -97,7 +97,7 @@ UUIDs, so the "malformed UUID" row is reframed as a slug length/sanity cap.
 Beyond this table, the input-validation hardening also added a `tower_http` middleware stack (see §DoS in
 [`THREAT-MODEL.md`](THREAT-MODEL.md#d--denial-of-service)): `RequestBodyLimitLayer`
 (2 MiB), `TimeoutLayer` (30s, exempting `/memory/stream`), `ConcurrencyLimitLayer`
-(256), plus IP-keyed rate limiting on `/llm/complete`, and an
+(256), plus peer-address-keyed rate limiting on `/llm/complete`, and an
 embedding-vector-length check against the configured dim.
 
 **`/index/embed` timeout carve-out (PR #513 field-failure

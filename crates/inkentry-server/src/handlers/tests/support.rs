@@ -6,11 +6,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{self, Request};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::auth::ApiKeyAuth;
+use crate::client_ip::TrustedProxies;
 use crate::db::ServerDb;
 use crate::{AppState, router};
 
@@ -48,6 +50,7 @@ pub(super) fn make_app(conflict_threshold: f32) -> (axum::Router, i32) {
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
     };
     (router(state), dim as i32)
@@ -118,6 +121,7 @@ pub(super) fn make_app_with_slot(dim: usize, embedder: crate::EmbedderSlot) -> a
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
     };
     crate::router(state)
@@ -176,6 +180,16 @@ impl inkentry_core::llm::LlmBackend for NoopLlm {
 // Build an app with a configured LLM backend and a tight rate limit, for
 // exercising `/llm/complete` rate limiting.
 pub(super) fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
+    make_app_with_llm_limit_and_proxies(max_requests, TrustedProxies::default())
+}
+
+// As above, but with an explicit trusted-proxy list, so a test can exercise
+// both the default (believe nobody's `X-Forwarded-For`) and the opted-in
+// deployment.
+pub(super) fn make_app_with_llm_limit_and_proxies(
+    max_requests: u32,
+    trusted_proxies: TrustedProxies,
+) -> axum::Router {
     register_sqlite_vec();
     let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
         .expect("failed to open in-memory server db");
@@ -194,9 +208,39 @@ pub(super) fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(max_requests, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies,
         relay: crate::relay::RelayRegistry::disabled(),
     };
     router(state)
+}
+
+// POST /llm/complete over a connection whose TCP peer is `peer`, optionally
+// carrying a client-supplied `X-Forwarded-For`. `ConnectInfo` is inserted the
+// same way `into_make_service_with_connect_info` inserts it in production, so
+// two different `peer` values are two different clients as far as every
+// handler can tell.
+pub(super) async fn post_llm_complete_from(
+    app: &axum::Router,
+    peer: &str,
+    forwarded_for: Option<&str>,
+) -> http::StatusCode {
+    let body = json!({
+        "messages": [{"role": "user", "content": "q"}],
+        "max_tokens": 16,
+    });
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/v1/projects/llm-test/llm/complete")
+        .header("content-type", "application/json");
+    if let Some(xff) = forwarded_for {
+        builder = builder.header("x-forwarded-for", xff);
+    }
+    let mut req = builder
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let addr: SocketAddr = peer.parse().expect("test peer address");
+    req.extensions_mut().insert(ConnectInfo(addr));
+    app.clone().oneshot(req).await.unwrap().status()
 }
 
 pub(super) async fn post_llm_complete(app: &axum::Router, content: &str) -> http::StatusCode {
@@ -233,6 +277,7 @@ pub(super) fn make_app_with_auth_key(key: Option<&str>) -> axum::Router {
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
     };
     crate::router(state)
@@ -328,6 +373,7 @@ pub(super) async fn spawn_test_server(
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
     };
     let app = crate::router_with_timeout(state, request_timeout);
@@ -399,6 +445,7 @@ pub(super) async fn spawn_test_server_with_embed_and_admission(
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
     };
     let app = crate::router_with_timeouts(state, request_timeout, embed_request_timeout);

@@ -1038,6 +1038,7 @@ mod tests {
             )),
             instance_id,
             started_by: None,
+            trusted_proxies: Default::default(),
             relay: relay_declaring(&team_server.uri(), "proj"),
         };
         let app = inkentry_server::router(state);
@@ -1149,6 +1150,7 @@ mod tests {
             )),
             instance_id,
             started_by: None,
+            trusted_proxies: Default::default(),
             relay: relay_declaring(&team_server.uri(), "proj"),
         };
         let app = inkentry_server::router(state);

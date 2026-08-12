@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod client_ip;
 pub mod db;
 #[cfg(feature = "embed-native")]
 pub mod embed_hub;
@@ -403,6 +404,11 @@ pub struct AppState {
     pub max_tokens_ceiling: usize,
     /// Per-principal rate limiter for `/llm/complete`.
     pub rate_limiter: Arc<RateLimiter>,
+    /// Peers whose `X-Forwarded-For` header is believed when attributing a
+    /// request to a client address. Empty in the ADR-066 deployment (the
+    /// server terminates TLS itself, with nothing in front of it), and empty
+    /// is what makes the rate limit hold: see [`client_ip`].
+    pub trusted_proxies: client_ip::TrustedProxies,
     /// Persistent UUID v7 identifying this server instance across restarts.
     /// CLI warns on instance_id change mid-session.
     pub instance_id: String,

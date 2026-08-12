@@ -370,6 +370,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
 

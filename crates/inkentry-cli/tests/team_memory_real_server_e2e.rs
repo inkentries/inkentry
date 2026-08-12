@@ -59,6 +59,7 @@ async fn spawn_real_server(db_path: &Path) -> String {
         rate_limiter: Arc::new(inkentry_server::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
     let app = inkentry_server::router(state);

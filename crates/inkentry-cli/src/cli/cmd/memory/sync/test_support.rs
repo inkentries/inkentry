@@ -43,6 +43,7 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
         )),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
     let app = inkentry_server::router(state);

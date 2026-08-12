@@ -670,6 +670,35 @@ container) is a routable bind with `--tls-cert`/`--tls-key` and a key, where the
 server terminates HTTPS itself. Plaintext off-host stays refused with no
 override.
 
+### Client identity and the `/llm/complete` rate limit
+
+`POST /llm/complete` is rate limited per caller (60 requests/minute), which is
+what bounds how much of your LLM budget one client can spend. A caller is
+identified by its bearer principal **and** its address, so a shared team key
+does not collapse everyone onto one bucket.
+
+That address is the **TCP peer address of the connection**, not the
+`X-Forwarded-For` header. The header is set by whoever opened the connection, so
+a caller that could choose it could mint a fresh budget on every request and the
+limit would not exist. Since the server terminates TLS itself (ADR-066) there is
+normally nothing in front of it and nothing legitimate to trust.
+
+| Flag | Env | Default | Purpose |
+|---|---|---|---|
+| `--trusted-proxy` | `INKENTRY_TRUSTED_PROXIES` | unset (empty) | IP address of a reverse proxy whose `X-Forwarded-For` this server should believe. Repeatable; comma-separated in the env var. |
+
+Set it only if you genuinely run a proxy in front of the server:
+
+```bash
+inkentry-server --trusted-proxy 10.0.0.5 --trusted-proxy 10.0.0.6 ...
+```
+
+With it set, a leading `X-Forwarded-For` entry is honoured **only** when the
+request's TCP peer is one of the listed addresses, and only when that entry
+parses as an IP address; anything else falls back to the peer. Naming an
+address that is not actually a proxy hands the rate limit to any client that can
+reach the server from there.
+
 ## Air-gapped / no-egress install
 
 `inkentry-server` normally fetches the bundled F2LLM-v2-330M embedder from

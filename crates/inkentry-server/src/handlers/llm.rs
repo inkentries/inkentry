@@ -105,6 +105,7 @@ pub async fn llm_complete(
         &auth_ctx,
         &headers,
         connect_info.map(|Extension(ConnectInfo(addr))| addr),
+        &state.trusted_proxies,
     );
     if state.rate_limiter.check(&rate_key).is_err() {
         return Ok((
