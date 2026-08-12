@@ -638,10 +638,18 @@ pub(crate) fn search_all_dbs_linearrag(
     }
 
     // Sort by ascending distance (lower = better score in LinearRAG output).
+    // The dedupe below keeps the first row per (path, start, end), so at equal
+    // distance the tie-break picks which project's copy survives — leaving that
+    // to sort order alone made a shared chunk flip owner between runs.
     all.sort_by(|a, b| {
-        a.distance
-            .partial_cmp(&b.distance)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        a.distance.total_cmp(&b.distance).then_with(|| {
+            (&a.file_path, a.start_line, a.end_line, a.chunk_id).cmp(&(
+                &b.file_path,
+                b.start_line,
+                b.end_line,
+                b.chunk_id,
+            ))
+        })
     });
     let mut seen = std::collections::HashSet::new();
     all.retain(|r| seen.insert((r.file_path.clone(), r.start_line, r.end_line)));
