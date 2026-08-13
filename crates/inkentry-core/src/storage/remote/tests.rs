@@ -338,3 +338,49 @@ async fn harvested_shas_accepts_both_shapes() {
         .expect("harvested_shas must still parse a legacy bare array");
     assert!(shas.contains("def"), "got: {shas:?}");
 }
+
+// ── 429 admission shedding on the write path ─────────────────────────────────
+
+#[tokio::test]
+async fn add_retries_a_shed_429_instead_of_failing_the_write() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // `POST /memory` embeds server-side when the caller supplies no vector, so
+    // it runs under the server's bounded embed admission queue and a full queue
+    // sheds it with a 429 that clears as soon as the in-flight embed finishes.
+    // A `memory add` must ride that out rather than reporting a failed write.
+    // `Retry-After: 0` keeps the test's real sleep at zero.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/projects/proj/memory"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/projects/proj/memory"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e01",
+            "conflicts": [],
+        })))
+        .mount(&server)
+        .await;
+
+    let (id, _) = backend_at(server.uri())
+        .add(NoteInput {
+            kind: "decision".into(),
+            title: "t".into(),
+            body: "b".into(),
+            tags: vec![],
+            linked_files: vec![],
+            embedding: None,
+            source_ref: None,
+            valid_at: None,
+            supersedes: None,
+        })
+        .await
+        .expect("a transient 429 must not fail the write");
+    assert_eq!(id.as_str(), "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e01");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}

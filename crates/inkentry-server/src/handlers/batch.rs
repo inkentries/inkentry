@@ -10,7 +10,8 @@ use utoipa::ToSchema;
 use crate::{AppError, AppState, ErrorBody};
 
 use super::{
-    MAX_BATCH_ENTRIES, validate_embedding_dim, validate_project_slug, validate_title_body,
+    MAX_BATCH_ENTRIES, embed_for_storage, validate_embedding_dim, validate_project_slug,
+    validate_title_body,
 };
 
 // ── Batch push (wire parity with cloud-api's POST /memory/batch) ────────────
@@ -76,7 +77,9 @@ pub struct BatchPushResponse {
 /// do against cloud-api. Always returns **207** with a per-entry result list;
 /// a request-level validation failure (oversized batch, a title/body over the
 /// configured caps, or an injection match) rejects the whole batch (4xx/422)
-/// with nothing stored, before any entry is written.
+/// with nothing stored, before any entry is written. A batch needing
+/// server-side embedding is shed with **429** when the embed admission queue is
+/// full, on the same terms as every other embed-consuming route.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/memory/batch",
@@ -89,6 +92,7 @@ pub struct BatchPushResponse {
         (status = 400, description = "Bad request (oversized batch, bad field length)", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 422, description = "Entry rejected: prompt injection detected"),
+        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -143,6 +147,40 @@ pub async fn push_memory_batch(
         }
     }
 
+    // Embed every entry that needs a server-side vector in one batched call,
+    // before the DB lock is taken — a routine `sync` push is 50 entries, and
+    // embedding them one at a time under the global lock stalls every other
+    // request on the server for the whole batch. See `embed_for_storage`.
+    //
+    // Entries that turn out to be dedupe-skips are embedded too and their
+    // vectors dropped: which ones those are is only knowable from the DB, and
+    // one batched embed off the lock beats N serialized embeds under it.
+    let pending: Vec<usize> = body
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.embedding.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    let texts: Vec<String> = pending
+        .iter()
+        .map(|&i| {
+            let entry = &body.entries[i];
+            format!(
+                "title: {} | text: {}",
+                entry.title,
+                entry.body.as_deref().unwrap_or("")
+            )
+        })
+        .collect();
+    let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let mut server_embeddings: Vec<Option<Vec<f32>>> = vec![None; body.entries.len()];
+    if let Some(vectors) = embed_for_storage(&state, &text_refs).await? {
+        for (&i, vector) in pending.iter().zip(vectors) {
+            server_embeddings[i] = Some(vector);
+        }
+    }
+
     let db = state.db.lock().await;
     // Register the project once against the server's own configured dim/model
     // (not a per-entry value: entries needing server-side embedding don't
@@ -165,7 +203,7 @@ pub async fn push_memory_batch(
     let mut created = 0u32;
     let mut skipped = 0u32;
 
-    for entry in &body.entries {
+    for (i, entry) in body.entries.iter().enumerate() {
         if let Some(existing_id) = existing.get(&entry.external_id) {
             // Carry the already-assigned id even on a dedupe-skip: a caller
             // that lost track of a prior "created" ack (e.g. a local write
@@ -181,30 +219,10 @@ pub async fn push_memory_batch(
             continue;
         }
 
-        // Server-side embedding backfill, same policy as `add_note`: only the
-        // ready backend embeds; loading/unavailable/disabled stores text-only.
-        let server_embedding: Option<Vec<f32>> = if entry.embedding.is_none() {
-            if let Some(embedder) = state.embedder.backend() {
-                let text = format!(
-                    "title: {} | text: {}",
-                    entry.title,
-                    entry.body.as_deref().unwrap_or("")
-                );
-                match embedder.embed(&[text.as_str()]).await {
-                    Ok(mut vecs) if !vecs.is_empty() => vecs.pop(),
-                    Ok(_) => None,
-                    Err(e) => {
-                        tracing::warn!("server-side embedding failed, storing without vector: {e}");
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let embedding = entry.embedding.as_deref().or(server_embedding.as_deref());
+        let embedding = entry
+            .embedding
+            .as_deref()
+            .or(server_embeddings[i].as_deref());
 
         // `source_commit` has no dedicated column on this schema; fold it into
         // tags using the same `git:<sha>` convention `harvested_shas` reads.

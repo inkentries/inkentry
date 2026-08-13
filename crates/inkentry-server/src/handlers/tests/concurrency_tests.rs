@@ -793,16 +793,165 @@ async fn index_embed_succeeds_normally_when_within_admission_capacity() {
     }
 }
 
-// ── add_note under a saturated embedder (scope check) ────────────────────
+// ── Memory writes are embed-consuming routes too ─────────────────────────
 //
-// `add_note`/`push_memory_batch` are deliberately NOT gated by
-// `EmbedAdmission` (see the task's scope note: they "already catch any
-// embed error and degrade to text-only storage"). That's true for an
-// in-band `Err` from `embed()`, but a saturated embedder doesn't error
-// quickly, it just makes the caller wait behind the `Mutex`. This proves
-// what actually happens when the embedder is busy longer than the
-// general request timeout, under the exact load pattern the embed
-// admission control targets for `index_embed`/`search`/`search_notes`.
+// `add_note` and `push_memory_batch` embed server-side whenever the client
+// sends no vector (the CLI never does), so they consume the same
+// serialized embedder as `/index/embed`, `/search` and `/memory/search`
+// and are gated by the same `EmbedAdmission`. Degrading to text-only
+// storage covers an in-band `Err` from `embed()`; it does nothing about a
+// saturated embedder, which does not error quickly, it just makes the
+// caller wait.
+
+// With the admission queue's only slot held by an in-flight embed, a
+// memory write that needs a server-side vector must be shed with `429` +
+// `Retry-After` rather than joining the wait.
+#[tokio::test]
+async fn memory_writes_return_429_once_the_admission_queue_is_saturated() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let embedder = crate::EmbedderSlot::ready(Arc::new(GatedEmbedder {
+        dim: 4,
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }));
+    // A short *general* budget (the embed budget stays long, so the holder
+    // survives): shedding happens before any embed, so a correct run never
+    // approaches it, while a regression that queues instead of shedding fails
+    // in seconds rather than out-waiting a long timeout.
+    let (base, _db) = spawn_test_server_with_embed_and_admission(
+        embedder,
+        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(60),
+        crate::EmbedAdmission::new(1, 3),
+    )
+    .await;
+
+    let holder_base = base.clone();
+    let holder = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!(
+                "{holder_base}/v1/projects/timeout-test/index/embed"
+            ))
+            .json(&json!({"chunks": [{"chunk_id": "1", "content": "fn f() {}"}]}))
+            .send()
+            .await
+    });
+    started.notified().await;
+
+    let client = reqwest::Client::new();
+    let note = client
+        .post(format!("{base}/v1/projects/timeout-test/memory"))
+        .json(&json!({"kind": "note", "title": "shed me", "body": "no client vector"}))
+        .send()
+        .await
+        .expect("a saturated queue must respond immediately, not hang");
+    assert_eq!(
+        note.status().as_u16(),
+        429,
+        "add_note needs a server-side embed here, so it must be shed like any \
+         other embed-consuming route"
+    );
+    assert_eq!(
+        note.headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .expect("429 must carry Retry-After")
+            .to_str()
+            .unwrap(),
+        "3",
+    );
+
+    let batch = client
+        .post(format!("{base}/v1/projects/timeout-test/memory/batch"))
+        .json(&json!({"entries": [
+            {"kind": "note", "title": "shed me too", "external_id": "ext-1"},
+        ]}))
+        .send()
+        .await
+        .expect("a saturated queue must respond immediately, not hang");
+    assert_eq!(
+        batch.status().as_u16(),
+        429,
+        "the batch push embeds server-side too and must be shed on the same terms"
+    );
+    assert_eq!(
+        batch
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .expect("429 must carry Retry-After")
+            .to_str()
+            .unwrap(),
+        "3",
+    );
+
+    release.notify_one();
+    let holder_resp = holder
+        .await
+        .expect("holder task panicked")
+        .expect("the admitted request must still complete once released");
+    assert_eq!(holder_resp.status().as_u16(), 200);
+}
+
+// A client-supplied vector needs no embedder, so it must not be shed by a
+// saturated embed queue: the permit is taken only when the server actually
+// has to embed.
+#[tokio::test]
+async fn a_memory_write_carrying_its_own_vector_is_not_shed_by_a_saturated_queue() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let embedder = crate::EmbedderSlot::ready(Arc::new(GatedEmbedder {
+        dim: 4,
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    }));
+    let (base, _db) = spawn_test_server_with_embed_and_admission(
+        embedder,
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(60),
+        crate::EmbedAdmission::new(1, 3),
+    )
+    .await;
+
+    let holder_base = base.clone();
+    let holder = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!(
+                "{holder_base}/v1/projects/timeout-test/index/embed"
+            ))
+            .json(&json!({"chunks": [{"chunk_id": "1", "content": "fn f() {}"}]}))
+            .send()
+            .await
+    });
+    started.notified().await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/projects/timeout-test/memory"))
+        .json(&json!({
+            "kind": "note",
+            "title": "brings its own vector",
+            "body": "nothing to embed",
+            "embedding": [1.0, 0.0, 0.0, 0.0],
+        }))
+        .send()
+        .await
+        .expect("request must complete");
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "a write that supplies its own vector never touches the embedder and must \
+         not be shed with 429"
+    );
+
+    release.notify_one();
+    let holder_resp = holder
+        .await
+        .expect("holder task panicked")
+        .expect("the admitted request must still complete once released");
+    assert_eq!(holder_resp.status().as_u16(), 200);
+}
+
+// What happens when the embedder is busy longer than the general request
+// timeout, under the load pattern embed admission control targets.
 #[tokio::test]
 async fn add_note_under_saturated_embedder_is_cancelled_not_degraded() {
     let started = Arc::new(tokio::sync::Notify::new());
@@ -833,21 +982,16 @@ async fn add_note_under_saturated_embedder_is_cancelled_not_degraded() {
         .await
         .expect("the request itself must complete (timeout layer responds, not a hang)");
 
-    // `add_note`'s own `match embedder.embed(...).await { Err(e) => ... }`
-    // arm never runs here: the enclosing `TimeoutLayer` races the whole
-    // handler future and cancels it first, so the note is dropped
-    // entirely (stored neither with nor without a vector) rather than
-    // degrading to text-only. Pre-existing behavior, unchanged by this
-    // fix (add_note was never gated before either) - not a regression -
-    // but it means the "already degrades gracefully" scope note overstates
-    // this specific failure mode; text-only degradation only covers an
-    // in-band embed error, not a saturated/slow embedder.
+    // The text-only degradation arm never runs here: the enclosing
+    // `TimeoutLayer` races the whole handler future and cancels it first,
+    // so the note is dropped entirely (stored neither with nor without a
+    // vector). Admission control does not change this: the slot is free,
+    // so the request is admitted and then out-waits its own budget.
     assert_eq!(
         resp.status().as_u16(),
         408,
         "add_note under a saturated embedder is cancelled by the general request \
-             timeout, not degraded to text-only storage - if this ever starts returning \
-             201, the scope note's claim has become literally true and should be revisited"
+             timeout, not degraded to text-only storage"
     );
 
     // The handler future (and the `embed()` call inside it) was already

@@ -240,3 +240,98 @@ async fn note_id_routes_still_work_alongside_batch_route() {
         "GET /memory/{{note_id}} must still resolve for a real note identity"
     );
 }
+
+// ── Server-side embedding of a batch ──────────────────────────────────
+
+// Maps any text containing `slot-<n>` to the one-hot vector at index n, so
+// a stored entry's vector is recoverable through `/memory/search`: which
+// makes a mis-paired batch vector visible instead of silent. Real
+// embedders return near-identical vectors for these test strings, which
+// would let any pairing pass.
+struct SlotEmbedder {
+    dim: usize,
+}
+
+impl SlotEmbedder {
+    fn one_hot(&self, text: &str) -> Vec<f32> {
+        let slot = text
+            .split_once("slot-")
+            .and_then(|(_, rest)| rest.chars().next())
+            .and_then(|c| c.to_digit(10))
+            .expect("every text in these tests carries a slot marker") as usize;
+        let mut v = vec![0.0_f32; self.dim];
+        v[slot] = 1.0;
+        v
+    }
+}
+
+#[async_trait::async_trait]
+impl inkentry_core::embeddings::EmbeddingBackend for SlotEmbedder {
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|t| self.one_hot(t)).collect())
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+}
+
+async fn nearest_title(app: &axum::Router, slug: &str, query: &str) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/projects/{slug}/memory/search"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"query": query, "limit": 5})).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    body["entries"][0]["title"]
+        .as_str()
+        .expect("a nearest entry")
+        .to_string()
+}
+
+// One batched embed call serves the whole request, so each vector must be
+// paired back to the entry it was produced for — including across entries
+// that brought their own vector and are skipped by the embed.
+#[tokio::test]
+async fn batch_pairs_each_server_side_vector_with_its_own_entry() {
+    let dim = 4;
+    let app = super::support::make_app_with_slot(
+        dim,
+        crate::EmbedderSlot::ready(std::sync::Arc::new(SlotEmbedder { dim })),
+    );
+
+    let entries = json!([
+        {"kind": "note", "title": "slot-0", "body": "b", "external_id": "e0"},
+        {"kind": "note", "title": "slot-1", "body": "b", "external_id": "e1"},
+        {"kind": "note", "title": "slot-2", "body": "b", "external_id": "e2",
+         "embedding": [0.0, 0.0, 0.0, 1.0]},
+    ]);
+    let (status, body) = post_batch(app.clone(), "pairing", entries).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["created"], json!(3));
+
+    assert_eq!(
+        nearest_title(&app, "pairing", "slot-0").await,
+        "slot-0",
+        "the first entry's server-side vector landed on another row"
+    );
+    assert_eq!(
+        nearest_title(&app, "pairing", "slot-1").await,
+        "slot-1",
+        "the second entry's server-side vector landed on another row"
+    );
+    assert_eq!(
+        nearest_title(&app, "pairing", "slot-3").await,
+        "slot-2",
+        "the client-supplied vector must be stored as-is, not replaced by a \
+         server-side one"
+    );
+}

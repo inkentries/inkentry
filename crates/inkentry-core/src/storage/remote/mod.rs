@@ -9,6 +9,7 @@ use crate::embeddings::blob_to_vec;
 
 mod cloud_api;
 mod peer;
+mod retry;
 mod sync;
 mod wire_types;
 pub use cloud_api::CloudApiMemoryBackend;
@@ -109,12 +110,15 @@ impl MemoryBackend for RemoteMemoryBackend {
             source_ref: input.source_ref,
             valid_at: input.valid_at,
         };
-        let http_resp = self
-            .authed(self.client.post(self.url("memory")))
-            .json(&body)
-            .send()
-            .await
-            .context("POST /memory")?;
+        // A write with no client vector makes the server embed, so it runs
+        // under the server's embed admission queue and can be shed with a
+        // transient 429 rather than queued.
+        let url = self.url("memory");
+        let http_resp =
+            retry::send_retrying_while_shed(&retry::RetryPolicy::default(), "POST /memory", || {
+                self.authed(self.client.post(&url)).json(&body).send()
+            })
+            .await?;
 
         let status = http_resp.status();
 

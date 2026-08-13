@@ -335,7 +335,7 @@
           "memory"
         ],
         "summary": "Add a memory entry to a project. The project is auto-created on first write.",
-        "description": "The `embedding` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN).\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.",
+        "description": "The `embedding` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN).\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.\nReturns **429** (with `Retry-After`) when the entry needs server-side\nembedding and the embed admission queue is full.",
         "operationId": "add_note",
         "parameters": [
           {
@@ -401,6 +401,16 @@
           },
           "422": {
             "description": "Entry rejected: prompt injection detected"
+          },
+          "429": {
+            "description": "Embed admission queue full; retry after the given delay",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -416,7 +426,7 @@
           "memory"
         ],
         "summary": "Batch-create memory entries. Idempotent on `external_id`: a live note\nalready carrying the given `external_id` is skipped, not duplicated.",
-        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `inkentry plumbing push`\nand `inkentry sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written.",
+        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `inkentry plumbing push`\nand `inkentry sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written. A batch needing\nserver-side embedding is shed with **429** when the embed admission queue is\nfull, on the same terms as every other embed-consuming route.",
         "operationId": "push_memory_batch",
         "parameters": [
           {
@@ -472,6 +482,16 @@
           },
           "422": {
             "description": "Entry rejected: prompt injection detected"
+          },
+          "429": {
+            "description": "Embed admission queue full; retry after the given delay",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
