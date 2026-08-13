@@ -390,8 +390,11 @@ jobs:
   update-homebrew-formula:
     name: Update Homebrew tap (inkentries/homebrew-inkentry)
     needs: release
-    # Skip pre-release tags (rc/beta/alpha) — formula only tracks stable releases.
-    if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+    # Stable tags always publish; pre-release tags publish only on the v1.0.0
+    # line, so the release candidates are installable via brew before v1 ships.
+    # The condition expires itself: once v1.0.0 is out, a v1.1.0-rc tag no
+    # longer matches and cannot serve an rc to users tracking stable.
+    if: ${{ !contains(github.ref_name, '-') || startsWith(github.ref_name, 'v1.0.0-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -427,11 +430,9 @@ jobs:
           echo "SHA_X86_64_LINUX=${SHA_X86_64_LINUX}"     >> "$GITHUB_ENV"
           echo "VER=${VER}"                                >> "$GITHUB_ENV"
 
-      # The tap repo does not exist yet, and no HOMEBREW_TAP_TOKEN is set: this
-      # step fails until both are in place. Pointing it back at the old
-      # organisation's tap is not the fix — that tap serves the pre-rename
-      # binary names and would publish this repo's checksums under URLs it
-      # does not own.
+      # Pointing this back at the old organisation's tap is not a fix for a
+      # checkout failure — that tap serves the pre-rename binary names and would
+      # publish this repo's checksums under URLs it does not own.
       - name: Checkout homebrew-inkentry tap
         uses: actions/checkout@v7
         with:
@@ -473,8 +474,9 @@ jobs:
   update-scoop-manifest:
     name: Update Scoop bucket (inkentries/scoop-inkentry)
     needs: release
-    # Skip pre-release tags (rc/beta/alpha) — the bucket only tracks stable releases.
-    if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+    # Same gate as update-homebrew-formula: stable always, pre-releases only on
+    # the v1.0.0 line.
+    if: ${{ !contains(github.ref_name, '-') || startsWith(github.ref_name, 'v1.0.0-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

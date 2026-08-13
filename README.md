@@ -22,7 +22,8 @@ Semantic search works out of the box: `inkentry` autostarts a local `inkentry-se
 curl -fsSL https://get.inkentry.com/install.sh | sh
 ```
 
-> Also available via Homebrew (`brew install inkentries/inkentry/inkentry`), a
+> Also available via Homebrew (`brew install inkentries/inkentry/inkentry`,
+> then `brew trust inkentries/inkentry` so upgrades keep working), a
 > Debian `.deb`, or a tarball from the
 > [releases page](https://github.com/inkentries/inkentry/releases). See
 > [Getting Started](docs/getting-started.md) for all install paths.

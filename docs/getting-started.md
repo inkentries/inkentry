@@ -90,8 +90,16 @@ curl -fsSL https://get.inkentry.com/install.sh | sh -s -- --dry-run
 
 ```bash
 brew install inkentries/inkentry/inkentry
+brew trust inkentries/inkentry
 inkentry --version
 ```
+
+Homebrew 6 will not evaluate a third-party tap's formula unless the tap is
+trusted or the formula is named in full, which is why the install line above is
+fully qualified. `brew trust` is what keeps it working afterwards: an untrusted
+tap is dropped from the list `brew upgrade` and `brew outdated` walk, so
+inkentry would simply never appear as upgradable. On Homebrew 5 and earlier
+`brew trust` does not exist — skip that line.
 
 ### Debian / Ubuntu (`.deb`)
 
