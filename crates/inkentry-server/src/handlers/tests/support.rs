@@ -48,7 +48,7 @@ pub(super) fn make_app(conflict_threshold: f32) -> (axum::Router, i32) {
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: crate::relay::RelayRegistry::new(),
+        relay: crate::relay::RelayRegistry::disabled(),
     };
     (router(state), dim as i32)
 }
@@ -118,7 +118,7 @@ pub(super) fn make_app_with_slot(dim: usize, embedder: crate::EmbedderSlot) -> a
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: crate::relay::RelayRegistry::new(),
+        relay: crate::relay::RelayRegistry::disabled(),
     };
     crate::router(state)
 }
@@ -194,7 +194,7 @@ pub(super) fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(max_requests, 60)),
         instance_id,
         started_by: None,
-        relay: crate::relay::RelayRegistry::new(),
+        relay: crate::relay::RelayRegistry::disabled(),
     };
     router(state)
 }
@@ -233,7 +233,7 @@ pub(super) fn make_app_with_auth_key(key: Option<&str>) -> axum::Router {
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: crate::relay::RelayRegistry::new(),
+        relay: crate::relay::RelayRegistry::disabled(),
     };
     crate::router(state)
 }
@@ -328,7 +328,7 @@ pub(super) async fn spawn_test_server(
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: crate::relay::RelayRegistry::new(),
+        relay: crate::relay::RelayRegistry::disabled(),
     };
     let app = crate::router_with_timeout(state, request_timeout);
 
@@ -399,7 +399,7 @@ pub(super) async fn spawn_test_server_with_embed_and_admission(
         rate_limiter: Arc::new(crate::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: crate::relay::RelayRegistry::new(),
+        relay: crate::relay::RelayRegistry::disabled(),
     };
     let app = crate::router_with_timeouts(state, request_timeout, embed_request_timeout);
 

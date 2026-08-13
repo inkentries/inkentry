@@ -1,14 +1,17 @@
 //! Axum handlers for the ADR-037 P2 local relay surface (`crate::relay`).
 //!
 //! These routes are **local-only**: the CLI on the same machine is the only
-//! intended caller. They sit behind the same [`crate::auth_middleware`] as
-//! every other route (item 39) — on the common auto-spawned, unauthenticated,
-//! loopback-bound daemon (`inkentry server`'s doc comment: "the auto-spawned
-//! daemon is unauthenticated, so it MUST only ever bind loopback"), that
-//! gives these routes the exact same trust posture the existing `/memory`
-//! routes already have on that same daemon: loopback-bind is the boundary,
-//! not a request-level check. A server started with `--key` additionally
-//! requires it here too, same as everywhere else.
+//! intended caller, and [`crate::relay::RelayRegistry::for_bind`] means a
+//! daemon on a non-loopback address does not serve them at all.
+//!
+//! They sit behind the same [`crate::auth_middleware`] as every other route,
+//! but that parity is not what makes them safe. On the common auto-spawned,
+//! unauthenticated, loopback-bound daemon the middleware admits everyone, and
+//! unlike its neighbours this surface makes the daemon open outbound
+//! connections — a capability no other route grants, so "same auth as the
+//! rest" settles nothing about it. What bounds it is that the destination
+//! comes from local configuration (`crate::relay::RelayPolicy`), never from
+//! the request body.
 
 use axum::Json;
 use axum::extract::{Query, State};
@@ -20,11 +23,19 @@ use crate::relay::{RelayAckRequest, RelayPollResponse, RelayPushRequest};
 use crate::{AppError, AppState};
 
 /// `POST /local/relay/push` — see [`crate::relay::RelayRegistry::push`].
+///
+/// A refusal is the caller's own fault (an undeclared target, a full
+/// registry), so it answers `400` with the refusal's fixed text rather than
+/// `500` with an opaque one.
 pub async fn relay_push(
     State(state): State<AppState>,
     Json(body): Json<RelayPushRequest>,
 ) -> Result<Response, AppError> {
-    state.relay.push(body).await?;
+    state
+        .relay
+        .push(body)
+        .await
+        .map_err(|refused| AppError::BadRequest(refused.to_string()))?;
     Ok((
         StatusCode::ACCEPTED,
         Json(serde_json::json!({"accepted": true})),

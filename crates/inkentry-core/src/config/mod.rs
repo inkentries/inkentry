@@ -7,6 +7,7 @@ mod persist;
 mod predicates;
 mod project_id;
 mod sync_mode;
+mod team_target;
 mod tls;
 
 pub mod llm_key;
@@ -29,6 +30,7 @@ pub use predicates::{
 };
 pub use project_id::derive_project_id;
 pub use sync_mode::SyncMode;
+pub use team_target::{TeamTarget, declared_team_targets};
 pub use tls::apply_server_ca;
 
 #[cfg(test)]

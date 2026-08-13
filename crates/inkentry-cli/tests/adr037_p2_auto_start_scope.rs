@@ -296,7 +296,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
         rate_limiter: Arc::new(inkentry_server::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: inkentry_server::relay::RelayRegistry::new(),
+        relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
     let app = inkentry_server::router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

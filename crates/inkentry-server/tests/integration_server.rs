@@ -370,7 +370,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         rate_limiter: Arc::new(RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: inkentry_server::relay::RelayRegistry::new(),
+        relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
 
     // Query with t=1500 — should return only the note at t=2000.

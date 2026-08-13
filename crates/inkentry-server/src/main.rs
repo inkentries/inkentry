@@ -8,7 +8,10 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use inkentry_server::auth::ApiKeyAuth;
 use inkentry_server::db::ServerDb;
 use inkentry_server::rate_limiter::RateLimiter;
-use inkentry_server::{ApiDoc, AppState, EmbedderSlot, default_conflict_threshold, router};
+use inkentry_server::relay::{RelayPolicy, RelayRegistry};
+use inkentry_server::{
+    ApiDoc, AppState, EmbedderSlot, default_conflict_threshold, host_is_loopback, router,
+};
 use utoipa::OpenApi;
 
 #[cfg(feature = "embed-native")]
@@ -342,7 +345,10 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         rate_limiter,
         instance_id,
         started_by,
-        relay: inkentry_server::relay::RelayRegistry::new(),
+        // The relay only ever talks to the team servers this machine's own
+        // config declares, and only on a loopback bind (see the `relay`
+        // module docs).
+        relay: RelayRegistry::for_bind(&args.host, RelayPolicy::from_local_config()),
     };
 
     // Keep a handle to the embedder slot so the background load task can flip it
@@ -517,21 +523,6 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
 }
 
 // ── Bind-safety guard ─────────────────────────────────────────────────────────
-
-/// Returns `true` when `host` names the loopback interface only — `127.0.0.0/8`,
-/// `::1`, or the literal `localhost`. A loopback bind is not reachable from other
-/// machines, so it is safe to serve without authentication. Anything else
-/// (`0.0.0.0`, `::`, a LAN/public IP, an unresolved hostname) is treated as
-/// off-host and is *not* loopback.
-fn host_is_loopback(host: &str) -> bool {
-    let h = host.trim();
-    if h.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    h.parse::<std::net::IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(false)
-}
 
 /// Normalise a configured API key: a blank/whitespace value (e.g. a
 /// set-but-empty `INKENTRY_SERVER_KEY`, or an empty credential file) becomes

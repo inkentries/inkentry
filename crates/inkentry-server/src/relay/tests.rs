@@ -5,6 +5,29 @@ use super::*;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+fn target(url: &str, project: &str) -> TeamTarget {
+    TeamTarget {
+        server_url: url.to_string(),
+        project_id: project.to_string(),
+        server_ca: None,
+    }
+}
+
+// A registry that declares exactly the mock servers a test drives, standing in
+// for the machine's `.inkentry/config.toml`.
+fn registry_for(targets: Vec<TeamTarget>) -> RelayRegistry {
+    RelayRegistry::new(RelayPolicy::allowing(targets))
+}
+
+// A bare session, for the paths that are exercised without a registry.
+fn session_for_target(target: &TeamTarget) -> Arc<RelaySession> {
+    Arc::new(RelaySession::new(
+        RelayKey::new(&target.server_url, &target.project_id),
+        target,
+        SESSION_IDLE_TIMEOUT,
+    ))
+}
+
 fn entry(ext: &str) -> RelayPushEntry {
     RelayPushEntry {
         kind: "decision".into(),
@@ -19,7 +42,7 @@ fn entry(ext: &str) -> RelayPushEntry {
 
 #[tokio::test]
 async fn empty_registry_makes_no_outbound_calls_and_starts_no_sessions() {
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![]);
     assert_eq!(registry.session_count().await, 0);
 
     // Polling an unregistered project must not create a session either.
@@ -53,7 +76,7 @@ async fn push_lands_on_the_team_server_and_is_pollable_and_reoffered_until_acked
         .mount(&server)
         .await;
 
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![target(&server.uri(), "proj")]);
     registry
         .push(RelayPushRequest {
             server_url: server.uri(),
@@ -120,7 +143,7 @@ async fn push_with_empty_entries_is_a_noop_no_request() {
         .mount(&server)
         .await;
 
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![target(&server.uri(), "proj")]);
     registry
         .push(RelayPushRequest {
             server_url: server.uri(),
@@ -162,7 +185,7 @@ async fn registration_seeds_cursor_and_catch_up_advances_it_and_buffers_pulled_r
         .mount(&server)
         .await;
 
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![target(&server.uri(), "proj")]);
     registry
         .push(RelayPushRequest {
             server_url: server.uri(),
@@ -222,7 +245,7 @@ async fn a_pulled_row_survives_repeated_polls_when_the_cli_never_acks_it() {
         .mount(&server)
         .await;
 
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![target(&server.uri(), "proj")]);
     registry
         .push(RelayPushRequest {
             server_url: server.uri(),
@@ -293,7 +316,7 @@ async fn a_later_stale_since_cursor_never_regresses_a_session_that_moved_past_it
         .mount(&server)
         .await;
 
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![target(&server.uri(), "proj")]);
     // First registration seeds a cursor ahead of what the second (slower,
     // stale) CLI invocation will offer.
     registry
@@ -308,7 +331,7 @@ async fn a_later_stale_since_cursor_never_regresses_a_session_that_moved_past_it
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let session = registry.get_or_create(&server.uri(), "proj").await;
+    let session = registry.lookup(&server.uri(), "proj").await.unwrap();
     assert_eq!(
         session.inner.lock().await.cursor.as_deref(),
         Some("01890000-0000-7000-8000-000000000005")
@@ -357,7 +380,10 @@ async fn one_sessions_push_failure_does_not_affect_another_sessions_push() {
         .mount(&good_server)
         .await;
 
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![
+        target(&bad_server.uri(), "proj"),
+        target(&good_server.uri(), "proj"),
+    ]);
     registry
         .push(RelayPushRequest {
             server_url: bad_server.uri(),
@@ -453,7 +479,10 @@ async fn pulled_rows_never_leak_across_projects_on_the_same_team_server() {
         .mount(&server)
         .await;
 
-    let registry = RelayRegistry::new();
+    let registry = registry_for(vec![
+        target(&server.uri(), "proj-x"),
+        target(&server.uri(), "proj-y"),
+    ]);
     registry
         .push(RelayPushRequest {
             server_url: server.uri(),
@@ -555,7 +584,7 @@ async fn oversized_sse_frame_without_terminator_errors_instead_of_growing_foreve
         .mount(&server)
         .await;
 
-    let session = Arc::new(RelaySession::new(server.uri(), "proj".to_string()));
+    let session = session_for_target(&target(&server.uri(), "proj"));
     let result = stream_once(&session).await;
     assert!(
         result.is_err(),
@@ -575,3 +604,375 @@ async fn oversized_sse_frame_without_terminator_errors_instead_of_growing_foreve
 // `registration_seeds_cursor_and_catch_up_advances_it_...` above)
 // completing correctly already proves sync works without this process
 // ever being handed — or needing — a `memory.db` path.
+
+// ── the request selects a destination, it never supplies one ────────────
+//
+// `POST /local/relay/push` used to take `server_url` and `bearer` straight
+// from the request body and open connections to them: an unauthenticated
+// local caller could make the daemon reach an arbitrary host, from the
+// daemon's network position, carrying a bearer of the caller's choosing,
+// retried forever. These pin that only a target declared by local
+// configuration is ever reachable.
+
+#[tokio::test]
+async fn a_server_url_no_local_config_declares_is_refused() {
+    let attacker = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/projects/anything/memory/batch"))
+        .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+            "created": 0, "skipped": 0, "failed": 0, "results": []
+        })))
+        .mount(&attacker)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/anything/memory/since"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"entries": [], "count": 0})),
+        )
+        .mount(&attacker)
+        .await;
+
+    let registry = registry_for(vec![target("https://team.example", "acme/app")]);
+    let err = registry
+        .push(RelayPushRequest {
+            server_url: attacker.uri(),
+            project_id: "anything".to_string(),
+            bearer: Some("attacker-chosen-token".to_string()),
+            since_cursor: None,
+            entries: vec![entry("e1")],
+        })
+        .await
+        .expect_err("an undeclared server_url must be refused");
+
+    assert!(err.to_string().contains("local configuration"), "{err}");
+    assert_eq!(registry.session_count().await, 0);
+    // Give any (wrongly) spawned background task a chance to make the call
+    // this test exists to prove never happens.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        attacker.received_requests().await.unwrap().is_empty(),
+        "the daemon must not have connected to the caller-supplied host at all"
+    );
+}
+
+#[tokio::test]
+async fn a_declared_server_with_an_undeclared_project_is_refused() {
+    let server = MockServer::start().await;
+    let registry = registry_for(vec![target(&server.uri(), "declared")]);
+
+    let err = registry
+        .push(RelayPushRequest {
+            server_url: server.uri(),
+            project_id: "someone-elses-project".to_string(),
+            bearer: None,
+            since_cursor: None,
+            entries: vec![],
+        })
+        .await
+        .expect_err("an undeclared project must be refused");
+
+    assert!(err.to_string().contains("local configuration"), "{err}");
+    assert_eq!(registry.session_count().await, 0);
+}
+
+#[tokio::test]
+async fn a_declared_but_plaintext_non_loopback_target_is_refused() {
+    // Even a locally-declared target may not be reached over plaintext http
+    // off-host: the entries and the bearer would cross the wire in the clear.
+    let registry = registry_for(vec![target("http://team-server:7777", "acme/app")]);
+
+    let err = registry
+        .push(RelayPushRequest {
+            server_url: "http://team-server:7777".to_string(),
+            project_id: "acme/app".to_string(),
+            bearer: None,
+            since_cursor: None,
+            entries: vec![],
+        })
+        .await
+        .expect_err("plaintext http to a non-loopback host must be refused");
+
+    assert!(err.to_string().contains("https://"), "{err}");
+    assert_eq!(registry.session_count().await, 0);
+}
+
+#[tokio::test]
+async fn a_disabled_registry_refuses_every_push() {
+    let registry = RelayRegistry::disabled();
+    assert!(!registry.is_enabled());
+
+    let err = registry
+        .push(RelayPushRequest {
+            server_url: "https://team.example".to_string(),
+            project_id: "acme/app".to_string(),
+            bearer: None,
+            since_cursor: None,
+            entries: vec![],
+        })
+        .await
+        .expect_err("a disabled relay must refuse");
+
+    assert!(err.to_string().contains("non-loopback"), "{err}");
+    assert_eq!(registry.session_count().await, 0);
+}
+
+// The relay is documented local-only, so a daemon that is reachable from
+// other machines must not serve it at all — structurally, rather than by
+// each handler re-deriving the rule.
+#[test]
+fn the_relay_is_disabled_on_a_non_loopback_bind() {
+    let policy = || RelayPolicy::allowing(vec![target("https://team.example", "acme/app")]);
+    for host in ["127.0.0.1", "::1", "localhost", " 127.0.0.5 "] {
+        assert!(
+            RelayRegistry::for_bind(host, policy()).is_enabled(),
+            "{host} is loopback and should serve the relay"
+        );
+    }
+    for host in ["0.0.0.0", "::", "192.168.1.10", "team.example", ""] {
+        assert!(
+            !RelayRegistry::for_bind(host, policy()).is_enabled(),
+            "{host} is reachable off-host and must not serve the relay"
+        );
+    }
+}
+
+// ── the remote error is the operator's, not the caller's ────────────────
+//
+// `last_error` carried the raw `reqwest` error, which distinguishes
+// connection-refused from timed-out from TLS-failed per host and port — a
+// blind-SSRF oracle good enough to port-scan with, readable by any local
+// process. It now reports one fixed string.
+
+#[tokio::test]
+async fn last_error_never_carries_the_remote_error() {
+    // A declared target with nothing listening: the underlying failure is a
+    // connection error naming the port.
+    let dead = MockServer::start().await;
+    let dead_uri = dead.uri();
+    let port = dead_uri.rsplit(':').next().unwrap().to_string();
+    drop(dead);
+
+    let registry = registry_for(vec![target(&dead_uri, "proj")]);
+    registry
+        .push(RelayPushRequest {
+            server_url: dead_uri.clone(),
+            project_id: "proj".to_string(),
+            bearer: None,
+            since_cursor: None,
+            entries: vec![entry("e1")],
+        })
+        .await
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut got = RelayPollResponse::default();
+    while std::time::Instant::now() < deadline {
+        got = registry.poll(&dead_uri, "proj").await;
+        if got.last_error.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let err = got
+        .last_error
+        .expect("a failing hop must still be reported");
+    assert_eq!(err, REMOTE_HOP_FAILED);
+    assert!(
+        !err.contains(&port) && !err.contains("connect") && !err.contains("tcp"),
+        "the remote failure must not be described to the caller: {err}"
+    );
+}
+
+// ── sessions are bounded and mortal ─────────────────────────────────────
+
+#[tokio::test]
+async fn a_sessions_pull_loop_terminates_once_no_cli_is_using_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/memory/since"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"entries": [], "count": 0})),
+        )
+        .mount(&server)
+        .await;
+
+    let registry = RelayRegistry::with_idle_timeout(
+        RelayPolicy::allowing(vec![target(&server.uri(), "proj")]),
+        Duration::from_millis(150),
+    );
+    registry
+        .push(RelayPushRequest {
+            server_url: server.uri(),
+            project_id: "proj".to_string(),
+            bearer: None,
+            since_cursor: None,
+            entries: vec![],
+        })
+        .await
+        .unwrap();
+    assert_eq!(registry.session_count().await, 1);
+
+    // The session is only ever removed by its own pull loop returning, so an
+    // empty registry proves the loop terminated rather than reconnecting for
+    // the daemon's lifetime.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while registry.session_count().await > 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an untouched session must be retired, not held forever"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_session_in_use_is_not_retired() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/memory/since"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"entries": [], "count": 0})),
+        )
+        .mount(&server)
+        .await;
+
+    let registry = RelayRegistry::with_idle_timeout(
+        RelayPolicy::allowing(vec![target(&server.uri(), "proj")]),
+        Duration::from_millis(200),
+    );
+    registry
+        .push(RelayPushRequest {
+            server_url: server.uri(),
+            project_id: "proj".to_string(),
+            bearer: None,
+            since_cursor: None,
+            entries: vec![],
+        })
+        .await
+        .unwrap();
+
+    // A CLI polling across more than one idle window keeps its session.
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        registry.poll(&server.uri(), "proj").await;
+    }
+    assert_eq!(
+        registry.session_count().await,
+        1,
+        "a session a CLI is still polling must survive"
+    );
+}
+
+#[tokio::test]
+async fn the_registry_is_bounded_even_when_local_config_declares_more() {
+    // Local config is the first bound on the key space; this is the second.
+    // A config declaring more targets than the registry admits must not be
+    // able to spawn an unbounded number of sessions and pull loops.
+    let declared: Vec<TeamTarget> = (0..MAX_RELAY_SESSIONS + 8)
+        .map(|i| target(&format!("https://team-{i}.example"), "acme/app"))
+        .collect();
+    let registry = registry_for(declared.clone());
+
+    let mut refusals = 0;
+    for t in &declared {
+        let refused = registry
+            .push(RelayPushRequest {
+                server_url: t.server_url.clone(),
+                project_id: t.project_id.clone(),
+                bearer: None,
+                since_cursor: None,
+                entries: vec![],
+            })
+            .await
+            .is_err();
+        if refused {
+            refusals += 1;
+        }
+    }
+
+    assert_eq!(registry.session_count().await, MAX_RELAY_SESSIONS);
+    assert_eq!(refusals, 8, "everything past the cap must be refused");
+}
+
+// ── the configured custom CA reaches the client ─────────────────────────
+//
+// The relay hardcoded `None` for the CA, so against an internal-CA team
+// server every background hop failed and only manual `inkentry sync` (which
+// does pass it) worked. A CA path that cannot be read makes both client
+// builds fail, which is what proves the path is threaded rather than
+// dropped: with the old `None` these would both succeed.
+
+#[tokio::test]
+async fn the_pull_client_is_built_with_the_configured_ca() {
+    let session = session_for_target(&TeamTarget {
+        server_url: "https://team.example".into(),
+        project_id: "acme/app".into(),
+        server_ca: Some(std::path::PathBuf::from("/nonexistent/internal-ca.pem")),
+    });
+
+    let err = match session.client().await {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("an unreadable CA bundle must fail the build, proving it is used"),
+    };
+    assert!(err.contains("INKENTRY_SERVER_CA"), "{err}");
+}
+
+#[tokio::test]
+async fn the_stream_client_is_built_with_the_configured_ca() {
+    let session = session_for_target(&TeamTarget {
+        server_url: "https://team.example".into(),
+        project_id: "acme/app".into(),
+        server_ca: Some(std::path::PathBuf::from("/nonexistent/internal-ca.pem")),
+    });
+
+    let err = stream_once(&session)
+        .await
+        .expect_err("the SSE leg must apply the CA too");
+    assert!(err.to_string().contains("INKENTRY_SERVER_CA"), "{err}");
+}
+
+#[tokio::test]
+async fn a_valid_ca_bundle_builds_both_clients() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, TEST_CA_PEM).unwrap();
+    let session = session_for_target(&TeamTarget {
+        server_url: "https://team.example".into(),
+        project_id: "acme/app".into(),
+        server_ca: Some(ca),
+    });
+
+    assert!(
+        session.client().await.is_ok(),
+        "a valid CA bundle must build"
+    );
+    // The stream leg gets as far as the (unreachable) connection, i.e. past
+    // the client build the CA participates in.
+    let err = stream_once(&session).await.unwrap_err().to_string();
+    assert!(!err.contains("INKENTRY_SERVER_CA"), "{err}");
+}
+
+// A throwaway self-signed CA: proves the bundle is parsed and accepted as a
+// trust anchor. Not trusted by anything real.
+const TEST_CA_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----\n\
+MIIDFTCCAf2gAwIBAgIUdz5ZLoL+3T+MwWN0dJjElxlwsRwwDQYJKoZIhvcNAQEL\n\
+BQAwGjEYMBYGA1UEAwwPc3BlbHVuay10ZXN0LWNhMB4XDTI2MDcxMzE3MjkyMFoX\n\
+DTM2MDcxMDE3MjkyMFowGjEYMBYGA1UEAwwPc3BlbHVuay10ZXN0LWNhMIIBIjAN\n\
+BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz/BAzTJJbgWUWnUqV0qFJHT+TIDT\n\
+WQJbIRVBb9MezLblAGun2RG22U47jubOKoSa4DrenrEJIafd74IR9aLUdcRp6lyN\n\
+WsuzY6P26ntZ1epHUjYeBgqpu71v3FK2pBvQ9PP//AhQN7apE6V4UocKd7OxbSk7\n\
+g1bZSYSXoFQtSZzV9KCWNpuqUMNdaMIoy1EYY86t55jeDdpFRkiO3W5jZ6M37ekg\n\
+mDq5wIOC1QHziDLWFkpBbuOxsN/admbwbsDH5301H3P25RBY12Guqsz4/lgsEuN9\n\
+L+RJfs/Vdmen5wKhbPDkr8EYx7hLF0T2ZKOf0TrJojrqHkO5n4+7ESeaUwIDAQAB\n\
+o1MwUTAdBgNVHQ4EFgQUJsLeVcwx4exuV//vdoLfqb5H3ZQwHwYDVR0jBBgwFoAU\n\
+JsLeVcwx4exuV//vdoLfqb5H3ZQwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B\n\
+AQsFAAOCAQEAT5lW043iyZlbYM0372z/Ec8Z3VYDZ3bvryKN+6kGYuZJJnCep2c/\n\
+QX2iPx+HRWx0rz+QcnNrOdetr2KAac6ODxU2LVzjehac5wUVWm6uICzojjy84Ztn\n\
+1t5Ori6kvPSbOxJbznQuC7FILxpZswOBh6qfOHNgKeGVK4OkG2069YiFI+kwMdkI\n\
+d9qQF0w9nfELOC5M+ZxwP4vE/QkXLG57ZrOvKl2V4pthKSBv3LBAnh/C7X7/KC+f\n\
+iwNpumIaYRGylEbxW2WVv9YsWDmTBFqEkgrmx1QPJr3FtA6eeWmZ+EJIr3ImOv/d\n\
+CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
+-----END CERTIFICATE-----\n";

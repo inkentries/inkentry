@@ -656,14 +656,6 @@ pub fn router_with_limits(
             "/v1/projects/{project_id}/llm/complete",
             post(handlers::llm_complete),
         )
-        // ── ADR-037 P2 local relay (see `relay` module docs) ────────────────
-        // Local-only surface: the CLI on the same machine is the only
-        // intended caller. Same `auth_middleware`/timeout/limits as every
-        // other route in this router — no new unauthenticated state-mutating
-        // endpoint (item 39).
-        .route("/local/relay/push", post(relay_handlers::relay_push))
-        .route("/local/relay/poll", get(relay_handlers::relay_poll))
-        .route("/local/relay/ack", post(relay_handlers::relay_ack))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -675,13 +667,57 @@ pub fn router_with_limits(
         .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
         .layer(ConcurrencyLimitLayer::new(concurrency_limit));
 
-    Router::new()
+    // ── ADR-037 P2 local relay (see the `relay` module docs) ────────────────
+    // Mounted only when the registry is enabled, i.e. on a loopback bind. The
+    // routes carry the same auth/timeout/limits as `protected`, but route
+    // parity is not the argument for their safety: unlike its neighbours, this
+    // surface makes the daemon open *outbound* connections, a capability no
+    // other route grants. That is why the destination comes from local config
+    // (see `relay::RelayPolicy`) and why a non-loopback daemon does not serve
+    // these routes at all rather than serving them behind the same check.
+    let local_relay = state.relay.is_enabled().then(|| {
+        Router::new()
+            .route("/local/relay/push", post(relay_handlers::relay_push))
+            .route("/local/relay/poll", get(relay_handlers::relay_poll))
+            .route("/local/relay/ack", post(relay_handlers::relay_ack))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .layer(TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                request_timeout,
+            ))
+            .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
+            .layer(ConcurrencyLimitLayer::new(concurrency_limit))
+    });
+
+    let mut router = Router::new()
         .route("/v1/health", get(handlers::health))
         .route("/api-docs/openapi.json", get(openapi_spec))
         .merge(stream_route)
         .merge(embed_route)
-        .merge(protected)
-        .with_state(state)
+        .merge(protected);
+    if let Some(local_relay) = local_relay {
+        router = router.merge(local_relay);
+    }
+    router.with_state(state)
+}
+
+/// Whether `host` names the loopback interface only — `127.0.0.0/8`, `::1`, or
+/// the literal `localhost`. A loopback bind is not reachable from other
+/// machines, so it is safe to serve without authentication, and it is the only
+/// bind on which the local-only relay surface is served. Anything else
+/// (`0.0.0.0`, `::`, a LAN/public IP, an unresolved hostname) is off-host and
+/// is *not* loopback.
+pub fn host_is_loopback(host: &str) -> bool {
+    let h = host.trim();
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 // ── AppError response mapping tests ────────────────────────────────────────────

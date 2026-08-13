@@ -354,6 +354,33 @@ mod tests {
         MemoryStore::open(path).expect("open memory.db")
     }
 
+    // Stands in for the machine's `.inkentry/config.toml`. The relay only
+    // connects to team targets local configuration declares, so a test driving
+    // a team server declares it here — the same handshake a real install
+    // performs by having the URL in its project config.
+    #[derive(Clone, Default)]
+    struct DeclaredTargets(
+        std::sync::Arc<std::sync::Mutex<Vec<inkentry_core::config::TeamTarget>>>,
+    );
+
+    impl DeclaredTargets {
+        fn declare(&self, server_url: &str, project_id: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(inkentry_core::config::TeamTarget {
+                    server_url: server_url.to_string(),
+                    project_id: project_id.to_string(),
+                    server_ca: None,
+                });
+        }
+
+        fn policy(&self) -> inkentry_server::relay::RelayPolicy {
+            let declared = self.0.clone();
+            inkentry_server::relay::RelayPolicy::from_fn(move || declared.lock().unwrap().clone())
+        }
+    }
+
     /// Spin up a real `inkentry-server` axum router (the actual production
     /// router, not a hand-rolled stand-in) on an ephemeral loopback port and
     /// return its address. Serves BOTH roles the same binary can play: the
@@ -362,7 +389,7 @@ mod tests {
     /// for a real `inkentry server start`-ed daemon) — callers pick which
     /// role they're using it for by whether they write a state-dir port file
     /// (see [`spawn_local_relay`]) or pass the address as `server_url`.
-    async fn spawn_inkentry_server() -> SocketAddr {
+    async fn spawn_inkentry_server(declared: &DeclaredTargets) -> SocketAddr {
         register_sqlite_vec();
         let db_dir = TempDir::new().unwrap();
         let db =
@@ -385,7 +412,7 @@ mod tests {
             )),
             instance_id,
             started_by: None,
-            relay: inkentry_server::relay::RelayRegistry::new(),
+            relay: inkentry_server::relay::RelayRegistry::new(declared.policy()),
         };
         let app = inkentry_server::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -400,11 +427,12 @@ mod tests {
     /// `state_dir/server.port` so `server::probe_local_relay_port`
     /// discovers it exactly the way it would discover a real
     /// `inkentry server start`-ed daemon — the *local relay* role.
-    async fn spawn_local_relay(state_dir: &std::path::Path) -> SocketAddr {
-        let addr = spawn_inkentry_server().await;
+    async fn spawn_local_relay(state_dir: &std::path::Path) -> (SocketAddr, DeclaredTargets) {
+        let declared = DeclaredTargets::default();
+        let addr = spawn_inkentry_server(&declared).await;
         std::fs::create_dir_all(state_dir).unwrap();
         std::fs::write(state_dir.join("server.port"), format!("{}\n", addr.port())).unwrap();
-        addr
+        (addr, declared)
     }
 
     /// Sets `INKENTRY_STATE_DIR` to a fresh temp dir for the test's duration,
@@ -450,7 +478,7 @@ mod tests {
     #[serial(server_state_dir_env)]
     async fn nudge_after_write_relays_pending_rows_and_a_later_poll_stamps_remote_id() {
         let state_guard = StateDirGuard::new();
-        spawn_local_relay(state_guard.path()).await;
+        let (_, declared) = spawn_local_relay(state_guard.path()).await;
 
         let mem_dir = TempDir::new().unwrap();
         let mem_path = mem_dir.path().join("memory.db");
@@ -479,6 +507,7 @@ mod tests {
             .mount(&team_server)
             .await;
 
+        declared.declare(&team_server.uri(), "proj");
         let cfg = local_first_cfg(&team_server.uri());
         nudge_after_write(&cfg, &mem_path).await;
 
@@ -522,7 +551,8 @@ mod tests {
     #[serial(server_state_dir_env)]
     async fn nudge_after_write_is_a_noop_when_mode_is_not_local_first() {
         let state_guard = StateDirGuard::new();
-        let addr = spawn_local_relay(state_guard.path()).await;
+        let (addr, declared) = spawn_local_relay(state_guard.path()).await;
+        declared.declare(&format!("http://127.0.0.1:{}", addr.port()), "proj");
 
         let mem_dir = TempDir::new().unwrap();
         let mem_path = mem_dir.path().join("memory.db");
@@ -649,7 +679,7 @@ mod tests {
     #[serial(server_state_dir_env)]
     async fn repeated_nudges_never_stop_the_local_relay() {
         let state_guard = StateDirGuard::new();
-        spawn_local_relay(state_guard.path()).await;
+        let (_, declared) = spawn_local_relay(state_guard.path()).await;
 
         let mem_dir = TempDir::new().unwrap();
         let mem_path = mem_dir.path().join("memory.db");
@@ -664,6 +694,7 @@ mod tests {
             )
             .mount(&team_server)
             .await;
+        declared.declare(&team_server.uri(), "proj");
         let cfg = local_first_cfg(&team_server.uri());
 
         for _ in 0..3 {
@@ -765,13 +796,15 @@ mod tests {
         // Held for the whole body: this test drives a real `memory list`, whose
         // git-notes import is keyed off the CWD.
         let _cwd = CwdOutsideAnyRepo::enter();
-        let team_addr = spawn_inkentry_server().await;
+        let team_addr = spawn_inkentry_server(&DeclaredTargets::default()).await;
         let team_uri = format!("http://{}", team_addr);
 
         let state_a = TempDir::new().unwrap();
         let state_b = TempDir::new().unwrap();
-        spawn_local_relay(state_a.path()).await;
-        spawn_local_relay(state_b.path()).await;
+        let (_, declared_a) = spawn_local_relay(state_a.path()).await;
+        let (_, declared_b) = spawn_local_relay(state_b.path()).await;
+        declared_a.declare(&team_uri, "proj");
+        declared_b.declare(&team_uri, "proj");
 
         let mem_dir_a = TempDir::new().unwrap();
         let mem_a = mem_dir_a.path().join("memory.db");
@@ -870,12 +903,13 @@ mod tests {
     #[serial(server_state_dir_env)]
     async fn kill_and_restart_the_local_relay_mid_drain_loses_nothing_and_dedupes() {
         let _restore_state_dir = RestoreStateDirOnDrop::capture();
-        let team_addr = spawn_inkentry_server().await;
+        let team_addr = spawn_inkentry_server(&DeclaredTargets::default()).await;
         let team_uri = format!("http://{}", team_addr);
         let cfg = local_first_cfg(&team_uri);
 
         let state_1 = TempDir::new().unwrap();
-        spawn_local_relay(state_1.path()).await;
+        let (_, declared_1) = spawn_local_relay(state_1.path()).await;
+        declared_1.declare(&team_uri, "proj");
 
         let mem_dir = TempDir::new().unwrap();
         let mem_path = mem_dir.path().join("memory.db");
@@ -909,7 +943,8 @@ mod tests {
 
         // "Restart": a second, wholly independent local relay process/registry.
         let state_2 = TempDir::new().unwrap();
-        spawn_local_relay(state_2.path()).await;
+        let (_, declared_2) = spawn_local_relay(state_2.path()).await;
+        declared_2.declare(&team_uri, "proj");
 
         // A new, never-yet-pushed row, added after the "restart".
         let store = open_store(&mem_path);
@@ -1010,9 +1045,10 @@ mod tests {
     #[serial(server_state_dir_env)]
     async fn a_pull_apply_failure_without_a_restart_does_not_lose_the_row() {
         let state_guard = StateDirGuard::new();
-        let team_addr = spawn_inkentry_server().await;
-        spawn_local_relay(state_guard.path()).await;
+        let team_addr = spawn_inkentry_server(&DeclaredTargets::default()).await;
+        let (_, declared) = spawn_local_relay(state_guard.path()).await;
         let team_uri = format!("http://{}", team_addr);
+        declared.declare(&team_uri, "proj");
         let cfg = local_first_cfg(&team_uri);
 
         let mem_dir = TempDir::new().unwrap();
@@ -1120,7 +1156,7 @@ mod tests {
     #[serial(server_state_dir_env)]
     async fn a_push_stamp_failure_without_a_restart_does_not_strand_the_row_pending_forever() {
         let state_guard = StateDirGuard::new();
-        spawn_local_relay(state_guard.path()).await;
+        let (_, declared) = spawn_local_relay(state_guard.path()).await;
 
         let mem_dir = TempDir::new().unwrap();
         let mem_path = mem_dir.path().join("memory.db");
@@ -1170,6 +1206,7 @@ mod tests {
             .mount(&team_server)
             .await;
 
+        declared.declare(&team_server.uri(), "proj");
         let cfg = local_first_cfg(&team_server.uri());
         // Unlocked: registers the session and relays the push to the (mock)
         // team server in a detached background task on the relay side.

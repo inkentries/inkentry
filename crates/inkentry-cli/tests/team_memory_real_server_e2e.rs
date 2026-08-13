@@ -59,7 +59,7 @@ async fn spawn_real_server(db_path: &Path) -> String {
         rate_limiter: Arc::new(inkentry_server::rate_limiter::RateLimiter::new(1000, 60)),
         instance_id,
         started_by: None,
-        relay: inkentry_server::relay::RelayRegistry::new(),
+        relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
     let app = inkentry_server::router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

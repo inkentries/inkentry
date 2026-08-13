@@ -38,7 +38,9 @@ Stating this first, because it is the part most often assumed:
 - **The `/local/` HTTP routes.** `inkentry-server` registers `/local/relay/push`,
   `/local/relay/poll`, and `/local/relay/ack` outside the documented API. They
   are deliberately absent from `docs/openapi.json` and are internal transport
-  between a inkentry client and its own server.
+  between a inkentry client and its own server. They are served only on a
+  loopback bind, and only for the team servers the machine's own configuration
+  declares: a request selects among those, it cannot name a new one.
 - **Wire-format details of the index.** Embedding vectors, the exact SQL schema
   of any table, and sqlite-vec internals. The *file* is a compatibility surface
   (see On-disk formats below); the SQL inside it is not.
