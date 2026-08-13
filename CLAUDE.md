@@ -218,7 +218,7 @@ cli/
       embed_phase.rs — embedding phase of indexing
       mentions.rs    — mention stopword filter used during indexing
       parse_phase.rs — parse/chunk phase of indexing
-      summaries.rs   — AI summary generation during index
+      summaries.rs   — composes each chunk's structural summary during index (offline)
       worktree.rs    — git worktree handling for index
     memory/
       mod.rs          — `inkentry memory` dispatch
