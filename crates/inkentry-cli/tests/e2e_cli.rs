@@ -1091,7 +1091,9 @@ fn test_server_logs_missing_file() {
         .stderr(predicate::str::contains("No log file"));
 }
 
-/// `inkentry server stop` exits with an error when there is no pid file.
+/// `inkentry server stop` exits with an error when there is no pid file, and
+/// says how to find a server that is running without one rather than implying
+/// none is.
 #[test]
 fn test_server_stop_not_running() {
     let tmp = tempdir().unwrap();
@@ -1101,7 +1103,8 @@ fn test_server_stop_not_running() {
         .arg("stop")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("server.pid"));
+        .stderr(predicate::str::contains("server.pid"))
+        .stderr(predicate::str::contains("ps ax | grep inkentry-server"));
 }
 
 /// `inkentry server start --bin <missing-path>` exits with a clear error.

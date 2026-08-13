@@ -777,12 +777,21 @@ fn apply_llm_child_env(cmd: &mut std::process::Command, llm: &LlmSpawn) {
     }
 }
 
-/// Spawn the server on Unix.
+/// Spawn the server on Unix, in a session of its own.
 ///
-/// Uses a single `fork`+`exec` via `std::process::Command::spawn()`.  The
-/// child process inherits the log file handles and runs independently; the
-/// CLI process exits after writing the PID/port state files, at which point
-/// the child is reparented to init/launchd and becomes fully detached.
+/// Uses a single `fork`+`exec` via `std::process::Command::spawn()`. Outliving
+/// the CLI takes two things, and reparenting to init/launchd — which happens on
+/// its own when this process exits — is only one of them. The other is
+/// `setsid()`: without it the daemon stays in the spawning shell's session and
+/// process group, so closing that terminal SIGHUPs it and the "background"
+/// server dies with the shell that started it. A short-lived shell (a container
+/// step, a `ssh host 'inkentry server start'`) makes that the common case
+/// rather than the corner.
+///
+/// Leaving the session is also what makes the redirection below complete: with
+/// no controlling terminal the daemon cannot be signalled through one, and its
+/// three descriptors already point at `/dev/null` and the log file rather than
+/// at the terminal's, so it neither holds the terminal open nor writes to it.
 ///
 /// `--host 127.0.0.1` is always passed explicitly. The auto-spawned daemon is
 /// unauthenticated, so it must only ever bind loopback; passing the flag keeps
@@ -795,6 +804,8 @@ fn spawn_daemon_unix(
     llm: &LlmSpawn,
     log_file: std::fs::File,
 ) -> Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+
     let log_file_err = log_file.try_clone().context("cloning log file handle")?;
 
     let mut cmd = std::process::Command::new(bin);
@@ -802,6 +813,24 @@ fn spawn_daemon_unix(
         cmd.arg(arg);
     }
     apply_llm_child_env(&mut cmd, llm);
+    // SAFETY: runs in the forked child before `exec`, where only
+    // async-signal-safe calls are permitted; `setsid` is one.
+    unsafe {
+        cmd.pre_exec(|| {
+            unsafe extern "C" {
+                fn setsid() -> i32;
+            }
+            // EPERM is the only documented failure, and it means "already a
+            // process group leader" — which a just-forked child cannot be. A
+            // failure here would leave the daemon attached, so surface it as a
+            // spawn error rather than starting a server that dies with the
+            // terminal.
+            if setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
@@ -904,8 +933,18 @@ async fn probe_health(port: u16) -> Option<String> {
 
 async fn cmd_stop() -> Result<()> {
     let state_dir = inkentry_state_dir()?;
-    let pid = read_pid(&state_dir)
-        .ok_or_else(|| anyhow::anyhow!("no server.pid found — is inkentry-server running?"))?;
+    // A missing pid file means this CLI has no record of a daemon — not that no
+    // daemon exists. A server started outside this CLI, or one whose state files
+    // were removed under it, is plainly alive in `ps` while `stop` has nothing to
+    // signal; say which of the two this is and how to find the process.
+    let pid = read_pid(&state_dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no server.pid in {} — this CLI has no record of a running inkentry-server. If one \
+             is running anyway, it was not started from here (or its state files were removed): \
+             find it with `ps ax | grep inkentry-server` and stop that process directly.",
+            state_dir.display()
+        )
+    })?;
 
     if !pid_is_alive(pid) {
         println!("inkentry-server (pid={pid}) is not running. Cleaning up state files.");
@@ -1490,6 +1529,68 @@ mod tests {
         assert!(
             !recorded.contains("INKENTRY_LLM_KEY"),
             "no credential resolved, so none should have been set: {recorded}"
+        );
+    }
+
+    // SIGKILLs and reaps the daemon on drop, including on a failed assertion.
+    // The child is in a session of its own, so nothing that signals this test's
+    // process group would reach it.
+    #[cfg(unix)]
+    struct KillOnDrop(std::process::Child);
+
+    #[cfg(unix)]
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    // A daemon still in the caller's session dies with the caller's terminal.
+    // `spawn` returns only once the child has exec'd, so the session id read
+    // here is the one `pre_exec` left behind, not a pre-`setsid` reading.
+    //
+    // This asserts the mechanism, not the consequence: closing a terminal and
+    // watching the daemon survive is not something this harness can stage.
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_daemon_leads_a_session_of_its_own() {
+        use std::os::unix::fs::PermissionsExt;
+
+        unsafe extern "C" {
+            fn getsid(pid: i32) -> i32;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let bin = tmp.path().join("fake-inkentry-server");
+        // `exec` so the sleeping process is the one that was spawned: a shell
+        // wrapper would leave `sleep` behind when the guard kills the shell.
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let log = std::fs::File::create(tmp.path().join("server.log")).unwrap();
+        let child = spawn_daemon_unix(
+            &bin,
+            &tmp.path().join("server.db"),
+            7777,
+            &LlmSpawn::default(),
+            log,
+        )
+        .expect("spawning the stand-in");
+        let pid = child.id() as i32;
+        let _guard = KillOnDrop(child);
+
+        let ours = unsafe { getsid(0) };
+        let theirs = unsafe { getsid(pid) };
+        assert!(theirs > 0, "could not read the spawned daemon's session id");
+        assert_ne!(
+            theirs, ours,
+            "the daemon stayed in the spawning process's session, so closing that \
+             terminal would take it down with the shell"
+        );
+        assert_eq!(
+            theirs, pid,
+            "the daemon should lead its own session (sid == pid)"
         );
     }
 
