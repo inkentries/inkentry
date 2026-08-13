@@ -116,10 +116,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   - `memory.db` is **refused outright**, with a message pointing at `inkentry
     import`.
 
-  **Export your memory before upgrading from 0.9.8.** There is nothing left that
-  converts an older `memory.db` in place, and this build will not open it — an
-  unexported store is unreachable memory. A store from a genuinely newer build is
-  refused and left untouched in both cases.
+  **Export your memory with `spelunk-export` before upgrading from 0.9.8, then
+  `inkentry import` the dump it writes.** `spelunk-export` is a standalone
+  per-platform asset on the [spelunk-cloud/spelunk
+  releases](https://github.com/spelunk-cloud/spelunk/releases) page — it is not in
+  the inkentry archive, the `.deb`, the Homebrew formula or the Scoop manifest.
+  There is nothing left that converts an older `memory.db` in place, and this
+  build will not open it — an unexported store is unreachable memory. A store
+  from a genuinely newer build is refused and left untouched in both cases.
 - **BREAKING: every memory-entry id is now a UUID string.** `id` and
   `superseded_by` are JSON **strings** on every command that emits them (`memory
   list --format json`, `memory show`, `memory graph`, `plumbing read-memory`),

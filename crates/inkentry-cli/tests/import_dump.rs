@@ -707,29 +707,38 @@ fn the_command_the_legacy_refusal_names_is_one_this_binary_accepts() {
         .clone();
     let message = String::from_utf8_lossy(&out).into_owned();
 
-    let named = message
+    // Every backticked `inkentry …` is checked, not just the first: the
+    // refusal also names `spelunk-export`, which belongs to the old product and
+    // is not a subcommand to probe.
+    let named: Vec<Vec<&str>> = message
         .split('`')
-        .nth(1)
-        .unwrap_or_else(|| panic!("the refusal must name a command in backticks: {message}"));
-    let mut words = named.split_whitespace();
-    assert_eq!(words.next(), Some("inkentry"), "{message}");
-    let subcommand: Vec<&str> = words.collect();
-    assert!(!subcommand.is_empty(), "{message}");
-
-    let probe = p
-        .bin()
-        .args(&subcommand)
-        .arg("--help")
-        .assert()
-        .get_output()
-        .stderr
-        .clone();
-    let probe = String::from_utf8_lossy(&probe).into_owned();
+        .skip(1)
+        .step_by(2)
+        .filter_map(|span| span.strip_prefix("inkentry "))
+        .map(|sub| sub.split_whitespace().collect())
+        .filter(|sub: &Vec<&str>| !sub.is_empty())
+        .collect();
     assert!(
-        !probe.contains("unrecognized subcommand") && !probe.contains("unexpected argument"),
-        "the refusal sends the user to `inkentry {}`, which this binary does not accept: {probe}",
-        subcommand.join(" ")
+        !named.is_empty(),
+        "the refusal must name an inkentry command in backticks: {message}"
     );
+
+    for subcommand in named {
+        let probe = p
+            .bin()
+            .args(&subcommand)
+            .arg("--help")
+            .assert()
+            .get_output()
+            .stderr
+            .clone();
+        let probe = String::from_utf8_lossy(&probe).into_owned();
+        assert!(
+            !probe.contains("unrecognized subcommand") && !probe.contains("unexpected argument"),
+            "the refusal sends the user to `inkentry {}`, which this binary does not accept: {probe}",
+            subcommand.join(" ")
+        );
+    }
 }
 
 // ── an identity carried as an empty string ───────────────────────────────────

@@ -224,8 +224,8 @@ A running server keeps the settings it started with, so restart it to pick yours
 `requires inkentry-server` error.
 
 ```
-'inkentry harvest' cannot run: offline mode is on, so no inference will run.
-Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove `mode = "offline"` from your inkentry config.
+'inkentry harvest' cannot run: offline mode is on, so nothing was probed and no inference will run.
+Two things force it, and INKENTRY_NO_SERVER wins: while that variable is set it turns off every server — the local one and `server_url` alike — whatever your config says. Unset it, and remove `mode = "offline"` from your inkentry config if that is set too.
 ```
 
 ### The local-LLM guarantee, and where it stops
