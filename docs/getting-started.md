@@ -279,19 +279,19 @@ inkentry hooks uninstall
 ## Capability tiers: where inference and memory live
 
 inkentry works at three tiers; the team-memory tier can be a server you host
-yourself or the managed spelunk.cloud, shown as separate rows below. You do not
+yourself or the managed inkentry cloud, shown as separate rows below. You do not
 pick one by hand; inkentry uses the best one available and degrades cleanly when a
 server is not reachable. The load-bearing distinction is that a **local server
 does inference only and never stores memory**. Your memory always lives in the
 project's local `memory.db` until you *explicitly* configure a team server or use
-the managed spelunk.cloud.
+the managed inkentry cloud.
 
 | Tier | What runs it | What it adds | Where memory lives |
 |---|---|---|---|
 | **Built-in** (zero infra) | just the `inkentry` binary | git-notes memory, full-text search, code graph | local `memory.db` |
 | **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search` | still local `memory.db`: the server is **inference only, never a memory store** |
 | **Team memory server** | a shared `inkentry-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
-| **spelunk.cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |
+| **inkentry cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |
 
 Built-in works with nothing installed but the binary (the always-available
 commands in section 3). The local semantic server is auto-discovered on loopback
@@ -299,7 +299,7 @@ commands in section 3). The local semantic server is auto-discovered on loopback
 queries and runs LLM calls, but a project's memory stays in `memory.db`
 regardless of whether it is running. Memory moves off the local machine only when
 you point at a team server, self-hosted via an explicit `server_url` or the
-managed spelunk.cloud (see
+managed inkentry cloud (see
 [Team setup](#team-setup-shared-memory-with-inkentry-server)); each developer's
 code still stays local.
 

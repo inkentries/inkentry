@@ -87,9 +87,9 @@ pub enum Command {
     Sync(SyncArgs),
     /// Manage the local inkentry-server daemon (start / stop / status / logs)
     Server(ServerArgs),
-    /// Authenticate with spelunk.cloud (WorkOS device authorization)
+    /// Authenticate with inkentry cloud (WorkOS device authorization)
     Login(LoginArgs),
-    /// Remove stored spelunk.cloud credentials (see `--servers`/`--server` for self-hosted keys)
+    /// Remove stored inkentry cloud credentials (see `--servers`/`--server` for self-hosted keys)
     Logout(LogoutArgs),
     /// Manage the active organization (e.g. `inkentry org switch <org>`)
     Org(OrgArgs),

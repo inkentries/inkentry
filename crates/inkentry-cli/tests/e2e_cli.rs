@@ -1481,7 +1481,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
 
     // `server_url` set, no `mode` key: resolves to `local_first`. Deliberately
     // an address nothing mounts anything on (mirrors the founder's
-    // `https://api.spelunk.cloud`): an accidental fallback to it for
+    // `https://api.inkentry.com`): an accidental fallback to it for
     // inference would surface as a connection error, never a silent pass.
     let config_path = temp.path().join("config.toml");
     let db_path = temp.path().join("index.db");

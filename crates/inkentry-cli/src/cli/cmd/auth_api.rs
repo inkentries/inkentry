@@ -76,7 +76,7 @@ pub fn workos_url() -> String {
 /// the rest of the CLI's environment config:
 ///   1. `INKENTRY_WORKOS_CLIENT_ID` — explicit override (tests / bespoke envs).
 ///   2. Otherwise derived from `cloud_url`: the production cloud host
-///      (`api.spelunk.cloud`) selects the prod client_id; anything else (a dev
+///      (`api.inkentry.com`) selects the prod client_id; anything else (a dev
 ///      override, localhost, a staging host) selects the dev client_id.
 pub fn workos_client_id(cloud_url: &str) -> String {
     if let Ok(v) = std::env::var("INKENTRY_WORKOS_CLIENT_ID")
@@ -91,7 +91,7 @@ pub fn workos_client_id(cloud_url: &str) -> String {
     }
 }
 
-/// Whether `cloud_url` targets the production spelunk.cloud API host.
+/// Whether `cloud_url` targets the production inkentry cloud API host.
 ///
 /// Only the canonical production host counts as prod; every other host (dev
 /// overrides, staging, localhost) falls through to the dev environment.
@@ -101,7 +101,7 @@ fn is_prod_cloud_url(cloud_url: &str) -> bool {
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     let host = host.split(['/', ':']).next().unwrap_or(host);
-    host.eq_ignore_ascii_case("api.spelunk.cloud")
+    host.eq_ignore_ascii_case("api.inkentry.com")
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -652,11 +652,11 @@ mod tests {
         let prev = std::env::var("INKENTRY_WORKOS_CLIENT_ID").ok();
         unsafe { std::env::remove_var("INKENTRY_WORKOS_CLIENT_ID") };
         assert_eq!(
-            workos_client_id("https://api.spelunk.cloud"),
+            workos_client_id("https://api.inkentry.com"),
             WORKOS_CLIENT_ID_PROD
         );
         assert_eq!(
-            workos_client_id("https://dev.spelunk.cloud"),
+            workos_client_id("https://dev.inkentry.com"),
             WORKOS_CLIENT_ID_DEV
         );
         assert_eq!(
@@ -680,11 +680,25 @@ mod tests {
 
     #[test]
     fn is_prod_cloud_url_only_matches_canonical_host() {
-        assert!(is_prod_cloud_url("https://api.spelunk.cloud"));
-        assert!(is_prod_cloud_url("https://api.spelunk.cloud/"));
-        assert!(is_prod_cloud_url("https://API.SPELUNK.CLOUD"));
-        assert!(!is_prod_cloud_url("https://staging.spelunk.cloud"));
+        assert!(is_prod_cloud_url("https://api.inkentry.com"));
+        assert!(is_prod_cloud_url("https://api.inkentry.com/"));
+        assert!(is_prod_cloud_url("https://API.INKENTRY.COM"));
+        assert!(!is_prod_cloud_url("https://staging.inkentry.com"));
         assert!(!is_prod_cloud_url("http://127.0.0.1:8080"));
+    }
+
+    // The default cloud URL and the prod-host check are two constants that have
+    // to name the same host, and nothing else forces them to agree. Move one
+    // without the other and the default silently classifies as non-prod, so
+    // every real login quietly picks up the DEV WorkOS client id: an auth
+    // failure with no wrong-looking line of code anywhere.
+    #[test]
+    fn default_cloud_url_is_recognised_as_prod() {
+        assert!(
+            is_prod_cloud_url(DEFAULT_CLOUD_URL),
+            "DEFAULT_CLOUD_URL ({DEFAULT_CLOUD_URL}) must satisfy is_prod_cloud_url, \
+             or production logins select the dev client id"
+        );
     }
 
     // ── ensure_fresh_token (expiry guard) ────────────────────────────────────────

@@ -1053,7 +1053,7 @@ mod tests {
             std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let cfg = crate::config::Config {
-            server_url: Some("https://api.spelunk.cloud".to_string()),
+            server_url: Some("https://api.inkentry.com".to_string()),
             project_id: Some("proj".to_string()),
             mode: None,
             ..Default::default()

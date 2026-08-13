@@ -87,7 +87,7 @@ truth, you run a **team server** and point everyone at it. The team server share
 your memory index, the decisions and requirements behind the code, not the code
 itself; each person's code stays on their own machine. It is the same
 open-source server, free to self-host. If you would rather not run one yourself,
-the hosted spelunk.cloud service is the managed alternative.
+the hosted inkentry cloud service is the managed alternative.
 
 | Tier | What it adds | Where memory lives |
 |---|---|---|

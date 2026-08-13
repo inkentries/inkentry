@@ -1178,7 +1178,7 @@ memory_server_key = "old-token"
         clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
-            server_url: Some("https://api.spelunk.cloud".to_string()),
+            server_url: Some("https://api.inkentry.com".to_string()),
             mode: None, // defaults to local_first because server_url is set
             ..Default::default()
         };
@@ -1192,7 +1192,7 @@ memory_server_key = "old-token"
         clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
-            server_url: Some("https://api.spelunk.cloud".to_string()),
+            server_url: Some("https://api.inkentry.com".to_string()),
             mode: Some(SyncMode::Offline),
             ..Default::default()
         };

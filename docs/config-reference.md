@@ -208,7 +208,7 @@ remote LLM. See
 - **Default:** unset
 - **Env override:** `INKENTRY_SERVER_KEY`
 
-This field only resolves the **cloud-kind** bearer, used for spelunk.cloud
+This field only resolves the **cloud-kind** bearer, used for inkentry cloud
 requests (`INKENTRY_SERVER_KEY` if set, otherwise the `[auth].access_token`
 written by `inkentry login`). It is **not** the effective credential for a
 self-hosted team `inkentry-server`: since the per-origin key scoping in
@@ -272,7 +272,7 @@ for the full walkthrough.
 - **Default:** absent
 - **Managed by:** `inkentry login`, `inkentry org switch` - do not hand-edit
 
-WorkOS device-flow tokens for spelunk.cloud, written by `inkentry login` under
+WorkOS device-flow tokens for inkentry cloud, written by `inkentry login` under
 the global config's `[auth]` table:
 
 ```toml
@@ -284,7 +284,7 @@ org_id = "org_..."
 ```
 
 While `access_token` is unexpired, it is the source of the `Authorization:
-Bearer` token every spelunk.cloud request sends; it does not apply to a
+Bearer` token every inkentry cloud request sends; it does not apply to a
 self-hosted `server_url`, which resolves its own credential separately (see
 `server_key` above). `refresh_token` rotates an expired access token and backs
 organization switching. The file is written with `0600` permissions. This
@@ -407,7 +407,7 @@ TOML file.
 | `INKENTRY_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `inkentry auth set-key --llm`). Not a `config.toml` field. |
 | `INKENTRY_MODE` | `mode` (`offline` / `local_first` / `cloud_first`; an unrecognized value is a hard error) |
 | `INKENTRY_NO_SERVER=1` | Kill-switch: forces `offline` mode and disables server autostart, regardless of `mode` or `server_url` |
-| `INKENTRY_CLOUD_URL` | spelunk.cloud API URL used by `login` / `org` (default `https://api.spelunk.cloud`) |
+| `INKENTRY_CLOUD_URL` | inkentry cloud API URL used by `login` / `org` (default `https://api.inkentry.com`) |
 | `INKENTRY_SECRET_STORE` | Secret-store backend: `auto` (default), `keychain`, or `file` |
 | `AGENT=true` | Forces JSON output for commands that support it (not a config field) |
 

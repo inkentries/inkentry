@@ -23,7 +23,7 @@ use super::auth_api::{self, DEFAULT_CLOUD_URL, MeOrg};
 
 #[derive(Args, Debug)]
 pub struct OrgArgs {
-    /// Override the inkentry cloud API URL (default: https://api.spelunk.cloud)
+    /// Override the inkentry cloud API URL (default: https://api.inkentry.com)
     #[arg(long, env = "INKENTRY_CLOUD_URL", global = true)]
     pub cloud_url: Option<String>,
 

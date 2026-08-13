@@ -48,7 +48,7 @@ use super::org::{persist_tokens, switch_org};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// Override the inkentry cloud API URL (default: https://api.spelunk.cloud).
+    /// Override the inkentry cloud API URL (default: https://api.inkentry.com).
     /// Also selects the WorkOS environment (prod host → prod client_id; any
     /// other host → dev client_id) unless `INKENTRY_WORKOS_CLIENT_ID` is set.
     #[arg(long, env = "INKENTRY_CLOUD_URL")]
@@ -250,7 +250,7 @@ fn choose_org(orgs: &[MeOrg], interactive: bool) -> Result<OrgChoice> {
     match orgs.len() {
         0 => anyhow::bail!(
             "Your account is not a member of any organization yet.\n\
-             Create one at https://spelunk.cloud/onboarding, then run `inkentry login` again."
+             Create one at https://app.inkentry.com/onboarding, then run `inkentry login` again."
         ),
         1 => Ok(OrgChoice::Switch(orgs[0].clone())),
         _ if interactive => {
