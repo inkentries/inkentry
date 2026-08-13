@@ -6,9 +6,15 @@
 // x86_64 release-asset sha256 digest, this script produces the exact file
 // contents and writes them out.
 //
-// Invoked by the update-scoop-manifest job in .github/workflows/release.yml on
-// every stable tag push, which then commits the result back to the bucket in
-// this repo.
+// Invoked by the update-scoop-manifest job in .github/workflows/release.yml,
+// which then commits the result back to the inkentries/scoop-inkentry bucket.
+//
+// The bucket holds one manifest, so publishing order — not version order —
+// decides what users get. The manifest already in the bucket is read first and
+// a version that does not sort above it is refused, leaving the file untouched:
+// re-running an older tag's release workflow would otherwise hand every
+// installed user a downgrade. Roll a bad release forward with a new tag; there
+// is no flag to republish an older one.
 //
 // Usage:
 //   node update-scoop-manifest.js \
@@ -25,6 +31,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { compareVersions } = require("./version-order.js");
 
 function parseArgs(argv) {
   const args = {};
@@ -60,6 +67,18 @@ function assertSha256(name, value) {
     );
   }
   return value.toLowerCase();
+}
+
+// null means "nothing to protect": an absent or unreadable manifest is
+// overwritten rather than treated as a floor no release can clear.
+function publishedVersion(outPath) {
+  if (!fs.existsSync(outPath)) return null;
+  try {
+    const version = JSON.parse(fs.readFileSync(outPath, "utf8")).version;
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildManifest({ version, shaX86_64Windows }) {
@@ -112,6 +131,15 @@ function main() {
   const outPath = path.resolve(
     requireValue("--out", args.out, "bucket/inkentry.json")
   );
+
+  const published = publishedVersion(outPath);
+  if (published !== null && compareVersions(version, published) <= 0) {
+    process.stderr.write(
+      `Refusing to publish ${version} over ${published}: it does not sort ` +
+        `above what the bucket already serves. Leaving ${outPath} untouched.\n`
+    );
+    return;
+  }
 
   const manifest = buildManifest({ version, shaX86_64Windows });
 

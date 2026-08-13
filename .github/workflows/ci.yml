@@ -220,7 +220,10 @@ jobs:
       # The packaging scripts only otherwise run at release-tag time, where a
       # break is expensive. node:test is a builtin: nothing to install.
       - name: Test packaging scripts
-        run: node --test .github/scripts/write-deb-control.test.js
+        run: |
+          node --test \
+            .github/scripts/write-deb-control.test.js \
+            .github/scripts/version-order.test.js
 
   docker-build:
     name: Docker image build

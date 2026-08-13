@@ -23,14 +23,13 @@ Two install paths live outside this workflow:
   does not need updating per release. (The Windows `install.ps1` is fetched the
   same way.)
 - **Homebrew tap** lives in the separate `inkentries/homebrew-inkentry`
-  repo, whose `Formula/` is still empty. The `HOMEBREW_TAP_TOKEN` secret is not
-  set yet, so the job fails at checkout until it is; the workflow points at the
-  new tap rather than the old organisation's, which serves the pre-rename binary
-  names. The `update-homebrew-formula` job in `.github/workflows/release.yml`
-  regenerates `Formula/inkentry.rb` with the new `url`/`sha256`/`version` and
-  pushes it to that repo's `main` branch directly, using the
-  `HOMEBREW_TAP_TOKEN` secret (a token with `contents: write` on
-  `homebrew-inkentry` — `GITHUB_TOKEN` only has access to this repo).
+  repo, seeded at v0.9.8. The `update-homebrew-formula` job in
+  `.github/workflows/release.yml` regenerates `Formula/inkentry.rb` with the new
+  `url`/`sha256`/`version` and pushes it to that repo's `main` branch directly,
+  using the `HOMEBREW_TAP_TOKEN` secret (a token with `contents: write` on
+  `homebrew-inkentry` — `GITHUB_TOKEN` only has access to this repo). The
+  workflow points at the new tap rather than the old organisation's, which
+  serves the pre-rename binary names.
 - **Scoop bucket** lives in the separate `inkentries/scoop-inkentry` repo,
   seeded at v0.9.8. `update-scoop-manifest` regenerates `bucket/inkentry.json`
   there and pushes to its `main` directly, using a `SCOOP_BUCKET_TOKEN` secret
@@ -41,9 +40,19 @@ Two install paths live outside this workflow:
   commit landed after the tag was cut and so opened the *next* release's
   changelog carrying the *previous* version.
 
-  Both packaging jobs skip `-rc`/`-beta`/`-alpha` tags, so a release candidate
-  publishes neither a formula nor a manifest, and neither token is exercised
-  until the first stable tag.
+  Both packaging jobs publish every stable tag, plus pre-release tags on the
+  `v1.0.0` line only — the release candidates for v1 are installable through
+  brew and scoop, and the condition expires on its own once v1.0.0 ships, since
+  a later `v1.1.0-rc0` no longer matches `v1.0.0-`. Without that, a `1.1.0-rc`
+  would sort *above* `1.0.0` in both package managers and be served to everyone
+  tracking stable.
+
+  Neither the tap nor the bucket keeps more than one file, so publishing order,
+  not version order, decides what users get. Both generator scripts read the
+  version already published and refuse to write one that does not sort above it
+  (`version-order.js`, tested in CI): re-running an older tag's release workflow
+  leaves the tap alone rather than downgrading every installed user. There is no
+  override — roll a bad release forward with a new tag.
 
 ## Supported platforms
 
