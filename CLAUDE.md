@@ -48,7 +48,7 @@ Full reference: `SKILL.md` and `docs/agent-guide.md`.
 
 **Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. `search` requires an index: an uninitialised directory funnels to `inkentry init`. Once `init` has parsed the tree, full-text search is available immediately (over both code and memory) while semantic ranking builds in the background; the call graph is surfaced through `search --graph` and `inkentry plumbing graph-edges`.
 
-**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search, `inkentry harvest`, and LLM summaries all route through the server's inference endpoints; the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
+**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search and `inkentry harvest` route through the server's inference endpoints (`harvest` is the only feature that needs an LLM at all; chunk summaries are composed offline with no model); the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
 **Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url` is the **only** way memory moves off the local `memory.db`, and how it moves is governed by the `mode` config (see `SyncMode` in `sync_mode.rs`): the default `local_first` keeps reads and writes in the local store with the server as a converging replica; `mode = "cloud_first"` relocates the store of record to the shared server, and reads/writes fail loudly when it is unreachable (no silent local fallback). Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) `project_id` is sent to the server exactly as configured, slug or UUID: both a self-hosted inkentry-server and the hosted cloud API accept either, so there is no resolution step and nothing is cached (see ADR-005).
 
@@ -118,7 +118,7 @@ indexer/
   pagerank.rs    — PageRank over the code graph
   pdf.rs         — PDF text extraction
   secrets.rs     — contains_secret(): regex scanner, drops credential chunks
-  summariser.rs  — LLM-based chunk summarisation
+  summariser.rs  — deterministic structural chunk summaries (no model, no key, no network)
   graph/
     mod.rs       — re-exports EdgeExtractor
     edges.rs     — EdgeExtractor: import/call/extends edges via tree-sitter
@@ -182,7 +182,7 @@ capability/      — Tier 0/1 capability detection (server reachable probe, cach
                    explicit server_url / nowhere-with-a-reason). Separate from embed
                    routing; never consults Config::resolve_inference_url
   llm_message.rs:  no_llm_message: the user-facing text over (NoLlmReason x LlmFeature),
-                   shared by index summaries and harvest
+                   used by harvest, the only LLM-backed feature
 server_client.rs:  ServerInferenceClient, the single HTTP client for inkentry-server's
                    inference endpoints, plus ServerLlmAdapter, a thin LlmBackend trait
                    adapter over an Arc of it (embedding is issued directly via embed_text,
@@ -431,8 +431,9 @@ these commands to query only the primary project's memory. See
 
 ### Secret scanning
 `crates/inkentry-core/src/indexer/secrets.rs` runs before each chunk is stored, scanning the full
-text that will be persisted and embedded (docstring + content; LLM summaries are scanned
-separately when generated, since they don't exist yet at store time). Chunks matching known
+text that will be persisted and embedded (docstring + content; each composed structural summary is scanned
+separately when generated, since summaries don't exist yet at store time and the
+composition can lift a salient literal out of the code). Chunks matching known
 credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped — including
 their docstring, so nothing lands in stored metadata either — and a warning naming only the
 symbol is logged; a secret-bearing summary is replaced with an empty string instead of being
