@@ -3,7 +3,8 @@
 **Scope:** `inkentry-server` (`crates/inkentry-server/`), the HTTP attack surface not covered by the CLI security program.  
 **Gate:** Must be completed before v1.0 GA. Blocks the v1.0 tag.  
 **Date drafted:** 2026-05-17  
-**Retargeted:** 2026-07-03 to the OSS server as-built (single-trust-domain tenancy per [ADR-056](../adr/056-oss-server-tenancy-model.md)).
+**Retargeted:** 2026-07-03 to the OSS server as-built (single-trust-domain tenancy per [ADR-056](../adr/056-oss-server-tenancy-model.md)).  
+**Amended:** 2026-08-13 — §9 added for the local relay surface (`/local/relay/*`, ADR-037 P2), which §§1–8 never covered; §3's bind guidance corrected against ADR-066 and the code; §4's SQL claim replaced with a site-by-site inventory.
 
 The CLI threat model ([`THREAT-MODEL.md`](THREAT-MODEL.md)) remains valid for the CLI crate. This document covers threats introduced by the HTTP server.
 
@@ -77,10 +78,27 @@ credential that must not travel in cleartext (ADR-056). `main.rs::check_bind_saf
 therefore refuses **unconditionally** to bind a non-loopback address over plaintext
 HTTP, covering both the keyless case (an open, unauthenticated server) and the keyed
 case (the bearer key would cross the network in the clear). The refusal names the
-interface/port. There is no
-override; the only supported posture for a shared server is to bind loopback.
-Covered by unit test
-`non_loopback_with_key_plaintext_is_refused_unconditionally`.
+interface/port, and there is no override for it.
+
+What is refused unconditionally is **plaintext off-host**, not off-host itself. A
+shared server has a supported non-loopback posture: bind off-host over HTTPS the
+server terminates **in-process** (`--tls-cert`/`--tls-key`) with an API key set —
+the path ADR-066 §4 ratified, which `check_bind_safety` implements as its final
+`Ok(())`. (An earlier revision of this section stated that loopback was the only
+supported posture for a shared server, and cited a unit test
+`non_loopback_with_key_plaintext_is_refused_unconditionally` that does not exist.
+Both were wrong: they pre-dated ADR-066 and contradicted the bind table in
+[`THREAT-MODEL.md`](THREAT-MODEL.md#mode-b--inkentry-server), which has been correct
+throughout.) The four-row decision is:
+
+| Bind | TLS | Key | `check_bind_safety` |
+|---|---|---|---|
+| loopback | any | any | allow — `loopback_is_allowed_for_every_combination` |
+| non-loopback | no | any | refuse — `non_loopback_without_tls_is_refused` |
+| non-loopback | yes | no | refuse — `non_loopback_tls_without_key_is_refused` |
+| non-loopback | yes | yes | allow — `non_loopback_tls_with_key_is_allowed` |
+
+All four unit tests live in `crates/inkentry-server/src/main.rs`.
 
 ## 4. Input validation
 
@@ -92,7 +110,45 @@ UUIDs, so the "malformed UUID" row is reframed as a slug length/sanity cap.
 | Title field: max 500 characters enforced at route handler | ☑ `handlers.rs` `MAX_TITLE_LEN = 500`, returns 400 on violation |
 | Body field: max 50 000 characters enforced at route handler | ☑ `handlers.rs` `MAX_BODY_LEN = 50_000`, returns 400 on violation |
 | Path param (project slug) validated; an over-long slug returns 400, not 500 | ☑ `handlers.rs` `MAX_SLUG_LEN = 200`, enforced in `require_project` and the handlers that bypass it (add_note / index_embed / project_search / llm_complete) |
-| All SQL uses parameterised queries, no string concatenation | ☑ verified: `db.rs` uses `params!` throughout (no `format!`/concatenation into SQL across `crates/inkentry-server/src/`); FTS5 terms are quoted as literals via `fts5_quote_literal` |
+| Every value that can originate with a caller is bound as a parameter; nothing caller-derived is interpolated into SQL text | ☑ verified site by site — see the SQL-construction inventory below |
+
+### SQL-construction inventory (`crates/inkentry-server/src/db.rs`)
+
+An earlier revision of the row above read "no `format!`/concatenation into SQL across
+`crates/inkentry-server/src/`". That was false as written — `db.rs` builds statement
+text with `format!` in eight places — and an absolute claim that is false is worse
+than a narrow one that is true, because it is the claim a future reviewer relies on
+to skip the check. The precise claim, verified in this tree, is the one in the table:
+**no caller-derived value is ever interpolated; only compile-time constants,
+programmatically generated placeholder tokens, and server-clamped integers are.**
+Every site:
+
+| Site (`db.rs`) | Interpolated | Why it is safe |
+|---|---|---|
+| `open`/migrate: `CREATE VIRTUAL TABLE … FLOAT[{dim}]` | `self.embedding_dim` (`usize`) | Server startup configuration, not a request field |
+| `find_by_remote_ids` | `{placeholders}` — a `?,?,?` token list | Generated from `remote_ids.len()` alone; every id is bound. Length is bounded by `MAX_BATCH_ENTRIES` (200) at the handler, far under SQLite's bind-parameter limit |
+| `get_note` | `NOTE_COLUMNS`, `NOTE_SOURCE` | `const &str` in the same file; `note_id`/`project_id` bound as `?1`/`?2` |
+| `list_notes` (×2 branches) | `NOTE_COLUMNS`, `NOTE_SOURCE`, `{status_clause}`, `{limit}` | `status_clause` is one of two string literals chosen by a `bool`; `limit` is `usize` after `.min(500)`. The caller-supplied `kind` filter is bound as `?2` |
+| `search_notes` | `NOTE_COLUMNS`, `{limit}` | `limit` is `usize` after `.min(100)`; the query vector is bound as a blob |
+| `search_notes_for_conflicts` | `{search_limit}`, `{limit}` | Both derived from `limit.min(50)` |
+| `notes_since` | `NOTE_COLUMNS`, `NOTE_SOURCE` | Constants only; `project_id`/`since_secs`/`limit` all bound |
+
+The `{limit}` interpolations are `usize` values that have already passed through a
+server-side clamp, so they cannot carry text at all — the type, not the clamp, is
+what rules out injection; the clamp bounds result size. (`notes_since` shows the same
+value bound as `?3` instead, so the interpolated ones are a local inconsistency, not
+a necessity.) Two properties are load-bearing and worth a reviewer's attention on any
+future edit: **a clamp must stay upstream of every `{limit}`**, and **the
+placeholder-token pattern in `find_by_remote_ids` must keep the values on the bind
+path** — the same trap documented for the CLI-side storage layer in
+[`in-clause-parameterisation.md`](in-clause-parameterisation.md).
+
+No SQL text is constructed anywhere else in `crates/inkentry-server/src/`; `db.rs`
+is the only module that talks to SQLite. The previous row also cited
+`fts5_quote_literal` as evidence here, which was misattributed: the server issues no
+FTS5 `MATCH` query at all (its only `MATCH` is sqlite-vec's `embedding MATCH ?1`,
+with the vector bound). `fts5_quote_literal` lives in `inkentry-core` and guards the
+CLI-side stores — correct, but not evidence about this crate.
 
 Beyond this table, the input-validation hardening also added a `tower_http` middleware stack (see §DoS in
 [`THREAT-MODEL.md`](THREAT-MODEL.md#d--denial-of-service)): `RequestBodyLimitLayer`
@@ -171,6 +227,39 @@ service authenticated by one bearer key. The JWT/database rows are relabelled.
      follow-up, and added a uniform MAX_FILE_BYTES gate in
      crates/inkentry-cli/src/cli/cmd/index/parse_phase.rs. -->
 
+## 9. Local relay surface (`/local/relay/*`, ADR-037 P2)
+
+Added to this checklist in August 2026. The surface pre-dates the entry: it was not
+covered by §§1–8, which were written against the `/v1` team-hosting routes, and it
+had no threat-model entry either. Full model:
+[`THREAT-MODEL.md` → Local relay](THREAT-MODEL.md#local-relay--localrelay-adr-037-p2).
+It is audited separately because it is the one surface on this binary that makes it
+open **outbound** connections, so the §§1–8 controls (which all bound what a caller
+may put *in*) do not speak to it.
+
+| Check | Status |
+|---|---|
+| Not served on a bind another machine can reach | ☑ `RelayRegistry::for_bind` returns a disabled registry off loopback, and `lib.rs::router` does not mount the three routes when the registry is disabled — refusal *and* absence, not a per-handler check. Tests: `the_relay_is_disabled_on_a_non_loopback_bind`, `a_disabled_registry_refuses_every_push` |
+| The outbound destination cannot be supplied by a request | ☑ every destination is resolved by `relay::RelayPolicy` from `inkentry_core::config::declared_team_targets` (env pair, `.inkentry/config.toml` above the daemon's cwd, local registry projects). `RelayPolicy::from_fn`'s source closure takes no arguments, so no policy can be built that a request can reach. Tests: `a_server_url_no_local_config_declares_is_refused`, `a_declared_server_with_an_undeclared_project_is_refused` |
+| A declared target still cannot be plaintext off-host | ☑ `RelayRegistry::resolve` re-runs `validate_transport_url` before any session exists. Test: `a_declared_but_plaintext_non_loopback_target_is_refused` |
+| Refusals and errors leak nothing about the remote host | ☑ `last_error` is the fixed `REMOTE_HOP_FAILED` string; the `reqwest` detail (refused vs timed-out vs TLS-failed, per host/port) goes only to the daemon log, so the surface is not a network-probe oracle. Test: `last_error_never_carries_the_remote_error` |
+| Registry and buffers are bounded | ☑ `MAX_RELAY_SESSIONS` (32), `MAX_BUFFERED_ITEMS_PER_SESSION` (10 000), and an SSE receive-buffer cap. Tests: `the_registry_is_bounded_even_when_local_config_declares_more`, `oversized_sse_frame_without_terminator_errors_instead_of_growing_forever` |
+| A session cannot outlive its use | ☑ `SESSION_IDLE_TIMEOUT` (30 min with no CLI call) ends the pull loop and drops the session; background traffic deliberately does not refresh the clock. Tests: `a_sessions_pull_loop_terminates_once_no_cli_is_using_it`, `a_session_in_use_is_not_retired` |
+| Idle daemon opens nothing | ☑ a session is only ever created by `push`; `poll`/`ack` never create one. Test: `empty_registry_makes_no_outbound_calls_and_starts_no_sessions` |
+| Pulled entries cannot cross projects on one team server | ☑ sessions are keyed on (server, project). Test: `pulled_rows_never_leak_across_projects_on_the_same_team_server` |
+| `poll`/`ack` restricted to the calling project | ☐ **Open, accepted for v1.0.** Both look a session up by (server, project) without consulting `RelayPolicy`, so any local process naming a declared pair — the pair is in the committed `.inkentry/config.toml` — reads that session's buffered entry bodies or retires them. Bounded by the surface being loopback-only and by the pair having to be declared; not closed. Recorded as residual 1 in the threat model |
+| A live session's bearer cannot be overwritten or borrowed by another local process | ☐ **Open, accepted for v1.0.** `set_bearer` takes the bearer from the request (the detached daemon must never open the OS keychain — §7 of this document and the corresponding threat-model row), so a local caller can replace it and stall that session's sync, and a `push` omitting it rides the resident one. Residuals 2 and 3 in the threat model |
+| Published in `docs/openapi.json` | N/A by decision. Deliberately unpublished: the spec describes the team-hosting role for clients pointing at a `server_url`, and a non-loopback server never mounts these routes. Reasoning recorded in the threat model's "Why this surface is not in `docs/openapi.json`" |
+| Covered by the egress-containment harness | N/A — not coverable there. `crates/inkentry-cli/tests/egress_containment.rs` wraps the **CLI subprocess**, so it cannot observe daemon-side egress. The local-tier default is unaffected (no declared target ⇒ no session ⇒ no outbound call), but the harness must not be cited as covering this surface |
+
+The two ☐ rows are **not** sign-off blockers under the same reasoning as §3's
+tenancy rows: they are properties of the deliberate keyless loopback posture
+([ADR-056](../adr/056-oss-server-tenancy-model.md)), reachable only by a process
+already running as the local user. They are listed unchecked rather than relabelled
+N/A because, unlike the tenancy rows, they are not purely intra-machine: they let a
+local process act against the **team** server. Closing them needs a local caller
+identity the current posture does not provide, which is a post-v1.0 ADR.
+
 ---
 
 ## Running the checks
@@ -187,7 +276,8 @@ INKENTRY_SECRET_STORE=file cargo test -p inkentry-server
 
 # Auth, injection-scan, input-cap, and error-mapping tests live in-crate:
 #   auth.rs (constant-time key compare), security.rs (injection patterns),
-#   handlers.rs (title/body/slug caps, 422 shape, SSE past-timeout).
+#   handlers.rs (title/body/slug caps, 422 shape, SSE past-timeout),
+#   main.rs (§3 bind guard), relay/{mod,policy}.rs + relay/tests.rs (§9).
 ```
 
 ---
@@ -195,11 +285,23 @@ INKENTRY_SECRET_STORE=file cargo test -p inkentry-server
 ## Sign-off
 
 Every **applicable** row must be ☑ (with cited evidence) before the v1.0 tag is
-created. **N/A** rows carry no obligation; they record a cloud-only item or an
-ADR-056 by-design decision, not an outstanding task.
+created, **or** carry an explicit, reasoned acceptance in this section. **N/A** rows
+carry no obligation; they record a cloud-only item or an ADR-056 by-design decision,
+not an outstanding task. A ☐ row is never silently carried past the tag: either it
+is ticked with evidence, or the sign-off names it and says why the release proceeds
+anyway.
 
 **State at retarget (2026-07-03):** the only applicable row not yet satisfied was
 the §1 injection audit-log (`tracing::warn!` on a match); it is now implemented in
-`handlers.rs::add_note` and ticked above. Every applicable row is ☑ with evidence
-cited above. Founder sign-off (initials + date) on this retarget is pending review
-of this PR.
+`handlers.rs::add_note` and ticked above.
+
+**State at amendment (2026-08-13):** §§1–8 remain fully ☑ with evidence cited. §9
+introduces two ☐ rows on the local relay (`poll`/`ack` project scoping, and bearer
+ownership on a live session). Both are **accepted, not outstanding work**: they are
+consequences of the keyless loopback posture and of the daemon deliberately never
+opening the OS keychain, reachable only by a process already running as the local
+user, and closing either requires a local caller identity that does not exist yet.
+They are recorded as ☐ rather than N/A because they are genuine residual capability,
+not by-design intent — a reviewer should be able to see them and disagree. Founder
+sign-off must therefore be an explicit acceptance of §9's two open rows, not only a
+tick of §§1–8.

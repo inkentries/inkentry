@@ -1,7 +1,8 @@
 # inkentry Threat Model
 
 **Method:** Lightweight threat modeling (STRIDE-informed)  
-**Last reviewed:** July 2026 (transport model updated to native in-process HTTPS, ADR-066; egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired; the embedding model and its compute path pinned product-wide, `--embedding-url` / `INKENTRY_EMBEDDING_URL` removed: embedding can no longer egress to a third party)  
+**Last reviewed:** August 2026 — the local relay (`/local/relay/*`, ADR-037 P2) modelled for the first time under this document's own "any new network-facing feature" trigger, which it had not been; the rate-limit, git-notes and auth-posture rows reconciled against the code that implements them  
+**Previously reviewed:** July 2026 (transport model updated to native in-process HTTPS, ADR-066; egress model corrected to the server-owned embedding path, ADR-002; `api_base_url` retired; the embedding model and its compute path pinned product-wide, `--embedding-url` / `INKENTRY_EMBEDDING_URL` removed: embedding can no longer egress to a third party)  
 **Reviewed by:** Architect  
 **Next review:** v1.0 release or after any new network-facing feature
 
@@ -17,12 +18,21 @@ inkentry has two distinct operational modes with different attack surfaces:
 3. Runs KNN search over stored embeddings via sqlite-vec
 4. Optionally sends context + a user question to the same `inkentry-server`'s LLM endpoint
 5. Maintains a `memory.db` of structured notes with semantic search. **`memory.db` is the single authoritative memory store at the CLI tier** (ADR-004). All `inkentry memory` operations (add, list, search, timeline, harvest) read from and write to `memory.db`.
-6. **When `store_in_git_notes = true` (the default):** each `inkentry memory add` also appends the note as a JSON line to `refs/notes/inkentry` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-prref-noteinkentry) below.
+6. **When `store_in_git_notes = true` (the default):** each `inkentry memory add` also appends the note as a JSON line to `refs/notes/inkentry` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-refsnotesinkentry) below.
 
 **Auto-discovered loopback inkentry-server (v0.8.0+):** inkentry auto-starts a local `inkentry-server` daemon (bound to `127.0.0.1`) to provide a native embedder and LLM backend. This server is **inference-only**: it receives query text or chunk text for embedding, and completion prompts for LLM calls. It does **not** receive note text for storage and is **not** a memory backend. Only an explicit `server_url` in config (pointing at a team or cloud server) moves the memory store of record away from `memory.db`.
 
+**A third role on the same daemon — the local relay (ADR-037 P2).** When a project is
+configured with a team `server_url`, that same loopback daemon also acts as the
+machine's *outbound sync client*: the CLI hands it outbox entries over
+`/local/relay/*` and the daemon performs the network legs to the team server on its
+own schedule, outliving the CLI process that queued them. This is neither the
+inference role nor the team-hosting role, and it is the **only** surface on the
+daemon that makes it open outbound connections. It is modelled in full in
+[Local relay](#local-relay--localrelay-adr-037-p2) below.
+
 ### Mode B — inkentry-server
-An axum HTTP API (`src/server/`) that exposes memory CRUD and semantic search over the network:
+An axum HTTP API (`crates/inkentry-server/src/`) that exposes memory CRUD and semantic search over the network:
 - Binds to a configurable interface/port; intended for shared team use. Loopback binds serve plaintext HTTP; a non-loopback bind serves HTTPS in-process (ADR-066) via `--tls-cert`/`--tls-key`
 - Bearer token authentication (`--key` / `INKENTRY_SERVER_KEY`). Unauthenticated is permitted **only on a loopback bind**; a non-loopback bind is refused unless **both** TLS and a key are set (see "Key difference" below)
 - Accepts pre-computed embedding vectors from clients (clients embed locally, server stores and searches)
@@ -62,6 +72,8 @@ external egress.
 | inkentry config (`~/.config/inkentry/config.toml`) | Medium | High | Medium |
 | Server-side memory DB (all projects) | High | High | High |
 | Bearer token / API key (server mode) | High | — | — |
+| Team-server bearer resident in a local relay session (`relay::RelayInner::bearer`) | High | Medium | Medium |
+| Team entries buffered in a local relay session (pulled but not yet applied) | Medium | Medium | Low |
 
 **Note on git-notes confidentiality:** Notes may contain architectural decisions, credentials accidentally typed into `--body`, handoff text referencing internal systems, or other context a developer would not ordinarily commit to the repo. If the repo is pushed to a shared or public remote the notes are readable by anyone with clone access.
 
@@ -94,7 +106,7 @@ User filesystem
   │                                                            ┌──────────────────────────────────────┐
   │                                                            │ TRUST BOUNDARY: local repo → remote  │
   │                                                            │ Notes travel with the repo;           │
-  │                                                            │ no secret scan on this path (*)       │
+  │                                                            │ secret-scanned before either write (*)│
   │                                                            └──────────────────────────────────────┘
   │
   └─ inkentry search (memory corpus)
@@ -102,10 +114,12 @@ User filesystem
         │    (query text only; note content stays in memory.db — NOT sent to server)
         └─► KNN search ─► memory.db (local sqlite-vec)
 ```
-(*) `inkentry harvest` (harvest_claude.rs) does run `contains_secret` on
-harvested text before storing. Direct `inkentry memory add` does **not** — the
-note body comes from the user's own command line or `$EDITOR` and is written to
-git notes verbatim.
+(*) Both paths scan. `inkentry harvest` (harvest_claude.rs) runs
+`contains_secret` on harvested text before storing, and `inkentry memory add`
+(`cli/cmd/memory/add.rs`) runs it on the resolved `title` and `body` before
+**any** persistence — see requirement 8 below, which the implementation
+over-satisfies by refusing the whole command rather than skipping only the
+git-notes write.
 
 **Memory data-flow rule (ADR-004):** Note text for storage is never sent to the
 loopback inkentry-server. For `memory search`, only the query string crosses the
@@ -182,16 +196,16 @@ unauthenticated (no bearer required or sent).
 
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
-| Client impersonates a legitimate inkentry user to the server | B | Medium | High | Bearer token auth — but **optional**; server runs unauthenticated by default. Operators must explicitly pass `--key` / `INKENTRY_SERVER_KEY`. |
+| Client impersonates a legitimate inkentry user to the server | B | Medium | High | Bearer token auth. It is optional **only on a loopback bind**, where the caller is already a local process: `check_bind_safety` refuses a non-loopback bind unless `--key` / `INKENTRY_SERVER_KEY` *and* TLS are set (ADR-066 §4), so a network-reachable server is never unauthenticated. The unauthenticated default therefore describes the auto-spawned local daemon, not a shared one. |
 | Attacker spoofs the embedding/LLM backend to return adversarial responses | A | Low | Medium | The loopback server is on-machine, so this only applies when a remote team `server_url` (or a server's external `--llm-url`) is used over plaintext HTTP. `validate_transport_url` rejects a non-loopback `http://` `server_url` (loopback-only plaintext; https required otherwise), so a remote backend must be HTTPS. |
 
 ### T — Tampering
 
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
-| Malicious chunk content injects SQL | A | Low | High | All DB writes use rusqlite parameterised queries — no string formatting into SQL |
+| Malicious chunk content injects SQL | A | Low | High | Every caller- or file-derived value is bound as a rusqlite parameter. Statement *text* is assembled with `format!` in a few places on both tiers — `IN (…)` placeholder tokens, `const` column lists, server-clamped integers — none of which can carry caller data; see [`in-clause-parameterisation.md`](in-clause-parameterisation.md) for the CLI-side sites and [`V1-SERVER-AUDIT.md` §4](V1-SERVER-AUDIT.md#4-input-validation) for the server-side inventory |
 | `memory.db` edited directly to corrupt supersession state | A | Low | Medium | Atomic transactions in `insert_with_supersession()` and `supersede()` (issue #136) |
-| Unauthenticated HTTP client corrupts server memory DB | B | Medium | High | Bearer token auth — but optional. Unauthenticated by default. |
+| Unauthenticated HTTP client corrupts server memory DB | B | Low | High | Bearer token auth, mandatory on any bind another machine can reach (`check_bind_safety`, ADR-066 §4). The keyless case is confined to a loopback bind, where "unauthenticated client" means a process already running as a local user — see the local-relay residuals for what that same locality does and does not grant. |
 | Embedding server returns malformed vectors | A/B | Low | Low | Dimension validation on KNN input; errors surface as HTTP 400 (server) or exit 2 (CLI) |
 | **git notes rewritten by another tool or git command, corrupting stored memory** | A | Low | Medium | `inkentry memory add` uses `git notes add -f` (force-replace) per-commit. A concurrent `git notes add` or `git notes prune` from another process could silently drop entries. The git-notes backend is documented as unsuitable for concurrent multi-agent use (#185); the SQLite backend is the recommended default for such workflows. |
 
@@ -208,14 +222,15 @@ unauthenticated (no bearer required or sent).
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
 | **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to that server, which always embeds natively in-process; there is no operator flag to forward embedding to a third party). This is an explicit operator/user choice; users must be informed via docs. **Enforced** for the local-tier default: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across `init`/`index`/`search` and fails loudly, naming the destination, on any escape past loopback. |
 | **Memory notes / code context sent off-machine for LLM** | A | Low | **High** | `inkentry harvest` sends memory content + code context to `inkentry-server`. On the default loopback server the LLM runs on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `INKENTRY_LLM_URL`, or `--llm-url`) pointing off-machine. Either is an explicit user choice, and an `llm_url` is never inherited from a checked-in project config: it is read from the personal config only, so cloning a repo cannot redirect a developer's LLM traffic. |
-| Server memory accessible without auth | B | Medium | High | No `--key` / `INKENTRY_SERVER_KEY` by default; any process that can reach the port reads all notes |
+| **Memory entries sent off-machine by the daemon's local relay, outside the CLI's own process** | A | Medium | **High** | The relay only ever connects to a (server, project) pair this machine's own configuration already declares (`RelayPolicy`), so it egresses exactly where an explicit team `server_url` already sends memory — it changes *when and by which process* that happens, not *whether*. **Coverage gap, deliberate and recorded:** `crates/inkentry-cli/tests/egress_containment.rs` traps outbound connections by wrapping the **CLI subprocess**, so it cannot observe the daemon's relay legs at all. Nothing about the local-tier default is weakened by that (a local-tier project declares no team target, so `RelayPolicy` resolves nothing and no session is ever created — `empty_registry_makes_no_outbound_calls_and_starts_no_sessions`), but the harness must not be read as covering daemon egress. See [Local relay](#local-relay--localrelay-adr-037-p2). |
+| Server memory accessible without auth | B | Low | High | No `--key` / `INKENTRY_SERVER_KEY` by default, so any process that can reach the port reads all notes — but `check_bind_safety` (ADR-066 §4) confines a keyless bind to loopback, so "any process that can reach the port" means any local process, which is the deliberate local posture (ADR-056), not an exposed one. A keyed non-loopback bind additionally requires TLS. |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `inkentry-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `INKENTRY_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
 | CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The `server_key` is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), not in `config.toml`; a legacy plaintext key is migrated out and stripped on next run. Headless fallback is an owner-only (`0600`) `secrets.toml`; `INKENTRY_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
 | LLM endpoint credential (`llm_url`) exposed in the process table, at rest, or in transit | A | Medium | High | Stored in the OS secret store via `inkentry auth set-key --llm`, never in `config.toml`; read from stdin/prompt and refused as an argument. The CLI resolves it only on the daemon-spawn path and passes it to the child in its environment: no input emits `--llm-key`/`--llm-key-file` into the spawned daemon's argv, and the endpoint URL/model travel as arguments precisely because they are not secret. `INKENTRY_LLM_KEY` is the CI/non-interactive escape hatch. Never logged at any level, and not echoed by the refusal below. When a credential resolves against a plaintext `http://` non-loopback endpoint, `inkentry-server` refuses to start rather than sending it in the clear; the check is scoped to a credential being present, so keyless LAN endpoints are unaffected. |
 | Detached `inkentry-server` daemon reads the OS keychain, raising an authorization prompt no user can answer (or, worse, being granted standing access) | A | Medium | Medium | **Structural:** the server crate reaches for no secret store at all. The CLI resolves the credential in the user's own session and hands it over out of band. Enforced by `the_server_crate_never_reaches_for_a_secret_store`, a source-level scan of `crates/inkentry-server/src/`, so a future reach fails CI rather than shipping. |
 | `inkentry memory add`/edit interactive `$EDITOR` draft written to a predictable temp path, enabling symlink/TOCTOU clobber and a world-readable info-leak window | A | Low | Medium | **Fixed:** the draft is created via `tempfile::Builder` (unpredictable name, `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in `std::env::temp_dir()`. The `NamedTempFile` handle is kept open across the `$EDITOR`/`$VISUAL` spawn and the body is read back by seeking the retained handle (not by re-opening the path), so a symlink swapped in at the draft's path during the edit window is not followed. |
-| **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | **Medium** | **High** | **No mitigation on the direct `memory add` path.** The `store_in_git_notes` flag is `true` by default. `contains_secret` is not called in `add.rs` before `append_to_git_notes`. Users must set `store_in_git_notes = false` in config to opt out, or avoid including secrets in note bodies. See [git-notes memory](#git-notes-memory-prref-noteinkentry) section. Track: issue to add secret-scan gate on write-through path. |
+| **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | Medium | **High** | **Mitigated (requirement 8 implemented).** `cli/cmd/memory/add.rs` calls `contains_secret` on both `title` and `body` before any persistence and, on a match, aborts the command with a message that does not echo the matched text — so neither SQLite nor `refs/notes/inkentry` receives it. This is stricter than requirement 8 specified (which asked only that the git-notes write be skipped). **Residual:** `contains_secret` is a finite regex list, so a credential in an unrecognised format still reaches both stores; the scanner reduces the chance of an accident, it is not a boundary. See [git-notes memory](#git-notes-memory-refsnotesinkentry). |
 | **Sensitive architectural context (decisions, handoffs) in git notes exposed on clone to any repo reader** | A | **Medium** | **Medium** | Notes attached to `refs/notes/inkentry` are fetched by `git fetch` when the refspec is included; anyone with clone access reads the full history of notes. **Documentation control only** — users must understand that `store_in_git_notes = true` (default) means notes are as public as the repo. |
 
 ### E — Elevation of Privilege
@@ -268,7 +283,7 @@ binding requirements, not recommendations.
 
 | Threat | STRIDE | Likelihood | Impact | Mitigation (binding) |
 |--------|--------|-----------|--------|----------------------|
-| Authenticated caller runs arbitrary prompts to burn the operator's LLM budget | D / EoP | Medium | Medium | Tier-1 + Bearer auth required; **rate limit keyed on principal + client IP** (a shared team key no longer shares one global bucket) + token budget; client `max_tokens` **clamped** to a server-side ceiling (never trusted upward) |
+| Authenticated caller runs arbitrary prompts to burn the operator's LLM budget | D / EoP | Medium | Medium | Tier-1 + Bearer auth required; **request-count rate limit keyed on principal + client IP** (`rate_limit_key`, `"<principal>\|<ip>"`; `RateLimiter::new(60, 60)` — 60 requests per 60s window), so a shared team key no longer collapses onto one global bucket; client `max_tokens` **clamped** to a server-side ceiling (`max_tokens_ceiling`, default 8192; never trusted upward). **Not implemented:** a cumulative *token* budget per principal. Earlier revisions of this row listed one; no token accounting exists in `crates/inkentry-server/src/`. The bound on spend is therefore requests × per-request ceiling, not tokens — adequate for the OSS single-trust-domain deployment where every keyholder is already a full administrator (ADR-056), and named here so nobody plans a metered deployment on a control that isn't there. |
 | Caller exfiltrates or abuses a BYOK upstream key | I | Low | High | BYOK key **never leaves the server** — client sends prompts, server holds the upstream key; stored as HMAC-SHA256 hash, resolved via Secret Manager in cloud, never logged (decisions #25/#26) |
 | Prompt injection via caller-supplied `messages` | T | Medium | Medium | `llm/complete` is a **raw** primitive: the server adds **no** system prompt and makes **no** trust assumptions. Delimiter isolation / angle-bracket escaping of untrusted context is the **caller's** responsibility (issue #137). The server must NOT wrap or re-prompt content. |
 | Completion content or prompts persisted/leaked server-side | I | Low | Medium | No persistence: messages are request-scoped, never written to the memory DB, never logged in plaintext (same data-promise as `/index/embed`) |
@@ -285,6 +300,159 @@ surface — which the controls above contain. See ADR-002 for the full rationale
 **Cost attribution** is per-principal via `AuthContext` (#261 auth trait) — the
 same granularity a bespoke endpoint would provide. No attribution granularity is
 lost by going generic.
+
+---
+
+## Local relay — `/local/relay/*` (ADR-037 P2)
+
+`POST /local/relay/push`, `GET /local/relay/poll`, `POST /local/relay/ack`
+(`crates/inkentry-server/src/relay/`, handlers in `relay_handlers.rs`).
+
+This surface was introduced without a threat-model entry, which this document's own
+review trigger ("v1.0 release or after any new network-facing feature") should have
+caught. It is modelled here as it stands today, after the hardening that constrained
+its destination.
+
+### What it is
+
+When a project is configured with a team `server_url`, the CLI does not perform the
+sync network legs itself. It hands the daemon its outbox over `/local/relay/push`
+and returns; the daemon holds a **relay session** per (team server, project) pair
+which pushes those entries, catches up from `/memory/since`, and holds an SSE
+connection to the team server's `/memory/stream` as a wake-up signal. The CLI later
+reads results with `/local/relay/poll` and retires them with `/local/relay/ack`.
+The point of the design is that the remote hop outlives the CLI process that queued
+it.
+
+The relay **never opens a project's `memory.db`** — by construction, there is no
+storage import in the module; entries arrive in the request and pulled entries are
+handed back for the CLI to apply.
+
+```
+inkentry memory add / sync (CLI, short-lived)
+  │  loopback HTTP, entries + bearer + cursor
+  ▼
+inkentry-server daemon ── relay session ──►  team server_url  (HTTPS)
+  (long-lived)              push_batch / /memory/since / SSE /memory/stream
+  │                                            ▲
+  └─ buffers results + pulled entries          └── TRUST BOUNDARY: machine → team server
+     until the CLI polls and acks                  (the daemon's own outbound leg)
+```
+
+### Local-only, structurally
+
+The registry is built with `RelayRegistry::for_bind(&args.host, …)`
+(`main.rs`), which returns a **disabled** registry on any non-loopback host. A
+disabled registry refuses every call *and* `router()` does not mount the three
+routes at all — a daemon reachable from another machine does not serve this surface
+in any form, rather than serving it behind a check. Covered by
+`the_relay_is_disabled_on_a_non_loopback_bind` and
+`a_disabled_registry_refuses_every_push`.
+
+### The destination is selected, never described
+
+This is the property worth stating, and the one that makes the rest of the section
+readable. The relay is the **only** route on the daemon that opens an outbound
+connection. A `server_url` deserialised out of a request body would therefore turn
+the auto-spawned, unauthenticated, loopback-bound daemon into an egress proxy for
+any local process: an attacker-chosen host, reached from the daemon's network
+position, carrying an attacker-chosen bearer, retried for as long as the daemon
+lives.
+
+Instead, every destination comes from `RelayPolicy`, which resolves it from
+`inkentry_core::config::declared_team_targets` — the `INKENTRY_SERVER_URL` /
+`INKENTRY_PROJECT_ID` environment pair the daemon was spawned with, the
+`.inkentry/config.toml` above its working directory, and every project in the local
+registry. A request may only **select** among pairs this machine already declares;
+anything else is refused with a fixed message. `RelayPolicy::from_fn`'s source
+closure takes no arguments, so no policy can be constructed that lets a request
+reach the resolution at all. A declared-but-plaintext non-loopback `server_url` is
+refused as well, before a session or pull loop exists. Covered by
+`a_server_url_no_local_config_declares_is_refused`,
+`a_declared_server_with_an_undeclared_project_is_refused`,
+`a_declared_but_plaintext_non_loopback_target_is_refused`.
+
+Note what this does *not* rest on: these routes sit behind `auth_middleware` like
+every other route, but on the common auto-spawned daemon no key is configured and
+that middleware admits everyone (`auth.rs`, `key_hash: None`). "Same auth as the
+rest of the API" settles nothing here.
+
+### Threats
+
+| Threat | STRIDE | Likelihood | Impact | Mitigation |
+|--------|--------|-----------|--------|-----------|
+| Local process uses the daemon as an egress proxy to an arbitrary host | I / EoP | — | High | **Closed.** Destination resolved from local config only; the request's `server_url`/`project_id` merely select among declared pairs (`RelayPolicy`) |
+| Surface reachable from another machine | I / EoP | — | High | **Closed.** Not mounted on a non-loopback bind (`RelayRegistry::for_bind`) |
+| Relay used as a network probe: connection-refused vs TLS-failed vs timeout per host/port, readable by any local caller | I | Low | Low | **Closed.** `last_error` is the fixed `REMOTE_HOP_FAILED` string; the real `reqwest` error goes to the daemon log only (`record_error`), covered by `last_error_never_carries_the_remote_error` |
+| Unbounded session/task/memory growth from repeated registration | D | Low | Medium | **Bounded.** `MAX_RELAY_SESSIONS` (32) caps live sessions, `MAX_BUFFERED_ITEMS_PER_SESSION` (10 000) caps unacked buffers per session, `SESSION_IDLE_TIMEOUT` (30 min without a CLI call) retires a session and ends its pull loop |
+| Malicious or broken team server floods the daemon over SSE | D | Low | Medium | **Bounded.** The unresolved SSE receive buffer is capped and a frame without a terminator errors rather than growing (`oversized_sse_frame_without_terminator_errors_instead_of_growing_forever`); the frame is only ever a wake-up signal, never the note payload |
+| One project's relay failure affects another's | D | Low | Low | Per-session isolation: errors are caught and recorded, never propagated as a panic, and hold no lock a request handler needs |
+| Pulled entries leak across projects on one team server | I | Low | Medium | Sessions are keyed on (server, project); covered by `pulled_rows_never_leak_across_projects_on_the_same_team_server` |
+
+### Residual risks (open, deliberate)
+
+These are narrowed, not closed. They are recorded rather than smoothed over because
+each is a real capability granted to any process running locally on the machine.
+
+1. **`poll`/`ack` are not policy-checked — they are keyed.** `RelayRegistry::poll`
+   and `::ack` look a session up by (server, project) and do **not** consult
+   `RelayPolicy`. A local process that names a pair with a live session therefore
+   reads that session's buffered pulled entries — team memory titles and **bodies**
+   — and can `ack` them, retiring entries the legitimate CLI has not applied while
+   the session cursor has already advanced past them (silent local loss until the
+   next cursor reseed). The pair is not a secret: it lives in the committed
+   `.inkentry/config.toml`. What the narrowing achieves is that this reaches only
+   *legitimately declared* sessions and cannot create one.
+2. **A local caller can overwrite a live session's bearer.** `set_bearer` replaces
+   the stored bearer whenever a `push` request carries one. A wrong value stalls
+   that session's background sync (every leg fails auth) until the real CLI pushes
+   again. The bearer must come from the request because the detached daemon
+   deliberately never opens the OS keychain — see the "Detached daemon reads the OS
+   keychain" row in [Information Disclosure](#i--information-disclosure), a
+   structural property enforced by a source-level CI scan. Closing this residual
+   would mean re-introducing that prompt.
+3. **A `push` with no bearer rides the session's resident one.** `set_bearer` only
+   overwrites on `Some`, so a local process that names a declared pair with a live
+   session can have arbitrary entries written into the **team** server's memory,
+   authenticated by a credential it never had to read. This is a confused-deputy
+   *use* of the credential, not disclosure of it: no route returns the bearer, and
+   `last_error` is fixed text.
+
+All three sit under the deliberate no-key local posture of
+[ADR-056](../adr/056-oss-server-tenancy-model.md): the loopback daemon is
+unauthenticated by design, and a local process is already inside the trust domain
+(it can read `memory.db` directly). The relay does not fit entirely inside that
+argument, which is why the residuals are listed rather than dismissed — it lets a
+local process act *against the team server*, over the network, with a credential it
+does not hold. Closing 1 and 3 needs a local caller identity the loopback posture
+does not currently provide; that is a post-v1.0 decision, not a v1.0 gate.
+
+### Why this surface is not in `docs/openapi.json` — decided
+
+**It stays out, and its absence is now a recorded decision rather than an
+oversight.** `docs/openapi.json` is generated from the `ApiDoc` derive in
+`lib.rs` and regenerated by
+`cargo test -p inkentry-server write_openapi_snapshot`; the relay handlers carry no
+`#[utoipa::path]`, so they are absent from it today.
+
+The reasons to keep it that way:
+
+- **The spec describes the team-hosting role.** Its audience is a client pointing at
+  a `server_url` — i.e. a *non-loopback* server, which by construction never mounts
+  `/local/relay/*` at all. Publishing the routes there would document an API that
+  cannot exist on any server that document's readers can reach.
+- **OpenAPI cannot express the availability rule.** One document carries one
+  `servers` list and one security scheme. "Present only when the bind is loopback"
+  is not expressible, so the spec would have to either lie by omission of the
+  condition or grow a caveat that no generated client would honour.
+- **It is not a public contract.** The CLI and the daemon it spawns ship as one
+  version pair; the wire shapes (`RelayPushRequest`, `RelayPollResponse`) are
+  internal to that pair and carry no stability promise, unlike the `/v1` surface.
+
+What the absence must not mean again is "unmodelled". The obligation the audit
+exposed was documentation, not publication, and this section is it. A future change
+that makes the relay reachable by any caller other than the same machine's CLI
+inverts this decision and must publish it.
 
 ---
 
@@ -338,17 +506,20 @@ push configuration.
 |-----------|:-:|-------|
 | `inkentry index` (chunk storage) | Yes — `contains_secret()` in `parse_phase.rs` | Credentials dropped before DB write |
 | `inkentry harvest` (harvest_claude.rs) | Yes — `contains_secret()` before storing | Harvested bodies screened |
-| `inkentry memory add` → git-notes write-through | **No** | Body is user-supplied text written verbatim to `refs/notes/inkentry`. No call to `contains_secret()` exists in `add.rs` before `append_to_git_notes()`. |
+| `inkentry memory add` → git-notes write-through | Yes — `contains_secret()` on `title` and `body` in `add.rs`, before *either* store | A match aborts the whole command; nothing is written to SQLite or `refs/notes/inkentry`, and the error does not echo the matched text |
 
-**Risk:** A user who types `inkentry memory add --title "DB creds" --body "password=s3cr3t"` will
-have that credential stored verbatim in `refs/notes/inkentry` and, if the repo is
-pushed with notes, the credential is exfiltrated.
+**Residual risk:** A user who types
+`inkentry memory add --title "DB creds" --body "password=s3cr3t"` is refused, because
+that shape matches a known pattern. A credential in a format the regex list does not
+carry is still stored verbatim in `refs/notes/inkentry` and, if the repo is pushed
+with notes, exfiltrated. The gate narrows the accident; it does not make note bodies
+safe to fill with secrets.
 
 ### Controls and recommendations
 
 | Control | Status |
 |---------|--------|
-| Secret scanning on `memory add` write-through path | **Gap — not implemented.** Binding requirement #8 below tracks this. |
+| Secret scanning on `memory add` write-through path | **Implemented** — `cli/cmd/memory/add.rs`, before either store. Satisfies (and exceeds) binding requirement 8 below. |
 | `store_in_git_notes = false` opt-out | Available in `~/.config/inkentry/config.toml`; not the default. |
 | Documentation warning that notes travel with the repo | Added in `docs/memory.md` and `SKILL.md` (PR #276). |
 | `git push` does not push notes by default | True — but not a reliable control; depends on user's git config. |
@@ -395,11 +566,12 @@ cross to that server), or a `inkentry-server` operator has set an external
 
 From this threat model, the following requirements are binding:
 
-1. **No SQL string formatting.** All DB operations use rusqlite parameterised queries.
+1. **No caller data in SQL text.** Every value that can originate with a caller, a file, or a request is bound as a rusqlite parameter. Interpolating into statement text is permitted only for compile-time constants, generated placeholder tokens, and integers already clamped server-side — and each such site must stay auditable (see the inventories linked from the Tampering table).
 2. **Secret scanner must run before every DB write of chunk content.** Enforced in `parse_phase.rs`.
 3. **LLM context must use XML delimiters** with angle-bracket escaping of all retrieved content (issue #137).
 4. **Atomic transactions for memory state transitions** — `supersede()` and `insert_with_supersession()` (issue #136).
 5. **CI must gate on `cargo audit` and `cargo deny`.**
 6. **inkentry-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `INKENTRY_SERVER_KEY` is set.
 7. **Config documentation must warn** that setting a remote team `server_url` (or running a `inkentry-server` with an external `--llm-url` shim) transmits source code and memory content off the machine.
-8. **Secret scanner must run on the git-notes write-through path.** `add.rs` must call `contains_secret(body)` (and optionally `contains_secret(title)`) before calling `append_to_git_notes()`. If a match is found, the git-notes write must be skipped (with a `tracing::warn!`) and the primary SQLite write must still succeed. This closes the gap identified in the [git-notes memory](#git-notes-memory-prref-noteinkentry) section above. **This is a binding requirement for any release with `store_in_git_notes = true` as the default.**
+8. **Secret scanner must run on the git-notes write-through path.** **Met, and met more strictly than specified.** The requirement as originally written asked that `add.rs` call `contains_secret` before `append_to_git_notes()`, skip only the git-notes write on a match, and still complete the SQLite write. `cli/cmd/memory/add.rs` instead scans both `title` and `body` before *any* persistence and refuses the command outright, so a matching entry reaches neither store. The stricter behaviour is the one to keep: a note that cannot be written to git notes because it holds a credential is not a note that should sit in `memory.db` either, where `inkentry sync` could later carry it to a team server. Requirement restated to match: **`memory add` must refuse to persist an entry whose title or body matches a secret pattern, to any store, without echoing the matched text.** Binding for any release with `store_in_git_notes = true` as the default.
+9. **The relay's destination must not be describable by a request.** Any surface that makes the daemon open an outbound connection must resolve its destination from local on-disk configuration (`declared_team_targets` → `RelayPolicy`), never from a request field. Binding: this is the whole of what separates the relay from an open egress proxy on loopback. See [Local relay](#local-relay--localrelay-adr-037-p2).
