@@ -794,6 +794,7 @@ mod arg_tests {
     // default: with no proxy configured the rate limiter must fall back to the
     // TCP peer, which the caller cannot choose.
     #[test]
+    #[serial_test::serial(trusted_proxies_env)]
     fn no_proxy_is_trusted_by_default() {
         let args = Args::parse_from(["inkentry-server"]);
         assert!(args.trusted_proxy.is_empty());
@@ -815,6 +816,39 @@ mod arg_tests {
                 "10.0.0.6".parse().unwrap(),
                 "2001:db8::1".parse().unwrap(),
             ]
+        );
+    }
+
+    // The env var is the container/systemd path, and it reaches a `Vec<IpAddr>`
+    // through clap's `value_delimiter` rather than any code of ours, so its
+    // comma-splitting is worth pinning independently of the flag.
+    #[test]
+    #[serial_test::serial(trusted_proxies_env)]
+    fn trusted_proxies_are_comma_split_from_the_environment() {
+        // SAFETY: pinned to the `trusted_proxies_env` serial group, so no other
+        // test reads or writes this variable concurrently.
+        unsafe { std::env::set_var("INKENTRY_TRUSTED_PROXIES", "10.0.0.5,2001:db8::1") };
+        let args = Args::parse_from(["inkentry-server"]);
+        unsafe { std::env::remove_var("INKENTRY_TRUSTED_PROXIES") };
+        assert_eq!(
+            args.trusted_proxy,
+            vec![
+                "10.0.0.5".parse::<std::net::IpAddr>().unwrap(),
+                "2001:db8::1".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(trusted_proxies_env)]
+    fn an_environment_trusted_proxy_that_is_not_an_ip_is_rejected_at_startup() {
+        // SAFETY: see the sibling test; same serial group.
+        unsafe { std::env::set_var("INKENTRY_TRUSTED_PROXIES", "10.0.0.5,proxy.internal") };
+        let parsed = Args::try_parse_from(["inkentry-server"]);
+        unsafe { std::env::remove_var("INKENTRY_TRUSTED_PROXIES") };
+        assert!(
+            parsed.is_err(),
+            "one bad entry must fail startup rather than silently narrowing the trust list"
         );
     }
 

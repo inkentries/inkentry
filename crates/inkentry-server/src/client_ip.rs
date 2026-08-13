@@ -26,8 +26,12 @@ use axum::http::HeaderMap;
 pub struct TrustedProxies(Arc<[IpAddr]>);
 
 impl TrustedProxies {
+    /// Entries are canonicalised on the way in, so a configured `10.0.0.5`
+    /// still matches a proxy that reaches a dual-stack bind (`--host ::`) over
+    /// IPv4 and therefore presents as `::ffff:10.0.0.5`. Without it the two
+    /// spellings never compare equal and the proxy silently loses its trust.
     pub fn new(addrs: impl IntoIterator<Item = IpAddr>) -> Self {
-        Self(addrs.into_iter().collect())
+        Self(addrs.into_iter().map(|a| a.to_canonical()).collect())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -39,7 +43,7 @@ impl TrustedProxies {
     }
 
     fn trusts(&self, peer: IpAddr) -> bool {
-        self.0.contains(&peer)
+        self.0.contains(&peer.to_canonical())
     }
 }
 
@@ -47,9 +51,14 @@ impl TrustedProxies {
 /// fragment.
 ///
 /// The TCP peer wins unless the peer is a configured trusted proxy *and* sent a
-/// parseable leading `X-Forwarded-For` entry. Requests with no peer at all
-/// (in-process test routers) collapse onto one shared bucket rather than
-/// escaping the limit.
+/// parseable `X-Forwarded-For` entry. Requests with no peer at all (in-process
+/// test routers) collapse onto one shared bucket rather than escaping the limit.
+///
+/// The address is canonicalised, so one client reaching a dual-stack bind over
+/// both stacks gets one budget rather than two: `::ffff:10.0.0.5` *is*
+/// `10.0.0.5`, and a v4-mapped address is a socket-API spelling that cannot
+/// appear as a source address on the wire, so folding the two cannot merge two
+/// distinct callers.
 pub fn client_ip_key(
     headers: &HeaderMap,
     peer: Option<SocketAddr>,
@@ -61,16 +70,34 @@ pub fn client_ip_key(
         && trusted.trusts(peer_ip)
         && let Some(forwarded) = forwarded_client_ip(headers)
     {
-        return forwarded.to_string();
+        return forwarded.to_canonical().to_string();
     }
 
     match peer_ip {
-        Some(ip) => ip.to_string(),
+        Some(ip) => ip.to_canonical().to_string(),
         None => "unknown".to_string(),
     }
 }
 
-/// The leading `X-Forwarded-For` entry, if it parses as an IP address.
+/// The *trailing* `X-Forwarded-For` entry, if it parses as an IP address.
+///
+/// Rightmost rather than leftmost, because it is the only choice that is
+/// correct under both ways a proxy can be configured to set the header:
+///
+/// - Appending (nginx's common `$proxy_add_x_forwarded_for`) keeps whatever the
+///   client sent and adds the address the proxy actually saw. A client sending
+///   `9.9.9.9` arrives as `9.9.9.9, <real client>`, so everything left of the
+///   last entry is attacker-chosen and only the last entry is observed fact.
+/// - Overwriting (`$remote_addr`) leaves exactly one entry, where rightmost and
+///   leftmost are the same value.
+///
+/// Taking the leftmost entry would therefore reopen the spoofing bug for any
+/// operator whose proxy appends — the majority default.
+///
+/// The trust config names the immediate peer, so a chain of two or more trusted
+/// proxies would resolve to the inner proxy rather than the originating client.
+/// That is out of scope here, and it fails safe: the key is a proxy address, not
+/// one the caller chose.
 ///
 /// Rejecting non-IP text is load-bearing beyond tidiness: the returned value
 /// becomes a rate-limiter map key, and an unparsed header would let a caller
@@ -80,7 +107,7 @@ fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())?
         .split(',')
-        .next()?
+        .next_back()?
         .trim()
         .parse()
         .ok()
@@ -145,14 +172,72 @@ mod tests {
     }
 
     #[test]
-    fn trusted_peer_takes_only_the_leading_entry() {
+    fn trusted_peer_takes_the_trailing_entry() {
         let trusted = TrustedProxies::new(["198.51.100.4".parse().unwrap()]);
         let key = client_ip_key(
             &headers_with_xff("203.0.113.7, 198.51.100.9"),
             peer("198.51.100.4:5555"),
             &trusted,
         );
-        assert_eq!(key, "203.0.113.7");
+        assert_eq!(key, "198.51.100.9");
+    }
+
+    // nginx's `$proxy_add_x_forwarded_for` appends rather than overwrites, so a
+    // client that sends its own header keeps the leading entry. Reading the
+    // leftmost value would hand that client the bucket key.
+    #[test]
+    fn an_appending_proxy_keys_on_the_address_the_proxy_saw() {
+        let trusted = TrustedProxies::new(["198.51.100.4".parse().unwrap()]);
+        let key = client_ip_key(
+            &headers_with_xff("9.9.9.9, 10.0.0.5"),
+            peer("198.51.100.4:5555"),
+            &trusted,
+        );
+        assert_eq!(
+            key, "10.0.0.5",
+            "the entry the proxy appended is the client; the one before it is attacker-supplied"
+        );
+    }
+
+    #[test]
+    fn a_client_prefixed_chain_cannot_move_itself_between_buckets() {
+        let trusted = TrustedProxies::new(["198.51.100.4".parse().unwrap()]);
+        let a = client_ip_key(
+            &headers_with_xff("1.1.1.1, 10.0.0.5"),
+            peer("198.51.100.4:5555"),
+            &trusted,
+        );
+        let b = client_ip_key(
+            &headers_with_xff("2.2.2.2, 3.3.3.3, 10.0.0.5"),
+            peer("198.51.100.4:5556"),
+            &trusted,
+        );
+        assert_eq!(a, b, "only the proxy-appended tail may decide the bucket");
+    }
+
+    #[test]
+    fn a_v4_mapped_peer_matches_a_v4_configured_proxy() {
+        let trusted = TrustedProxies::new(["10.0.0.5".parse().unwrap()]);
+        let key = client_ip_key(
+            &headers_with_xff("203.0.113.7"),
+            peer("[::ffff:10.0.0.5]:5555"),
+            &trusted,
+        );
+        assert_eq!(
+            key, "203.0.113.7",
+            "a proxy reaching a dual-stack bind over IPv4 must keep the trust it was configured with"
+        );
+    }
+
+    #[test]
+    fn a_v4_mapped_peer_shares_one_bucket_with_its_v4_spelling() {
+        let trusted = TrustedProxies::default();
+        let mapped = client_ip_key(&HeaderMap::new(), peer("[::ffff:10.0.0.5]:5555"), &trusted);
+        let plain = client_ip_key(&HeaderMap::new(), peer("10.0.0.5:5555"), &trusted);
+        assert_eq!(
+            mapped, plain,
+            "one client reaching a dual-stack server over both stacks must not get two budgets"
+        );
     }
 
     #[test]

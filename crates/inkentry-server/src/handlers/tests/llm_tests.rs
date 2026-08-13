@@ -161,6 +161,33 @@ async fn llm_complete_honours_forwarded_for_from_a_configured_proxy_only() {
     );
 }
 
+// nginx's usual `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`
+// appends to whatever the client sent instead of replacing it, so the leading
+// entry stays attacker-chosen even behind a genuine proxy. Only the trailing
+// entry is an address the proxy actually observed, and only it may pick the
+// bucket.
+#[tokio::test]
+async fn llm_complete_ignores_the_client_prefix_of_an_appended_forwarded_for() {
+    let proxy = "10.9.9.9".parse().expect("proxy address");
+    let app = make_app_with_llm_limit_and_proxies(1, TrustedProxies::new([proxy]));
+
+    assert_eq!(
+        post_llm_complete_from(&app, "10.9.9.9:40001", Some("9.9.9.9, 10.0.0.5")).await,
+        http::StatusCode::OK,
+        "first call from the client the proxy saw at 10.0.0.5"
+    );
+    assert_eq!(
+        post_llm_complete_from(&app, "10.9.9.9:40002", Some("1.1.1.1, 10.0.0.5")).await,
+        http::StatusCode::TOO_MANY_REQUESTS,
+        "varying the prefix the client controls must not mint a second budget"
+    );
+    assert_eq!(
+        post_llm_complete_from(&app, "10.9.9.9:40003", Some("9.9.9.9, 10.0.0.6")).await,
+        http::StatusCode::OK,
+        "a genuinely different client, per the entry the proxy appended, gets its own budget"
+    );
+}
+
 // The forwarded value becomes a rate-limiter map key, so it is accepted only as
 // an IP address. Junk falls back to the peer instead of allocating a bucket
 // under an attacker-chosen string of attacker-chosen length.

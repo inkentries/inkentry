@@ -693,11 +693,33 @@ Set it only if you genuinely run a proxy in front of the server:
 inkentry-server --trusted-proxy 10.0.0.5 --trusted-proxy 10.0.0.6 ...
 ```
 
-With it set, a leading `X-Forwarded-For` entry is honoured **only** when the
-request's TCP peer is one of the listed addresses, and only when that entry
-parses as an IP address; anything else falls back to the peer. Naming an
-address that is not actually a proxy hands the rate limit to any client that can
-reach the server from there.
+With it set, an `X-Forwarded-For` entry is honoured **only** when the request's
+TCP peer is one of the listed addresses, and only when that entry parses as an
+IP address; anything else falls back to the peer. Naming an address that is not
+actually a proxy hands the rate limit to any client that can reach the server
+from there.
+
+The entry read is the **last** one in the header, not the first. Both common
+proxy configurations are then handled correctly:
+
+- **Appending** (nginx's usual `proxy_set_header X-Forwarded-For
+  $proxy_add_x_forwarded_for`) keeps whatever the client sent and adds the
+  address the proxy saw. A client sending `X-Forwarded-For: 9.9.9.9` arrives as
+  `9.9.9.9, <its real address>`; only the last entry is observed fact, so only
+  it is used.
+- **Overwriting** (`proxy_set_header X-Forwarded-For $remote_addr`) leaves a
+  single entry, where last and first are the same value.
+
+You therefore do not need to change your proxy's header handling. What you do
+need is for your proxy to be the server's **immediate peer**: only the address
+`--trusted-proxy` names is trusted, and behind a chain of two or more proxies
+the last entry is the inner proxy rather than the originating client. That case
+still fails safe — the bucket is keyed on a proxy address rather than one the
+caller chose — but every client behind that chain shares one budget.
+
+Addresses are compared in canonical form, so on a dual-stack bind (`--host ::`)
+a proxy that connects over IPv4 and presents as `::ffff:10.0.0.5` still matches
+`--trusted-proxy 10.0.0.5`. Write the plain IPv4 address.
 
 ## Air-gapped / no-egress install
 
