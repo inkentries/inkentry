@@ -377,20 +377,19 @@ Written for you by `inkentry login` (the `[auth]` table) and by the one-time
 
 ---
 
-## Removed fields
+## What you cannot configure
 
-These keys were removed pre-1.0. If your config still has them, they parse
-without error but do nothing:
+**The embedding model.** It is pinned product-wide —
+`codefuse-ai/F2LLM-v2-330M`, 896 dimensions — and computed only by the bundled
+native embedder in `inkentry-server`. There is no key for choosing it and no
+relocation option.
 
-| Key | Status |
-|-----|--------|
-| `memory_server_url` | Removed. Use `server_url`. |
-| `memory_server_key` | Removed. Use `server_key`, `inkentry auth set-key`, or `inkentry login`. |
-| `embedding_model` | Removed. The embedding model is pinned product-wide (`codefuse-ai/F2LLM-v2-330M`, 896-dimension), computed only by the bundled native embedder in `inkentry-server`; there is no config key or relocation option for it. |
+**`inference_url`.** Populated at runtime when inkentry auto-discovers a
+loopback server, and never read from either TOML file.
 
-`inference_url` is not a config key at all: it is populated at runtime only,
-when inkentry auto-discovers a loopback server, and is never read from either
-TOML file.
+An unrecognised key parses without error and does nothing, so a typo is silent.
+Check spelling against the field list above if a setting appears to have no
+effect.
 
 ---
 

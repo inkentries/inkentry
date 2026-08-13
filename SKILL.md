@@ -65,9 +65,14 @@ With `--format json`/`jsonl`, each result is a nested envelope naming the corpus
 
 `inkentry memory graph <id>` is a different, live command.
 
+`inkentry explore` is also gone. It exits 2 like the rows above, but with clap's
+generic unknown-subcommand error rather than a hint naming a replacement,
+because there is no single command to name: the loop below is the replacement,
+and you run it.
+
 ### Exploring: multi-hop retrieval (you run the loop)
 
-There is no `inkentry explore` command — inkentry retrieves context; **your model reasons over it.** For an open-ended question that needs tracing across files, run this loop yourself using the primitives below.
+inkentry retrieves context; **your model reasons over it.** For an open-ended question that needs tracing across files, run this loop yourself using the primitives below.
 
 1. **Search** for the concept: `inkentry search "<question or key terms>"` (add `--graph` to pull in call-graph neighbours; `--only-text` for a no-server full-text pass). Results interleave code chunks and memory entries, so a prior decision on the topic surfaces alongside the code. Read the top results.
 2. **Trace** structure from a symbol the results surfaced: `inkentry plumbing graph-edges --symbol <symbol>` (or `--file <path>`) emits the call, import, and extends/implements edges as JSONL. This tells you callers/callees to follow.
@@ -214,8 +219,6 @@ inkentry harvest --source failures  # extract antipatterns from revert/bugfix co
 inkentry harvest --source failures --git-range v0.4.0..HEAD
 ```
 
-(`inkentry memory harvest` still works as a deprecated alias for one release; it
-prints a warning and points you at `inkentry harvest`.)
 
 Extracts decisions, requirements, and non-obvious notes. From git, analyzes commit messages.
 From `claude-code`, reads agent session transcripts from `~/.claude/history.jsonl`.

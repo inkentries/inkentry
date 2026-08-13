@@ -427,14 +427,11 @@ whatever is in `project_id` is what the server sees. (See
 [ADR-005](adr/005-cli-slug-uuid-resolution.md) for the resolution step this
 replaced.)
 
-> **Rotating a key you committed under the old model.** Earlier versions of
-> this doc suggested a plaintext `server_key = "..."` line in the personal
-> `~/.config/inkentry/config.toml`, and a committed project `.inkentry/config.toml`
-> used to accept the same field as a "shared team key". Neither path exists
-> any more: the personal file never stores the key in plaintext, and
-> `.inkentry/config.toml` silently ignores a `server_key` line if one is still
-> present. If a key was ever written to either file, especially if it reached
-> git history, treat it as compromised: issue a new key on the server (e.g.
+> **A key that reached a config file in plaintext is compromised.** Keys live in
+> the secret store: the personal `~/.config/inkentry/config.toml` never holds one
+> in plaintext, and a committed project `.inkentry/config.toml` ignores a
+> `server_key` line entirely. If a key was written to either file, especially if
+> it reached git history, treat it as compromised: issue a new key on the server (e.g.
 > `openssl rand -hex 32` for a self-managed instance) and run `inkentry auth
 > set-key --server <url>` with the new value on every machine that had the old
 > one. A flat key from an even older install is picked up and migrated into
@@ -591,6 +588,25 @@ cargo build --release --bin inkentry-server
 | `--tls-cert` | `INKENTRY_SERVER_TLS_CERT` | unset | PEM certificate chain (leaf + intermediates) for in-process HTTPS. The chain is public. Set with `--tls-key` (both or neither). Distinct from `--key`/`--key-file`. |
 | `--tls-key` | `INKENTRY_SERVER_TLS_KEY` | unset | PEM private key matching `--tls-cert`. A high-value secret: supply via a systemd credential or a `0600` root-owned file, never an `Environment=` line. Set with `--tls-cert`. |
 
+### Operational flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--health-check` | – | Probe this server's own `/v1/health` on the configured `--host`/`--port`, then exit 0 if live and non-zero otherwise. A wildcard `--host` is probed over loopback. |
+| `--embedding-dim <n>` | `896` | Embedding dimension expected from clients. Must match the team's model; `896` is F2LLM-v2-330M. |
+| `--conflict-threshold <f>` | `0.92` | Cosine similarity at or above which a new memory entry is treated as conflicting with an existing active one and answered `409`. `1.0` disables conflict detection. |
+
+`--health-check` exists so a container image needs no `curl` or `wget` for its
+`HEALTHCHECK`: the binary probes itself.
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
+  CMD ["inkentry-server", "--health-check"]
+```
+
+Pass the same `--host`/`--port` as the serving process if you have changed them
+from the defaults, since the probe reads them to know where to look.
+
 The certificate is bring-your-own PEM (an internal CA, a self-signed cert you
 mint yourself, `certbot`, or a cloud-issued cert). `inkentry-server` does not
 obtain or renew it (no ACME); the operator renews it.
@@ -626,10 +642,10 @@ they stay responsive for the whole of an index whatever this value is set to.
 This budget only bounds CPU contention *within* a single embed batch; embed
 requests themselves are still serialized behind a single mutex on both device
 paths (GPU concurrency would blow its memory limit, and a CPU batch already
-uses most of this budget on its own). A batch queuing behind a running index
-no longer waits silently until the caller's own timeout fires: once a bounded
-admission queue in front of the embedder is full, the server sheds the
-request immediately with `429` and a `Retry-After` header instead (see
+uses most of this budget on its own). A bounded admission queue sits in front of the
+embedder: when it is full the server sheds the request immediately with `429`
+and a `Retry-After` header, rather than letting a batch queue behind a running
+index until the caller's own timeout fires (see
 `POST /index/embed` in `architecture/server-api.md`).
 
 ### Non-loopback plaintext binds are refused, no override

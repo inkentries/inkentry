@@ -225,9 +225,8 @@ see [`inkentry index`](../commands.md#inkentry-index).
 Run a single LLM completion over caller-supplied messages. This is the generic
 inference primitive (ADR-002): it is a 1:1 lift of the `LlmBackend::generate`
 trait. The server performs **no** orchestration, adds **no** system prompt, and
-stores **nothing**. The CLI owns all prompt assembly (this is how `inkentry
-memory harvest` runs after #260: ~2300 LoC of CLI-side orchestration calling
-this primitive for raw inference).
+stores **nothing**. The CLI owns all prompt assembly: `inkentry harvest` is ~2300 LoC of CLI-side
+orchestration calling this primitive for raw inference.
 
 **Request:**
 
