@@ -182,6 +182,13 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
   Anything still pointing at the predecessor project's repository or install host
   will fail.
+- **BREAKING: a plaintext `http://` team server is refused even when no
+  credential is configured.** The transport guard only ran when a bearer was
+  present, so a keyless client sent memory in the clear to a non-loopback host
+  without complaint. It now runs on every remote sync client. If you run a team
+  server over plain `http://` with no bearer, `inkentry sync` stops with a
+  transport error where it previously worked: put TLS in front of it, or bind it
+  to loopback. Nothing about a TLS or loopback server changes.
 
 ### Deprecated
 
@@ -284,6 +291,44 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   missing. The message and `docs/commands.md` now say what actually reaches them:
   `memory list` and `context`, which take no query, and `inkentry memory reindex`
   to finish the job.
+- **Team memory now converges in the background against a server with an
+  internal CA.** The daemon's relay built its HTTP clients without the
+  configured `server_ca`, so on a corporate or self-signed server every
+  background attempt failed the TLS handshake: `inkentry status` showed a
+  permanent sync error and only a manual `inkentry sync` moved anything. The CA
+  now reaches both the catch-up client and the streaming one — they are separate
+  clients, and fixing only the first would have left streaming broken while
+  catch-up appeared to work.
+
+### Security
+
+- **The local relay no longer opens outbound connections to a caller-chosen
+  host.** `POST /local/relay/push` took `server_url` and `bearer` from the
+  request body, and the daemon then connected there carrying that credential,
+  retried forever, and returned the remote failure to the caller. Any process on
+  the machine could therefore borrow the daemon's network position and read the
+  error as an oracle for what it could reach. A request now only *selects* among
+  the team servers this machine already declares — the daemon's own environment,
+  the project it was started in, and the registry — and can never describe a new
+  one. Failures report a fixed string, with the detail going to the daemon log.
+  The routes are also no longer mounted at all on a non-loopback bind, rather
+  than being served behind a check, and relay sessions are capped and retired
+  when idle instead of accumulating one immortal reconnect task per request.
+  This surface is local-only and its authentication posture is unchanged: with
+  no server key configured, every route stays open to local callers by design
+  (ADR-056). What is closed is the outbound capability, which no other route
+  granted.
+- **The `/llm/complete` rate limit can no longer be lifted by setting a
+  header.** The bucket key used the caller's own `X-Forwarded-For` value
+  whenever one was present, so varying it per request minted a fresh budget and
+  removed the control that bounds what a caller can spend of the operator's LLM
+  credit — measured, a limit of two requests served two hundred. The key now
+  comes from the TCP peer. An operator genuinely running a proxy opts in with
+  `--trusted-proxy` (or `INKENTRY_TRUSTED_PROXIES`), and only the trailing
+  forwarded entry is read — the one the proxy itself appended, rather than the
+  leading one a client can prepend. Forwarded values must parse as IP addresses
+  and expired windows are now evicted, so the limiter's table can no longer be
+  grown without bound by arbitrary attacker-chosen keys.
 
 ## [0.9.8] — 2026-08-07
 
