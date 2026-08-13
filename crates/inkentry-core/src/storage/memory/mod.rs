@@ -172,8 +172,11 @@ impl MemoryStore {
             };
             anyhow::bail!(
                 "this memory store was written by an older product{stamp} and cannot be \
-                 opened in place. Export it with the migration tool, then run \
-                 `inkentry import` to bring it across."
+                 opened in place. Export it with `spelunk-export`, then run \
+                 `inkentry import` on the dump to bring it across.\n\
+                 `spelunk-export` is a separate per-platform download from \
+                 https://github.com/spelunk-cloud/spelunk/releases — it does not ship \
+                 with inkentry."
             );
         }
 

@@ -157,6 +157,31 @@ a launchd plist (`packaging/inkentry-server.plist`) for macOS and a systemd unit
 `inkentry` autostarts the server on demand (see section 2) — but they're useful
 on a shared or always-on host.
 
+### Upgrading from spelunk (0.9.8 or earlier)
+
+inkentry refuses a `memory.db` written by spelunk rather than converting it, so
+**export before you upgrade**. The export tool is **`spelunk-export`**, a
+standalone per-platform asset on the [spelunk-cloud/spelunk
+releases](https://github.com/spelunk-cloud/spelunk/releases) page — deliberately
+not part of the inkentry archive, the `.deb`, the Homebrew formula or the Scoop
+manifest, so upgrading through a package manager will not put it on your machine.
+Run it against the old project, then bring the dump across:
+
+```bash
+inkentry import <dump>
+```
+
+If your entries were also shared through git notes, renaming the ref hydrates
+them directly — but it carries **only the notes-resident entries** (on one real
+corpus, 51 of 343), so it is not a substitute for the export:
+
+```bash
+git fetch <old-remote> 'refs/notes/spelunk:refs/notes/inkentry'
+```
+
+`index.db` needs no migration at all: run `inkentry init` and it is rebuilt from
+your source tree.
+
 ## 2. Cold start: index and get your first answer
 
 ```bash
@@ -417,14 +442,14 @@ This:
 1. Registers your project in the global registry
 2. Parses every source file and indexes chunks
 3. Embeds chunks using your configured server
-4. Stores everything in `~/.local/share/inkentry/<project-slug>.db`
+4. Stores everything in `.inkentry/index.db` inside the project
 
 Output:
 ```
 inkentry initialised for github.com/acme/my-project
 
   Index:   142 files, 1 840 chunks
-  DB:      ~/.local/share/inkentry/my-project.db
+  DB:      /path/to/your/project/.inkentry/index.db
   Project: github.com/acme/my-project  (written to .inkentry/config.toml)
   Embeddings: 1 840 vectors
 ```

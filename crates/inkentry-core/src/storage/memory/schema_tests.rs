@@ -280,6 +280,12 @@ fn a_store_from_an_older_product_is_refused_rather_than_half_migrated() {
         err.to_string().contains("inkentry import"),
         "the refusal should name the way across: {err}"
     );
+    // A tool the message does not name is a tool nobody can search for, and
+    // `spelunk-export` is published only on the old product's release page.
+    assert!(
+        err.to_string().contains("spelunk-export"),
+        "the refusal must name the export tool rather than gesture at one: {err}"
+    );
 }
 
 // A store from a *released* product carries a stamp, and `user_version` is one
@@ -306,8 +312,10 @@ fn a_store_stamped_by_a_released_binary_is_sent_to_export_and_import() {
             Err(e) => e.to_string(),
         };
         assert!(
-            err.contains("older product") && err.contains("inkentry import"),
-            "stamp {stamp}: the refusal must name the crossing, got: {err}"
+            err.contains("older product")
+                && err.contains("spelunk-export")
+                && err.contains("inkentry import"),
+            "stamp {stamp}: the refusal must name both ends of the crossing, got: {err}"
         );
         assert!(
             !err.contains("upgrade inkentry"),

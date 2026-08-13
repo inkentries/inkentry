@@ -26,9 +26,12 @@ pub enum NoLlmReason {
 pub fn no_llm_message(reason: NoLlmReason) -> String {
     let subject = "'inkentry harvest' cannot run";
     let body = match reason {
-        NoLlmReason::Offline => "offline mode is on, so no inference will run.\n\
-             Turn offline mode off to enable it: unset INKENTRY_NO_SERVER, or remove \
-             `mode = \"offline\"` from your inkentry config."
+        NoLlmReason::Offline => "offline mode is on, so nothing was probed and no \
+             inference will run.\n\
+             Two things force it, and INKENTRY_NO_SERVER wins: while that variable is \
+             set it turns off every server — the local one and `server_url` alike — \
+             whatever your config says. Unset it, and remove `mode = \"offline\"` from \
+             your inkentry config if that is set too."
             .to_string(),
         NoLlmReason::LocalConfiguredButNotServed => {
             "your local inkentry server is running without the LLM endpoint you set in \
@@ -106,6 +109,13 @@ mod tests {
         assert!(msg.contains("offline mode is on"), "{msg}");
         assert!(msg.contains("INKENTRY_NO_SERVER"), "{msg}");
         assert!(msg.contains("mode = \"offline\""), "{msg}");
+        // The variable is a kill-switch, not one of two interchangeable knobs:
+        // it forces offline ahead of `mode` and `server_url`, so a reader told
+        // to edit the config instead is sent to change something inert.
+        assert!(
+            msg.contains("whatever your config says"),
+            "the message must say the variable overrides config, not sit beside it: {msg}"
+        );
     }
 
     // The stale-daemon case: the setting is right, the running process is
