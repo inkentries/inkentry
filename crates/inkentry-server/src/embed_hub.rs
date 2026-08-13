@@ -96,7 +96,7 @@ pub fn load_from_hub() -> Result<NativeEmbedder> {
         .build()
         .context("building HuggingFace Hub API client")?;
 
-    let gguf_repo = prequantized_gguf_repo()?;
+    let gguf_repo = prequantized_gguf_repo();
     let repo = api.repo(Repo::new(gguf_repo.clone(), RepoType::Model));
 
     let tokenizer_path = repo
@@ -200,32 +200,13 @@ fn model_cache_dir() -> Result<PathBuf> {
 /// * **unset** → `DEFAULT_GGUF_REPO` — the default; a stock install fetches the
 ///   ~339 MB pre-quant GGUF plus tokenizer from
 ///   `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`.
-/// * **`off`** (any case) → hard error. This was previously an escape hatch
-///   that downloaded the upstream BF16 safetensors and quantized them on
-///   device; that path has been removed (v1: the pre-quantized first-party
-///   GGUF is the only delivery mechanism), so a leftover `off` in the
-///   environment now fails loudly instead of silently changing behavior.
 /// * **any other value** → that `org/repo` id (trimmed) — override: fetch the
 ///   pre-quant GGUF and tokenizer from there instead (it must host both
 ///   files).
-fn prequantized_gguf_repo() -> Result<String> {
+fn prequantized_gguf_repo() -> String {
     match std::env::var(GGUF_REPO_ENV) {
-        Ok(v) => {
-            let v = v.trim();
-            anyhow::ensure!(
-                !v.eq_ignore_ascii_case("off"),
-                "{GGUF_REPO_ENV}=off is no longer supported: on-device quantization from \
-                 upstream BF16 weights was removed (v1 always fetches the pre-quantized \
-                 first-party GGUF). Unset {GGUF_REPO_ENV} to use the default repo, or set it \
-                 to an `org/repo` that hosts a pre-quantized GGUF."
-            );
-            if v.is_empty() {
-                Ok(DEFAULT_GGUF_REPO.to_string())
-            } else {
-                Ok(v.to_string())
-            }
-        }
-        Err(_) => Ok(DEFAULT_GGUF_REPO.to_string()),
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => DEFAULT_GGUF_REPO.to_string(),
     }
 }
 
@@ -235,8 +216,6 @@ mod tests {
 
     /// `prequantized_gguf_repo()` resolves the GGUF source from
     /// `INKENTRY_EMBEDDER_GGUF_REPO`: unset/blank → the bundled default repo;
-    /// `off` (any case, any surrounding whitespace) → hard error, since the
-    /// on-device-quantize escape hatch it used to select has been removed;
     /// any other value → that `org/repo` (trimmed). Uses `serial` because it
     /// mutates a process-global env var.
     #[test]
@@ -248,31 +227,21 @@ mod tests {
 
         unsafe { std::env::remove_var(GGUF_REPO_ENV) };
         assert_eq!(
-            prequantized_gguf_repo().ok().as_deref(),
-            Some("spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF"),
+            prequantized_gguf_repo(),
+            "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF",
             "unset env var must default to fetching the bundled pre-quant GGUF"
         );
 
         unsafe { std::env::set_var(GGUF_REPO_ENV, "   ") };
         assert_eq!(
-            prequantized_gguf_repo().ok().as_deref(),
-            Some("spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF"),
+            prequantized_gguf_repo(),
+            "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF",
             "blank/whitespace env var must fall back to the default repo, not fetch \"\""
         );
 
-        // The removed escape hatch (`off`) must now error clearly rather than
-        // silently changing behavior, in any case or with surrounding whitespace.
-        for off in ["off", "OFF", "  off  "] {
-            unsafe { std::env::set_var(GGUF_REPO_ENV, off) };
-            assert!(
-                prequantized_gguf_repo().is_err(),
-                "`{off}` must be a hard error now that on-device quantize is removed"
-            );
-        }
-
         // Override: an explicit repo id is used verbatim, with whitespace trimmed.
         unsafe { std::env::set_var(GGUF_REPO_ENV, "  org/repo  ") };
-        assert_eq!(prequantized_gguf_repo().ok().as_deref(), Some("org/repo"));
+        assert_eq!(prequantized_gguf_repo(), "org/repo");
 
         match prev {
             Some(v) => unsafe { std::env::set_var(GGUF_REPO_ENV, v) },
