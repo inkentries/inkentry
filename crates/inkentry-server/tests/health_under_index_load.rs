@@ -133,6 +133,7 @@ async fn spawn_server(embedder: inkentry_server::EmbedderSlot) -> String {
         rate_limiter: Arc::new(inkentry_server::rate_limiter::RateLimiter::new(100_000, 60)),
         instance_id,
         started_by: None,
+        trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
     };
     let app = inkentry_server::router(state);

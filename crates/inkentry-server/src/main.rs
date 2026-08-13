@@ -6,6 +6,7 @@ use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use inkentry_server::auth::ApiKeyAuth;
+use inkentry_server::client_ip::TrustedProxies;
 use inkentry_server::db::ServerDb;
 use inkentry_server::rate_limiter::RateLimiter;
 use inkentry_server::relay::{RelayPolicy, RelayRegistry};
@@ -76,6 +77,23 @@ struct Args {
     /// `0600` root-owned file, never an `Environment=` line.
     #[arg(long, env = "INKENTRY_SERVER_TLS_KEY", value_name = "PATH")]
     tls_key: Option<PathBuf>,
+
+    /// IP address of a reverse proxy whose `X-Forwarded-For` header this server
+    /// should believe when identifying a client for rate limiting. Repeatable,
+    /// or comma-separated in the environment variable.
+    ///
+    /// Empty by default, and that default is the supported shape: ADR-066 gives
+    /// the server in-process HTTPS so a team deployment has nothing in front of
+    /// it. Set this only if you genuinely run a proxy — naming an address that
+    /// is not one lets any caller reaching the server from that address pick its
+    /// own rate-limit bucket.
+    #[arg(
+        long = "trusted-proxy",
+        env = "INKENTRY_TRUSTED_PROXIES",
+        value_delimiter = ',',
+        value_name = "IP"
+    )]
+    trusted_proxy: Vec<std::net::IpAddr>,
 
     /// Embedding dimension expected from clients (must match the team's model).
     /// Default: 896 (F2LLM-v2-330M).
@@ -331,6 +349,15 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     // Per-principal rate limiter: 60 requests per minute by default.
     let rate_limiter = Arc::new(RateLimiter::new(60, 60));
 
+    let trusted_proxies = TrustedProxies::new(args.trusted_proxy.iter().copied());
+    if !trusted_proxies.is_empty() {
+        tracing::warn!(
+            "trusting X-Forwarded-For from {:?}: any client that can reach the server \
+             from one of those addresses chooses its own rate-limit bucket",
+            trusted_proxies.addrs()
+        );
+    }
+
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         auth,
@@ -343,6 +370,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         llm,
         max_tokens_ceiling,
         rate_limiter,
+        trusted_proxies,
         instance_id,
         started_by,
         // The relay only ever talks to the team servers this machine's own
@@ -759,6 +787,76 @@ mod arg_tests {
             normalize_reasoning_effort(&args.llm_reasoning_effort),
             Some("none".to_string()),
             "the default must be sent on the wire as reasoning_effort=none"
+        );
+    }
+
+    // Trusting a forwarded header is an explicit operator decision, never a
+    // default: with no proxy configured the rate limiter must fall back to the
+    // TCP peer, which the caller cannot choose.
+    #[test]
+    #[serial_test::serial(trusted_proxies_env)]
+    fn no_proxy_is_trusted_by_default() {
+        let args = Args::parse_from(["inkentry-server"]);
+        assert!(args.trusted_proxy.is_empty());
+    }
+
+    #[test]
+    fn trusted_proxies_accept_repetition_and_comma_separation() {
+        let args = Args::parse_from([
+            "inkentry-server",
+            "--trusted-proxy",
+            "10.0.0.5,10.0.0.6",
+            "--trusted-proxy",
+            "2001:db8::1",
+        ]);
+        assert_eq!(
+            args.trusted_proxy,
+            vec![
+                "10.0.0.5".parse::<std::net::IpAddr>().unwrap(),
+                "10.0.0.6".parse().unwrap(),
+                "2001:db8::1".parse().unwrap(),
+            ]
+        );
+    }
+
+    // The env var is the container/systemd path, and it reaches a `Vec<IpAddr>`
+    // through clap's `value_delimiter` rather than any code of ours, so its
+    // comma-splitting is worth pinning independently of the flag.
+    #[test]
+    #[serial_test::serial(trusted_proxies_env)]
+    fn trusted_proxies_are_comma_split_from_the_environment() {
+        // SAFETY: pinned to the `trusted_proxies_env` serial group, so no other
+        // test reads or writes this variable concurrently.
+        unsafe { std::env::set_var("INKENTRY_TRUSTED_PROXIES", "10.0.0.5,2001:db8::1") };
+        let args = Args::parse_from(["inkentry-server"]);
+        unsafe { std::env::remove_var("INKENTRY_TRUSTED_PROXIES") };
+        assert_eq!(
+            args.trusted_proxy,
+            vec![
+                "10.0.0.5".parse::<std::net::IpAddr>().unwrap(),
+                "2001:db8::1".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(trusted_proxies_env)]
+    fn an_environment_trusted_proxy_that_is_not_an_ip_is_rejected_at_startup() {
+        // SAFETY: see the sibling test; same serial group.
+        unsafe { std::env::set_var("INKENTRY_TRUSTED_PROXIES", "10.0.0.5,proxy.internal") };
+        let parsed = Args::try_parse_from(["inkentry-server"]);
+        unsafe { std::env::remove_var("INKENTRY_TRUSTED_PROXIES") };
+        assert!(
+            parsed.is_err(),
+            "one bad entry must fail startup rather than silently narrowing the trust list"
+        );
+    }
+
+    #[test]
+    fn a_trusted_proxy_that_is_not_an_ip_is_rejected_at_startup() {
+        assert!(
+            Args::try_parse_from(["inkentry-server", "--trusted-proxy", "proxy.internal"]).is_err(),
+            "a hostname would have to be resolved per request to compare against a peer"
         );
     }
 

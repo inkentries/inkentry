@@ -412,6 +412,7 @@ mod tests {
             )),
             instance_id,
             started_by: None,
+            trusted_proxies: Default::default(),
             relay: inkentry_server::relay::RelayRegistry::new(declared.policy()),
         };
         let app = inkentry_server::router(state);

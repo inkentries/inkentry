@@ -7,6 +7,7 @@ use axum::http::HeaderMap;
 use tokio::sync::mpsc;
 
 use crate::auth::AuthContext;
+use crate::client_ip::{TrustedProxies, client_ip_key};
 use crate::{AppError, AppState, EmbedderState};
 
 mod batch;
@@ -102,23 +103,6 @@ fn validate_project_slug(slug: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Resolve the client's IP for rate-limiting: prefer the leftmost
-/// `X-Forwarded-For` entry (the server sits behind a trusted proxy in team
-/// deployments; see ADR-056), else the TCP peer. Falls back to a constant so
-/// keyless requests share one bucket rather than bypassing the limit.
-fn client_ip_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        let first = xff.split(',').next().unwrap_or("").trim();
-        if !first.is_empty() {
-            return first.to_string();
-        }
-    }
-    match peer {
-        Some(addr) => addr.ip().to_string(),
-        None => "unknown".to_string(),
-    }
-}
-
 /// Test-only override for the generation budget `llm_generate_with_timeout`
 /// enforces (production uses `crate::REQUEST_TIMEOUT`). Lets tests inject a
 /// millisecond-scale budget. `#[cfg(test)]`-gated, inert in the release binary.
@@ -189,12 +173,21 @@ async fn llm_generate_with_timeout(
 /// shared team API key (a single `Principal::ApiKey` string, or the empty
 /// string when no key is configured at all) doesn't collapse every distinct
 /// client onto one shared bucket: each caller gets its own budget.
-fn rate_limit_key(auth_ctx: &AuthContext, headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+///
+/// Both halves must be outside the caller's control or the budget is not a
+/// budget. See [`crate::client_ip`] for why the address half comes from the TCP
+/// peer rather than `X-Forwarded-For`.
+fn rate_limit_key(
+    auth_ctx: &AuthContext,
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    trusted_proxies: &TrustedProxies,
+) -> String {
     let principal = match &auth_ctx.principal {
         crate::auth::Principal::ApiKey(k) => k.clone(),
         crate::auth::Principal::User { id } => id.clone(),
     };
-    let ip = client_ip_key(headers, peer);
+    let ip = client_ip_key(headers, peer, trusted_proxies);
     format!("{principal}|{ip}")
 }
 
