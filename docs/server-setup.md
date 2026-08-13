@@ -588,6 +588,25 @@ cargo build --release --bin inkentry-server
 | `--tls-cert` | `INKENTRY_SERVER_TLS_CERT` | unset | PEM certificate chain (leaf + intermediates) for in-process HTTPS. The chain is public. Set with `--tls-key` (both or neither). Distinct from `--key`/`--key-file`. |
 | `--tls-key` | `INKENTRY_SERVER_TLS_KEY` | unset | PEM private key matching `--tls-cert`. A high-value secret: supply via a systemd credential or a `0600` root-owned file, never an `Environment=` line. Set with `--tls-cert`. |
 
+### Operational flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--health-check` | – | Probe this server's own `/v1/health` on the configured `--host`/`--port`, then exit 0 if live and non-zero otherwise. A wildcard `--host` is probed over loopback. |
+| `--embedding-dim <n>` | `896` | Embedding dimension expected from clients. Must match the team's model; `896` is F2LLM-v2-330M. |
+| `--conflict-threshold <f>` | `0.92` | Cosine similarity at or above which a new memory entry is treated as conflicting with an existing active one and answered `409`. `1.0` disables conflict detection. |
+
+`--health-check` exists so a container image needs no `curl` or `wget` for its
+`HEALTHCHECK`: the binary probes itself.
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
+  CMD ["inkentry-server", "--health-check"]
+```
+
+Pass the same `--host`/`--port` as the serving process if you have changed them
+from the defaults, since the probe reads them to know where to look.
+
 The certificate is bring-your-own PEM (an internal CA, a self-signed cert you
 mint yourself, `certbot`, or a cloud-issued cert). `inkentry-server` does not
 obtain or renew it (no ACME); the operator renews it.
