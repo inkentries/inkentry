@@ -247,6 +247,25 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A memory push no longer stalls every other request on the server.** The
+  batch endpoint embedded entries one at a time while holding the server's
+  global database lock, so a routine `inkentry sync` — fifty entries per chunk —
+  queued memory reads, live streaming and project lookups behind the whole
+  batch, and with a real CPU embedder it ran past the request timeout. Entries
+  are embedded once, together, before the lock is taken. Both memory writes now
+  also pass through the same embed admission bound as `search` and `index`, so
+  no route can queue on the embedder unbounded. One consequence to know about: a
+  batch's embedding call is now all-or-nothing, so a text that makes the
+  embedder fail leaves every entry in that request stored text-only, where
+  before only the failing entry lost its vector. `inkentry memory reindex`
+  backfills them.
+- **A busy server no longer aborts a sync.** Now that the memory write routes
+  can shed with `429`, `inkentry sync`, `inkentry plumbing push` and
+  `inkentry memory add` honour the server's `Retry-After` and retry a bounded
+  number of times, printing what they are waiting on, instead of failing the
+  chunk and stopping the run at the first shed. A server still shedding after
+  those retries reports the condition and asks for a re-run, which resumes from
+  the entries that had not landed.
 - **`search` now returns the same order for the same query.** Both hybrid
   searches fused their two ranked lists through a `HashMap` and sorted on the RRF
   score alone, so an unchanged index could return one query's results in a

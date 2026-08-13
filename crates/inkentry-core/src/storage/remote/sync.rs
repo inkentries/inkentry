@@ -32,6 +32,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::encode_project_id;
+use super::retry::{RetryPolicy, send_retrying_while_shed};
 
 /// Per-request timeout for the sync HTTP client. `POST /memory/batch` performs
 /// server-side embedding backfill, an inference-class operation: a cold embedder
@@ -240,6 +241,10 @@ pub struct CloudSyncClient {
     base_url: String,
     project_id: String,
     api_key: Option<String>,
+    /// How the two `/memory/batch` posts respond to a `429`. A field rather
+    /// than a constant purely so a test can collapse the waits; production
+    /// only ever uses [`RetryPolicy::default`].
+    retry: RetryPolicy,
 }
 
 impl CloudSyncClient {
@@ -287,7 +292,17 @@ impl CloudSyncClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             project_id: project_id.to_string(),
             api_key: api_key.map(str::to_string),
+            retry: RetryPolicy::default(),
         })
+    }
+
+    /// Replace the `429` retry policy. Test-only: production reaches the
+    /// admission queue rarely and wants the real cadence, while a test wants
+    /// the same code path with the sleeps collapsed.
+    #[cfg(test)]
+    fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
     }
 
     fn url(&self, path: &str) -> String {
@@ -331,12 +346,14 @@ impl CloudSyncClient {
             });
         }
         let body = BatchPushBody { entries };
-        let resp = self
-            .authed(self.client.post(self.url("memory/batch")))
-            .json(&body)
-            .send()
-            .await
-            .context("POST /memory/batch")?;
+        // The route embeds every text-only entry server-side, so it runs under
+        // the server's bounded embed admission queue and can be shed with a
+        // transient 429 instead of queued.
+        let url = self.url("memory/batch");
+        let resp = send_retrying_while_shed(&self.retry, "POST /memory/batch", || {
+            self.authed(self.client.post(&url)).json(&body).send()
+        })
+        .await?;
 
         // The endpoint always returns 207 Multi-Status on success; treat any
         // 2xx as parseable and surface other statuses as errors.
@@ -365,12 +382,16 @@ impl CloudSyncClient {
             return Ok(EdgePushResult::default());
         }
         let body = BatchEdgePushBody { entries: [], edges };
-        let resp = self
-            .authed(self.client.post(self.url("memory/batch")))
-            .json(&body)
-            .send()
-            .await
-            .context("POST /memory/batch (edges)")?;
+        // An edge-only body has nothing to embed, so an inkentry-server takes
+        // no admission permit for it and never sheds it today. Handled the same
+        // way anyway: it posts to the same route as the entry batch, and
+        // whether a shed is possible is the destination's decision, not a
+        // property of this body that the client should be betting on.
+        let url = self.url("memory/batch");
+        let resp = send_retrying_while_shed(&self.retry, "POST /memory/batch (edges)", || {
+            self.authed(self.client.post(&url)).json(&body).send()
+        })
+        .await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -708,6 +729,103 @@ mod tests {
         let res = client.push_edges(vec![]).await.unwrap();
         assert_eq!(res.applied(), 0);
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    // ── 429 admission shedding: the push waits instead of aborting the sync ──
+
+    #[tokio::test]
+    async fn push_batch_honours_retry_after_on_a_429_then_succeeds() {
+        // `/memory/batch` embeds server-side under a bounded admission queue,
+        // so a full queue sheds the chunk with a 429 that clears on its own.
+        // Treating that as a hard failure would abort a whole multi-chunk sync
+        // over a transient condition, so the chunk is retried after the wait
+        // the server names. `Retry-After: 0` keeps the test's real sleep at zero
+        // while still exercising the header path.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 1, "skipped": 0, "failed": 0,
+                "results": [{"status": "created", "external_id": "e1", "id": "c1"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let res = client
+            .push_batch(vec![item("e1")])
+            .await
+            .expect("a transient 429 must not fail the chunk");
+        assert_eq!(res.created, 1);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn push_edges_retries_a_429_with_no_retry_after_using_the_fallback_wait() {
+        // A server may shed without naming a wait. The push must still back off
+        // on its own rather than either hammering or giving up. The fallback is
+        // shrunk to ~0 here so the suite does not sit through the production
+        // cadence.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
+                "created": 0, "skipped": 0, "failed": 0,
+                "edges": [{"status": "created"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None)
+            .unwrap()
+            .with_retry(RetryPolicy::immediate(4));
+        let res = client
+            .push_edges(vec![SyncEdgePush {
+                from_external_id: "a".into(),
+                to_external_id: "b".into(),
+                kind: "relates_to",
+            }])
+            .await
+            .expect("a headerless 429 must fall back to a bounded wait, not fail");
+        assert_eq!(res.applied(), 1);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn push_batch_surfaces_a_clean_error_once_429_retries_are_exhausted() {
+        // The retry budget is bounded: a server that never drains must end in a
+        // caller-visible error naming the condition, so the push loop can mark
+        // the run interrupted and the user can re-run — never a hang, and never
+        // a panic. Two attempts is the smallest budget that still retries once.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/projects/proj/memory/batch"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None)
+            .unwrap()
+            .with_retry(RetryPolicy::immediate(2));
+        let err = client.push_batch(vec![item("e1")]).await.unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("429") && chain.contains("2 attempt"),
+            "an exhausted retry must name the shed and how many attempts it made: {chain}"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]

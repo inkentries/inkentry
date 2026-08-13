@@ -1121,6 +1121,14 @@ inkentry sync [--project <slug>] [--source <path>] [--include-archived]
 | `--source <path>` | Local `memory.db` to sync (default: the auto-detected project `memory.db`). |
 | `--include-archived` | Include archived entries in the push, propagating tombstones. |
 
+A push chunk that comes back `429` — the server's bounded embed queue is
+already full, e.g. an `inkentry index` or a `search` is mid-embed — is not a
+failure: the chunk is retried a few times, sleeping for the server's own
+`Retry-After` (five seconds when it names none), and each wait prints a line
+naming how long it is waiting and which attempt it is on. The sync only stops
+and asks for a re-run if the server is still shedding once those retries are
+spent. The same handling covers `inkentry memory add` against a server.
+
 For a one-directional transfer (seeding, CI), use the plumbing forms
 `inkentry plumbing push` (local → server) or `inkentry plumbing pull`
 (server → local); each emits a single JSONL report. The former porcelain
