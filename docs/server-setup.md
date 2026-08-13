@@ -427,14 +427,11 @@ whatever is in `project_id` is what the server sees. (See
 [ADR-005](adr/005-cli-slug-uuid-resolution.md) for the resolution step this
 replaced.)
 
-> **Rotating a key you committed under the old model.** Earlier versions of
-> this doc suggested a plaintext `server_key = "..."` line in the personal
-> `~/.config/inkentry/config.toml`, and a committed project `.inkentry/config.toml`
-> used to accept the same field as a "shared team key". Neither path exists
-> any more: the personal file never stores the key in plaintext, and
-> `.inkentry/config.toml` silently ignores a `server_key` line if one is still
-> present. If a key was ever written to either file, especially if it reached
-> git history, treat it as compromised: issue a new key on the server (e.g.
+> **A key that reached a config file in plaintext is compromised.** Keys live in
+> the secret store: the personal `~/.config/inkentry/config.toml` never holds one
+> in plaintext, and a committed project `.inkentry/config.toml` ignores a
+> `server_key` line entirely. If a key was written to either file, especially if
+> it reached git history, treat it as compromised: issue a new key on the server (e.g.
 > `openssl rand -hex 32` for a self-managed instance) and run `inkentry auth
 > set-key --server <url>` with the new value on every machine that had the old
 > one. A flat key from an even older install is picked up and migrated into
@@ -626,10 +623,10 @@ they stay responsive for the whole of an index whatever this value is set to.
 This budget only bounds CPU contention *within* a single embed batch; embed
 requests themselves are still serialized behind a single mutex on both device
 paths (GPU concurrency would blow its memory limit, and a CPU batch already
-uses most of this budget on its own). A batch queuing behind a running index
-no longer waits silently until the caller's own timeout fires: once a bounded
-admission queue in front of the embedder is full, the server sheds the
-request immediately with `429` and a `Retry-After` header instead (see
+uses most of this budget on its own). A bounded admission queue sits in front of the
+embedder: when it is full the server sheds the request immediately with `429`
+and a `Retry-After` header, rather than letting a batch queue behind a running
+index until the caller's own timeout fires (see
 `POST /index/embed` in `architecture/server-api.md`).
 
 ### Non-loopback plaintext binds are refused, no override

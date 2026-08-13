@@ -3,9 +3,9 @@
 This document says which parts of inkentry you may build on, and what a version
 bump is allowed to do to them.
 
-inkentry follows [Semantic Versioning](https://semver.org/). Before 1.0 that
-promise is not yet in force: the surfaces below are already treated as stable in
-practice, and this document is what they are frozen against when 1.0 ships.
+inkentry follows [Semantic Versioning](https://semver.org/). The surfaces below
+are frozen against this document: a breaking change to any of them requires a
+major version bump.
 
 Every surface is one of three things:
 
@@ -98,17 +98,9 @@ plus `jsonl` on `search` and `memory list`. This is a **different
 surface** from the text output, and a different one again from plumbing JSONL:
 none of it is covered by the plumbing golden schema.
 
-`search --format json`/`jsonl` changed shape in this release: results are now
-per-corpus envelopes (`{type, fused_rank, fused_score, corpus_rank,
-code|memory}`) rather than a flat array of code hits. Consumers of the old shape
-must migrate; see [`inkentry search`](commands.md#inkentry-search).
-
-(`memory since` and `memory watch` were removed from the CLI; `memory since`'s
-`--format jsonl` therefore left this list, as did `graph`'s when the top-level
-`graph` porcelain was removed. One-way transfer moved to the
-test-enforced plumbing surface — `inkentry plumbing push`/`pull` — and the
-former `memory push`/`pull` were removed outright with no alias. The server
-routes those commands used are unchanged — see the changelog.)
+`search --format json`/`jsonl` emits per-corpus envelopes (`{type, fused_rank,
+fused_score, corpus_rank, code|memory}`); see
+[`inkentry search`](commands.md#inkentry-search).
 
 | Surface | Level |
 |---|---|
@@ -224,40 +216,11 @@ Removing or renaming a stable config key follows a fixed sequence:
    only job is to describe a key that no longer does anything is permanent code
    for a one-release problem. See
    [ADR-071](adr/071-per-server-client-bearer-scoping.md) for the reasoning.
-3. **Remove.** The key is dropped in the next major release, and listed under
-   "Removed fields" in [Config reference](config-reference.md) and under
-   `### Removed` in the changelog. It then falls back to the
-   ignore-unknown-keys rule, so old configs still load; they just stop having
-   that effect.
+3. **Remove.** The key is dropped in the next major release and recorded under
+   `### Removed` in the changelog. It then falls back to the ignore-unknown-keys
+   rule, so existing configs still load; the key simply stops having an effect.
 
 The same three steps apply to CLI flags and to `/v1/` request fields.
-
-#### Worked example: `memory_server_url`
-
-This is the precedent the policy is written from.
-
-1. **Alias.** `server_url` carried `#[serde(alias = "memory_server_url")]`, and
-   `server_key` carried `#[serde(alias = "memory_server_key")]`, so an existing
-   config kept working untouched. The environment variable
-   `INKENTRY_MEMORY_SERVER_URL` was accepted as a fallback for
-   `INKENTRY_SERVER_URL`.
-2. **Warn.** Partially, and this is where the precedent falls short of the
-   policy above rather than setting it. The environment fallback did warn:
-   `INKENTRY_MEMORY_SERVER_URL is deprecated; use INKENTRY_SERVER_URL instead`.
-   The two TOML aliases never warned at all. They were accepted silently for
-   their whole deprecation window, so the only signal a user got was the
-   changelog. Step 2 is written as a requirement for what comes next, not as a
-   description of what this example did.
-3. **Remove.** The aliases and the environment fallback were deleted, the
-   changelog recorded the break, and `docs/config-reference.md` gained a
-   "Removed fields" row pointing at the replacement. The keys are now unknown
-   fields: a config that still carries them loads fine and keeps every other
-   field, but the deprecated keys have no effect. Regression tests in
-   `crates/inkentry-core/src/config/mod.rs` pin exactly that, so the removal
-   cannot silently regress into a partial mapping.
-
-That removal shipped pre-1.0, which is why it landed in a minor release rather
-than a major one. After 1.0, step 3 waits for the next major version.
 
 ## On-disk formats
 

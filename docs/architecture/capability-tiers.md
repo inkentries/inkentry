@@ -285,10 +285,9 @@ and reprocesses the file instead of skipping it forever.
 
 The whole `inkentry index` process, both phases, is serialized per project by
 a cross-process advisory lock (`cli/cmd/index/run_lock.rs`), taken as the
-first thing a run does and released on process exit. Two concurrent runs
-against the same project previously could interleave writes and corrupt
-`index.db`; a second run that finds the lock held now exits immediately with
-a clean error instead of racing the first run's writes.
+first thing a run does and released on process exit. A second run that finds the lock held exits immediately with a clean error
+rather than racing the first run's writes, which would interleave writes and
+corrupt `index.db`.
 
 Progress output during Phase 2:
 
@@ -304,6 +303,5 @@ Embedding chunks via server... 1 024 / 3 812  [====>     ] 27%
 server, which encodes it and returns the vector; the CLI then runs KNN over the
 project's local `memory.db`. Note text never leaves the local store. When the
 memory backend is an explicit team `server_url`, the server runs the KNN over
-its own memory DB instead. The raw-vector interface
-(`SearchRequest.embedding`) is deprecated; see server-api.md for the updated
-`SearchRequest` schema.
+its own memory DB instead. `SearchRequest` is `{ query, limit }`; see
+server-api.md for the full schema.

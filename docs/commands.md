@@ -114,21 +114,18 @@ inkentry index <path> [options]
 A plain `inkentry index` (no `--force`) re-indexes changed files (blake3 hash)
 and also backfills embeddings for any already-parsed chunk that has no embedding
 yet – for example if a previous run parsed the tree before the embedder had
-finished loading. Unchanged, already-embedded files are skipped, so you no
-longer need `--force` just to fill in missing embeddings.
+finished loading. Unchanged, already-embedded files are skipped, so filling
+in missing embeddings needs no `--force`.
 
-**Summaries need no LLM.** Each chunk's `summary:` slot is composed from signals
-already present after the parse — the docstring sentence, the split symbol name,
-split callee names, salient literals — with no model, no key and no network. So
-there is nothing for a missing LLM to break here, and no failed-summary state to
-retry: the composition is byte-identical for the same chunk on every run, which
-is what underwrites idempotent resume and the "same query, same answer"
-guarantee. Skip the pass entirely with `--no-summaries`.
+Each chunk carries a `summary:` slot, composed from signals present after the
+parse: the docstring sentence, the split symbol name, split callee names, and
+salient literals. It runs offline — no model, no key, no network — and is
+byte-identical for the same chunk on every run, which is what underwrites
+idempotent resume and the "same query, same answer" guarantee. Skip the pass
+with `--no-summaries`.
 
-If you want abstractive, LLM-written summaries, run your own agent over the
-indexed chunks — see
-[Abstractive chunk summaries](examples/abstractive-summaries.md). **The only
-command in inkentry that reaches for an LLM is [`harvest`](#inkentry-harvest).**
+For abstractive, natural-language summaries, run your own agent over the indexed
+chunks: see [Abstractive chunk summaries](examples/abstractive-summaries.md).
 
 If a previous run was interrupted after recording a file's new content hash
 but before writing its chunks (a process kill mid-parse, for example), that
@@ -389,10 +386,9 @@ inkentry search "why did we choose sqlite" --only-memory --as-of 2026-01-01
 
 ---
 
-## Multi-hop exploration (no command — you run the loop)
+## Multi-hop exploration — you run the loop
 
-There is no `inkentry explore` command. inkentry retrieves context; your own
-agent reasons over it. For an open-ended question that needs tracing across
+inkentry retrieves context; your own agent reasons over it. For an open-ended question that needs tracing across
 files, loop over the primitives yourself, refining the query each pass:
 
 1. `inkentry search "<terms>"` (add `--graph` for call-graph neighbours;
@@ -509,12 +505,9 @@ AGENT=true inkentry context        # JSON for machine processing
 
 ---
 
-## Graph queries (moved)
+## Graph queries
 
-The top-level `inkentry graph <symbol>` command has been removed. Nothing is
-registered with clap and it does not appear in `--help`; invoking it exits `2`
-with a migration hint naming its two replacements. The code-graph capability now
-lives in those two places:
+The code graph is reachable from two places:
 
 - **Porcelain:** `inkentry search <symbol> --graph` appends the symbol's chunk
   and its 1-hop call-graph neighbours (imports, calls, extends/implements) after
@@ -522,7 +515,8 @@ lives in those two places:
 - **Plumbing:** `inkentry plumbing graph-edges --symbol <name>` (or
   `--file <path>`) emits exact edges as JSONL for scripts and agents.
 
-Both read the graph built by `inkentry init`; there is no `--live` scan.
+Both read the graph built by `inkentry init`. Both are index-backed: there is no
+working-tree scan.
 
 **Example:**
 
@@ -756,9 +750,8 @@ keyed by the server's origin, so keys for two different self-hosted servers
 never collide. A flat `server_key` from an install predating this scheme is
 migrated in automatically the first time it's needed for a given server; no
 action required. A `server_key` line in a project's checked-in
-`.inkentry/config.toml` is no longer read at all (it was a plaintext-in-a-committed-file
-footgun); if a project config still has that line, remove it and have each
-developer run `inkentry auth set-key --server <url>` instead.
+`.inkentry/config.toml` is not read: a key belongs to a developer, not to a
+committed file. Each developer runs `inkentry auth set-key --server <url>`.
 
 **Headless / CI / containers.** When no OS keychain backend is available, the
 credential never causes a hard failure:
@@ -916,9 +909,6 @@ reachable. See
 Extraction and the dedup embedding resolve independently and can land on
 different servers.
 
-`inkentry memory harvest` is a deprecated, still-working alias of this command
-for one release: it prints a deprecation warning on stderr and otherwise behaves
-identically.
 
 ---
 
@@ -932,7 +922,6 @@ inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,
 inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
 inkentry memory list [--kind decision] [--limit 20] [--format text|json] [--local-only]
 inkentry memory show <id> [--format text|json]
-inkentry memory harvest [...]                # deprecated alias of `inkentry harvest`
 inkentry memory failures                    # list all antipatterns
 inkentry memory archive <id>
 inkentry memory supersede <id> --title "..." # archive old, add replacement
@@ -952,10 +941,8 @@ cross-project dep pass (see [Cross-project visibility](memory.md#cross-project-v
 Results from linked projects carry a `[from: <project>]` badge in text output
 and `source_project` / `source_project_path` fields in JSON.
 
-**Harvest is now the top-level [`inkentry harvest`](#inkentry-harvest).**
-`inkentry memory harvest` remains as a deprecated, still-working alias for one
-release; it prints a deprecation warning on stderr and points you at
-`inkentry harvest`. See that section for the full flag reference.
+Harvest is the top-level [`inkentry harvest`](#inkentry-harvest); see that
+section for the full flag reference.
 
 **Memory kinds:** `decision` · `context` · `requirement` · `note` · `intent` ·
 `answer` · `handoff` · `question` · `antipattern`
@@ -985,9 +972,8 @@ row number, not this identity. See [Entry identity](memory.md#project-memory).
 Existing duplicate rows already resident in `memory.db` are never collapsed
 automatically; use `inkentry memory dedupe` to do that explicitly (see
 [Collapsing duplicate entries already in memory.db](memory.md#collapsing-duplicate-entries-already-in-memorydb)).
-Once a store's duplicates are cleared and its `entity_id` index is promoted to
-UNIQUE, a plain `memory add` for byte-identical content no longer errors: it
-reuses the existing entry and prints `Already recorded as ...` instead of
+`entity_id` is UNIQUE, so a plain `memory add` for byte-identical content
+reuses the existing entry and prints `Already recorded as ...` rather than
 `Stored ...`. The same reuse applies to `inkentry sync` / `inkentry plumbing pull`:
 a pulled entry matching an existing local row's identity merges into that row
 (adopting the remote id, archiving it if the pulled entry is archived) instead
@@ -1111,7 +1097,7 @@ machine; only memory does. Requires a configured `server_url`.
 
 Under the default `local_first` mode, a background reconciler already drains
 unpushed entries and pulls new ones during interactive sessions, so this
-command is no longer required in the normal day-to-day path: `inkentry
+so the day-to-day path needs no explicit call: `inkentry
 status` shows what's still pending. Reach for `inkentry sync` when you want an
 immediate, synchronous reconcile instead of waiting on the background drain,
 or in a non-interactive context (CI, a script, a git hook) where the

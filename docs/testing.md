@@ -383,7 +383,7 @@ file itself stays accurate.
 
 ## Property-based tests and fuzzing
 
-Both used to be "planned additions" here; both now exist and run in CI:
+Both exist and run in CI:
 
 - **Property-based tests** (`proptest`) live in `crates/inkentry-core/tests/prop_*.rs`:
   `prop_chunker.rs`, `prop_token_budget.rs`, and `prop_embeddings.rs` (the

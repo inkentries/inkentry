@@ -5,10 +5,9 @@ every chunk (docstring sentence, split symbol name, split callee names, salient
 literals) and folds it into the embedding input. That summary bridges retrieval
 vocabulary; it is not written prose.
 
-If you want **abstractive** (LLM-written) summaries — one-sentence natural
-language descriptions of what each chunk does — run your own agent over the
-indexed chunks. inkentry does not call an LLM for this: reasoning stays with the
-caller's model, and the only feature that reaches for an LLM is `memory harvest`.
+For **abstractive** summaries — one-sentence natural-language descriptions of
+what each chunk does — run your own agent over the indexed chunks. Reasoning
+stays with the caller's model.
 
 ## The data source: `plumbing cat-chunks`
 

@@ -86,8 +86,8 @@ inkentry plumbing ls-files --stale --root . \
 ## All 11 plumbing commands
 
 Every command below emits JSONL. All but `publish-notes`, `push`, and `pull` are
-read-only: those three write or talk to a remote, so treating the namespace as
-safe-by-construction for scripting or sandboxing no longer holds. `push` and
+read-only: those three write or talk to a remote, so the namespace as a whole is
+not safe-by-construction for scripting or sandboxing. `push` and
 `pull` additionally require an explicitly-configured team `server_url` (never the
 inference loopback), the same guard the two-way `inkentry sync` uses.
 

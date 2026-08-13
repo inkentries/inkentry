@@ -517,8 +517,8 @@ export INKENTRY_SERVER_KEY="your-shared-api-key"
 If you have an old personal `~/.config/inkentry/config.toml` with a bare
 `server_key = "..."`, it is picked up and migrated into the per-server store
 automatically the first time it's needed; no action required. A `server_key`
-line in a project's checked-in `.inkentry/config.toml` is no longer read at all,
-so remove it if one is still there. On a host with no keychain, inkentry falls
+line in a project's checked-in `.inkentry/config.toml` is not read: a key belongs
+to a developer, not to a committed file. On a host with no keychain, inkentry falls
 back to an owner-only `~/.config/inkentry/secrets.toml`. For the full
 credential-storage rules and the `INKENTRY_SECRET_STORE` override, see the
 [Commands reference](commands.md#inkentry-auth).
@@ -550,7 +550,7 @@ For full setup and deployment guide: **[Server setup](server-setup.md)**: Docker
 ### Enterprise / MDM deployment
 
 Rolling inkentry out to a managed fleet? The
-[`examples/mdm/`](../examples/mdm/README.md) directory shows how to deploy and
+[`examples/mdm/`](examples/mdm/README.md) directory shows how to deploy and
 pre-configure `inkentry` and `inkentry-server` via MDM (managed config file,
 fleet-wide environment, and a macOS profile for a managed server daemon),
 grounded in inkentry's real config surface.

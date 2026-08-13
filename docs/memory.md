@@ -503,21 +503,17 @@ For non-GitHub URLs, if a script exists at `~/.config/inkentry/scripts/web-to-md
 
 This is opt-in by design: the script only runs if you've placed it at that exact, inkentry-owned path. Requires [`bun`](https://bun.sh) on `PATH`. If `bun` or the script fails, `inkentry` silently falls back to the built-in HTML extraction. Set `INKENTRY_SCRIPTS_DIR` to look for the script in a different directory instead of `~/.config/inkentry/scripts`.
 
-> **Breaking change:** prior to this, `inkentry` looked for the hook script at
-> `~/scripts/web-to-md.ts`. That location is **no longer read** — any script
-> left there is silently ignored, and `memory add --from-url` falls back to
-> the built-in HTML extraction instead. If you were relying on the old hook,
-> move the script to `~/.config/inkentry/scripts/web-to-md.ts` (creating the
-> directory if needed). The path moved because the old, undocumented
-> `~/scripts/` convention meant *any* script an attacker could plant there —
-> via an unrelated prior compromise, or on a shared/managed machine — would
-> get silently executed on every `--from-url` call; the new path is scoped to
-> a location you explicitly manage for inkentry.
+> **Why this exact path.** The hook is executed on every `--from-url` call, so
+> where it lives is a security boundary. A general-purpose location such as
+> `~/scripts/` would mean any script planted there — via an unrelated prior
+> compromise, or on a shared or managed machine — gets run silently. The
+> inkentry-owned directory is a location you manage deliberately for this
+> purpose, so nothing lands in it by accident.
 
 ## Searching memory
 
-Memory is searched through the unified `inkentry search` command; there is no
-separate `memory search` subcommand. By default `search` interleaves code and
+Memory is searched through the unified `inkentry search` command. By default
+`search` interleaves code and
 memory results into one ranked list — pass `--only-memory` to restrict it to the
 memory corpus. `--as-of` and `--expand-graph` are memory-only modifiers.
 
@@ -679,7 +675,7 @@ inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33 --format json
 
 ## Harvesting from git history
 
-`inkentry harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `inkentry-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/inkentry/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)). (`inkentry memory harvest` is a deprecated, still-working alias for one release.)
+`inkentry harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `inkentry-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/inkentry/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).
 
 ```bash
 # Default: last 10 commits (fewer if the repo has fewer than 10)
@@ -826,12 +822,12 @@ $ inkentry memory dedupe --format json
 
 Once a store has zero duplicate groups, `dedupe` (dry-run or not) reports
 all-zero counts and makes no writes, and the next `inkentry` run promotes
-`memory.db`'s `entity_id` index to enforce uniqueness going forward; after
-that, a duplicate group can no longer occur.
+`memory.db`'s `entity_id` index to enforce uniqueness, which rules out any
+further duplicate group.
 
 Once that index is promoted, a plain `memory add` for byte-identical
-`kind`/`title`/`body` content no longer inserts a second row: it reuses the
-existing entry (merging the new call's `tags` and `linked_files` into it,
+`kind`/`title`/`body` content reuses the existing entry rather than inserting a
+second row (merging the new call's `tags` and `linked_files` into it,
 add-wins) and reports it instead of erroring:
 
 ```
@@ -925,10 +921,8 @@ Before the batch is built, every entry in the push set that has no usable local
 vector is embedded through the local loopback embedder, using the same document
 text and the same document-side embedding call `inkentry memory reindex` uses,
 and each vector is committed to `memory.db` as it completes. A pushed entry is
-therefore findable by semantic `search` on your own machine afterwards,
-with no separate `reindex` step. Previously a push left `memory.db` exactly as
-it found it, so entries it had just pushed stayed invisible to local semantic
-search and nothing said so.
+therefore findable by semantic `search` on your own machine afterwards, with no
+separate `reindex` step.
 
 This changes what is stored locally, not what is sent. `kind`, `title`, and
 `body` are serialised on every push and always were; the vector fields are
