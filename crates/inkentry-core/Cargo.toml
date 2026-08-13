@@ -12,6 +12,15 @@ rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
 # Exposes in-memory test doubles (e.g. `config::secret_store::MemoryStore`) to
 # downstream crates' tests without pulling them into release builds.
 test-support = []
+# Dev-only, for the chunk_quality_eval example alone (see its `required-features`
+# below): turns inkentry-embed's default-off `native` back on so the example can
+# construct a NativeEmbedder in-process. Nothing shipped may enable it — the
+# whole point of core's `default-features = false` on inkentry-embed is that
+# inkentry-cli, which only reaches inference over HTTP, doesn't statically link
+# candle. Feature unification means a workspace-wide `--all-features` would drag
+# candle into the CLI build through this; CI doesn't use it, and deny.toml
+# pins `all-features = false`.
+native-embed = ["inkentry-embed/native"]
 
 [dependencies]
 # Trait-only dep (no candle): owns EmbeddingBackend, re-exported below. Storage-free.
@@ -68,6 +77,13 @@ indicatif = "0.18"
 docx-rs = { version = "0.4", optional = true }
 calamine = { version = "0.36", features = ["dates"], optional = true }
 lopdf = { version = "0.44", optional = true }
+
+[[example]]
+name = "chunk_quality_eval"
+# Without this the example is built by any command that sweeps all targets
+# (`cargo test`, `cargo nextest run`, `cargo check --all-targets`) and fails to
+# compile, since NativeEmbedder is gated out of core's inkentry-embed dep.
+required-features = ["native-embed"]
 
 [dev-dependencies]
 proptest = "1"

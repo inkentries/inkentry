@@ -14,8 +14,14 @@
 // is reported alongside @10 because @10 alone structurally flatters large
 // chunks.
 //
+// Requires the dev-only `native-embed` feature (declared as this example's
+// `required-features`), which turns inkentry-embed's `native` back on for
+// core's otherwise default-features = false dep. Without it the example is
+// skipped rather than failing to build.
+//
 // Usage:
-//   cargo run --release -p inkentry-core --example chunk_quality_eval -- \
+//   cargo run --release -p inkentry-core --features native-embed \
+//       --example chunk_quality_eval -- \
 //       --gguf <path> --tokenizer <path> --config <path> \
 //       --corpus /path/to/repo \
 //       [--caps 2048,1024,512,384] [--budget-tokens 8192] \
