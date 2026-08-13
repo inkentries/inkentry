@@ -258,6 +258,18 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A daemon started from a shell now survives that shell exiting.** On Unix the
+  spawned `inkentry-server` was orphaned but never left the spawning terminal's
+  session and process group, so closing the terminal SIGHUPed the "background"
+  server out from under the user — routine wherever the starting shell is
+  short-lived, as in a container step. The child now calls `setsid()` before
+  `exec`, giving it a session of its own and no controlling terminal; its
+  descriptors already pointed at `/dev/null` and the log file. Windows
+  detachment is unchanged.
+- **`inkentry server stop` no longer implies nothing is running when the pid
+  file is missing.** The error said `no server.pid found — is inkentry-server
+  running?` even with a server plainly alive in `ps`; it now distinguishes "this
+  CLI has no record" from "nothing is running" and says how to find the process.
 - **A memory push no longer stalls every other request on the server.** The
   batch endpoint embedded entries one at a time while holding the server's
   global database lock, so a routine `inkentry sync` — fifty entries per chunk —
