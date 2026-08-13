@@ -50,7 +50,11 @@ pub struct Chunk {
     pub docstring: Option<String>,
     /// Enclosing scope (e.g. `impl MyStruct` for a method).
     pub parent_scope: Option<String>,
-    /// LLM-generated one-sentence summary (set after indexing, not during parsing).
+    /// Composed structural summary (set after indexing, not during parsing).
+    /// Deterministic and offline — see [`summariser`]; it replaced an
+    /// LLM-written one-sentence summary before 1.0.
+    ///
+    /// [`summariser`]: crate::indexer::summariser
     pub summary: Option<String>,
 }
 

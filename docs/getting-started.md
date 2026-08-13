@@ -289,7 +289,7 @@ the managed spelunk.cloud.
 | Tier | What runs it | What it adds | Where memory lives |
 |---|---|---|---|
 | **Built-in** (zero infra) | just the `inkentry` binary | git-notes memory, full-text search, code graph | local `memory.db` |
-| **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search`, LLM summaries | still local `memory.db`: the server is **inference only, never a memory store** |
+| **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search` | still local `memory.db`: the server is **inference only, never a memory store** |
 | **Team memory server** | a shared `inkentry-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
 | **spelunk.cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |
 
@@ -379,18 +379,20 @@ Two things are worth knowing before you hit them:
   endpoint means your code is not sent elsewhere. That guarantee does not hold
   under `mode = "cloud_first"`, where `server_url` is the inference target
   already.
-- **`inkentry index` never fails over a missing LLM.** It prints why summaries
-  were skipped and exits 0. Pass `--no-summaries` to skip the step silently.
-  `harvest` does fail, since it cannot run without an LLM.
+- **`inkentry index` never reaches for an LLM at all.** Chunk summaries are
+  composed deterministically from the parse, with no model, no key and no
+  network, so there is nothing here for a missing LLM to affect. Pass
+  `--no-summaries` to skip that pass. `harvest` does fail without an LLM, since
+  it cannot run without one.
 
 See [Third-party models](third-party-models.md#how-inkentry-finds-an-llm) for the
 routing rule, the exact messages, the full precedence and security details, and
 the team-server equivalent.
 
-This is an advanced override; most users never set it: summaries and
-`harvest` are simply unavailable without an LLM configured, and
-semantic search works regardless since the native embedder needs no
-configuration at all.
+This is an advanced override; most users never set it: `harvest` is the only
+thing unavailable without an LLM configured, and both semantic search and chunk
+summaries work regardless — the native embedder needs no configuration at all,
+and the summaries need no inference at all.
 
 ### Index your project for semantic search
 

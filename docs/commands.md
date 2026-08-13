@@ -117,18 +117,18 @@ yet – for example if a previous run parsed the tree before the embedder had
 finished loading. Unchanged, already-embedded files are skipped, so you no
 longer need `--force` just to fill in missing embeddings.
 
-Summaries are the exception: a chunk whose summary failed (say the LLM was
-unreachable) is recorded as attempted rather than missing, so a plain re-run
-skips it. Use `--force` to retry those.
+**Summaries need no LLM.** Each chunk's `summary:` slot is composed from signals
+already present after the parse — the docstring sentence, the split symbol name,
+split callee names, salient literals — with no model, no key and no network. So
+there is nothing for a missing LLM to break here, and no failed-summary state to
+retry: the composition is byte-identical for the same chunk on every run, which
+is what underwrites idempotent resume and the "same query, same answer"
+guarantee. Skip the pass entirely with `--no-summaries`.
 
-**Summaries need an LLM, and never fail the index.** If no LLM can be reached,
-`inkentry index` prints a notice naming the reason and what to do, then exits 0
-with everything else (files, chunks, embeddings) indexed as usual. The three
-reasons are: no LLM anywhere, an `llm_url` your running local server was not
-started with, and offline mode. See
-[Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm)
-for the routing rule and the exact messages. LLM routing is resolved separately
-from embedding: which server embeds your code is unaffected by any of this.
+If you want abstractive, LLM-written summaries, run your own agent over the
+indexed chunks — see
+[Abstractive chunk summaries](examples/abstractive-summaries.md). **The only
+command in inkentry that reaches for an LLM is [`harvest`](#inkentry-harvest).**
 
 If a previous run was interrupted after recording a file's new content hash
 but before writing its chunks (a process kill mid-parse, for example), that
@@ -353,7 +353,13 @@ JSONL (for scripts and agents), use `inkentry plumbing graph-edges --symbol
 
 **JSON output shape.** With `--format json`/`jsonl`, each result is a nested
 envelope naming the corpus it came from — exactly one of `code`/`memory`,
-matching `type`:
+matching `type`.
+
+**The two formats differ in framing, not in the envelope.** `--format json`
+emits a single pretty-printed JSON **array** of these envelopes; `--format
+jsonl` emits one compact envelope per line, with no enclosing array and no
+commas. Parse accordingly: a reader written for one will not read the other.
+The examples below are `jsonl`.
 
 ```json
 {"type":"code","fused_rank":1,"fused_score":0.0163,"corpus_rank":1,"code":{"chunk_id":42,"file_path":"src/auth/middleware.rs","language":"rust","node_type":"function","name":"validate_token","start_line":18,"end_line":54,"content":"...","distance":0.41,"from_graph":false,"governing_specs":[],"token_count":0,"project_name":null,"project_path":null,"summary":null}}
