@@ -401,7 +401,7 @@ mod tests {
             server_limits: None,
         };
         let cfg = Config {
-            server_url: Some("https://api.spelunk.cloud".to_string()),
+            server_url: Some("https://api.inkentry.com".to_string()),
             project_id: Some("team/proj".to_string()),
             mode: None, // defaults to local_first because server_url is set
             ..Default::default()
@@ -411,7 +411,7 @@ mod tests {
 
         assert_eq!(
             eff.server_url.as_deref(),
-            Some("https://api.spelunk.cloud"),
+            Some("https://api.inkentry.com"),
             "server_url must be preserved unchanged (memory selection still reads it)"
         );
         assert_eq!(

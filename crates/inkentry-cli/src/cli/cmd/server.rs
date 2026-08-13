@@ -175,6 +175,7 @@ pub(super) fn pid_is_alive(pid: u32) -> bool {
 /// Grace period for a `SIGTERM`ed daemon to exit before escalation.
 const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Extra window for the process to disappear after `SIGKILL` (Unix).
+#[cfg(unix)]
 const FORCE_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `server.db-path` records the DB the running daemon was started against, so a

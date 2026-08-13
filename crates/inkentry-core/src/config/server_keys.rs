@@ -26,12 +26,12 @@ use super::secret_store::{KEY_SERVER_KEY, SecretStore};
 /// distinct from the legacy flat [`KEY_SERVER_KEY`] (ADR-071 D1).
 pub const KEY_SERVER_KEYS_MAP: &str = "server_keys";
 
-/// Default spelunk.cloud API origin. Overridable via `INKENTRY_CLOUD_URL`,
+/// Default inkentry cloud API origin. Overridable via `INKENTRY_CLOUD_URL`,
 /// which is read directly here (and by every cloud-api call site) so bearer
 /// resolution, `/v1/me`, and WorkOS client-id selection all agree on the same
 /// value. Single source of truth for the constant: `inkentry-cli`'s
 /// `auth_api` module re-exports this rather than defining its own copy.
-pub const DEFAULT_CLOUD_URL: &str = "https://api.spelunk.cloud";
+pub const DEFAULT_CLOUD_URL: &str = "https://api.inkentry.com";
 
 /// Normalize `url` to its origin: scheme, lowercased host, and explicit
 /// port (default port applied for comparison, omitted from the canonical

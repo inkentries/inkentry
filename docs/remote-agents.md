@@ -17,7 +17,7 @@ The shapes we distinguish:
 |---|---|---|
 | Local (R0) | Your workstation | `http://127.0.0.1:7777` (auto) |
 | **Local Docker (R1)** | A container on your machine | `https://inkentry.your-domain` (portable) |
-| Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.spelunk.cloud` |
+| Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.inkentry.com` |
 | Self-hosted remote (R3) | Your own VM / pod | `https://inkentry.your-domain`: see [Server setup](server-setup.md) |
 
 This page covers **R1 (local Docker)**. R2 (cloud-managed) is on the roadmap and

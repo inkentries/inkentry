@@ -1,4 +1,4 @@
-//! `inkentry logout`: clear stored spelunk.cloud credentials.
+//! `inkentry logout`: clear stored inkentry cloud credentials.
 //!
 //! Bare `inkentry logout` clears **only** the `[auth]` WorkOS token pair
 //! written by `inkentry login`: the credential logout exists to undo. It no
@@ -45,7 +45,7 @@ pub async fn logout(args: LogoutArgs) -> Result<()> {
     } else {
         config::remove_auth_tokens()
             .context("removing [auth] tokens from ~/.config/inkentry/config.toml")?;
-        println!("Logged out. Stored spelunk.cloud credentials have been removed.");
+        println!("Logged out. Stored inkentry cloud credentials have been removed.");
 
         let n = server_keys::count(store.as_ref())?;
         if n > 0 {
