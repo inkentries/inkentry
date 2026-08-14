@@ -105,21 +105,23 @@ and there is not meant to be: writing a dump means opening a store this build
 refuses to open, so the writer ships from the side that can still open it.
 
 **`spelunk-export` is that writer, and it comes from the predecessor's
-releases** — its own per-target download on
+releases**: its own per-target download on
 [`spelunk-cloud/spelunk`](https://github.com/spelunk-cloud/spelunk/releases),
-alongside the `spelunk` binaries. That is deliberate rather than an oversight:
-anyone who needs to export is by definition running the predecessor, so the tool
-is on the side they are already standing on. It is self-contained, so it can be
-fetched, checksummed, run and deleted without installing anything.
+alongside the `spelunk` binaries. It is not in the inkentry archive, the `.deb`,
+the Homebrew formula or the Scoop manifest, so upgrading through a package
+manager will never put it on your machine. That is deliberate rather than an
+oversight: anyone who needs to export is by definition running the predecessor,
+so the tool is on the side they are already standing on. It is self-contained,
+so it can be fetched, checksummed, run and deleted without installing anything.
 
 It takes the store path and the destination, opens the store **read-only**, and
 verifies what it wrote against what it read before reporting success. Keep the
 dump somewhere outside `.inkentry/`, which is gitignored for the databases and
 is not a backup location.
 
-This is also what the refusal message means by "the migration tool". If you are
-reading this because you hit that message, the store is still intact and the
-[recovery section](#if-you-upgraded-without-exporting) applies.
+This is the tool the refusal message names. If you are reading this because you
+hit that message, the store is still intact and the [recovery
+section](#if-you-upgraded-without-exporting) applies.
 
 ### The path with no extra tooling, and exactly what it costs
 
@@ -131,8 +133,18 @@ and says so:
   Memory:  imported 6 entries from git notes
 ```
 
-That makes the ref a usable fallback, with three losses worth naming before you
-rely on it:
+**Coming from 0.9.8, the ref has to cross before that works.** The predecessor
+published to `refs/notes/spelunk`; this build reads and writes
+`refs/notes/inkentry`. A fresh `init` therefore finds nothing until the old ref
+is fetched into the new name, and it finds it quietly rather than reporting that
+it looked:
+
+```bash
+git fetch <remote> 'refs/notes/spelunk:refs/notes/inkentry'
+```
+
+With the ref in place the fallback works, with three losses worth naming before
+you rely on it:
 
 - **Publishing is opt-in.** Reading a teammate's notes is automatic; publishing
   your own is not. Until you have run `inkentry hooks install --pre-push` (or
@@ -205,7 +217,8 @@ assume it.
 memory store stops with this, and exits `1`:
 
 ```
-Error: this memory store was written by an older product (schema version 10) and cannot be opened in place. Export it with the migration tool, then run `inkentry import` to bring it across.
+Error: this memory store was written by an older product (schema version 10) and cannot be opened in place. Export it with `spelunk-export`, then run `inkentry import` on the dump to bring it across.
+`spelunk-export` is a separate per-platform download from https://github.com/spelunk-cloud/spelunk/releases — it does not ship with inkentry.
 ```
 
 The store is not deleted, emptied or rewritten. It is left byte for byte as it
@@ -253,8 +266,7 @@ anything that parses inkentry:
 - Every memory-entry id is a UUID string. A script reading an integer `id`
   breaks, and an old numeric id no longer resolves.
 
-The id change is listed in the changelog under `BREAKING`; the search-envelope
-change sits under `Changed`. Neither is detectable by
+Both are listed in the changelog under `BREAKING`. Neither is detectable by
 running the command and seeing whether it succeeded.
 
 ## If you upgraded without exporting
@@ -312,10 +324,13 @@ Worth stating, so the window does not grow to cover things that do not need it:
   phase to matter, `inkentry index --detach-embed` parses in the foreground and
   hands the embedding off, so full-text search is back immediately and semantic
   ranking catches up behind it. `inkentry status` reports when it is done.
-- **Re-embedding memory.** A dump carries no embeddings, so imported entries
-  are not in semantic search until `inkentry memory reindex` has run. Text
-  search is phrase-exact, so it is not a substitute; `inkentry status` reports
-  the outstanding count as `memory_embedding_pending`.
+- **Re-embedding memory.** A dump carries no embeddings, so `inkentry import`
+  runs the embedding pass itself once the entries have landed. It is never fatal
+  if it cannot: under `--no-embed`, or with no embedder reachable, the import
+  still commits and says on stderr how many entries are not in semantic search
+  yet and to run `inkentry memory reindex` later. Text search is phrase-exact,
+  so it is no substitute in the meantime; `inkentry status` reports the
+  outstanding count as `memory_embedding_pending`.
 - **Reading a colleague's notes across the boundary.** The git-notes record
   format is frozen, so the shared ref stays readable in both directions
   throughout the window. A half-upgraded team still sees each other's memory.

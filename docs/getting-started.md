@@ -182,6 +182,13 @@ git fetch <old-remote> 'refs/notes/spelunk:refs/notes/inkentry'
 `index.db` needs no migration at all: run `inkentry init` and it is rebuilt from
 your source tree.
 
+That is the whole of it for one machine. **If you share a repository with
+anyone, it is not a personal upgrade**: `.inkentry/config.toml` is tracked, and
+so is every committed script, CI step and agent instruction that calls the CLI,
+so one person's commit reaches colleagues still on the old binary. See
+[Upgrading](upgrading.md) for the team sequence, the symptoms, and what to do if
+you already upgraded without exporting.
+
 ## 2. Cold start: index and get your first answer
 
 ```bash
