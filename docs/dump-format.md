@@ -4,13 +4,24 @@ A **dump** is your project's stored data written out as a plain text file: one
 JSON object per line, readable in any editor, diffable in git, and re-importable
 into inkentry.
 
-It exists so that four things are possible without asking anyone's permission:
+The format exists so that four things are possible without asking anyone's
+permission:
 
 - **Take a backup** that is not a copy of an opaque database file.
 - **Inspect what is actually stored**, with `less` and `jq` rather than a SQL client.
 - **Move a project between machines**, including between machines running
   different versions of inkentry.
 - **Leave**, with your data in a form something other than inkentry can read.
+
+**Those four are what the format is for. They are not a list of what inkentry
+does today.** Every one of them needs something that *writes* a dump, and
+inkentry only reads them: `inkentry import` brings a dump into a project, and
+there is no `inkentry export`. The writer that exists today is `spelunk-export`,
+which ships with the predecessor product so that a store written before 1.0.0
+can cross into this one (see [upgrading from
+spelunk](getting-started.md#upgrading-from-spelunk-098-or-earlier)). If you
+started at 1.0.0 you have no such store, and nothing on your machine will write
+one of these files for you.
 
 This document is the specification. It is written for anyone implementing a
 reader or a writer, including implementations that are not inkentry.
@@ -107,7 +118,7 @@ neither the file nor the entry it came from.
 | `generator` | string | ✓ | Producing tool and version, free text, **informational only** |
 
 ```json
-{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"inkentry/1.0.0"}
+{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"spelunk-export/0.9.9"}
 ```
 
 - A reader **must refuse a `format` it does not recognise**. A file that is not
@@ -355,7 +366,7 @@ entries, so treat their contents with the same care as the entries themselves.
 A dump of three memory entries, one of which supersedes another:
 
 ```
-{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"inkentry/1.0.0"}
+{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"spelunk-export/0.9.9"}
 {"record":"entity","type":"memory_entry","ref":"e1","uuid":"0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33","kind":"decision","title":"Old choice","body":"we did X","tags":["a","b"],"linked_files":["src/x.rs"],"created_at":1000,"status":"superseded","source_ref":"commit:abc","entity_id":"ent-1"}
 {"record":"entity","type":"memory_entry","ref":"e2","kind":"decision","title":"New choice","body":"we now do Y","created_at":2000,"status":"active","valid_at":1500}
 {"record":"entity","type":"memory_entry","ref":"e3","kind":"note","title":"Aside","body":"related thing","created_at":3000,"remote_id":"rem-9"}
