@@ -80,6 +80,21 @@ That's a hard break, not the kind of drift version skew tolerates, so the
 server and every client need to upgrade together, in one window, rather than
 drifting the way the rest of this doc allows.
 
+**Upgrade the server first.** Its own store (`server.db`) migrates in place —
+unlike a client's `memory.db`, there's no export/import step, no refusal, and
+no version stamp to check. Redeploy the new `inkentry-server` binary the same
+way you deployed it originally (restart the systemd unit, or `docker compose
+pull && docker compose up -d` — see [Server setup](server-setup.md)); the
+migration ladder runs automatically the moment it opens the store, before it
+starts accepting requests.
+
+Once the server's up on the new version, every client upgrades inside the
+same window and does its own local migration:
+
+```bash
+curl -fsSL https://get.inkentry.com/migrate.sh | sh
+```
+
 Under `mode = "cloud_first"`, `inkentry import` refuses to run locally (the
 server is the store of record). Import local first, then push it up:
 
