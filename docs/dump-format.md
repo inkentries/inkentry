@@ -21,11 +21,11 @@ which git notes never touched. Git notes also structurally can't carry
 `depends_on` relationships: `GitNotesBackend` refuses those operations
 (`add_edge`/`get_edges` return `BackendUnsupported`) by design, since it only
 ever carried individual memory entries, not the rest of the store. A dump is
-the only path that carries all of it, which is why the predecessor migration
-uses one instead of a `refs/notes` rename.
+the only path that carries all of it.
 
-This document is the specification, written for anyone implementing a reader
-or a writer, inkentry or otherwise. **Current version: `format_version` 1.**
+This document is the specification of the format used by `inkentry import`,
+written for anyone implementing a reader. **Current version:
+`format_version` 1.**
 
 ## Entities and relationships, not tables
 
