@@ -258,6 +258,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The local relay's idle-retirement can no longer orphan a session a request
+  just touched.** `push`/`poll`/`ack` used to release the sessions-map lock
+  before recording the call as liveness, and idle retirement re-locks that same
+  map to recheck; if retirement won that gap it could remove a session on a
+  stale timestamp while the in-flight call still held the (now orphaned)
+  session. Because the session's background pull task never restarts once
+  started, the effect was background sync stalling until the next `push`
+  re-registered the project. Liveness is now recorded under the same lock
+  acquisition that finds or creates the session, so the two decisions always
+  read the same observation.
 - **A daemon started from a shell now survives that shell exiting.** On Unix the
   spawned `inkentry-server` was orphaned but never left the spawning terminal's
   session and process group, so closing the terminal SIGHUPed the "background"
