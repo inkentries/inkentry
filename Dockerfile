@@ -58,21 +58,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # third-party deps (candle, etc.) then land in a layer that only busts when a
 # Cargo.toml / Cargo.lock changes. Every member manifest must be present and
 # its declared target source must exist, or cargo refuses to load the
-# workspace — even members the server bin doesn't depend on.
+# workspace — even members the server bin doesn't depend on, and even targets
+# nothing here builds: an explicit `[[example]]`/`[[bin]]` block is a declared
+# target, so adding one means adding a placeholder for it below.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/inkentry-core/Cargo.toml   crates/inkentry-core/Cargo.toml
 COPY crates/inkentry-cli/Cargo.toml    crates/inkentry-cli/Cargo.toml
 COPY crates/inkentry-embed/Cargo.toml  crates/inkentry-embed/Cargo.toml
 COPY crates/inkentry-server/Cargo.toml crates/inkentry-server/Cargo.toml
 RUN mkdir -p crates/inkentry-core/src crates/inkentry-cli/src \
-             crates/inkentry-embed/src crates/inkentry-server/src && \
+             crates/inkentry-embed/src crates/inkentry-server/src \
+             crates/inkentry-core/examples && \
     : > crates/inkentry-core/src/lib.rs && \
     : > crates/inkentry-embed/src/lib.rs && \
     : > crates/inkentry-server/src/lib.rs && \
     echo 'fn main(){}' > crates/inkentry-cli/src/main.rs && \
     echo 'fn main(){}' > crates/inkentry-server/src/main.rs && \
+    echo 'fn main(){}' > crates/inkentry-core/examples/chunk_quality_eval.rs && \
     cargo build --release --bin inkentry-server && \
-    rm -rf crates/*/src
+    rm -rf crates/*/src crates/inkentry-core/examples
 
 # Now copy the real source and build properly. BuildKit normalizes COPY mtimes
 # to a constant OLDER than the cached placeholder artifacts, so cargo's
