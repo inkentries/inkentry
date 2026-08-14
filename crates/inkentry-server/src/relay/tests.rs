@@ -955,6 +955,81 @@ async fn a_valid_ca_bundle_builds_both_clients() {
     assert!(!err.contains("INKENTRY_SERVER_CA"), "{err}");
 }
 
+// ── retirement's recheck and a live call must agree on one observation ──
+//
+// `session_for`/`lookup` used to release the sessions-map lock, then call
+// `touch()` as a separate step. `retire_if_idle` also locks that map before
+// rechecking `idle_for()`, so if it won that gap it would remove the session
+// on a stale `last_seen` while the caller that just found/created it still
+// held the (now orphaned) `Arc`. These force the gap open by staling
+// `last_seen` past the idle timeout right before the call under test, then
+// firing the retirement recheck immediately after — proving the recheck
+// never wins against a call that just observed the session live.
+
+async fn stale(session: &Arc<RelaySession>, past: Duration) {
+    session.inner.lock().await.last_seen = Instant::now() - past;
+}
+
+#[tokio::test]
+async fn retirement_recheck_cannot_remove_a_session_a_push_just_touched() {
+    let t = target("https://team.example", "proj");
+    let registry = RelayRegistry::with_idle_timeout(
+        RelayPolicy::allowing(vec![t.clone()]),
+        Duration::from_millis(50),
+    );
+    let session = registry.session_for(&t).await.unwrap();
+    stale(&session, Duration::from_millis(200)).await;
+
+    // What `push` does before spawning its background work.
+    let touched = registry.session_for(&t).await.unwrap();
+
+    assert!(
+        !registry.retire_if_idle(&touched).await,
+        "a session a push call just found/touched must not be retired"
+    );
+    assert_eq!(registry.session_count().await, 1);
+}
+
+#[tokio::test]
+async fn retirement_recheck_cannot_remove_a_session_a_poll_just_touched() {
+    let t = target("https://team.example", "proj");
+    let registry = RelayRegistry::with_idle_timeout(
+        RelayPolicy::allowing(vec![t.clone()]),
+        Duration::from_millis(50),
+    );
+    let session = registry.session_for(&t).await.unwrap();
+    stale(&session, Duration::from_millis(200)).await;
+
+    // What `poll` does before calling `touch()`.
+    let found = registry.lookup(&t.server_url, &t.project_id).await.unwrap();
+
+    assert!(
+        !registry.retire_if_idle(&found).await,
+        "a session a poll call just found/touched must not be retired"
+    );
+    assert_eq!(registry.session_count().await, 1);
+}
+
+#[tokio::test]
+async fn retirement_recheck_cannot_remove_a_session_an_ack_just_touched() {
+    let t = target("https://team.example", "proj");
+    let registry = RelayRegistry::with_idle_timeout(
+        RelayPolicy::allowing(vec![t.clone()]),
+        Duration::from_millis(50),
+    );
+    let session = registry.session_for(&t).await.unwrap();
+    stale(&session, Duration::from_millis(200)).await;
+
+    // What `ack` does before calling `touch()`.
+    let found = registry.lookup(&t.server_url, &t.project_id).await.unwrap();
+
+    assert!(
+        !registry.retire_if_idle(&found).await,
+        "a session an ack call just found/touched must not be retired"
+    );
+    assert_eq!(registry.session_count().await, 1);
+}
+
 // A throwaway self-signed CA: proves the bundle is parsed and accepted as a
 // trust anchor. Not trusted by anything real.
 const TEST_CA_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----\n\
