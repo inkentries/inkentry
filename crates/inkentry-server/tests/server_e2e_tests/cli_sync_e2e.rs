@@ -22,7 +22,7 @@
 //!   created via the single-note POST route (`remote_id = NULL`), and a
 //!   second pull with the advanced cursor returns nothing further.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 

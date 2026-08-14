@@ -10,7 +10,7 @@
 //! skipped (the machine can't mint a cert), so CI images without openssl don't
 //! hard-fail.
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 use std::path::Path;

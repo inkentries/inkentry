@@ -4,7 +4,7 @@
 //! sqlite-vec must be registered before any `ServerDb` is opened, so all
 //! tests in this file use `#[serial]`.
 
-mod common;
+use crate::common;
 
 use axum::{
     body::Body,

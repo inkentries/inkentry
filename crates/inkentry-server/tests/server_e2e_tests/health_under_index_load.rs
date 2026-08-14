@@ -25,7 +25,7 @@
 
 #![cfg(feature = "embed-native")]
 
-mod common;
+use crate::common;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
