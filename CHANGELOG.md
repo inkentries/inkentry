@@ -258,6 +258,18 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`status` no longer misreads a foreign pid as a live embed worker when the
+  project path itself contains "inkentry" and "index".** The liveness check
+  matched those two words as a substring anywhere in the recorded pid's
+  `ps -o args=` output, which includes the running binary's full path — so a
+  project kept under, say, `~/code/inkentry/indexing/`, or a worktree branch
+  named similarly, made any live-but-unrelated process recycling that pid read
+  as a running worker. `status` then reported "Embedding in progress"
+  indefinitely after a crash, and the stale pid record was never cleaned up
+  because it always looked live. The check now requires the pid's own binary to
+  be `inkentry` exactly and an actual `index` subcommand token, not a substring
+  anywhere on the line; the Windows `tasklist` path is tightened the same way,
+  to an exact image-name match.
 - **The local relay's idle-retirement can no longer orphan a session a request
   just touched.** `push`/`poll`/`ack` used to release the sessions-map lock
   before recording the call as liveness, and idle retirement re-locks that same

@@ -112,6 +112,50 @@ fn classify_worker_pid(alive: bool, looks_like_worker: bool) -> WorkerLiveness {
     }
 }
 
+/// True when `name` is exactly the inkentry binary's file name (its Windows
+/// extension included), never a substring match. A checkout path or an
+/// unrelated binary can easily contain "inkentry" somewhere in it; only exact
+/// identity is safe to trust.
+fn is_inkentry_exe_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("inkentry") || name.eq_ignore_ascii_case("inkentry.exe")
+}
+
+/// Judge a `ps -o args=`-style command-line string against the two real
+/// invocation shapes (`<exe> index <path> --_embed-phases ...` detached, or
+/// `<exe> index <path>` foreground resume): argv0's file name must be the
+/// inkentry binary exactly, and some later token must be the exact `index`
+/// subcommand. Matching on parsed argv0/tokens instead of a substring search
+/// over the whole line is what stops a checkout path that happens to contain
+/// both words (e.g. `.../inkentry/index-workspace/...`) from satisfying the
+/// check on identity alone.
+#[cfg(any(unix, test))]
+fn command_looks_like_index_run(command_line: &str) -> bool {
+    let mut tokens = command_line.split_whitespace();
+    let Some(argv0) = tokens.next() else {
+        return false;
+    };
+    let exe_name = Path::new(argv0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(argv0);
+    is_inkentry_exe_name(exe_name) && tokens.any(|t| t == "index")
+}
+
+/// Judge a `tasklist /FO CSV /NH` line by its leading quoted image-name field,
+/// compared exactly rather than as a substring. `tasklist` exposes no argv, so
+/// unlike the Unix path there is no `index` token to check; exact image-name
+/// equality is the most identity can be narrowed to here.
+#[cfg(any(windows, test))]
+fn tasklist_line_matches_inkentry(line: &str) -> bool {
+    let image_name = line
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"');
+    is_inkentry_exe_name(image_name)
+}
+
 /// Return `true` when `pid`'s command line looks like a inkentry index run
 /// (the detached `--_embed-phases` worker or a foreground resume).
 fn process_looks_like_index_run(pid: u32) -> bool {
@@ -122,24 +166,20 @@ fn process_looks_like_index_run(pid: u32) -> bool {
             .output()
         {
             Ok(out) if out.status.success() => {
-                let args = String::from_utf8_lossy(&out.stdout);
-                args.contains("inkentry") && args.contains("index")
+                command_looks_like_index_run(&String::from_utf8_lossy(&out.stdout))
             }
             _ => false,
         }
     }
     #[cfg(windows)]
     {
-        // tasklist exposes only the image name, so match on the binary; the
-        // worst case of the coarser match is reporting another inkentry
-        // process's pid as a live worker, never a foreign process's.
         match std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .output()
         {
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-                .to_lowercase()
-                .contains("inkentry"),
+            Ok(out) if out.status.success() => {
+                tasklist_line_matches_inkentry(&String::from_utf8_lossy(&out.stdout))
+            }
             _ => false,
         }
     }
@@ -239,6 +279,88 @@ mod tests {
         // command line is not a inkentry index run. Reporting it as "Embedding
         // in progress" is exactly the guess D4 removes.
         assert_eq!(classify_worker_pid(true, false), WorkerLiveness::NotRunning);
+    }
+
+    // ── command_looks_like_index_run: identity from parsed argv, not a raw
+    //    substring search over the whole command line ─────────────────────
+
+    #[test]
+    fn detached_embed_worker_command_line_matches() {
+        assert!(command_looks_like_index_run(
+            "/home/user/inkentry/target/release/inkentry index /home/user/proj --_embed-phases --batch-size 8"
+        ));
+    }
+
+    #[test]
+    fn foreground_resume_command_line_matches() {
+        assert!(command_looks_like_index_run(
+            "/usr/local/bin/inkentry index /home/user/proj"
+        ));
+    }
+
+    #[test]
+    fn path_containing_both_substrings_but_wrong_binary_does_not_match() {
+        // The exact shape that broke `status`: a checkout path carries both
+        // "inkentry" and "index" as path segments, but the running binary is
+        // the test harness, not `inkentry` itself.
+        assert!(!command_looks_like_index_run(
+            "/home/user/inkentry/index-workspace/target/debug/deps/e2e_cli-abc123 some_test_name"
+        ));
+    }
+
+    #[test]
+    fn inkentry_binary_without_an_index_token_does_not_match() {
+        assert!(!command_looks_like_index_run(
+            "/usr/local/bin/inkentry status"
+        ));
+    }
+
+    #[test]
+    fn a_token_merely_containing_index_is_not_the_exact_subcommand() {
+        assert!(!command_looks_like_index_run(
+            "/usr/local/bin/inkentry reindex-everything"
+        ));
+    }
+
+    #[test]
+    fn empty_command_line_does_not_match() {
+        assert!(!command_looks_like_index_run(""));
+        assert!(!command_looks_like_index_run("   "));
+    }
+
+    // ── is_inkentry_exe_name: exact identity, both platforms' names ────────
+
+    #[test]
+    fn exact_binary_names_match_case_insensitively() {
+        assert!(is_inkentry_exe_name("inkentry"));
+        assert!(is_inkentry_exe_name("INKENTRY"));
+        assert!(is_inkentry_exe_name("inkentry.exe"));
+        assert!(is_inkentry_exe_name("Inkentry.EXE"));
+    }
+
+    #[test]
+    fn names_only_containing_inkentry_as_a_substring_do_not_match() {
+        assert!(!is_inkentry_exe_name("notinkentry"));
+        assert!(!is_inkentry_exe_name("inkentry-tool"));
+        assert!(!is_inkentry_exe_name("my-inkentry-thing.exe"));
+    }
+
+    // ── tasklist_line_matches_inkentry: Windows CSV image-name field ───────
+    // Reasoned through rather than run (tasklist isn't available here), but
+    // the parsing is pure and platform-independent so it's exercised on any host.
+
+    #[test]
+    fn tasklist_csv_line_with_exact_image_name_matches() {
+        assert!(tasklist_line_matches_inkentry(
+            r#""inkentry.exe","1234","Console","1","12,345 K""#
+        ));
+    }
+
+    #[test]
+    fn tasklist_csv_line_with_substring_only_image_name_does_not_match() {
+        assert!(!tasklist_line_matches_inkentry(
+            r#""notinkentry.exe","1234","Console","1","12,345 K""#
+        ));
     }
 
     // ── worker_key: per-project isolation ───────────────────────────────────
