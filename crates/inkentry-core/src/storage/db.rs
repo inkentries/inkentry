@@ -431,6 +431,77 @@ mod tests {
             .unwrap()
     }
 
+    // The authored/derived split `index_001_initial.sql` states next to
+    // `usage`, restated here as the two lists
+    // `every_table_in_a_fresh_index_is_classified_as_authored_or_derived`
+    // checks a fresh index against.
+    const DERIVED_TABLES: &[&str] = &[
+        "files",
+        "chunks",
+        "chunks_fts",
+        "embeddings",
+        "graph_edges",
+        "specs",
+        "spec_links",
+        "conventions",
+        "index_meta",
+    ];
+    const AUTHORED_TABLES: &[&str] = &["usage"];
+
+    // FTS5 and vec0 each own a set of shadow tables (`chunks_fts_data`,
+    // `embeddings_info`, and so on) that no `CREATE TABLE` in the schema
+    // declares directly; they belong to their virtual table's classification,
+    // not one of their own.
+    fn is_virtual_table_shadow(name: &str) -> bool {
+        ["chunks_fts", "embeddings"]
+            .iter()
+            .any(|vt| name.starts_with(&format!("{vt}_")))
+    }
+
+    // A table added to `index_001_initial.sql` without a decision about
+    // whether `Database::rebuild` needs to carry it across must fail a test,
+    // not go unnoticed until a user reports lost data. This enumerates every
+    // real table a fresh index actually has and checks each one against the
+    // classification above; a table in neither list fails with a message
+    // naming the decision to make, not a bare assertion diff. The reverse
+    // check (a listed name that no longer exists) catches the classification
+    // going stale the other way.
+    #[test]
+    fn every_table_in_a_fresh_index_is_classified_as_authored_or_derived() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
+        let mut stmt = db
+            .conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|n| !is_virtual_table_shadow(n))
+            .collect();
+
+        for name in &names {
+            assert!(
+                DERIVED_TABLES.contains(&name.as_str()) || AUTHORED_TABLES.contains(&name.as_str()),
+                "table {name:?} exists in a fresh index.db but is classified as neither \
+                 derived nor authored here. Decide whether a rebuild reproduces it correctly \
+                 by discarding it (add it to DERIVED_TABLES) or whether it must be carried \
+                 across like `usage` (add it to AUTHORED_TABLES and teach Database::rebuild to \
+                 carry it), then update index_001_initial.sql's comment to match."
+            );
+        }
+        for name in DERIVED_TABLES.iter().chain(AUTHORED_TABLES) {
+            assert!(
+                names.iter().any(|n| n == name),
+                "the classification names {name:?} but a fresh index.db has no such table; \
+                 the list is stale"
+            );
+        }
+    }
+
     /// A freshly created DB runs every migration and ends stamped at the latest
     /// version.
     #[test]
