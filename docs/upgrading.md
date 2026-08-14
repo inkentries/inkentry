@@ -1,7 +1,7 @@
 # Upgrading to 1.0.0
 
-1.0.0 is the first release that will not open a store an earlier build wrote.
-Neither store migrates:
+1.0.0 is the first release that will not open a memory store an earlier build
+wrote. Neither store migrates:
 
 | Store | What 1.0.0 does | Getting back to working |
 |---|---|---|
@@ -13,94 +13,81 @@ is not destructive — but **deleting the store and re-running `init` is**, and
 that's the natural instinct once the refusal looks like a broken install.
 Don't.
 
-## The sequence
+## Run the migration script
 
-1. **Agree a window and announce it.** State the date and the one rule:
-   everyone exports their own memory, from the version they're still running,
-   before upgrading anything.
-2. **One person goes first.** Upgrade, re-index, `inkentry import` your dump,
-   then push — that puts the team's memory on the shared carrier in a form
-   1.0.0 reads. Fix any committed script, CI step, or agent instruction that
-   depends on the changed output shape, but hold that commit until step 4.
-3. **Report back** how long the re-index took on the real repository. That's
-   what everyone else plans around.
-4. **Everyone else upgrades inside the window**, then re-indexes. Import is
-   usually a no-op for them — their entries already arrived via the notes ref
-   — but their own dump still matters: it's the only thing carrying
-   `relates_to`/`contradicts` edges. Once everyone's across, land the commit
-   held back at step 2.
-5. **Anyone who was away** exports first, then upgrades, then re-indexes —
-   same sequence, just later. This is the step people skip, because by the
-   time they're back it feels like catching up rather than a migration.
+Check where memory lives first: `inkentry status`. If it shows a server, skip
+straight to [Teams running a shared inkentry-server](#teams-running-a-shared-inkentry-server)
+— this section is about the local store.
 
-Running a shared `inkentry-server`? See [Teams running a shared
-server](#teams-running-a-shared-server) — that one moves all at once, not in
-a window.
-
-## Before you upgrade: get your memory out
+Otherwise, this is usually the whole job. It installs inkentry, finds every
+spelunk store on the machine, exports and imports each one, offers to
+re-index, and only then retires spelunk — see [get.inkentry.com](https://get.inkentry.com)
+for what it does step by step:
 
 ```bash
-inkentry memory list      # what's in your local store
-inkentry status           # where it actually lives
+curl -fsSL https://get.inkentry.com/migrate.sh | sh
 ```
 
-If `status` shows memory living on a server, skip to [Teams running a shared
-server](#teams-running-a-shared-server) — this section is about the local
-store.
-
-**Export it.** `spelunk-export` reads `memory.db` and writes a [portable
-dump](dump-format.md). It's a separate download from [the predecessor's
-releases](https://github.com/spelunk-cloud/spelunk/releases) — writing a dump
-means opening a store 1.0.0 refuses to, so the tool lives on the side that
-still can. Bring the dump across with:
+Preview first with no changes made:
 
 ```bash
+curl -fsSL https://get.inkentry.com/migrate.sh | INKENTRY_MIGRATE_DRY_RUN=1 sh
+```
+
+Your `.spelunk` directories are never modified or deleted — they're the
+script's own recovery path if something goes wrong.
+
+**Exception:** the script finds stores by scanning for `.spelunk/` directories.
+If `.inkentry/memory.db` already exists (you're on 0.9.8 or a later pre-1.0
+build, past the rename but not carried across), that scan won't see it, and
+the script's own `inkentry import` step fails against it the same way any
+command does. Export and swap it in by hand instead:
+
+```bash
+spelunk-export --store .inkentry/memory.db --out project.dump
+mv .inkentry/memory.db ~/memory-backup.db   # import re-creates the store; it refuses the old one in place, same as any other command
 inkentry import project.dump
 ```
 
-`import` verifies the whole file before writing anything, is idempotent (safe
-to run twice), and **publishes**: entries land on `refs/notes/inkentry`, so
-anyone who fetches gets them. One person can import for the whole team.
+`spelunk-export` is a standalone per-platform download from [the predecessor's
+releases](https://github.com/spelunk-cloud/spelunk/releases) — not in the
+inkentry archive, since writing a dump means opening a store 1.0.0 refuses to.
 
-**No export tool handy?** If your memory was ever published to git notes
-(`inkentry hooks install --pre-push`, or a manual push of the ref), a fresh
-`init` recovers it automatically. Coming from 0.9.8 specifically, fetch the
-old ref under its new name first — the predecessor wrote
-`refs/notes/spelunk`, 1.0.0 reads `refs/notes/inkentry`:
+Either way, `import` verifies the whole dump before writing anything and is
+idempotent (safe to run twice). It writes to your local `.inkentry/memory.db`
+— gitignored, never pushed — and separately appends the same entries to
+`refs/notes/inkentry`, a git ref. `git push` (or the `inkentry hooks install
+--pre-push` hook) carries *that* ref, not the database file, to everyone who
+fetches. One person can run this for the whole team.
 
-```bash
-git fetch <remote> 'refs/notes/spelunk:refs/notes/inkentry'
-```
+## What actually needs coordinating
 
-This fallback loses two things the dump doesn't: `relates_to`/`contradicts`
-edges (notes only carry `supersedes`), and anything recorded with
-`store_in_git_notes = false`. Good enough to unblock, not a substitute for
-the dump.
+Running the script, or the manual export, is a per-machine action — nothing
+about it needs the team's permission or a shared window. Two things do:
 
-Either way, `cp .inkentry/memory.db ~/memory-backup.db` costs nothing and
-keeps the export option open even after the fact.
+- **Tracked tooling.** `.inkentry/config.toml`, and any committed script, CI
+  step, hook, or agent instruction that calls `inkentry`, is tracked and
+  reaches everyone the moment it's committed. If one depends on an output
+  shape that changed (`search --format json` and every memory-entry id both
+  did — see [symptoms](#appendix-symptoms-if-you-skip-this) below), land the
+  fix like any other code change: colleagues still on 0.9.x keep working
+  against 0.9.x's shapes until they upgrade too, so there's no window to hit.
+- **A shared `inkentry-server`.** The one place a real cutover matters — see
+  below.
 
-## If you already upgraded without exporting
+Everything else can happen in any order, at anyone's own pace: the git-notes
+carrier's format hasn't changed, so a half-upgraded team keeps reading each
+other's memory throughout, and `index.db` is per-machine and gitignored, so
+re-indexing never needs coordinating either.
 
-Nothing is lost yet.
+## Teams running a shared inkentry-server
 
-1. Copy `.inkentry/memory.db` somewhere safe now.
-2. **Don't delete it and re-`init`.** That's the one action that turns this
-   from recoverable into not — and it looks like a fix, because search and
-   memory both start working again on an empty store.
-3. Export the copy with `spelunk-export`, then `inkentry import` the dump.
-
-No copy, and memory was never published to notes? It's gone. Published? A
-fresh `init` recovers what reached the ref, minus the two edge kinds above.
-
-## Teams running a shared server
-
-An explicit `server_url` adds a second problem: entries are now identified
-by UUIDv7 instead of integers, with no compatibility mapping between them —
-a client holding an old integer id won't resolve it against an upgraded
-server. Server and clients move together, in one window, not staggered like
-the rest of this doc. See [Version skew](version-skew.md) for what does and
-doesn't tolerate a mismatch.
+An explicit `server_url` adds a real problem: entries are identified by
+UUIDv7 instead of integers, with no compatibility mapping between them — a
+client holding an old integer id won't resolve it against an upgraded server.
+Server and clients move together, in one window, unlike the rest of this doc.
+See [Version skew](version-skew.md) for what does and doesn't tolerate a
+mismatch.
 
 Under `mode = "cloud_first"`, `inkentry import` refuses to run locally (the
 server is the store of record). Import local first, then push it up:
@@ -110,17 +97,22 @@ INKENTRY_MODE=local_first inkentry import project.dump
 inkentry sync
 ```
 
-## What doesn't need coordinating
+## If you already upgraded without exporting
 
-- **Re-indexing.** `index.db` is per-machine and gitignored — re-index
-  whenever it suits you. `inkentry index --detach-embed` gets full-text
-  search back immediately on a large repo while semantic ranking catches up
-  behind it.
-- **Re-embedding memory.** `import` embeds automatically; if it can't (no
-  embedder reachable, or `--no-embed`), it still commits and tells you to run
-  `inkentry memory reindex` later. `status` reports the pending count.
-- **Reading a colleague's notes across the boundary.** The git-notes format
-  is frozen, so a half-upgraded team still sees each other's memory.
+Nothing is lost yet.
+
+1. Move `.inkentry/memory.db` somewhere safe now — a rename, not a copy: the
+   path needs to be clear before `inkentry import` can write there.
+2. **Don't just delete it and re-`init`.** That's the action that turns this
+   from recoverable into not, and it looks like a fix, because search and
+   memory both start working again on an empty store.
+3. Export it from its new location with `spelunk-export`, then `inkentry
+   import` the dump.
+
+No backup, and memory was never published to notes? It's gone. Published? A
+fresh `init` recovers what reached the ref, minus edges git notes can't carry
+(`relates_to`/`contradicts` — notes only hold `supersedes`) and anything
+recorded with `store_in_git_notes = false`.
 
 ## Appendix: symptoms if you skip this
 
