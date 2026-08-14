@@ -22,7 +22,7 @@
 #   scripts/check-git-isolation.sh --self-test  # regression-tests this script
 set -euo pipefail
 
-ISOLATION_MARKER='fn isolate_git_config|isolate_git_config\(|git_command\(|mod common;|mod plumbing_helpers;'
+ISOLATION_MARKER='fn isolate_git_config|isolate_git_config\(|git_command\(|mod common;|mod plumbing_helpers;|use crate::common;|use crate::plumbing_helpers;'
 
 # Matches `<Path>::new("git")` for any type-path prefix (covers a renamed
 # `Command` import), tolerant of whitespace/line-wraps from rustfmt.
@@ -45,7 +45,7 @@ check_region() {
   fi
 
   echo "ERROR: $label spawns \`git\` via a \`*::new(\"git\")\` call without wiring in git-config isolation" >&2
-  echo "  (expected a call to isolate_git_config()/git_command(), or a \`mod common;\`/\`mod plumbing_helpers;\` import of the shared fixture)" >&2
+  echo "  (expected a call to isolate_git_config()/git_command(), or a \`mod common;\`/\`mod plumbing_helpers;\`/\`use crate::common;\`/\`use crate::plumbing_helpers;\` import of the shared fixture)" >&2
   fail=1
 }
 
@@ -127,6 +127,19 @@ fn spawns_git_isolated() {
 }
 EOF
 
+  # Nested-module form: the file is loaded via #[path] from a consolidated
+  # test binary's root, so it imports the fixture declared there instead of
+  # declaring its own `mod common;`. Must not be flagged.
+  cat >"$tmp/crates/fake-crate/tests/good_use_crate.rs" <<'EOF'
+use crate::common;
+
+#[test]
+fn spawns_git_isolated_via_use_crate() {
+    common::isolate_git_config();
+    std::process::Command::new("git").arg("status").status().unwrap();
+}
+EOF
+
   # No git spawn at all: must never be flagged.
   cat >"$tmp/crates/fake-crate/tests/unrelated.rs" <<'EOF'
 #[test]
@@ -179,6 +192,10 @@ EOF
     fi
     if grep -q 'tests/good.rs' /tmp/self_test_out; then
       echo "SELF-TEST FAIL: good.rs (isolated) was incorrectly flagged" >&2
+      failures=1
+    fi
+    if grep -q 'tests/good_use_crate.rs' /tmp/self_test_out; then
+      echo "SELF-TEST FAIL: good_use_crate.rs (isolated via use crate::common;) was incorrectly flagged" >&2
       failures=1
     fi
     if grep -q 'tests/unrelated.rs' /tmp/self_test_out; then
