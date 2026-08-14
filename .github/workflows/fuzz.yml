@@ -41,17 +41,16 @@ jobs:
           rustup update nightly
           rustup default nightly
 
-      - name: Cache cargo registry and binaries
-        uses: actions/cache@v6
+      # `fuzz/` is a standalone workspace (see the lockfile-alignment step
+      # above), so it needs its own workspace/target entry rather than the
+      # default `. -> target`. cargo-fuzz isn't in install-action's tool
+      # manifest, so it still self-installs below; Swatinem/rust-cache still
+      # covers that build (into ~/.cargo/bin, cached by default) plus the
+      # fuzz targets' own build cache.
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target
-          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-fuzz-
+          workspaces: "fuzz -> target"
 
       - name: Install cargo-fuzz
         run: cargo-fuzz --version 2>/dev/null || cargo +nightly install cargo-fuzz --locked
