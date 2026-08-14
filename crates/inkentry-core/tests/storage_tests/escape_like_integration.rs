@@ -10,8 +10,7 @@
 //! process-global and `common::open_test_db()` must be the first call to open
 //! any connection in the process.
 
-mod common;
-
+use crate::common;
 use serial_test::serial;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

@@ -3,8 +3,7 @@
 //! All tests use in-memory SQLite so they are hermetic (no LLM, no network).
 //! DB tests are annotated `#[serial]` because `sqlite3_auto_extension` is process-global.
 
-mod common;
-
+use crate::common;
 use serial_test::serial;
 
 use inkentry_core::conventions::{

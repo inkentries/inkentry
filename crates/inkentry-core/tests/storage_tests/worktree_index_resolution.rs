@@ -14,8 +14,7 @@
 //! developer's ambient global/system git config, so an ambient `core.hooksPath`
 //! or `commit.gpgsign` can never reach these setup commands either.
 
-mod common;
-
+use crate::common;
 use inkentry_core::config::find_project_db;
 use inkentry_core::utils::resolve_main_worktree_root;
 
@@ -134,7 +133,7 @@ fn real_git_worktree_resolves_to_main_index_survives_a_hostile_ambient_hooks_pat
 
     let exe = std::env::current_exe().expect("current test binary");
     let status = std::process::Command::new(exe)
-        .arg("real_git_worktree_resolves_to_main_index")
+        .arg("worktree_index_resolution::real_git_worktree_resolves_to_main_index")
         .arg("--exact")
         .env("GIT_CONFIG_GLOBAL", &global_config)
         .status()
@@ -205,7 +204,7 @@ fn git_command_commit_identity_matches_local_config_not_ambient_env() {
 fn git_command_commit_identity_survives_a_hostile_ambient_author_committer_env() {
     let exe = std::env::current_exe().expect("current test binary");
     let status = std::process::Command::new(exe)
-        .arg("git_command_commit_identity_matches_local_config_not_ambient_env")
+        .arg("worktree_index_resolution::git_command_commit_identity_matches_local_config_not_ambient_env")
         .arg("--exact")
         .env("GIT_AUTHOR_NAME", "Ambient Poison")
         .env("GIT_AUTHOR_EMAIL", "poison@evil.example")

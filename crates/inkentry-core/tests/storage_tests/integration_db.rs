@@ -4,8 +4,7 @@
 //! extension loaded.  They must run serially because sqlite3_auto_extension
 //! is process-global.
 
-mod common;
-
+use crate::common;
 use inkentry_core::indexer::graph::{Edge, EdgeKind};
 use serial_test::serial;
 

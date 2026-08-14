@@ -15,8 +15,7 @@
 //! loudly", never "all must land": heavy legitimate contention may exceed the
 //! wait budget, and that surfaces as an error, not a loss.
 
-mod common;
-
+use crate::common;
 use inkentry_core::storage::GitNotesBackend;
 use inkentry_core::storage::MemoryBackend;
 use inkentry_core::storage::NoteInput;
@@ -3290,7 +3289,11 @@ async fn merge_skips_without_touching_the_ref_when_another_process_holds_the_loc
     let ref_before = git_stdout_at(root, &["rev-parse", "refs/notes/inkentry"]);
 
     let mut child = std::process::Command::new(std::env::current_exe().expect("current_exe"))
-        .args(["--exact", "lock_holder_child", "--ignored"])
+        .args([
+            "--exact",
+            "integration_git_notes::lock_holder_child",
+            "--ignored",
+        ])
         .env(LOCK_HOLDER_REPO_ENV, root)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
