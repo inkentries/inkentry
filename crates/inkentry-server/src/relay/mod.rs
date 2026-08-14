@@ -644,23 +644,39 @@ impl RelayRegistry {
         Ok(target)
     }
 
+    /// Finds-or-creates and touches the session under the *same* sessions-map
+    /// lock acquisition. [`Self::retire_if_idle`] also locks this map before
+    /// rechecking `idle_for()`, so touching after releasing this lock (the
+    /// old shape) left a gap where retirement could see a still-stale
+    /// `last_seen` and remove a session this call had just found or created,
+    /// orphaning the `Arc` the caller was about to use.
     async fn session_for(&self, target: &TeamTarget) -> Result<Arc<RelaySession>, RelayRefused> {
         let key = RelayKey::new(&target.server_url, &target.project_id);
         let mut map = self.0.sessions.lock().await;
         if let Some(existing) = map.get(&key) {
-            return Ok(existing.clone());
+            let existing = existing.clone();
+            existing.touch().await;
+            return Ok(existing);
         }
         if map.len() >= MAX_RELAY_SESSIONS {
             return Err(RelayRefused(REFUSED_AT_CAPACITY));
         }
         let session = Arc::new(RelaySession::new(key.clone(), target, self.0.idle_timeout));
+        session.touch().await;
         map.insert(key, session.clone());
         Ok(session)
     }
 
+    /// Finds and touches the session under the same sessions-map lock
+    /// acquisition, for the same reason [`Self::session_for`] does: it must
+    /// never hand back a session that a racing [`Self::retire_if_idle`] can
+    /// still remove on a stale observation.
     async fn lookup(&self, server_url: &str, project_id: &str) -> Option<Arc<RelaySession>> {
         let key = RelayKey::new(server_url.trim(), project_id.trim());
-        self.0.sessions.lock().await.get(&key).cloned()
+        let map = self.0.sessions.lock().await;
+        let session = map.get(&key)?.clone();
+        session.touch().await;
+        Some(session)
     }
 
     /// Drop a session that has gone idle, reporting whether it was actually
@@ -689,7 +705,6 @@ impl RelayRegistry {
     pub async fn push(&self, req: RelayPushRequest) -> Result<(), RelayRefused> {
         let target = self.resolve(&req.server_url, &req.project_id)?;
         let session = self.session_for(&target).await?;
-        session.touch().await;
         session.set_bearer(req.bearer).await;
         session.seed_cursor(req.since_cursor).await;
         self.ensure_pull_task(session.clone()).await;
@@ -706,10 +721,7 @@ impl RelayRegistry {
     /// must not spawn anything). Non-destructive — see [`RelaySession::poll`].
     pub async fn poll(&self, server_url: &str, project_id: &str) -> RelayPollResponse {
         match self.lookup(server_url, project_id).await {
-            Some(s) => {
-                s.touch().await;
-                s.poll().await
-            }
+            Some(s) => s.poll().await,
             None => RelayPollResponse::default(),
         }
     }
@@ -725,7 +737,6 @@ impl RelayRegistry {
         applied_pull_remote_ids: &[String],
     ) {
         if let Some(s) = self.lookup(server_url, project_id).await {
-            s.touch().await;
             s.ack(applied_push_external_ids, applied_pull_remote_ids)
                 .await;
         }

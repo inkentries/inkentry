@@ -457,3 +457,149 @@ fn insert_relationship(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dump::record::{CommandUsage, MemoryEntry};
+    use crate::storage::Database;
+    use std::sync::OnceLock;
+
+    fn register_sqlite_vec() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    fn command_usage_dump(command: &str, at: i64) -> Dump {
+        Dump {
+            entities: vec![Entity::CommandUsage(CommandUsage {
+                dump_ref: "u0".to_string(),
+                command: command.to_string(),
+                at,
+            })],
+            relationships: vec![],
+            merged_memory_entries: 0,
+        }
+    }
+
+    // The one path `crates/inkentry-cli/tests/e2e_tests/import_dump.rs` never
+    // mentions `usage` in: a dump carrying `command_usage` must land a row in
+    // `index.db`, counted in the summary.
+    #[test]
+    fn command_usage_entity_lands_a_row_in_index_db() {
+        register_sqlite_vec();
+        let mem_tmp = tempfile::NamedTempFile::new().unwrap();
+        let memory = MemoryStore::open(mem_tmp.path()).expect("open memory store");
+        let index_tmp = tempfile::NamedTempFile::new().unwrap();
+        // Creates the schema `open_usage_store` expects to find, including
+        // the `usage` table.
+        Database::open(index_tmp.path()).expect("create index schema");
+
+        let dump = command_usage_dump("search", 1_700_000_000);
+        let targets = ImportTargets {
+            memory: &memory,
+            registry: None,
+            index_db: Some(index_tmp.path()),
+        };
+        let outcome = apply(&dump, &targets).expect("apply");
+        assert_eq!(outcome.summary.command_usages, 1);
+
+        let conn = rusqlite::Connection::open(index_tmp.path()).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT command, called_at FROM usage")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(rows, vec![("search".to_string(), 1_700_000_000)]);
+    }
+
+    // The first of `open_usage_store`'s two refusals: nowhere to put the
+    // commands at all.
+    #[test]
+    fn open_usage_store_refuses_without_an_index_db() {
+        let err = open_usage_store(None).expect_err("must refuse with no index db supplied");
+        assert!(
+            format!("{err:#}").contains("no index database was supplied"),
+            "{err:#}"
+        );
+    }
+
+    // The second refusal: an index database exists but predates the `usage`
+    // table (or was never initialised by `inkentry init`).
+    #[test]
+    fn open_usage_store_refuses_when_the_index_has_no_usage_table() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // A plain file SQLite happily opens, unlike a real index.db: no
+        // `usage` table exists in it.
+        rusqlite::Connection::open(tmp.path()).unwrap();
+
+        let err = open_usage_store(Some(tmp.path())).expect_err("must refuse with no usage table");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("has no table to hold it"), "{msg}");
+        assert!(msg.contains("inkentry init"), "{msg}");
+    }
+
+    // The `needs_usage` precondition in `apply` is checked, and the whole
+    // dump refused, before anything is written — matching the "no partial
+    // import" guarantee the memory-only paths already have. A memory entry
+    // riding along in the same dump must not land either.
+    #[test]
+    fn a_dump_needing_usage_storage_refuses_the_whole_import_when_no_index_db_is_supplied() {
+        register_sqlite_vec();
+        let mem_tmp = tempfile::NamedTempFile::new().unwrap();
+        let memory = MemoryStore::open(mem_tmp.path()).expect("open memory store");
+
+        let mut dump = command_usage_dump("index", 1_700_000_001);
+        dump.entities
+            .push(Entity::MemoryEntry(Box::new(MemoryEntry {
+                dump_ref: "e1".to_string(),
+                uuid: None,
+                kind: "decision".to_string(),
+                title: "should not land".to_string(),
+                body: "body".to_string(),
+                tags: vec![],
+                linked_files: vec![],
+                created_at: 1000,
+                status: None,
+                source_ref: None,
+                valid_at: None,
+                invalid_at: None,
+                entity_id: None,
+                remote_id: None,
+                namespace: None,
+            })));
+
+        let targets = ImportTargets {
+            memory: &memory,
+            registry: None,
+            index_db: None,
+        };
+        // `ImportOutcome` carries no `Debug` impl, so `expect_err` (which
+        // requires the `Ok` side to implement it) is not an option here.
+        let err = match apply(&dump, &targets) {
+            Ok(_) => panic!("must refuse the whole dump"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{err:#}").contains("no index database was supplied"),
+            "{err:#}"
+        );
+        assert_eq!(
+            memory.count().unwrap(),
+            0,
+            "a refused import must leave no partial writes, including the memory entry that \
+             shared the dump with the command-usage record"
+        );
+    }
+}
