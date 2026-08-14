@@ -100,10 +100,19 @@ fetches. That is usually what you want, and it is why one person importing on
 behalf of a shared history is a reasonable plan rather than a race. It is also
 why you should know it is happening.
 
-**This CLI reads dumps but does not write them.** There is no `inkentry export`.
-Writing one is done by a separate export tool, because it has to open a store
-this build refuses to open, and it is distributed on its own for that reason.
-It takes the store path and the destination, opens the store read-only, and
+**This CLI reads dumps but does not write them.** There is no `inkentry export`,
+and there is not meant to be: writing a dump means opening a store this build
+refuses to open, so the writer ships from the side that can still open it.
+
+**`spelunk-export` is that writer, and it comes from the predecessor's
+releases** — its own per-target download on
+[`spelunk-cloud/spelunk`](https://github.com/spelunk-cloud/spelunk/releases),
+alongside the `spelunk` binaries. That is deliberate rather than an oversight:
+anyone who needs to export is by definition running the predecessor, so the tool
+is on the side they are already standing on. It is self-contained, so it can be
+fetched, checksummed, run and deleted without installing anything.
+
+It takes the store path and the destination, opens the store **read-only**, and
 verifies what it wrote against what it read before reporting success. Keep the
 dump somewhere outside `.inkentry/`, which is gitignored for the databases and
 is not a backup location.
@@ -244,7 +253,8 @@ anything that parses inkentry:
 - Every memory-entry id is a UUID string. A script reading an integer `id`
   breaks, and an old numeric id no longer resolves.
 
-Both are listed in the changelog under `BREAKING`. Neither is detectable by
+The id change is listed in the changelog under `BREAKING`; the search-envelope
+change sits under `Changed`. Neither is detectable by
 running the command and seeing whether it succeeded.
 
 ## If you upgraded without exporting
@@ -257,9 +267,10 @@ You have not lost anything yet, but stop before doing anything that writes:
    step that turns a recoverable situation into an unrecoverable one, and it
    looks like a fix, because search and memory start working again on an empty
    store.
-3. **Export the copy, then import the dump.** The export tool reads the file
-   directly, so it does not care that the store is no longer in a project this
-   build recognises.
+3. **Export the copy, then import the dump.** `spelunk-export` (from the
+   [predecessor's releases](https://github.com/spelunk-cloud/spelunk/releases))
+   reads the file directly, so it does not care that the store is no longer in a
+   project this build recognises.
 
 If the copy is gone and your memory was published, a fresh `init` recovers what
 reached the notes ref, minus the two edge kinds it cannot carry. If it was never
