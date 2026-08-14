@@ -69,18 +69,10 @@ jobs:
           rustup update stable
           rustup default stable
 
+      # See ci.yml's `test` job for why this is Swatinem/rust-cache rather
+      # than a hand-rolled `actions/cache` with a version-prefixed key.
       - name: Cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          # Shares the `Linux-cargo-v3-` namespace with ci.yml's `test` job;
-          # see the comment there for why the prefix jumped from `-v2-`.
-          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v3-
+        uses: Swatinem/rust-cache@v2
 
       # The previous release is "the newest published tag that is not the
       # version in this tree". Taking the newest tag unconditionally would

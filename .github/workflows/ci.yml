@@ -58,16 +58,13 @@ jobs:
           rustup default stable
           rustup component add rustfmt clippy
 
+      # Swatinem/rust-cache prunes stale/unused build artifacts, incremental
+      # output, and anything older than a week before saving, so it can't
+      # accumulate the way a hand-rolled `restore-keys`-prefix cache does (that
+      # required a manual version-prefix bump to reset once it got poisoned;
+      # see the `test` job below for that history).
       - name: Cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+        uses: Swatinem/rust-cache@v2
 
       - name: Disk usage (after cache restore)
         run: df -h
@@ -163,29 +160,28 @@ jobs:
       - name: Set default toolchain
         run: rustup default stable
 
+      # Previously a hand-rolled `actions/cache` keyed by `${{ runner.os }}-cargo-vN-<lockfile-hash>`
+      # with a prefix `restore-keys` fallback. That fallback matches on prefix
+      # only, so every run kept rehydrating whatever `target/` a past run left
+      # behind and layering new output on top of it — cargo has no built-in GC
+      # for artifacts of a dependency edge (or, as of the test-binary
+      # consolidation, a renamed/merged test binary) that no longer exists.
+      # This bit twice (the `-v1` -> `-v2` bump abandoned poisoned macOS
+      # native-embedder caches; `-v2` -> `-v3` abandoned stale candle/
+      # candle-transformers artifacts from before inkentry-cli's embedder dep
+      # was dropped), each time requiring a human to notice the bloat and
+      # manually reset the prefix. Swatinem/rust-cache replaces that: it
+      # prunes unused dependencies, incremental artifacts, and anything with
+      # an mtime older than a week before every save, so the cache can't
+      # accumulate garbage between resets in the first place.
+      #
+      # The `key` differentiates the two `ubuntu-latest` matrix legs (default
+      # vs `--no-default-features`), which otherwise share the same OS/rustc
+      # host and would collide on the action's automatic job-based key.
       - name: Cache
-        uses: actions/cache@v6
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          # `-v3` bump abandons the pre-2026-07-31 caches, which still carry
-          # `target/` artifacts for candle/candle-transformers linked into
-          # inkentry-cli (whole extra test binaries, on Windows a full
-          # companion `.pdb` per binary) from before that dependency edge was
-          # dropped: inkentry-cli now only reaches the embedder over HTTP. The
-          # `Cargo.lock` change that dropped it wasn't enough on its own to
-          # shed those artifacts, because `restore-keys` matches on prefix:
-          # every run kept rehydrating the same bloated `target/` and layering
-          # new output on top of it, since cargo has no built-in GC for
-          # artifacts of a dependency edge that no longer exists. Same reason
-          # as the earlier `-v1` -> `-v2` bump (poisoned macOS native-embedder
-          # caches): jump the prefix so restore-keys can't fall back into what
-          # it's meant to abandon.
-          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v3-
+          key: ${{ matrix.test-flags }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2.85.11
@@ -305,15 +301,7 @@ jobs:
           rustup default stable
 
       - name: Cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+        uses: Swatinem/rust-cache@v2
 
       - name: Generate OpenAPI spec
         run: cargo run -p inkentry-server -- --print-openapi > /tmp/openapi-generated.json

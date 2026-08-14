@@ -55,16 +55,10 @@ jobs:
           rustup update stable
           rustup default stable
 
+      # See ci.yml's `test` job for why this is Swatinem/rust-cache rather
+      # than a hand-rolled `actions/cache` with a version-prefixed key.
       - name: Cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+        uses: Swatinem/rust-cache@v2
 
       # Reads the checked-in fixtures only. No release download, no server, no
       # model: the corpus is self-contained so this leg cannot be broken by a
