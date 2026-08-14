@@ -84,6 +84,7 @@ fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
 
 /// Run `git args` in `dir` with an explicit `PATH`, returning the `Output`
 /// without asserting.
+#[cfg(unix)]
 fn git_out_with_path(
     home: &Path,
     dir: &Path,

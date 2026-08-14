@@ -1837,6 +1837,7 @@ fn offline_indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::
 /// canonicalised index path, first 16 hex chars). Deliberately duplicated
 /// here: if the writer's keying ever drifts from this, the reader/writer
 /// pair drifts too, and this test fails loudly.
+#[cfg(unix)]
 fn embed_worker_pid_file_in(
     state_dir: &std::path::Path,
     db_path: &std::path::Path,
@@ -1850,6 +1851,7 @@ fn embed_worker_pid_file_in(
 
 /// Same as [`embed_worker_pid_file_in`], for the default (no
 /// `INKENTRY_STATE_DIR`) state dir derived from `home`.
+#[cfg(unix)]
 fn embed_worker_pid_file(home: &std::path::Path, db_path: &std::path::Path) -> std::path::PathBuf {
     embed_worker_pid_file_in(&home.join(".local").join("state").join("inkentry"), db_path)
 }

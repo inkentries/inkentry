@@ -204,6 +204,58 @@ jobs:
       - name: Run doctests
         run: cargo test --doc ${{ matrix.test-flags }}
 
+  clippy-native:
+    name: Clippy (native)
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    env:
+      # This job only lints (no debug binary is ever run), so the dev
+      # profile's debug info buys nothing; mirrors Check & Lint's env var.
+      CARGO_PROFILE_DEV_DEBUG: 0
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      # A standalone job, not folded into the `test` job's matrix: `test`
+      # builds the `test` cargo profile (for nextest) while clippy here builds
+      # the `dev` profile, and the two don't share incremental artifacts. A
+      # combined job pays for both builds back-to-back on the same runner
+      # (measured +~7 min on Windows); a separate job runs them concurrently
+      # instead. Public-repo Actions minutes are free, so total runner-minutes
+      # spent isn't the tradeoff here — PR wall-clock latency is.
+      #
+      # One command per step: this job's matrix covers windows-latest, and a
+      # Windows step's exit status does not reflect a failing native
+      # executable (only a failing PowerShell cmdlet), so chaining rustup
+      # invocations in one run block would mask a failure in the first.
+      - name: Update stable toolchain
+        run: rustup update stable
+
+      - name: Set default toolchain
+        run: rustup default stable
+
+      - name: Install clippy
+        run: rustup component add clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      # Windows/macOS only: the Check & Lint job already runs this on Linux,
+      # but a Linux-only pass can't see #[cfg(windows)] or #[cfg(unix)]-gated
+      # code paths that don't compile on Linux at all (see #95, a
+      # Windows-only dead-code warning clippy on Linux had no way to catch).
+      #
+      # --lib --bins --tests --benches (not --all-targets): examples are
+      # never part of the regular build/lint/test gates, see Check & Lint's
+      # Clippy step comment.
+      - name: Clippy (rich-formats)
+        run: cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
+
   release-scripts:
     name: Release script tests
     runs-on: ubuntu-latest

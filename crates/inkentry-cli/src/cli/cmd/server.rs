@@ -1595,12 +1595,15 @@ mod tests {
     }
 
     // The LLM variables the child must never simply inherit.
+    #[cfg(unix)]
     const LLM_ENV: [&str; 3] = ["INKENTRY_LLM_URL", "INKENTRY_LLM_MODEL", "INKENTRY_LLM_KEY"];
 
     // Restores the LLM and secret-store variables on drop, so a panic mid-test
     // cannot leak a mutated environment into another test.
+    #[cfg(unix)]
     struct LlmEnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
 
+    #[cfg(unix)]
     impl LlmEnvGuard {
         // Clear every LLM variable and point the secret store at an empty file
         // store under `config_dir`, so whatever a spawned child ends up with
@@ -1632,6 +1635,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for LlmEnvGuard {
         fn drop(&mut self) {
             // SAFETY: see `isolated`.
