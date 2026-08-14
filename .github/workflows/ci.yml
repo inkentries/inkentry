@@ -183,6 +183,20 @@ jobs:
         with:
           key: ${{ matrix.test-flags }}
 
+      # Windows/macOS only: the Check & Lint job already runs clippy -D
+      # warnings on Linux, but a Linux-only pass can't see #[cfg(windows)] or
+      # #[cfg(unix)]-gated code paths that don't compile on Linux at all (see
+      # #95, a Windows-only dead-code warning clippy on Linux had no way to
+      # catch). Piggybacking on this job's already-provisioned runners avoids
+      # paying for a second full compile on these pricier platforms.
+      - name: Install clippy (Windows/macOS)
+        if: matrix.os == 'windows-latest' || matrix.os == 'macos-latest'
+        run: rustup component add clippy
+
+      - name: Clippy (Windows/macOS, rich-formats)
+        if: matrix.os == 'windows-latest' || matrix.os == 'macos-latest'
+        run: cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2.85.11
         with:
