@@ -27,6 +27,14 @@ The team-server window is one minor version in each direction. It is *not* a
 promise that wider gaps fail, and in practice they often work: it is the range
 that is tested, and therefore the range a break is treated as a bug in.
 
+The window does not reach back across a major boundary, and restarts at the
+first release of each major. 1.0 is where that first bites: it refuses or
+rebuilds a store an earlier build wrote, and it removed the three memory
+commands the skew smoke test drives, so a 0.9 peer is both outside what this
+document promises and outside what any test here can exercise. A pairing that
+crosses the boundary is not covered, and a break there is a decision rather
+than a regression.
+
 `GET /v1/health` carries the peer's real version in its `version` field.
 `info.version` inside the OpenAPI spec is a placeholder (`0.1.0` regardless of
 the build) and must not be used for this.
