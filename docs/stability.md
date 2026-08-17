@@ -189,16 +189,25 @@ guess wrong about, and each restriction is part of the contract:
   in either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
   same reasoning as `server_key`.
 
+`mode` is the counter-example that shows the pattern is not "project keys and
+personal keys": it is read from **both** files, project winning over personal,
+because it names no host and so cannot route anything anywhere the project
+config did not already choose. See
+[ADR-085](adr/085-project-config-mode-and-unread-key-warning.md).
+
 Beyond those three:
 
 - Unrecognised keys are ignored rather than rejected. A config written for a
   newer inkentry still loads on an older one, and a config carrying a removed key
   still loads. A key ignored because it is in the wrong file behaves the same
-  way: the rest of the file is unaffected.
+  way: the rest of the file is unaffected. In `.inkentry/config.toml` an ignored
+  key is also **named on stderr**, which changes nothing about what loads;
+  `server_key` and the removed `memory_server_*` aliases are exempt and stay
+  silent.
 - The **project-level allowlist** is itself stable. A checked-in
   `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
-  `server_ca`, and `[index]`. Adding a key to that allowlist is additive and
-  allowed; removing one is a breaking change.
+  `server_ca`, `mode`, and `[index]`. Adding a key to that allowlist is additive
+  and allowed; removing one is a breaking change.
 - Environment variable overrides (`INKENTRY_*`) are stable on the same terms as
   the keys they override. They are not subject to the file restrictions above:
   `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`, and `INKENTRY_LLM_URL` all take

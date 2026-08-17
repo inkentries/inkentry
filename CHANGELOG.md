@@ -285,6 +285,19 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`mode` in `.inkentry/config.toml` now takes effect.** The project config
+  read four keys and dropped everything else without a word, so a team that
+  wrote `server_url`, `project_id` and `mode = "cloud_first"` together (the
+  shape the team-server docs show) silently ran `local_first`, with memory
+  staying in each developer's own store while the setup read as
+  server-authoritative. `mode` is now read from either file: the project config
+  wins over the personal one, and `INKENTRY_MODE` still wins over both.
+  `INKENTRY_NO_SERVER=1` still forces `offline` regardless. See ADR-085.
+- **A key `.inkentry/config.toml` is not read for is named on stderr** instead
+  of being dropped in silence, with `llm_url` carrying its own message and its
+  own reason. This is a warning, never a refusal: the key is ignored, the rest
+  of the file loads, and the command runs unchanged. `server_key` and the
+  removed `memory_server_*` aliases stay silent, as before.
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's

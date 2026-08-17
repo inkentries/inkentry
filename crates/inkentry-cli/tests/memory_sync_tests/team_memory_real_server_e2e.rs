@@ -80,27 +80,27 @@ async fn spawn_real_server(db_path: &Path) -> String {
 // A project configured the way a team member's would be: `cloud_first`, so the
 // server is the store of record and nothing falls back to a local `memory.db`.
 //
-// The split is the CLI's own: `server_url` and `project_id` are read only from
-// the project-level `.inkentry/config.toml` (a team server is a project-wide
-// choice), `mode` only from the global config.
+// `mode` sits in the global config here; the project-config placement the team
+// setup documents has its own test below.
 fn make_project(home: &Path, base_url: &str) {
-    let project = home.join(".inkentry");
-    std::fs::create_dir_all(&project).expect("create project dir");
-    std::fs::write(
-        project.join("config.toml"),
-        format!("project_id = \"{PROJECT}\"\nserver_url = \"{base_url}\"\n"),
-    )
-    .expect("write project config");
-
-    let global = home.join(".config").join("inkentry");
-    std::fs::create_dir_all(&global).expect("create global config dir");
-    // `store_in_git_notes` off: the child would otherwise write a git note per
-    // entry into whatever repository its working directory sits in.
-    std::fs::write(
-        global.join("config.toml"),
+    write_project_config(
+        home,
+        &format!("project_id = \"{PROJECT}\"\nserver_url = \"{base_url}\"\n"),
         "mode = \"cloud_first\"\nstore_in_git_notes = false\n",
-    )
-    .expect("write global config");
+    );
+}
+
+// `store_in_git_notes` off in the global config: the child would otherwise
+// write a git note per entry into whatever repository its working directory
+// sits in.
+fn write_project_config(home: &Path, project: &str, global: &str) {
+    let project_dir = home.join(".inkentry");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
+    std::fs::write(project_dir.join("config.toml"), project).expect("write project config");
+
+    let global_dir = home.join(".config").join("inkentry");
+    std::fs::create_dir_all(&global_dir).expect("create global config dir");
+    std::fs::write(global_dir.join("config.toml"), global).expect("write global config");
 }
 
 // `current_dir` is the throwaway home rather than the crate directory, so this
@@ -207,6 +207,53 @@ async fn cli_memory_round_trips_against_a_real_team_server() {
     assert!(
         shown.contains("First decision"),
         "`memory show {first}` did not return the entry:\n{shown}"
+    );
+}
+
+// The team-setup shape: `server_url`, `project_id` and `mode` together in the
+// checked-in `.inkentry/config.toml`, with nothing in the personal config
+// beyond a personal key. Until ADR-085 the `mode` line was dropped, the project
+// silently ran `local_first`, and memory a team believed was server-authoritative
+// was sitting in each developer's own `memory.db`.
+//
+// Which is why the assertion is not that a status line reads `cloud_first`. The
+// entry is written from one checkout and listed from a second, freshly created
+// one that has never seen it: under `local_first` the second checkout reads its
+// own empty `memory.db` and finds nothing, so an entry that arrives there, under
+// the id the first checkout was handed, can only have come from the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cloud_first_from_the_project_config_puts_memory_on_the_server() {
+    const TITLE: &str = "Decision from the project config";
+
+    let db_dir = TempDir::new().unwrap();
+    let base_url = spawn_real_server(&db_dir.path().join("server.db")).await;
+
+    let project = format!(
+        "project_id = \"{PROJECT}\"\nserver_url = \"{base_url}\"\nmode = \"cloud_first\"\n"
+    );
+    let author = TempDir::new().unwrap();
+    let author = author.path();
+    write_project_config(author, &project, "store_in_git_notes = false\n");
+
+    add(author, &base_url, TITLE);
+    let written = id_of(&list_entries(author, &base_url), TITLE);
+    assert_uuid_v7(&written, "the id the author was handed");
+
+    let teammate = TempDir::new().unwrap();
+    let teammate = teammate.path();
+    write_project_config(teammate, &project, "store_in_git_notes = false\n");
+
+    let entries = list_entries(teammate, &base_url);
+    assert_eq!(
+        id_of(&entries, TITLE),
+        written,
+        "a checkout that never wrote the entry must list it under the server's id: {entries:#?}"
+    );
+
+    let shown = run_ok(teammate, &base_url, &["memory", "show", &written]);
+    assert!(
+        shown.contains(TITLE),
+        "`memory show {written}` did not return the entry:\n{shown}"
     );
 }
 
