@@ -44,6 +44,11 @@ pub struct ServerLimits {
     /// Informational: the binding constraint in practice is wall-clock time,
     /// not per-batch memory.
     pub embedder_token_cap: Option<usize>,
+    /// CPU threads this server budgeted for a forward pass. `1` means embedding
+    /// is single-threaded here, which is the difference between minutes and
+    /// hours on a first index; a client surfaces the `INKENTRY_EMBED_THREADS`
+    /// override on seeing it.
+    pub embed_threads: usize,
 }
 
 /// Server capabilities reported in the health response.
@@ -130,6 +135,7 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
             embed_request_timeout_secs: crate::EMBED_REQUEST_TIMEOUT.as_secs(),
             max_batch_chunks: MAX_EMBED_BATCH,
             embedder_token_cap,
+            embed_threads: state.embed_threads,
         },
     })
 }

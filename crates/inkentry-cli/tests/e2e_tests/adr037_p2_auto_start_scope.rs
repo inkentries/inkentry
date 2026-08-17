@@ -291,6 +291,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
             inkentry_server::EMBED_QUEUE_CAPACITY,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
+        embed_threads: 4,
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: Arc::new(inkentry_server::rate_limiter::RateLimiter::new(1000, 60)),

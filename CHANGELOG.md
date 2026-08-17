@@ -285,6 +285,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Embedding no longer collapses to a single thread on hosts with two physical
+  cores.** The thread budget reserved a flat two physical cores for request
+  serving, which on a 2-core host reserved the whole machine and left a first
+  index running for hours. It now reserves a quarter of the host, capped at two,
+  from the physical and logical counts separately and takes the smaller result:
+  hosts with eight or more physical cores are unchanged, smaller ones keep a
+  proportional share. When the budget does resolve to 1, the server log and
+  `inkentry status` now name the `INKENTRY_EMBED_THREADS` override, and
+  `/v1/health` reports the resolved value as `limits.embed_threads`. (#112)
+
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's
