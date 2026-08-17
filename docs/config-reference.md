@@ -56,6 +56,19 @@ file only accepts the fields listed under
 Path to the SQLite index database file. The project index and memory databases
 live alongside it (`index.db`, `memory.db`).
 
+**Keep these on a local filesystem.** Both stores run SQLite in
+write-ahead-logging mode, which needs shared-memory locking that network
+filesystems — NFS, SMB/CIFS, and most cloud-drive sync folders — do not provide
+reliably. On such a path SQLite may refuse to open the store, or appear to work
+and corrupt it under concurrent access. The same applies to a project directory
+on a network share, since `.inkentry/index.db` and `.inkentry/memory.db` live
+inside the project.
+
+Each store keeps `-wal` and `-shm` sidecar files next to it while open. The
+`.gitignore` that `inkentry init` writes already excludes them; if you manage
+that file yourself, exclude `index.db*` and `memory.db*` rather than the bare
+names.
+
 ### `llm_model`
 
 - **Type:** string, optional

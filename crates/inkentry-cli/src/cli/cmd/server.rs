@@ -841,7 +841,21 @@ fn spawn_daemon_unix(
     Ok(child)
 }
 
-/// Spawn the server on Windows with `CREATE_NEW_PROCESS_GROUP`.
+/// Spawn the server on Windows, detached from the spawning console.
+///
+/// This is the Windows counterpart to `setsid()` in `spawn_daemon_unix`, and it
+/// takes two flags because they cover different events.
+/// `CREATE_NEW_PROCESS_GROUP` alone — what this did before — only stops
+/// Ctrl-C/Ctrl-Break from reaching the daemon; the process stays attached to the
+/// console, so closing that console delivers `CTRL_CLOSE_EVENT` and kills it.
+/// Measured: without `DETACHED_PROCESS` the daemon died on every console close,
+/// even though `server start` had already exited and left it orphaned, so the
+/// console association was the only thing left to kill it.
+///
+/// `DETACHED_PROCESS` gives the child no console at all, which is safe only
+/// because stdio is fully redirected below: stdin is null and both output
+/// streams are the log file, so nothing ever reaches for a console handle.
+/// Changing that redirection would reintroduce the failure this flag fixes.
 ///
 /// `--host 127.0.0.1` is always passed explicitly. The auto-spawned daemon is
 /// unauthenticated, so it must only ever bind loopback; passing the flag keeps
@@ -856,6 +870,7 @@ fn spawn_daemon_windows(
 ) -> Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
 
     let mut cmd = std::process::Command::new(bin);
     for arg in build_daemon_args(db, port, llm) {
@@ -866,7 +881,7 @@ fn spawn_daemon_windows(
         .stdin(std::process::Stdio::null())
         .stdout(log_file.try_clone()?)
         .stderr(log_file)
-        .creation_flags(CREATE_NEW_PROCESS_GROUP)
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
         .spawn()
         .with_context(|| format!("spawning {}", bin.display()))?;
 
@@ -1529,6 +1544,123 @@ mod tests {
         assert!(
             !recorded.contains("INKENTRY_LLM_KEY"),
             "no credential resolved, so none should have been set: {recorded}"
+        );
+    }
+
+    // Kills and reaps the daemon on drop, including on a failed assertion.
+    #[cfg(windows)]
+    struct KillOnDropWindows(std::process::Child);
+
+    #[cfg(windows)]
+    impl Drop for KillOnDropWindows {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    // The Windows counterpart to `the_spawned_daemon_leads_a_session_of_its_own`.
+    // A process attached to our console appears in that console's process list,
+    // and every process in that list receives `CTRL_CLOSE_EVENT` when the
+    // console closes — which is what killed the daemon before `DETACHED_PROCESS`.
+    //
+    // Both spawns use the real `inkentry-server` binary and differ *only* in the
+    // creation flags, which is what makes the comparison mean anything: the
+    // control must be visible in the console list, the flagged one must not.
+    //
+    // The control also keeps the test from passing vacuously, in two ways that
+    // both bit earlier drafts. `GetConsoleProcessList` returns nothing when the
+    // test binary has no console of its own, and a child that has already
+    // exited is absent from the list for reasons having nothing to do with
+    // detachment — either would turn the real assertion into a tautology. The
+    // control is checked for liveness and presence first, so the assertion below
+    // only runs once the list is known to discriminate.
+    #[cfg(windows)]
+    #[test]
+    fn the_spawned_daemon_is_not_attached_to_our_console() {
+        unsafe extern "system" {
+            fn GetConsoleProcessList(lpdwProcessList: *mut u32, dwProcessCount: u32) -> u32;
+        }
+
+        fn console_pids() -> Vec<u32> {
+            let mut buf = vec![0u32; 256];
+            let n = unsafe { GetConsoleProcessList(buf.as_mut_ptr(), buf.len() as u32) };
+            buf.truncate(n as usize);
+            buf
+        }
+
+        // A port nothing is listening on. The daemon only has to start and stay
+        // up long enough to be observed; it is killed before it matters.
+        fn free_port() -> u16 {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        }
+
+        // `target/<profile>/deps/<test>.exe` -> `target/<profile>/inkentry-server.exe`.
+        let server_bin = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("inkentry-server.exe"));
+        let Some(bin) = server_bin.filter(|p| p.exists()) else {
+            eprintln!("skipping: inkentry-server.exe is not built alongside this test");
+            return;
+        };
+
+        let tmp = TempDir::new().unwrap();
+
+        let control = std::process::Command::new(&bin)
+            .args(build_daemon_args(
+                &tmp.path().join("control.db"),
+                free_port(),
+                &LlmSpawn::default(),
+            ))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawning the control daemon");
+        let control_pid = control.id();
+        let mut control_guard = KillOnDropWindows(control);
+
+        std::thread::sleep(Duration::from_millis(500));
+        if control_guard.0.try_wait().unwrap().is_some() {
+            eprintln!("skipping: the control daemon exited before it could be observed");
+            return;
+        }
+        if !console_pids().contains(&control_pid) {
+            eprintln!(
+                "skipping: this test process has no console, so console attachment \
+                 cannot be observed and the assertion below would be vacuous"
+            );
+            return;
+        }
+
+        let log = std::fs::File::create(tmp.path().join("server.log")).unwrap();
+        let child = spawn_daemon_windows(
+            &bin,
+            &tmp.path().join("server.db"),
+            free_port(),
+            &LlmSpawn::default(),
+            log,
+        )
+        .expect("spawning the detached daemon");
+        let pid = child.id();
+        let mut guard = KillOnDropWindows(child);
+
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            guard.0.try_wait().unwrap().is_none(),
+            "the detached daemon exited on its own, so its absence from the \
+             console list would prove nothing"
+        );
+        assert!(
+            !console_pids().contains(&pid),
+            "the daemon is attached to the spawning console, so closing that \
+             console would deliver CTRL_CLOSE_EVENT and take the daemon down"
         );
     }
 
