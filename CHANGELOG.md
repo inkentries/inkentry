@@ -11,6 +11,37 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A memory entry stored without a vector is now repaired, and the batch
+  response says which entries those are.** Every element of `POST
+  …/memory/batch`'s `results` carries a new `embedded` boolean, on `created`
+  and `skipped` alike. It describes the stored row the result refers to as of
+  that response, not the payload that was sent, so a `skipped` dedupe hit
+  reports whether the row already on the server is in the vector index.
+
+  A write has never failed just because no vector could be produced: with the
+  embedder still loading, unavailable, disabled, or simply refusing a text, the
+  entry is stored and counted as created and is silently absent from semantic
+  search. Nothing repaired that, and re-pushing did not either, because a
+  re-push takes the dedupe branch and never touched the embedding. The rows
+  most at risk were the ones nothing would ever re-push: a client's `sync`
+  tracks what it has already sent.
+
+  The server now reads those rows back, embeds their stored text and fills in
+  the vector, after which the same entry reports `embedded: true` and is
+  reachable by semantic search. The pass runs only in response to an event that
+  produced repairable state (the embedder becoming ready, or a write that
+  stored a vectorless row), never on an interval, so a server with nothing to
+  repair does no work and schedules no wakeups. A page whose batched embed
+  fails is retried one entry at a time, so a single unembeddable text costs its
+  own vector and not the whole page.
+
+  A dedupe hit is never given the vector its skipped payload carried:
+  `external_id` is the client's own entry id rather than a content hash, so the
+  payload's vector may describe text the server does not store. A row's vector
+  stays derived from that row's own stored title and body.
+
+  The single-note route stores under the same policy and is repaired the same
+  way; its response does not yet carry the field.
 - **`GET /v1/health` advertises `accepts_pushed_vectors`.** A client that has
   already embedded an entry locally can send that vector and skip server-side
   embedding, but only against a server that says it accepts one. The flag is

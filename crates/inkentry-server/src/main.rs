@@ -377,12 +377,20 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         // config declares, and only on a loopback bind (see the `relay`
         // module docs).
         relay: RelayRegistry::for_bind(&args.host, RelayPolicy::from_local_config()),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     };
 
     // Keep a handle to the embedder slot so the background load task can flip it
     // `loading → ready | unavailable` after the listener binds.
     let embedder_slot = state.embedder.clone();
+    let repair_signal = state.repair_signal.clone();
     let model_dir = args.model_dir.clone();
+
+    tokio::spawn(inkentry_server::repair::run_repair_worker(
+        state.clone(),
+        inkentry_server::repair::REPAIR_PAGE_SIZE,
+        inkentry_server::repair::REPAIR_DEBOUNCE,
+    ));
 
     let app = router(state);
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -451,6 +459,11 @@ async fn run(budget: ThreadBudget) -> Result<()> {
                     slot.set_ready(
                         Arc::new(native) as Arc<dyn inkentry_core::embeddings::EmbeddingBackend>
                     );
+                    // Anything stored while the model was warming up went in
+                    // without a vector. This is also the restart recovery
+                    // floor: a process that comes up with a working model
+                    // always re-examines the backlog once.
+                    repair_signal.raise();
                 }
                 Ok(Err(e)) => {
                     let msg = embedder_load_failure_message(&e);
@@ -471,7 +484,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     }
     // Silence "unused" for the non-embed-native build (no background load).
     #[cfg(not(feature = "embed-native"))]
-    let _ = (load_native, &embedder_slot, &model_dir);
+    let _ = (load_native, &embedder_slot, &model_dir, &repair_signal);
 
     let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
     match tls_config {

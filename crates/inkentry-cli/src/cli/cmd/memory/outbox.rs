@@ -414,6 +414,7 @@ mod tests {
             started_by: None,
             trusted_proxies: Default::default(),
             relay: inkentry_server::relay::RelayRegistry::new(declared.policy()),
+            repair_signal: inkentry_server::repair::RepairSignal::new(),
         };
         let app = inkentry_server::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
