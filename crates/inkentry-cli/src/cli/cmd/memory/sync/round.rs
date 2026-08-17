@@ -359,7 +359,7 @@ mod tests {
         assert!(titles.contains(&"B1".to_string()));
     }
 
-    // `memory pull` (one-way, no push) is unaffected by the `sync_round`
+    // `plumbing pull` (one-way, no push) is unaffected by the `sync_round`
     // two-phase reconciliation added for `sync`. It keeps
     // deriving a single cursor from the store itself via `pull_and_apply`,
     // unmodified.

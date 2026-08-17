@@ -457,7 +457,7 @@ pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
 /// cloud-origin `server_url` can ever resolve to the `[auth]` access token,
 /// so a self-hosted `server_url` never mistakes an unrelated cloud login for
 /// its own credential. Because access tokens are short-lived, commands that
-/// hit cloud-api directly (e.g. `inkentry sync`, `inkentry memory pull`) must
+/// hit cloud-api directly (e.g. `inkentry sync`, `inkentry plumbing pull`) must
 /// guard against using an already-expired token, which would 401.
 ///
 /// Behaviour:

@@ -1,12 +1,12 @@
 //! `inkentry plumbing push` — one-way local→server memory push with a JSONL
 //! report.
 //!
-//! Plumbing counterpart of the porcelain `inkentry memory push`: the same core
-//! (`push_local_oneway`) and the same egress guards, but it emits a single
-//! machine-readable report object on stdout and follows the plumbing 0/1/2
-//! exit contract. Unlike the read-only plumbing commands it makes an outbound
-//! request, so it requires an explicitly-configured team `server_url` (never
-//! the inference loopback), exactly as the porcelain form does.
+//! Shares its core (`push_local_oneway`) and its egress guards with
+//! `inkentry sync`, but it emits a single machine-readable report object on
+//! stdout and follows the plumbing 0/1/2 exit contract. Unlike the read-only
+//! plumbing commands it makes an outbound request, so it requires an
+//! explicitly-configured team `server_url` (never the inference loopback),
+//! exactly as `inkentry sync` does.
 
 use std::io::Write;
 

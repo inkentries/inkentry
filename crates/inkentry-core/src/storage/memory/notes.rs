@@ -596,7 +596,8 @@ impl MemoryStore {
         Ok(changed > 0)
     }
 
-    /// Retrieve the raw embedding blob for a note (for use by `memory push`).
+    /// Retrieve the raw embedding blob for a note (for use by the CLI's
+    /// `sync` / `plumbing push`).
     pub fn get_embedding(&self, note_id: &NoteId) -> Result<Option<Vec<u8>>> {
         let Some(rowid) = self.rowid_for(note_id)? else {
             return Ok(None);

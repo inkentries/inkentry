@@ -1,7 +1,8 @@
 //! Cloud two-way sync wire client.
 //!
-//! Wires the CLI's `sync` / `memory pull` commands to cloud-api primitives that
-//! already exist server-side but were previously unreachable from the CLI:
+//! Wires the CLI's `sync` and `plumbing push`/`pull` commands to cloud-api
+//! primitives that already exist server-side but were previously unreachable
+//! from the CLI:
 //!
 //! - `GET  /v1/projects/{id}/memory/since?since_id=<cursor>` — delta pull.
 //! - `POST /v1/projects/{id}/memory/batch`                   — batched delta push.
