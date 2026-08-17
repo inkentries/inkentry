@@ -75,8 +75,10 @@ src/
     db.rs              Database struct: open/migrate, CRUD, KNN search
 
   search/
-    mod.rs             SearchResult struct
-    rag.rs             RagPipeline: search + ask methods
+    mod.rs             SearchResult struct, RRF_K rank-fusion constant
+    rag.rs             linearrag_search: LinearRAG two-stage retrieval (entity
+                       activation + personalised PageRank), called by `inkentry search`
+    tokens.rs          Token-budget helpers
 
   registry.rs          Global project registry (~/.config/inkentry/registry.db)
 

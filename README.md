@@ -97,12 +97,17 @@ across a team.
 ### Code graph
 
 ```bash
-inkentry search RagPipeline --graph                         # the symbol's chunk + its 1-hop neighbours
-inkentry plumbing graph-edges --symbol RagPipeline          # exact edges as JSONL
-inkentry plumbing graph-edges --file src/storage/db.rs      # every edge in a file
+inkentry search linearrag_search --graph                 # the symbol's chunk + its 1-hop neighbours
+inkentry plumbing graph-edges --symbol linearrag_search  # exact edges as JSONL
+inkentry plumbing graph-edges --file crates/inkentry-core/src/storage/db.rs   # every edge in a file
 ```
 
 inkentry extracts import, call, extends, and implements edges from the AST at index time. No server needed.
+
+The symbol and path above are real ones from this repository, so the commands
+work as written once you have indexed a clone of it. `graph-edges --file` matches
+the path as it is stored in the index, so pass the full repo-relative path rather
+than a suffix.
 
 ### Search
 
