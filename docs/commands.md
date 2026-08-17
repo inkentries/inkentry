@@ -323,10 +323,9 @@ inkentry search <query> [options]
 | `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
 
 `--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
-LinearRAG: a two-stage entity-activation + personalised PageRank pipeline that
-improves multi-hop recall over raw KNN. `--only-text` needs no embedding model
-or server; it still runs over the full-text index, so it needs `inkentry init`
-first like every `search`.
+LinearRAG: a two-stage entity-activation + personalised PageRank pipeline.
+`--only-text` needs no embedding model or server; it still runs over the
+full-text index, so it needs `inkentry init` first like every `search`.
 
 Over the **code corpus**, `--only-text` scores the query's words as
 **independent terms** (BM25): a multi-word query ranks chunks that contain the

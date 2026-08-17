@@ -259,12 +259,12 @@ unauthenticated (no bearer required or sent).
 
 | Threat | Mode | Likelihood | Impact | Mitigation |
 |--------|------|-----------|--------|-----------|
-| Indexed source file contains adversarial LLM instructions | A | Low | Medium | XML delimiter isolation in `ask.rs`; angle-bracket escaping of retrieved context (issue #137) |
+| Indexed source file contains adversarial LLM instructions | A | Low | Medium | No CLI command runs an LLM over retrieved context. `search` and `context` return retrieved content to the calling agent, which is responsible for isolating it in its own prompt. |
 | Indexed source file steers an in-process LLM `read_file` tool into reading an arbitrary path (e.g. `/Users/me/.ssh/id_rsa`, `../../etc/passwd`), exfiltrating file contents | A | — | — | **Surface removed** (ADR-079): the `explore` command that ran an in-process file-reading tool loop no longer exists, so there is no server-side `read_file` boundary to enforce. Multi-hop retrieval is now a caller-run skill; the equivalent norm — read only files inside the project — is documented as the caller's responsibility in `SKILL.md`. |
-| User query contains injection payload | A | Low | Low | Pre-flight check against known patterns (`ask.rs` lines 155–174) |
-| Memory note stored via team server contains injection payload, later surfaced to the caller's agent (e.g. via `inkentry search` / `context`) | B | Low | Medium | Applies only when an explicit team `server_url` is configured (Mode B). In Mode A, notes are stored in local `memory.db`, not via the loopback server, so this attack requires access to the user's filesystem. Retrieved notes are untrusted content; the consuming agent must apply its own delimiter isolation / escaping when placing them into an LLM prompt. |
+| User query contains injection payload | A | Low | Low | The CLI does not send the query to an LLM. A search query is embedded and matched against the index; it never enters a prompt. |
+| Memory note stored via team server contains injection payload, later surfaced to the caller's agent (e.g. via `inkentry search` / `context`) | B | Low | Medium | Applies only when an explicit team `server_url` is configured (Mode B). In Mode A, notes are stored in local `memory.db`, not via the loopback server, so this attack requires access to the user's filesystem. On the write path the server scans `title` and `body` for known prompt-injection patterns and rejects the entry with **422** before storage, on both `POST /memory` and `POST /memory/batch` (`security.rs`, `handlers/notes.rs`, `handlers/batch.rs`). Retrieved notes remain untrusted content; the consuming agent must isolate them when placing them into an LLM prompt. |
 
-**Residual risk:** Pre-flight only blocks known string patterns. Novel injection payloads in indexed content or memory notes could influence the LLM response.
+**Residual risk:** The write-path scan blocks known string patterns only. Novel injection payloads in indexed content or memory notes could still reach a consuming agent's prompt.
 
 ---
 
@@ -568,7 +568,7 @@ From this threat model, the following requirements are binding:
 
 1. **No caller data in SQL text.** Every value that can originate with a caller, a file, or a request is bound as a rusqlite parameter. Interpolating into statement text is permitted only for compile-time constants, generated placeholder tokens, and integers already clamped server-side — and each such site must stay auditable (see the inventories linked from the Tampering table).
 2. **Secret scanner must run before every DB write of chunk content.** Enforced in `parse_phase.rs`.
-3. **LLM context must use XML delimiters** with angle-bracket escaping of all retrieved content (issue #137).
+3. **Retrieved content is untrusted, and inkentry does not reason over it.** No inkentry command runs an LLM over retrieved context; content returned to a calling agent is untrusted input that the agent isolates in its own prompt. Where caller-supplied content enters inkentry, the binding control is input validation, not prompt formatting: memory writes must be scanned for known prompt-injection patterns and rejected with **422** before storage, on both the single-entry and batch routes.
 4. **Atomic transactions for memory state transitions** — `supersede()` and `insert_with_supersession()` (issue #136).
 5. **CI must gate on `cargo audit` and `cargo deny`.**
 6. **inkentry-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `INKENTRY_SERVER_KEY` is set.
