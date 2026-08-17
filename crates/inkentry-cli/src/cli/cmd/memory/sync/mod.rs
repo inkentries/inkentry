@@ -1,4 +1,5 @@
-//! `inkentry sync` and `inkentry memory pull` — two-way local↔cloud memory sync.
+//! `inkentry sync`: two-way local↔cloud memory sync, plus the one-way halves
+//! that `inkentry plumbing push` / `inkentry plumbing pull` reuse from here.
 //!
 //! - `pull`: delta-pull from `GET /memory/since?since_id=<cursor>` and apply
 //!   locally. The cursor is the max cloud `remote_id` already synced

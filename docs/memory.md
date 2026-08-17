@@ -673,6 +673,15 @@ inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33
 inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33 --format json
 ```
 
+**Where these edges live.** `relates_to` and `contradicts` edges are recorded
+only in the project's local `memory.db`. Unlike the entries themselves and their
+supersede state, they are not written to `refs/notes/inkentry`, so they do not
+arrive with a clone or a fetch: a teammate who pulls your memory sees the same
+entries without the links you drew between them. Two paths do carry them off the
+machine that recorded them: `inkentry sync` pushes `relates_to` edges to a
+configured team server, and a [portable dump](dump-format.md) carries all three
+kinds into whichever store imports it.
+
 ## Harvesting from git history
 
 `inkentry harvest` reads your git log, sends commit messages to the LLM, and automatically extracts significant entries. Requires a reachable `inkentry-server` with a chat model loaded; there is no local-model path, and setting `llm_model` in `~/.config/inkentry/config.toml` has no effect on this command (see [Config reference](config-reference.md#llm_model)).

@@ -323,10 +323,9 @@ inkentry search <query> [options]
 | `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
 
 `--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
-LinearRAG: a two-stage entity-activation + personalised PageRank pipeline that
-improves multi-hop recall over raw KNN. `--only-text` needs no embedding model
-or server; it still runs over the full-text index, so it needs `inkentry init`
-first like every `search`.
+LinearRAG: a two-stage entity-activation + personalised PageRank pipeline.
+`--only-text` needs no embedding model or server; it still runs over the
+full-text index, so it needs `inkentry init` first like every `search`.
 
 Over the **code corpus**, `--only-text` scores the query's words as
 **independent terms** (BM25): a multi-word query ranks chunks that contain the
@@ -518,13 +517,17 @@ The code graph is reachable from two places:
 Both read the graph built by `inkentry init`. Both are index-backed: there is no
 working-tree scan.
 
-**Example:**
+**Example** (real symbol and path from the inkentry repository, so these work as
+written against a clone of it):
 
 ```bash
-inkentry search RagPipeline --graph
-inkentry plumbing graph-edges --file src/storage/db.rs
-inkentry plumbing graph-edges --symbol validate_token
+inkentry search linearrag_search --graph
+inkentry plumbing graph-edges --symbol linearrag_search
+inkentry plumbing graph-edges --file crates/inkentry-core/src/storage/db.rs
 ```
+
+`--file` matches the path as it is stored in the index, so pass the full
+repo-relative path rather than a suffix.
 
 ---
 

@@ -49,7 +49,7 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
 }
 
 /// Guard for a feature that moves memory to or from an explicitly-configured
-/// server (`memory push`, `sync`, `memory pull`): a self-hosted team server or
+/// server (`sync`, `plumbing push`, `plumbing pull`): a self-hosted team server or
 /// Inkentry Cloud both work identically here. Distinct from features that
 /// merely need *an* inference-capable server ([`require_tier1`]).
 ///
@@ -157,14 +157,14 @@ mod tests {
     #[test]
     fn require_tier1_uses_feature_name_in_message() {
         let tier = Tier::Offline;
-        let err = require_tier1("memory push", &tier, None).unwrap_err();
+        let err = require_tier1("plumbing push", &tier, None).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("'inkentry memory push'"));
+        assert!(msg.contains("'inkentry plumbing push'"));
     }
 
     // ── require_explicit_server_url ──────────────────────────────────────────
     //
-    // `memory push`, `sync`, and `memory pull` move memory to/from an
+    // `sync`, `plumbing push`, and `plumbing pull` move memory to/from an
     // explicitly-configured team server; an auto-discovered loopback
     // inference server must never satisfy them (ADR-004). This guard checks
     // configuration presence only, never reachability, so it stays usable
@@ -193,7 +193,7 @@ mod tests {
         );
     }
 
-    /// `memory push` and `sync` must refuse with the exact same message
+    /// `plumbing push` and `sync` must refuse with the exact same message
     /// shape (only the feature name differs), so they can't drift apart
     /// again.
     #[test]
@@ -202,14 +202,14 @@ mod tests {
             server_url: None,
             ..Default::default()
         };
-        let push_msg = require_explicit_server_url("memory push", &cfg)
+        let push_msg = require_explicit_server_url("plumbing push", &cfg)
             .unwrap_err()
             .to_string();
         let sync_msg = require_explicit_server_url("sync", &cfg)
             .unwrap_err()
             .to_string();
         assert_eq!(
-            push_msg.replace("memory push", "sync"),
+            push_msg.replace("plumbing push", "sync"),
             sync_msg,
             "push and sync messages must differ only in the feature name: \
              push={push_msg:?} sync={sync_msg:?}"

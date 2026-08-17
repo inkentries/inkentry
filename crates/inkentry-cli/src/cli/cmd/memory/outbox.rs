@@ -889,7 +889,7 @@ mod tests {
         assert!(
             seen,
             "instance A's write must become visible via a real `inkentry memory list` \
-             invocation on instance B, without any explicit `inkentry sync`/`memory pull`"
+             invocation on instance B, without any explicit `inkentry sync`/`plumbing pull`"
         );
     }
 

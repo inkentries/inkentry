@@ -555,9 +555,9 @@ Key considerations for any deployment:
 - Putting the server behind a VPN or private subnet is still good
   defense-in-depth (the API key is the app-level guard; network-level access
   control is an additional layer, not a substitute for it)
-- The SQLite WAL-mode database handles 2–20 concurrent writers comfortably
+- The SQLite WAL-mode database handles 2–20 concurrent writers comfortably;
+  that write concurrency is the practical ceiling for a single server
 - Back up the database file with your normal database backup process
-- For large teams or heavy write loads, see the plan for Postgres support
 
 ## Running without Docker
 

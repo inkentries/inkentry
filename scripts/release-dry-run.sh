@@ -33,6 +33,12 @@
 #                 built .deb in. Defaults to the three floor/current images
 #                 release.yml's own "deb" job smoke-tests against.
 
+# Every single-quoted block below is a container-side script, expanded by bash
+# inside the container rather than by this shell. shellcheck understands that
+# shape only when `docker run` is the literal command word, so routing the
+# containers through the run_docker wrapper makes it flag all of them.
+# shellcheck disable=SC2016
+
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -53,15 +59,26 @@ SMOKE_IMAGES="${SMOKE_IMAGES:-debian:11 ubuntu:20.04 ubuntu:24.04}"
 DOCKER_PLATFORM="linux/amd64"
 
 WORKDIR="target/release-dry-run"
-DEB_LAYOUT="${WORKDIR}/BUILD"
 CACHE_CARGO="${WORKDIR}/cache/cargo"
 CACHE_RUSTUP="${WORKDIR}/cache/rustup"
+LOCK_DIR="${WORKDIR}/.lock"
 
 VERSION="$(grep -m1 '^version' crates/inkentry-cli/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')-dryrun"
 DEB_VERSION="${VERSION}"
 
+# Per-invocation, so a second run cannot overwrite the layout and .deb a first
+# run is still reading. The cache dirs above stay shared on purpose -- scoping
+# them per run would turn every invocation into a 15-20 minute cold build.
+RUN_DIR="${WORKDIR}/run-$$"
+DEB_LAYOUT="${RUN_DIR}/BUILD"
+DEB_PATH="${RUN_DIR}/inkentry_${DEB_VERSION}_amd64.deb"
+
 CONTAINER_PREFIX="inkentry-release-dry-run-$$"
 STAGE="init"
+# Name of the container currently running, or empty between stages. The signal
+# trap reads this to kill the in-progress container instead of waiting it out.
+ACTIVE_CONTAINER=""
+HELD_LOCK=0
 
 # --- diagnostics -------------------------------------------------------
 
@@ -82,6 +99,15 @@ log_stage() {
 # up anything left behind by an interrupted (killed) run, so no manual
 # `docker system prune` is ever required.
 cleanup() {
+  # Kill the in-progress container by name first. The prefix sweep below would
+  # eventually catch it too, but on an interrupt this is the one call standing
+  # between the user and a container that keeps building for another 15 minutes,
+  # so it must not wait on a `docker ps` round trip.
+  if [ -n "${ACTIVE_CONTAINER}" ]; then
+    docker rm -f "${ACTIVE_CONTAINER}" >/dev/null 2>&1 || true
+    ACTIVE_CONTAINER=""
+  fi
+
   local leftover
   leftover="$(docker ps -aq --filter "name=${CONTAINER_PREFIX}" 2>/dev/null || true)"
   if [ -n "${leftover}" ]; then
@@ -90,12 +116,55 @@ cleanup() {
     # shellcheck disable=SC2086
     docker rm -f ${leftover} >/dev/null 2>&1 || true
   fi
+
+  # Only the run that took the lock may drop it, or a second invocation exiting
+  # on the "already in progress" path would release the first run's lock.
+  if [ "${HELD_LOCK}" -eq 1 ]; then
+    rmdir "${LOCK_DIR}" 2>/dev/null || true
+    HELD_LOCK=0
+  fi
 }
-trap cleanup EXIT INT TERM
+
+# Distinct from die(): an aborted run and a broken run must not look the same in
+# the terminal or to a caller reading $?. Exiting here also runs the EXIT trap,
+# so cleanup happens exactly once.
+on_signal() {
+  echo "" >&2
+  echo "release-dry-run INTERRUPTED by ${1} at stage: ${STAGE}" >&2
+  exit "$2"
+}
+
+trap cleanup EXIT
+trap 'on_signal SIGINT 130' INT
+trap 'on_signal SIGTERM 143' TERM
+
+mkdir -p "${WORKDIR}"
+# mkdir is atomic, and unlike flock it exists on macOS as well as Linux. The
+# per-run paths above stop two runs colliding on the layout, but they share one
+# cargo target dir by necessity, so overlapping runs still have to be excluded.
+if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
+  die "another release-dry-run appears to be in progress (lock: ${LOCK_DIR}). If no run is active, remove that directory and retry."
+fi
+HELD_LOCK=1
 
 mkdir -p "${CACHE_CARGO}" "${CACHE_RUSTUP}"
 rm -rf "${DEB_LAYOUT}"
 mkdir -p "${DEB_LAYOUT}"
+
+# Runs one stage's container as a background job and blocks in `wait`. A shell
+# blocked directly on a foreground command defers its traps until that command
+# returns, which on the build stage means up to 20 minutes between Ctrl-C and
+# anything happening; a shell blocked in `wait` runs them immediately.
+run_docker() {
+  local name="$1"
+  shift
+  local rc=0
+  ACTIVE_CONTAINER="${CONTAINER_PREFIX}-${name}"
+  docker run --rm --name "${ACTIVE_CONTAINER}" --platform "${DOCKER_PLATFORM}" "$@" &
+  wait "$!" || rc=$?
+  ACTIVE_CONTAINER=""
+  return "${rc}"
+}
 
 # --- stage 1: build inside the glibc floor container --------------------
 #
@@ -106,8 +175,7 @@ mkdir -p "${DEB_LAYOUT}"
 # script exists to catch -- it would silently raise the glibc floor.
 build_in_floor_container() {
   log_stage "build (${BUILD_IMAGE}, target ${TARGET})"
-  docker run --rm --name "${CONTAINER_PREFIX}-build" \
-    --platform "${DOCKER_PLATFORM}" \
+  run_docker build \
     -v "${REPO_ROOT}:/repo" \
     -v "${REPO_ROOT}/${CACHE_CARGO}:/root/.cargo" \
     -v "${REPO_ROOT}/${CACHE_RUSTUP}:/root/.rustup" \
@@ -138,8 +206,7 @@ build_in_floor_container() {
 # non-numeric ceiling is a failure, not a silent pass.
 enforce_glibc_ceiling() {
   log_stage "glibc ceiling check (floor: GLIBC_2.31)"
-  docker run --rm --name "${CONTAINER_PREFIX}-glibc-check" \
-    --platform "${DOCKER_PLATFORM}" \
+  run_docker glibc-check \
     -v "${REPO_ROOT}:/repo:ro" \
     -w /repo \
     "${BUILD_IMAGE}" bash -euc '
@@ -181,9 +248,12 @@ assemble_deb() {
   install -m 755 "target/${TARGET}/release/inkentry-server" "${DEB_LAYOUT}/usr/bin/inkentry-server"
   install -m 644 packaging/inkentry-server.service "${DEB_LAYOUT}/usr/lib/systemd/user/inkentry-server.service"
 
+  # Captured via a file rather than command substitution: `$(...)` runs the
+  # docker client in a subshell this script cannot background or `wait` on, and
+  # keeping it would leave this one stage unable to respond to a signal.
   local deb_depends
-  deb_depends="$(docker run --rm --name "${CONTAINER_PREFIX}-shlibdeps" \
-    --platform "${DOCKER_PLATFORM}" \
+  local depends_out="${RUN_DIR}/shlibdeps.txt"
+  run_docker shlibdeps \
     -v "${REPO_ROOT}:/w:ro" "${BUILD_IMAGE}" bash -euc '
       set -euo pipefail
       apt-get update -qq >/dev/null
@@ -192,7 +262,9 @@ assemble_deb() {
       printf "Source: inkentry\nMaintainer: inkentries <hello@inkentry.com>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
       cd /tmp/sd
       dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
-    ')" || die "dpkg-shlibdeps failed inside ${BUILD_IMAGE}"
+    ' >"${depends_out}" || die "dpkg-shlibdeps failed inside ${BUILD_IMAGE}"
+  deb_depends="$(cat "${depends_out}")"
+  [ -n "${deb_depends}" ] || die "dpkg-shlibdeps produced no Depends line"
   echo "Derived ${deb_depends}"
 
   DEB_DEPENDS="${deb_depends}" \
@@ -211,9 +283,7 @@ assemble_deb() {
 # package install is needed here.
 build_deb() {
   log_stage "build .deb (-Zxz)"
-  DEB_PATH="${WORKDIR}/inkentry_${DEB_VERSION}_amd64.deb"
-  docker run --rm --name "${CONTAINER_PREFIX}-dpkg-deb" \
-    --platform "${DOCKER_PLATFORM}" \
+  run_docker dpkg-deb \
     -v "${REPO_ROOT}:/w" -w /w \
     "${BUILD_IMAGE}" \
     dpkg-deb --build -Zxz "${DEB_LAYOUT}" "${DEB_PATH}" \
@@ -232,8 +302,7 @@ build_deb() {
 smoke_test_deb() {
   for image in ${SMOKE_IMAGES}; do
     log_stage "install + smoke-test .deb (${image})"
-    docker run --rm --name "${CONTAINER_PREFIX}-smoke" \
-      --platform "${DOCKER_PLATFORM}" \
+    run_docker smoke \
       -v "${REPO_ROOT}/${DEB_PATH}:/pkg/inkentry_${DEB_VERSION}_amd64.deb:ro" \
       -e INKENTRY_SECRET_STORE=file \
       "${image}" bash -euc '

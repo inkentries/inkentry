@@ -12,7 +12,7 @@ use crate::storage::{CloudSyncClient, MemoryStore};
 /// notes (decision #183) — so there is no persisted watermark to advance: the
 /// next run re-derives the cursor from the rows just applied. This is what makes
 /// the pull immune to clock drift and trivially resumable. Used as-is by the
-/// one-way `memory pull`; `sync_round` below instead calls
+/// one-way `plumbing pull`; `sync_round` below instead calls
 /// [`pull_and_apply_since`] directly so it can pin an explicit cursor across
 /// its two pull passes.
 pub(in crate::cli::cmd) async fn pull_and_apply(
@@ -573,7 +573,7 @@ mod tests {
         assert_eq!(store.count().unwrap(), 160);
     }
 
-    // Item 7: the one-way `inkentry memory pull` entry point (`pull_and_apply`,
+    // Item 7: the one-way `inkentry plumbing pull` entry point (`pull_and_apply`,
     // which derives its own cursor from the store rather than being handed
     // one) also paginates fully, proven through `pull_and_apply` directly,
     // not just through `sync_round`, since both merely wrap the same shared
