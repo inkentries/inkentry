@@ -302,7 +302,7 @@ inkentry plumbing pull        # server -> local
 inkentry plumbing push        # local -> server
 ```
 
-Conflict detection: If you write an entry semantically similar to an existing one (cosine ≥ 0.92), the server returns HTTP 409 (advisory). The entry is stored with a `contradicts` edge linking to the conflicting entry. Check `inkentry memory show <id>` to review related entries before proceeding.
+Conflict detection: If you write an entry semantically similar to an existing one (cosine ≥ 0.92), the server returns HTTP 409 (advisory). The entry is stored, and the server records a `contradicts` edge to the conflicting entry on its own side. That edge is not carried back to your machine, so `inkentry memory show` will not display it; what you get locally is a warning on stderr naming each conflicting entry and its similarity score. Review those entries before proceeding.
 
 ## Reconciling memory from a server database
 
