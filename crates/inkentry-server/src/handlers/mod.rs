@@ -68,21 +68,69 @@ fn validate_title_body(title: &str, body: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Reject an embedding vector whose length doesn't match the server's
-/// configured embedding dimension. `None` (no vector supplied) always passes:
-/// embedding is optional on write.
-fn validate_embedding_dim(
-    embedding: Option<&[f32]>,
+/// Full-contract validation for a client-pushed embedding vector.
+///
+/// A client may push its own vector to skip server-side embedding, but only if
+/// it matches what this server would have produced: same model family, fp32,
+/// same dimension, no non-finite components. `None` (no vector supplied)
+/// always passes, since pushing one is optional and the server embeds instead.
+///
+/// The model tag and precision are **required** whenever a vector is present.
+/// An untagged vector cannot be checked against what this server embeds with,
+/// so accepting one would put a vector of unknown provenance next to the
+/// server's own in the same index, where nothing downstream could tell them
+/// apart. Refusing surfaces the mismatch to the caller instead of silently
+/// re-embedding behind its back.
+fn validate_pushed_vector(
+    vector: Option<&[f32]>,
+    model: Option<&str>,
+    precision: Option<&str>,
     configured_dim: usize,
 ) -> Result<(), AppError> {
-    if let Some(v) = embedding
-        && configured_dim != 0
-        && v.len() != configured_dim
-    {
+    let Some(v) = vector else {
+        return Ok(());
+    };
+
+    let expected_model = inkentry_core::embeddings::pushed_vector_model_tag();
+    match model {
+        Some(m) if m == expected_model => {}
+        Some(m) => {
+            return Err(AppError::BadRequest(format!(
+                "pushed vector model '{m}' does not match server embedding model '{expected_model}'"
+            )));
+        }
+        None => {
+            return Err(AppError::BadRequest(format!(
+                "vector_model is required with a pushed vector; expected '{expected_model}'"
+            )));
+        }
+    }
+
+    let expected_precision = inkentry_core::embeddings::PUSHED_VECTOR_PRECISION;
+    match precision {
+        Some(p) if p == expected_precision => {}
+        Some(p) => {
+            return Err(AppError::BadRequest(format!(
+                "pushed vector precision '{p}' is unsupported; expected '{expected_precision}'"
+            )));
+        }
+        None => {
+            return Err(AppError::BadRequest(format!(
+                "vector_precision is required with a pushed vector; expected '{expected_precision}'"
+            )));
+        }
+    }
+
+    if configured_dim != 0 && v.len() != configured_dim {
         return Err(AppError::BadRequest(format!(
             "embedding vector length {} does not match server's configured dimension {configured_dim}",
             v.len()
         )));
+    }
+    if !v.iter().all(|x| x.is_finite()) {
+        return Err(AppError::BadRequest(
+            "pushed vector contains NaN or infinite values".into(),
+        ));
     }
     Ok(())
 }

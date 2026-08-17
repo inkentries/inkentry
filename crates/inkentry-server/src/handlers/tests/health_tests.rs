@@ -202,6 +202,46 @@ async fn health_reflects_load_failure() {
     assert_eq!(json["embedding_dim"], json!(0));
 }
 
+// `accepts_pushed_vectors` is the gate the CLI's sync push reads before
+// attaching a locally-computed vector. It is ready-gated rather than constant:
+// this server can only honour a pushed vector once its own embedder is ready
+// and its dimension is known, because that dimension is what the stored-vector
+// contract is checked against.
+#[tokio::test]
+async fn health_advertises_accepts_pushed_vectors_when_embedder_ready() {
+    let json = get_health_json(make_app_with_embedder(4)).await;
+    assert_eq!(
+        json["accepts_pushed_vectors"],
+        json!(true),
+        "a ready embedder with a known dimension must advertise accepts_pushed_vectors"
+    );
+}
+
+#[tokio::test]
+async fn health_withholds_accepts_pushed_vectors_unless_embedder_ready() {
+    let (app, _) = make_app(0.92);
+    assert_eq!(
+        get_health_json(app).await["accepts_pushed_vectors"],
+        json!(false),
+        "a disabled embedder must not advertise accepts_pushed_vectors"
+    );
+
+    let loading = make_app_with_slot(4, crate::EmbedderSlot::loading());
+    assert_eq!(
+        get_health_json(loading).await["accepts_pushed_vectors"],
+        json!(false),
+        "a loading embedder must not advertise accepts_pushed_vectors"
+    );
+
+    let failed = crate::EmbedderSlot::loading();
+    failed.set_unavailable("download error: boom");
+    assert_eq!(
+        get_health_json(make_app_with_slot(4, failed)).await["accepts_pushed_vectors"],
+        json!(false),
+        "an unavailable embedder must not advertise accepts_pushed_vectors"
+    );
+}
+
 // The CLI's version-skew suite replays recorded peer health bodies. Those
 // recordings are only evidence of what a peer sends while the live body still
 // carries the same keys: once this handler and the recording drift, the replay
@@ -230,8 +270,17 @@ async fn live_health_keys_match_the_recorded_peer_fixture() {
 
     let live = get_health_json(make_app_with_embedder(4)).await;
 
+    // Keys this server has gained since the recording was taken. Named one by
+    // one rather than tolerating extra keys wholesale, so a key that vanishes
+    // from the live body still fails this assertion.
+    const ADDED_SINCE_RECORDING: [&str; 1] = ["accepts_pushed_vectors"];
+    let live_keys: Vec<String> = keys(&live, "live body")
+        .into_iter()
+        .filter(|k| !ADDED_SINCE_RECORDING.contains(&k.as_str()))
+        .collect();
+
     assert_eq!(
-        keys(&live, "live body"),
+        live_keys,
         keys(&recorded, "recorded body"),
         "the live health body and the recorded peer fixture no longer carry the \
          same top-level keys, so the skew replay is asserting against a shape no \

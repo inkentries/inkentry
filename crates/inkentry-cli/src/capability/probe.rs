@@ -573,7 +573,7 @@ struct HealthBody {
     /// Whether the server accepts a client-pushed embedding vector on
     /// `POST /memory/batch`. Top-level bool, not a
     /// `capabilities` entry. Absent on servers without the accept side
-    /// (older servers, the OSS team server) → defaults false.
+    /// (an older server, or one whose embedder is not ready) → defaults false.
     #[serde(default, deserialize_with = "lenient_accepts_pushed_vectors")]
     accepts_pushed_vectors: bool,
 }
@@ -874,8 +874,8 @@ mod tests {
         );
     }
 
-    // A server that omits the field (older server, or the OSS team server)
-    // must default to `false`: the push stays text-only there.
+    // A server that omits the field (an older server) must default to
+    // `false`: the push stays text-only there.
     #[tokio::test]
     async fn probe_url_accepts_pushed_vectors_defaults_false_when_absent() {
         use wiremock::matchers::{method, path};
@@ -898,6 +898,135 @@ mod tests {
         assert!(
             !tier.caps().unwrap().accepts_pushed_vectors,
             "absent `accepts_pushed_vectors` must default to false (text-only)"
+        );
+    }
+
+    // Neither end mocked: the real server's health handler, this CLI's real
+    // probe, and the real push client. A mock is written from one side's own
+    // expectations, so it agrees with that side by construction and cannot
+    // catch the two disagreeing. That is precisely how this fast path came to
+    // be unreachable while every test on both sides stayed green.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_real_server_advertises_the_capability_and_a_real_push_skips_its_embedder() {
+        use std::sync::OnceLock;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static SQLITE_VEC: OnceLock<()> = OnceLock::new();
+        SQLITE_VEC.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+
+        let dim = inkentry_core::embeddings::EMBEDDING_DIM;
+
+        struct CountingEmbedder {
+            dim: usize,
+            calls: std::sync::Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl inkentry_core::embeddings::EmbeddingBackend for CountingEmbedder {
+            async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+                self.calls.fetch_add(texts.len(), Ordering::SeqCst);
+                Ok(texts.iter().map(|_| vec![0.0_f32; self.dim]).collect())
+            }
+
+            fn dimension(&self) -> usize {
+                self.dim
+            }
+        }
+
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let db = inkentry_server::db::ServerDb::open(
+            std::path::Path::new(":memory:"),
+            dim,
+            inkentry_core::embeddings::MODEL_ID,
+        )
+        .expect("open server db");
+        let instance_id = db.get_or_create_instance_id().expect("instance_id");
+        let state = inkentry_server::AppState {
+            db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
+            auth: std::sync::Arc::new(inkentry_server::auth::ApiKeyAuth::new(None)),
+            conflict_threshold: inkentry_server::default_conflict_threshold(),
+            embedder: inkentry_server::EmbedderSlot::ready(std::sync::Arc::new(CountingEmbedder {
+                dim,
+                calls: calls.clone(),
+            })),
+            embed_admission: inkentry_server::EmbedAdmission::new(
+                inkentry_server::EMBED_QUEUE_CAPACITY,
+                inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
+            ),
+            llm: None,
+            max_tokens_ceiling: 8192,
+            rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(
+                1000, 60,
+            )),
+            instance_id,
+            started_by: None,
+            trusted_proxies: Default::default(),
+            relay: inkentry_server::relay::RelayRegistry::disabled(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral loopback port");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                inkentry_server::router(state)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+        });
+        let base_url = format!("http://{addr}");
+
+        let tier = probe_url(&base_url, REMOTE_PROBE_TIMEOUT, false, None)
+            .await
+            .expect("probe must succeed against a real server");
+        let caps = tier
+            .caps()
+            .expect("a reachable server must report capabilities");
+        assert!(
+            caps.accepts_pushed_vectors,
+            "a real server with a ready embedder must advertise the capability the \
+             push gate reads"
+        );
+
+        let client =
+            inkentry_core::storage::CloudSyncClient::new(&base_url, "acme-widget", None, None)
+                .expect("build push client");
+        let item = inkentry_core::storage::BatchPushItem {
+            kind: "decision".into(),
+            title: "pushed with its own vector".into(),
+            body: Some("b".into()),
+            external_id: "ext-pushed-1".into(),
+            source_commit: None,
+            vector: None,
+            vector_model: None,
+            vector_precision: None,
+        }
+        .maybe_attach_vector(caps.accepts_pushed_vectors, Some(vec![0.25_f32; dim]));
+        assert!(
+            item.vector.is_some(),
+            "the advertised capability must actually open the push gate"
+        );
+
+        let result = client
+            .push_batch(vec![item])
+            .await
+            .expect("push must succeed");
+        assert_eq!(
+            result.created, 1,
+            "the pushed entry must be stored: {result:?}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "an entry that arrived with its own vector must never be re-embedded"
         );
     }
 

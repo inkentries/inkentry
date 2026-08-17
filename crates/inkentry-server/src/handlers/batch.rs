@@ -10,17 +10,16 @@ use utoipa::ToSchema;
 use crate::{AppError, AppState, ErrorBody};
 
 use super::{
-    MAX_BATCH_ENTRIES, embed_for_storage, validate_embedding_dim, validate_project_slug,
+    MAX_BATCH_ENTRIES, embed_for_storage, validate_project_slug, validate_pushed_vector,
     validate_title_body,
 };
 
 // ── Batch push (wire parity with cloud-api's POST /memory/batch) ────────────
 
 /// One entry in a `POST /memory/batch` request. Field-for-field match of the
-/// CLI's `BatchPushItem` (`inkentry-core/src/storage/remote/sync.rs`): the CLI
-/// never sends `embedding` today (its push is text-only), but the
-/// field is accepted when present for forward compatibility with a possible
-/// future pushed-vector optimization: the server must not require it.
+/// CLI's `BatchPushItem` (`inkentry-core/src/storage/remote/sync.rs`) and of
+/// the hosted peer's batch item, so one client payload means the same thing
+/// wherever it is sent.
 #[derive(Deserialize, ToSchema)]
 pub struct BatchNoteItem {
     pub kind: String,
@@ -35,9 +34,17 @@ pub struct BatchNoteItem {
     /// as a `git:<sha>` tag, the same convention `harvested_shas` already reads.
     #[serde(default)]
     pub source_commit: Option<String>,
-    /// Optional pre-computed embedding. Tolerated, never required.
+    /// Locally-computed embedding, letting the client skip server-side
+    /// embedding. Optional; without it the server embeds the text itself.
     #[serde(default)]
-    pub embedding: Option<Vec<f32>>,
+    pub vector: Option<Vec<f32>>,
+    /// Model tag for a pushed `vector`. Required whenever `vector` is present.
+    #[serde(default)]
+    pub vector_model: Option<String>,
+    /// Precision of a pushed `vector`; must be `fp32`. Required whenever
+    /// `vector` is present.
+    #[serde(default)]
+    pub vector_precision: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -117,8 +124,13 @@ pub async fn push_memory_batch(
     for (i, entry) in body.entries.iter().enumerate() {
         validate_title_body(&entry.title, entry.body.as_deref().unwrap_or(""))
             .map_err(|e| prefix_batch_error(e, i))?;
-        validate_embedding_dim(entry.embedding.as_deref(), configured_dim)
-            .map_err(|e| prefix_batch_error(e, i))?;
+        validate_pushed_vector(
+            entry.vector.as_deref(),
+            entry.vector_model.as_deref(),
+            entry.vector_precision.as_deref(),
+            configured_dim,
+        )
+        .map_err(|e| prefix_batch_error(e, i))?;
         if entry.external_id.is_empty() {
             return Err(AppError::BadRequest(format!(
                 "entry {i}: external_id must not be empty"
@@ -159,7 +171,7 @@ pub async fn push_memory_batch(
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.embedding.is_none())
+        .filter(|(_, entry)| entry.vector.is_none())
         .map(|(i, _)| i)
         .collect();
     let texts: Vec<String> = pending
@@ -219,10 +231,7 @@ pub async fn push_memory_batch(
             continue;
         }
 
-        let embedding = entry
-            .embedding
-            .as_deref()
-            .or(server_embeddings[i].as_deref());
+        let embedding = entry.vector.as_deref().or(server_embeddings[i].as_deref());
 
         // `source_commit` has no dedicated column on this schema; fold it into
         // tags using the same `git:<sha>` convention `harvested_shas` reads.

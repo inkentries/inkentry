@@ -1051,3 +1051,58 @@ d9qQF0w9nfELOC5M+ZxwP4vE/QkXLG57ZrOvKl2V4pthKSBv3LBAnh/C7X7/KC+f\n\
 iwNpumIaYRGylEbxW2WVv9YsWDmTBFqEkgrmx1QPJr3FtA6eeWmZ+EJIr3ImOv/d\n\
 CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
 -----END CERTIFICATE-----\n";
+
+// ── The relay's wire and the accept side's wire are one shape ──────────
+
+// The relay converts its own entry into the push item, and a different crate
+// deserialises that item back on the accept side. Nothing but this forces the
+// two to agree, so a field renamed on one side alone would leave the relay
+// pushing a name the server has stopped reading: a silent re-embed of every
+// relayed entry rather than a build failure.
+#[test]
+fn a_relayed_entry_deserialises_into_the_accept_side_item() {
+    let wire = serde_json::to_value(BatchPushItem::from(entry("ext-1")))
+        .expect("push item must serialise");
+    assert!(
+        !wire
+            .as_object()
+            .expect("an object")
+            .contains_key("embedding"),
+        "the retired field name must not reappear on the relay's wire: {wire}"
+    );
+
+    let accepted: crate::handlers::BatchNoteItem =
+        serde_json::from_value(wire.clone()).expect("accept side must read the relay's own wire");
+    assert_eq!(accepted.external_id, "ext-1");
+    assert!(
+        accepted.vector.is_none(),
+        "a relayed entry is text-only, so the server embeds it: {wire}"
+    );
+}
+
+// The same agreement on the fast path: a push item carrying a vector must
+// arrive with all three fields under the names the accept side requires, or
+// the server refuses it as an untagged vector.
+#[test]
+fn a_pushed_vector_deserialises_into_the_accept_side_item_with_its_tags() {
+    let item = BatchPushItem::from(entry("ext-2")).maybe_attach_vector(true, Some(vec![0.25; 4]));
+    let wire = serde_json::to_value(item).expect("push item must serialise");
+
+    let accepted: crate::handlers::BatchNoteItem =
+        serde_json::from_value(wire.clone()).expect("accept side must read a vector-carrying push");
+    assert_eq!(
+        accepted.vector.as_deref(),
+        Some(&[0.25_f32; 4][..]),
+        "{wire}"
+    );
+    assert_eq!(
+        accepted.vector_model.as_deref(),
+        Some(inkentry_core::embeddings::pushed_vector_model_tag()),
+        "{wire}"
+    );
+    assert_eq!(
+        accepted.vector_precision.as_deref(),
+        Some(inkentry_core::embeddings::PUSHED_VECTOR_PRECISION),
+        "{wire}"
+    );
+}

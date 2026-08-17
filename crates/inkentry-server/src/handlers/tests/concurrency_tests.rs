@@ -930,7 +930,9 @@ async fn a_memory_write_carrying_its_own_vector_is_not_shed_by_a_saturated_queue
             "kind": "note",
             "title": "brings its own vector",
             "body": "nothing to embed",
-            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "vector": [1.0, 0.0, 0.0, 0.0],
+            "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+            "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
         }))
         .send()
         .await

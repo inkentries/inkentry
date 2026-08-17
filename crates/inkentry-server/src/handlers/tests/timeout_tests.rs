@@ -44,7 +44,9 @@ async fn normal_route_exceeding_timeout_returns_408() {
             "kind": "note",
             "title": "t",
             "body": "b",
-            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "vector": [1.0, 0.0, 0.0, 0.0],
+            "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+            "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
         }))
         .send()
         .await
@@ -388,7 +390,9 @@ async fn other_routes_unaffected_by_longer_embed_budget() {
             "kind": "note",
             "title": "t",
             "body": "b",
-            "embedding": [1.0, 0.0, 0.0, 0.0],
+            "vector": [1.0, 0.0, 0.0, 0.0],
+            "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+            "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
         }))
         .send()
         .await

@@ -335,7 +335,7 @@
           "memory"
         ],
         "summary": "Add a memory entry to a project. The project is auto-created on first write.",
-        "description": "The `embedding` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN).\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.\nReturns **429** (with `Retry-After`) when the entry needs server-side\nembedding and the embed admission queue is full.",
+        "description": "The `vector` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN). A `vector` must\narrive with its `vector_model` and `vector_precision`, or it is refused.\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.\nReturns **429** (with `Retry-After`) when the entry needs server-side\nembedding and the embed admission queue is full.",
         "operationId": "add_note",
         "parameters": [
           {
@@ -1236,17 +1236,6 @@
           "body": {
             "type": "string"
           },
-          "embedding": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "number",
-              "format": "float"
-            },
-            "description": "Pre-computed embedding vector from the client. Optional: if omitted and the\nserver's embedder is ready, the server embeds the entry.\nIf neither is available, the entry is stored without a vector (text search only)."
-          },
           "kind": {
             "type": "string",
             "description": "Kind of memory entry: `decision`, `requirement`, `note`, `question`, `handoff`, `intent`."
@@ -1267,6 +1256,31 @@
           },
           "title": {
             "type": "string"
+          },
+          "vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Locally-computed embedding vector from the client. Optional: if omitted\nand the server's embedder is ready, the server embeds the entry.\nIf neither is available, the entry is stored without a vector (text\nsearch only)."
+          },
+          "vector_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model tag for a pushed `vector`. Required whenever `vector` is present."
+          },
+          "vector_precision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Precision of a pushed `vector`; must be `fp32`. Required whenever\n`vector` is present."
           }
         }
       },
@@ -1320,7 +1334,7 @@
       },
       "BatchNoteItem": {
         "type": "object",
-        "description": "One entry in a `POST /memory/batch` request. Field-for-field match of the\nCLI's `BatchPushItem` (`inkentry-core/src/storage/remote/sync.rs`): the CLI\nnever sends `embedding` today (its push is text-only), but the\nfield is accepted when present for forward compatibility with a possible\nfuture pushed-vector optimization: the server must not require it.",
+        "description": "One entry in a `POST /memory/batch` request. Field-for-field match of the\nCLI's `BatchPushItem` (`inkentry-core/src/storage/remote/sync.rs`) and of\nthe hosted peer's batch item, so one client payload means the same thing\nwherever it is sent.",
         "required": [
           "kind",
           "title",
@@ -1332,17 +1346,6 @@
               "string",
               "null"
             ]
-          },
-          "embedding": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "number",
-              "format": "float"
-            },
-            "description": "Optional pre-computed embedding. Tolerated, never required."
           },
           "external_id": {
             "type": "string",
@@ -1360,6 +1363,31 @@
           },
           "title": {
             "type": "string"
+          },
+          "vector": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Locally-computed embedding, letting the client skip server-side\nembedding. Optional; without it the server embeds the text itself."
+          },
+          "vector_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Model tag for a pushed `vector`. Required whenever `vector` is present."
+          },
+          "vector_precision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Precision of a pushed `vector`; must be `fp32`. Required whenever\n`vector` is present."
           }
         }
       },
@@ -1654,10 +1682,15 @@
           "capabilities",
           "instance_id",
           "embedding_dim",
+          "accepts_pushed_vectors",
           "embedder",
           "limits"
         ],
         "properties": {
+          "accepts_pushed_vectors": {
+            "type": "boolean",
+            "description": "Whether this server validates and stores a client-pushed embedding\nvector instead of re-embedding the text. A client gates its push fast\npath on this; `false` (or absent, on an older server) means push the\ntext and let the server embed.\n\nReady-gated, not constant: a pushed vector is only storable once this\nserver's own embedder is ready, because the stored-vector contract is\nchecked against that embedder's dimension and model."
+          },
           "capabilities": {
             "type": "array",
             "items": {

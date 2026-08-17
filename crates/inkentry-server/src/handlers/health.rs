@@ -65,6 +65,15 @@ pub struct HealthResponse {
     /// Embedding dimension produced by this server's embedder.
     /// `0` until the embedder is `ready` (capability `index.embed` absent).
     pub embedding_dim: usize,
+    /// Whether this server validates and stores a client-pushed embedding
+    /// vector instead of re-embedding the text. A client gates its push fast
+    /// path on this; `false` (or absent, on an older server) means push the
+    /// text and let the server embed.
+    ///
+    /// Ready-gated, not constant: a pushed vector is only storable once this
+    /// server's own embedder is ready, because the stored-vector contract is
+    /// checked against that embedder's dimension and model.
+    pub accepts_pushed_vectors: bool,
     /// Embedder readiness. Newer clients read `embedder.state` for the finer
     /// `loading` vs `unavailable` distinction that `capabilities` cannot express.
     pub embedder: EmbedderStatus,
@@ -112,6 +121,7 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         instance_id: state.instance_id.clone(),
         started_by: state.started_by,
         embedding_dim,
+        accepts_pushed_vectors: embedding_dim != 0,
         embedder: EmbedderStatus {
             state: embedder_state,
             detail: state.embedder.detail(),

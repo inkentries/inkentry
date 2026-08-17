@@ -9,6 +9,25 @@ pub use inkentry_embed::MODEL_ID;
 /// The embedding vector dimension produced by the default native model (F2LLM-v2-330M, 896-dim).
 pub const EMBEDDING_DIM: usize = 896;
 
+/// Precision tag carried alongside a client-pushed memory vector. Memory
+/// vectors cross to a shared server, so they are ALWAYS full-precision fp32,
+/// never the int8 quantisation used for the local code index. The accept side
+/// rejects any other precision, so nothing else is ever sent.
+pub const PUSHED_VECTOR_PRECISION: &str = "fp32";
+
+/// The `vector_model` tag a vector-accepting server validates for exact string
+/// equality: the model *family* portion of [`MODEL_ID`] (`"F2LLM-v2-330M@896"`)
+/// with the `@<dim>` suffix stripped. The dimension travels as the vector's own
+/// length, checked separately, so carrying it in the tag as well would make two
+/// peers whose model constants differ only in suffix formatting disagree about
+/// an identical vector.
+///
+/// Both sides of the contract call this, so the push side and the accept side
+/// cannot drift into two spellings of the same model.
+pub fn pushed_vector_model_tag() -> &'static str {
+    MODEL_ID.split('@').next().unwrap_or(MODEL_ID)
+}
+
 /// Serialise a float vector to raw little-endian f32 bytes for a sqlite-vec
 /// `float[N]` column. Used for the full-precision memory-note vector table
 /// (`note_embeddings`, `FLOAT[896]`). See `docs/architecture.md` ("Why two

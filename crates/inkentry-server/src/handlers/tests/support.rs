@@ -56,18 +56,21 @@ pub(super) fn make_app(conflict_threshold: f32) -> (axum::Router, i32) {
     (router(state), dim as i32)
 }
 
-// POST /v1/projects/{slug}/memory with the given embedding. Returns the response.
+// POST /v1/projects/{slug}/memory with the given client-pushed vector, tagged
+// as the accept side requires. Returns the response.
 pub(super) async fn post_note(
     app: axum::Router,
     slug: &str,
     title: &str,
-    embedding: Vec<f32>,
+    vector: Vec<f32>,
 ) -> (http::StatusCode, Value) {
     let body = json!({
         "kind": "note",
         "title": title,
         "body": "test body",
-        "embedding": embedding,
+        "vector": vector,
+        "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+        "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
     });
     let req = Request::builder()
         .method("POST")

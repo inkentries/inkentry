@@ -75,7 +75,9 @@ async fn add_note_creates_project_automatically() {
         "kind": "decision",
         "title": "Use SQLite",
         "body": "Simpler than Postgres for local use.",
-        "embedding": [0.1_f32, 0.2, 0.3, 0.4],
+        "vector": [0.1_f32, 0.2, 0.3, 0.4],
+        "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+        "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
     });
 
     let resp = send(
@@ -106,7 +108,9 @@ async fn list_notes_returns_added_note() {
         "kind": "note",
         "title": "First note",
         "body": "Some context.",
-        "embedding": [1.0_f32, 0.0, 0.0, 0.0],
+        "vector": [1.0_f32, 0.0, 0.0, 0.0],
+        "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+        "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
     });
     send(
         state.clone(),
@@ -147,7 +151,7 @@ async fn get_note_returns_404_for_unknown_id() {
         state.clone(),
         "POST",
         "/v1/projects/p/memory",
-        json_body(serde_json::json!({"kind":"note","title":"x","embedding":[0.0_f32,0.0,0.0,0.0]})),
+        json_body(serde_json::json!({"kind":"note","title":"x","vector":[0.0_f32,0.0,0.0,0.0],"vector_model":inkentry_core::embeddings::pushed_vector_model_tag(),"vector_precision":inkentry_core::embeddings::PUSHED_VECTOR_PRECISION})),
         true,
     )
     .await;
@@ -169,8 +173,7 @@ async fn get_note_returns_404_for_unknown_id() {
 #[serial]
 async fn archive_note_hides_it_from_list() {
     let state = make_state();
-    let add =
-        serde_json::json!({"kind":"decision","title":"Arch","embedding":[0.0_f32,0.0,0.0,0.0]});
+    let add = serde_json::json!({"kind":"decision","title":"Arch","vector":[0.0_f32,0.0,0.0,0.0],"vector_model":inkentry_core::embeddings::pushed_vector_model_tag(),"vector_precision":inkentry_core::embeddings::PUSHED_VECTOR_PRECISION});
     let resp = send(
         state.clone(),
         "POST",
@@ -210,7 +213,7 @@ async fn archive_note_hides_it_from_list() {
 #[serial]
 async fn delete_note_removes_it() {
     let state = make_state();
-    let add = serde_json::json!({"kind":"note","title":"Gone","embedding":[0.0_f32,0.0,0.0,0.0]});
+    let add = serde_json::json!({"kind":"note","title":"Gone","vector":[0.0_f32,0.0,0.0,0.0],"vector_model":inkentry_core::embeddings::pushed_vector_model_tag(),"vector_precision":inkentry_core::embeddings::PUSHED_VECTOR_PRECISION});
     let resp = send(
         state.clone(),
         "POST",
@@ -285,7 +288,7 @@ async fn search_without_embedder_returns_400() {
         "POST",
         "/v1/projects/s/memory",
         json_body(
-            serde_json::json!({"kind":"note","title":"alpha","embedding":[1.0_f32,0.0,0.0,0.0]}),
+            serde_json::json!({"kind":"note","title":"alpha","vector":[1.0_f32,0.0,0.0,0.0],"vector_model":inkentry_core::embeddings::pushed_vector_model_tag(),"vector_precision":inkentry_core::embeddings::PUSHED_VECTOR_PRECISION}),
         ),
         true,
     )
@@ -408,7 +411,7 @@ async fn project_stats_returns_correct_counts() {
         state.clone(),
         "POST",
         "/v1/projects/t/memory",
-        json_body(serde_json::json!({"kind":"note","title":"a","embedding":[0.0_f32,0.0,0.0,0.0]})),
+        json_body(serde_json::json!({"kind":"note","title":"a","vector":[0.0_f32,0.0,0.0,0.0],"vector_model":inkentry_core::embeddings::pushed_vector_model_tag(),"vector_precision":inkentry_core::embeddings::PUSHED_VECTOR_PRECISION})),
         true,
     )
     .await;
