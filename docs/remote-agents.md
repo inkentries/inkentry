@@ -20,8 +20,7 @@ The shapes we distinguish:
 | Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.inkentry.com` |
 | Self-hosted remote (R3) | Your own VM / pod | `https://inkentry.your-domain`: see [Server setup](server-setup.md) |
 
-This page covers **R1 (local Docker)**. R2 (cloud-managed) is on the roadmap and
-documented separately when it ships. R3 (self-hosted over the network) is
+This page covers **R1 (local Docker)**. R3 (self-hosted over the network) is
 [Server setup](server-setup.md).
 
 ## R1 — an agent in a local Docker container
