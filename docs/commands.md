@@ -518,13 +518,17 @@ The code graph is reachable from two places:
 Both read the graph built by `inkentry init`. Both are index-backed: there is no
 working-tree scan.
 
-**Example:**
+**Example** (real symbol and path from the inkentry repository, so these work as
+written against a clone of it):
 
 ```bash
-inkentry search RagPipeline --graph
-inkentry plumbing graph-edges --file src/storage/db.rs
-inkentry plumbing graph-edges --symbol validate_token
+inkentry search linearrag_search --graph
+inkentry plumbing graph-edges --symbol linearrag_search
+inkentry plumbing graph-edges --file crates/inkentry-core/src/storage/db.rs
 ```
+
+`--file` matches the path as it is stored in the index, so pass the full
+repo-relative path rather than a suffix.
 
 ---
 
