@@ -285,6 +285,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A server key file saved with a UTF-8 BOM no longer makes every request fail
+  with 401.** The BOM (`EF BB BF`), which many Windows editors write by default,
+  survived the key's trim because U+FEFF is a format character rather than
+  whitespace, so it was hashed as part of the key. No client could match it: a
+  bearer token arrives as header-safe ASCII, so nothing an operator could send,
+  including the file's exact contents, would ever authenticate, and the server
+  logged a normal startup. A leading BOM is now stripped from every key source
+  (`--key`, `--key-file`, `INKENTRY_SERVER_KEY`, the systemd `server-key`
+  credential), and a resolved key still holding a byte an HTTP header cannot
+  carry now refuses startup with an error naming the source it came from.
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's
