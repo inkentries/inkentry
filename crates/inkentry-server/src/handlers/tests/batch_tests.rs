@@ -453,6 +453,51 @@ async fn batch_rejects_a_pushed_vector_of_the_wrong_dimension() {
     );
 }
 
+// A non-finite component is refused before it can reach `note_embeddings`,
+// where it would make that row's distance comparisons meaningless and skew
+// KNN for the whole project with nothing reporting an error.
+//
+// JSON has no infinity literal, so the way one arrives is a number inside
+// f64 range but outside f32 range: decoding to f32 saturates to an infinity.
+// Both signs are covered because they saturate through different arithmetic.
+#[tokio::test]
+async fn batch_rejects_a_pushed_vector_with_a_non_finite_component() {
+    for raw in ["1e300", "-1e300"] {
+        let overflowing: Value = serde_json::from_str(raw).expect("valid JSON number");
+        let (app, _) = make_app(0.92);
+        let entries = json!([pushed_entry(
+            "nf1",
+            "non finite",
+            json!([overflowing, 0.0, 0.0, 0.0])
+        )]);
+        let (status, body) = post_batch(app, "nonfinite", entries).await;
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "a pushed vector whose first component is `{raw}` must be refused; body: {body}"
+        );
+    }
+}
+
+// NaN cannot be expressed in JSON, so no request can carry one to the check
+// above: `null` is rejected as a decode failure long before validation. The
+// NaN half of the rule is therefore only reachable by a caller inside this
+// crate, and is pinned directly so that removing it fails something.
+#[test]
+fn validation_rejects_a_nan_component() {
+    let vector = [f32::NAN, 0.0, 0.0, 0.0];
+    let result = super::super::validate_pushed_vector(
+        Some(&vector),
+        Some(pushed_vector_model_tag()),
+        Some(PUSHED_VECTOR_PRECISION),
+        4,
+    );
+    assert!(
+        result.is_err(),
+        "a vector carrying NaN must be refused even though no JSON request can express one"
+    );
+}
+
 // A vector with no model tag or no precision is refused rather than stored:
 // an untagged vector cannot be checked against what this server embeds with,
 // so storing it would put a vector of unknown provenance in the index.
