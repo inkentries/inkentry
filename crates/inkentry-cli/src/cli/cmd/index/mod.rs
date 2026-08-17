@@ -143,6 +143,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
             }
         }
     };
+    super::helpers::announce_index_rebuild(&db);
 
     // Keep the global registry in sync with the current location.
     {
@@ -189,6 +190,12 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
     if result.removed > 0 {
         eprintln!("Removed {} stale file(s) from index.", result.removed);
     }
+
+    // The walk has been through the tree, so whatever the index holds now is
+    // what the source produced, not what a rebuild left behind. Retiring the
+    // marker here rather than on file count keeps a genuinely empty tree
+    // reading as empty instead of as unrepaired.
+    db.mark_reindexed()?;
 
     // ── Pre-embed phases: PageRank + structural summaries ────────────────────
     // Offline, and run before the first embed so the embed queue is

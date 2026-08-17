@@ -49,7 +49,8 @@ use crate::{
 /// Additional fields (`tier`, `mode`, `sync_pending`, `sync_last_synced_at`,
 /// `server_url`, `capabilities`, `embedder_state`, `embedding_count`,
 /// `embedding_pending`, `embedding_refresh_pending`, `memory_embedding_pending`,
-/// `summary_scheme`, `embed_worker_alive`, `embed_tokens`, `drift_candidates`,
+/// `summary_scheme`, `index_rebuilt_from`, `embed_worker_alive`, `embed_tokens`,
+/// `drift_candidates`,
 /// `usage_7d`) are present for backward compatibility and richer tooling; treat
 /// them as unstable extensions.
 ///
@@ -76,6 +77,11 @@ use crate::{
 /// `embed_worker_alive` and `embed_tokens` describe the recorded embed
 /// worker's liveness and token-weighted progress and are `null` when no embed
 /// work (first-embed or refresh) is pending.
+/// `index_rebuilt_from` is the schema version a rebuild discarded when this
+/// build could not read the index it found, while the index it left behind is
+/// still empty; `null` on an index no rebuild touched and once a reindex has
+/// run. Non-null with `indexed_files: 0` is an emptied index, not an
+/// unindexed project, and the two are otherwise identical.
 pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     let fmt = crate::utils::effective_format(&args.format);
 
@@ -94,6 +100,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             .map(|p| p.root_path.display().to_string());
 
         let db = Database::open(&db_path)?;
+        super::helpers::announce_index_rebuild(&db);
+        let rebuilt_unpopulated = db.unpopulated_since_rebuild().unwrap_or(None);
         let stats = db.stats()?;
         let languages = db.language_stats().unwrap_or_default();
         let drift = db.drift_candidates(30, 10).unwrap_or_default();
@@ -260,6 +268,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "embedding_pending": pending_chunks,
                 "embedding_refresh_pending": embedding_refresh_pending_json,
                 "summary_scheme": summary_scheme_json,
+                "index_rebuilt_from": rebuilt_unpopulated,
                 "embed_worker_alive": embed_worker_alive_json,
                 "embed_tokens": embed_tokens_json,
                 "drift_candidates": drift,
@@ -367,6 +376,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     }
 
     let db = Database::open(&db_path)?;
+    super::helpers::announce_index_rebuild(&db);
     let s = db.stats()?;
 
     // ── Memory backend (single truthful line from the resolved backend, ADR-067 D3) ──
@@ -386,6 +396,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     println!("Files:      {}", s.file_count);
     println!("Chunks:     {}", s.chunk_count);
     println!("Embeddings: {}", s.embedding_count);
+    if let Some(line) = rebuilt_line(db.unpopulated_since_rebuild().unwrap_or(None)) {
+        cprintln!("{line}");
+    }
     // Surface remaining embed work from what the process actually knows: the
     // worker's recorded pid liveness (not a guess from two integers), chunk
     // coverage, and the token-weighted work fraction. Coverage and progress
@@ -715,6 +728,21 @@ fn memory_embedding_line(mem_path: &std::path::Path) -> Option<String> {
         "\x1b[33m[Memory: {pending} entr{} not in semantic search; \
          run 'inkentry memory reindex']\x1b[0m",
         if pending == 1 { "y" } else { "ies" }
+    ))
+}
+
+/// One line saying the zeros above are an index this build emptied, not a
+/// project nobody has indexed. `None` when no rebuild is outstanding.
+///
+/// The two states print identical counts, so without this the reader has to
+/// already know a rebuild happened to read the zeros as anything but "nothing
+/// here yet".
+fn rebuilt_line(rebuilt_from: Option<i32>) -> Option<String> {
+    let found = rebuilt_from?;
+    Some(format!(
+        "\x1b[33m[Index: emptied by a rebuild from {}, not yet reindexed; \
+         run 'inkentry index .']\x1b[0m",
+        super::helpers::replaced_schema(found)
     ))
 }
 

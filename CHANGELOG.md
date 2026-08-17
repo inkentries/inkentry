@@ -285,6 +285,19 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An index rebuilt for a new schema now says so, instead of reading as an
+  empty repository.** Opening an `index.db` this build cannot read discards and
+  recreates it, keeping the recorded usage history; the only account of that was
+  a `tracing::warn!`, and the CLI logs at `error` by default, so nothing the user
+  saw distinguished a rebuilt-and-empty index from a genuine absence of matches.
+  `search` printed `No results found.` and exited `0`. The run that performs the
+  rebuild now states it, naming the schema version it replaced and the reindex
+  that repairs it. The emptiness stays attributed afterwards too: until an index
+  run has been through the tree, `search`'s no-results line and `status` both say
+  the index was emptied by a rebuild rather than never built, and
+  `status --format json` carries the discarded version as `index_rebuilt_from`
+  (`null` otherwise). The rebuild is still a statement, not a gate, and it still
+  leaves a working tool.
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's
