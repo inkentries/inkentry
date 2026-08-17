@@ -8,8 +8,9 @@
 //!
 //! The pass is driven entirely by signals, never by a timer. Two edges raise
 //! one: the embedder becoming ready, and any request that stores a row without
-//! a vector. A server with nothing to repair therefore does no work and
-//! schedules no wakeups.
+//! a vector. A sweep that stopped on a saturated request path raises for
+//! itself too, that being the one stop with no future edge behind it. A server
+//! with nothing to repair therefore does no work and schedules no wakeups.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
