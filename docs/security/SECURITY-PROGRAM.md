@@ -35,7 +35,7 @@ The relevant threats, across both modes:
 | Threat                                   | Mode | Likelihood | Impact | Controls                                                      |
 | ---------------------------------------- | ---- | ---------- | ------ | ------------------------------------------------------------- |
 | Credential leakage into vector index     | CLI  | Medium     | High   | `secrets.rs` scanner; file exclusion in `ignore` traversal    |
-| Prompt injection via indexed source code | CLI  | Low        | Medium | The CLI runs no LLM over retrieved context (ADR-079 removed the last such surface); retrieved content is returned to the calling agent as untrusted input for it to isolate |
+| Prompt injection via indexed source code | CLI  | Low        | Medium | The CLI runs no LLM over retrieved context. Retrieved content is returned to the calling agent as untrusted input for it to isolate |
 | Data integrity corruption (memory DB)    | CLI  | Low        | Medium | Atomic transactions in `storage/memory.rs`                    |
 | Unauthenticated network access to server memory | Server | Medium | High | Bearer key (`ApiKeyAuth`); a non-loopback bind without a key is refused at startup |
 | Bearer key disclosure / brute force on server | Server | Low | High | Key hashed with BLAKE3; per-request constant-time compare; shared key is a high-value secret (ADR-056) |
