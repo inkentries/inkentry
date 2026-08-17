@@ -1,5 +1,5 @@
 //! The pre-batch local-embedding repair shared by `inkentry sync` and
-//! `inkentry memory push`.
+//! `inkentry plumbing push`.
 //!
 //! A push used to leave `memory.db` exactly as it found it, so an entry that
 //! had never been embedded stayed invisible to semantic `memory search` after a
@@ -21,7 +21,7 @@ use crate::{
 /// the batch, and the config the local embedder is resolved from.
 ///
 /// Constructed by the command layer via [`LocalEmbedPolicy::for_push`] so
-/// `inkentry sync` and `inkentry memory push` decide it identically.
+/// `inkentry sync` and `inkentry plumbing push` decide it identically.
 pub(in crate::cli::cmd) enum LocalEmbedPolicy<'a> {
     /// Embed every push-set row that lacks a usable local vector, through the
     /// loopback embedder, and commit the result to `memory.db`.

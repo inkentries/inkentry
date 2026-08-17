@@ -1,5 +1,5 @@
 //! Push local memory entries to the cloud (`inkentry sync` and the one-way
-//! `inkentry memory push`).
+//! `inkentry plumbing push`).
 
 use std::collections::HashSet;
 
@@ -24,7 +24,7 @@ use local_embed::{repair_local_embeddings, usable_vector};
 /// to adjust later.
 const PUSH_BATCH_CHUNK_SIZE: usize = 50;
 
-/// Outcome of a push pass (shared by `sync` and the one-way `memory push`).
+/// Outcome of a push pass (shared by `sync` and the one-way `plumbing push`).
 #[derive(Debug)]
 pub(in crate::cli::cmd) struct PushSummary {
     /// Rows actually sent to `push_batch` (the `live` set) — not the raw
@@ -70,7 +70,7 @@ pub(in crate::cli::cmd) struct PushSummary {
     pub edges_pushed: usize,
 }
 
-/// One-way push entry point reused by `inkentry memory push`.
+/// One-way push entry point reused by `inkentry plumbing push`.
 ///
 /// `accepts_pushed_vectors` mirrors the destination server's `/v1/health`
 /// capability: when true, each entry that has a local embedding

@@ -1,11 +1,10 @@
 //! `inkentry plumbing pull` — one-way server→local memory delta pull with a
 //! JSONL report.
 //!
-//! Plumbing counterpart of the porcelain `inkentry memory pull`: the same core
-//! (`pull_and_apply`, cursored on `MAX(remote_id)`) and the same egress
-//! guards, emitting one machine-readable report object and following the
-//! plumbing 0/1/2 exit contract. It makes an outbound request, so it requires
-//! an explicitly-configured team `server_url`.
+//! Shares its core (`pull_and_apply`, cursored on `MAX(remote_id)`) and its
+//! egress guards with `inkentry sync`, emitting one machine-readable report
+//! object and following the plumbing 0/1/2 exit contract. It makes an outbound
+//! request, so it requires an explicitly-configured team `server_url`.
 
 use std::io::Write;
 
