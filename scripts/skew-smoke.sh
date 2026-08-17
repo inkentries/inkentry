@@ -17,6 +17,13 @@
 # against the previous released server, and the previous released CLI against
 # the current server.
 #
+# Both ends are driven through one command vocabulary, so the oldest peer this
+# script can test is the oldest release whose CLI still answers to it. That is
+# the first 1.0 release: `memory push`, `memory pull` and `memory search` were
+# removed there, and teaching this script to speak both vocabularies would keep
+# the removed surface alive in the harness after it was deleted from the
+# product. The workflow picks the peer accordingly.
+#
 # See docs/version-skew.md for the support window this is asserting.
 
 set -euo pipefail
@@ -276,15 +283,53 @@ run list "$CLI_BIN" memory list
 grep -q "Skew smoke decision" "$WORK/list.out" || fail "memory list lost the decision entry"
 grep -q "Skew smoke note" "$WORK/list.out" || fail "memory list lost the note entry"
 
-run push "$CLI_BIN" memory push
-grep -q "created 2" "$WORK/push.out" \
-  || { cat "$WORK/push.out" >&2; fail "push did not report 2 created entries across the skew boundary"; }
+# One-way transfer is `plumbing push`/`plumbing pull` from 1.0 on. Its report is
+# a single JSON object on stdout and its exit status is part of the contract
+# (0 moved something, 1 empty delta with the report still emitted, 2 did not
+# complete), so both are read here rather than grepped out of prose. `run`
+# cannot carry these: it folds stderr into the same file, which would put a
+# warning line inside the JSON, and it treats every non-zero exit as failure.
+#
+# `--db` is not optional here even though nothing indexes these projects. The
+# memory store plumbing acts on is index.db's sibling, and plumbing's own
+# auto-detect recognises a project by a *present* index.db, which a project that
+# was never indexed does not have. Left to auto-detect it walks past the scratch
+# project to the global store, finds it empty, and reports an empty delta rather
+# than an error, so both ends would agree on nothing at all. The `memory`
+# commands above resolve the same store from the `.inkentry/` directory instead,
+# so this flag is what keeps every step in this script on one store.
+STORE_A="$WORK/a/.inkentry/index.db"
+STORE_B="$WORK/b/.inkentry/index.db"
+plumb() {
+  local label="$1" want_status="$2"; shift 2
+  echo "-- $label"
+  local status=0
+  ( cd "$WORK/a" && "$@" ) >"$WORK/$label.out" 2>"$WORK/$label.err" || status=$?
+  [ "$status" -eq "$want_status" ] || {
+    cat "$WORK/$label.err" >&2
+    cat "$WORK/$label.out" >&2
+    fail "$label exited $status, expected $want_status (CLI $CLI_VERSION -> server $SERVER_VERSION)"
+  }
+}
+
+report_field() {
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2" \
+    || fail "the $1 report was not a readable JSON object with a $2 field"
+}
+
+plumb push 0 "$CLI_BIN" plumbing push --db "$STORE_A"
+created="$(report_field "$WORK/push.out" created)"
+[ "$created" = "2" ] \
+  || { cat "$WORK/push.out" >&2; fail "push created $created entries across the skew boundary, expected 2"; }
 
 # Re-push must be idempotent on external_id. A server that lost that dedupe
-# would look identical to a working one on the first push alone.
-run repush "$CLI_BIN" memory push
-grep -q "already synced" "$WORK/repush.out" \
-  || { cat "$WORK/repush.out" >&2; fail "re-push was not idempotent"; }
+# would look identical to a working one on the first push alone: it would
+# create the two entries a second time, which is exit 0 here rather than the
+# empty-delta 1.
+plumb repush 1 "$CLI_BIN" plumbing push --db "$STORE_A"
+already="$(report_field "$WORK/repush.out" already_synced)"
+[ "$already" = "2" ] \
+  || { cat "$WORK/repush.out" >&2; fail "re-push was not idempotent: already_synced=$already, expected 2"; }
 
 run sync "$CLI_BIN" memory sync
 
@@ -337,13 +382,42 @@ while :; do
 done
 echo "   embedder state: $EMBEDDER_STATE"
 
+# Skipping search is not free, and it used to be silent. It is the only step
+# that drives the query-embedding path across the skew boundary, and a warm
+# model cache on a developer box is the only reason it ever looked cheap: the
+# isolation above hands the server a cold cache, so a runner without
+# SKEW_MODEL_CACHE lands here every time. Failing by default is what stops
+# the job going green while its most valuable assertion never ran.
+skipped_search() {
+  if [ "${SKEW_ALLOW_SKIPPED_SEARCH:-0}" != "1" ]; then
+    cat "$WORK/search.out" "$WORK/search.err" >&2
+    fail "search was never exercised: embedder state=$EMBEDDER_STATE after \
+waiting up to ${EMBEDDER_TIMEOUT}s, so this run asserted the wire contract but not the \
+query-embedding path. Point SKEW_MODEL_CACHE at a warm model cache, raise \
+SKEW_EMBEDDER_TIMEOUT_SECS, or set SKEW_ALLOW_SKIPPED_SEARCH=1 to accept the gap"
+  fi
+  echo "   WARNING: search skipped, the query was never embedded (embedder state=$EMBEDDER_STATE); the fallback was the documented one"
+}
+
 echo "-- search"
-if ( cd "$WORK/a" && "$CLI_BIN" memory search "skew smoke decision" ) >"$WORK/search.out" 2>&1; then
-  grep -q "Skew smoke decision" "$WORK/search.out" \
-    || { cat "$WORK/search.out" >&2; fail "memory search succeeded but did not surface the decision entry"; }
+# `search --only-memory` is where the memory corpus is queried from 1.0 on. Its
+# exit status no longer separates an embedded query from a degraded one: an
+# embedder that is unreachable or not yet loaded now falls back to full-text and
+# still exits 0, and full-text matches these two entries on their titles alone,
+# so reading the status alone would report a pass for a run that embedded
+# nothing. The fallback announces itself on stderr, which is why stderr is
+# captured apart from the results the hit is grepped out of.
+if ( cd "$WORK/a" && "$CLI_BIN" search "skew smoke decision" --only-memory ) \
+    >"$WORK/search.out" 2>"$WORK/search.err"; then
+  if grep -q "using full-text search" "$WORK/search.err"; then
+    skipped_search
+  else
+    grep -q "Skew smoke decision" "$WORK/search.out" \
+      || { cat "$WORK/search.out" "$WORK/search.err" >&2; fail "search succeeded but did not surface the decision entry"; }
+  fi
 elif [ "$EMBEDDER_STATE" = "ready" ]; then
-  cat "$WORK/search.out" >&2
-  fail "memory search failed against a ready embedder (CLI $CLI_VERSION -> server $SERVER_VERSION)"
+  cat "$WORK/search.out" "$WORK/search.err" >&2
+  fail "search failed against a ready embedder (CLI $CLI_VERSION -> server $SERVER_VERSION)"
 else
   # Not a pass for search, but not a skew failure either. The one thing that
   # must still hold is that the refusal is the *documented* one: an old client
@@ -351,23 +425,9 @@ else
   # itself part of the contract under test. A protocol-level failure here
   # (404, 405, a deserialization error) is a real break and must not be
   # waved through by this branch.
-  grep -Eqi 'embedder|embedding model|warming up|503' "$WORK/search.out" \
-    || { cat "$WORK/search.out" >&2; fail "memory search failed for a reason unrelated to embedder readiness"; }
-
-  # Skipping search is not free, and it used to be silent. It is the only step
-  # that drives the query-embedding path across the skew boundary, and a warm
-  # model cache on a developer box is the only reason it ever looked cheap: the
-  # isolation above hands the server a cold cache, so a runner without
-  # SKEW_MODEL_CACHE lands here every time. Failing by default is what stops
-  # the job going green while its most valuable assertion never ran.
-  if [ "${SKEW_ALLOW_SKIPPED_SEARCH:-0}" != "1" ]; then
-    cat "$WORK/search.out" >&2
-    fail "memory search was never exercised: embedder state=$EMBEDDER_STATE after \
-waiting up to ${EMBEDDER_TIMEOUT}s, so this run asserted the wire contract but not the \
-query-embedding path. Point SKEW_MODEL_CACHE at a warm model cache, raise \
-SKEW_EMBEDDER_TIMEOUT_SECS, or set SKEW_ALLOW_SKIPPED_SEARCH=1 to accept the gap"
-  fi
-  echo "   WARNING: search skipped, embedder never became ready (state=$EMBEDDER_STATE); refusal was the documented one"
+  grep -Eqi 'embedder|embedding model|warming up|503' "$WORK/search.err" "$WORK/search.out" \
+    || { cat "$WORK/search.out" "$WORK/search.err" >&2; fail "search failed for a reason unrelated to embedder readiness"; }
+  skipped_search
 fi
 
 # The real assertion. A second, empty checkout of the same project must be able
@@ -375,9 +435,12 @@ fi
 # the wire contract rather than just the request half.
 make_project "$WORK/b"
 echo "-- pull-into-fresh-checkout"
-if ! ( cd "$WORK/b" && "$CLI_BIN" memory pull ) >"$WORK/pull.out" 2>&1; then
-  cat "$WORK/pull.out" >&2
-  fail "pull into a fresh checkout exited non-zero"
+# Exit 0 is load-bearing rather than incidental: `plumbing pull` answers 1 on an
+# empty delta, so a pull that reached the server and came back with nothing is
+# not the same outcome as one that applied the two entries.
+if ! ( cd "$WORK/b" && "$CLI_BIN" plumbing pull --db "$STORE_B" ) >"$WORK/pull.out" 2>"$WORK/pull.err"; then
+  cat "$WORK/pull.err" "$WORK/pull.out" >&2
+  fail "pull into a fresh checkout did not apply the pushed entries"
 fi
 
 if ! ( cd "$WORK/b" && "$CLI_BIN" memory list ) >"$WORK/list-b.out" 2>&1; then

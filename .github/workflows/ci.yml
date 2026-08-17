@@ -102,11 +102,11 @@ jobs:
     # what a failing test looks like. Measured wall-clock on two instrumented
     # attempts was 937s and 1258s, outside the 19-run baseline range, so a whole
     # run is sometimes uniformly ~1.6x slower there for reasons still
-    # unexplained (^347; the Defender-exclusion hypothesis was tested and
-    # disproved). At 30 those runs are indistinguishable from a hang. At 60 a
-    # slow run finishes and says what it found, and anything still hitting the
-    # ceiling is a real hang worth chasing. Lower it once ^347 explains the
-    # slowdown.
+    # unexplained (the Defender-exclusion hypothesis was tested and disproved).
+    # At 30 those runs are indistinguishable from a hang. At 60 a slow run
+    # finishes and says what it found, and anything still hitting the ceiling is
+    # a real hang worth chasing. Lower it once the slowdown is explained; the
+    # observed range since the leg came back is 9 to 21 minutes.
     #
     # Expressed over `matrix.os` rather than as a matrix key, because a matrix
     # key becomes part of the job name and would rename every existing check.

@@ -13,25 +13,32 @@ name: Version skew
 # repeated here: `openapi-snapshot` in ci.yml regenerates the spec from the
 # running binary and diffs it against docs/openapi.json.
 #
-# TEMPORARILY MANUAL-ONLY. This job compares the current build against the
-# previous published release, and there is no published release to compare
-# against yet. Running it automatically can only ever produce a red that says
-# "no previous release", which is a fact about the release history rather than
-# anything about this branch.
+# WHAT IT COMPARES AGAINST: the newest published release that carries this
+# version's major and is not the version in this tree. The window stops at the
+# major boundary, and that is a decision rather than a convenience.
 #
-# The definition is kept whole and the workflow can still be run by hand with
-# `workflow_dispatch`; only the automatic triggers are off. Restore them by
-# putting back the `push`/`pull_request` blocks below — which must happen
-# before the first release, since the release after that one is the first that
-# has a predecessor to be skewed against, and this is the only test in the repo
-# that puts two independently built artifacts on a socket together.
+# 1.0 is a clean break. A store written by an earlier build is refused or
+# rebuilt rather than migrated, and the porcelain this job's script drives
+# (`memory push`, `memory pull`, `memory search`) was removed there. The last
+# 0.9 release cannot be driven by those commands at all, so covering it would
+# mean keeping a removed surface alive inside the test harness for the sole
+# purpose of testing a pairing nothing promises. What this job does assert is
+# what the stability contract actually promises: additive evolution inside one
+# major version. A red raised across the boundary would be reporting a break
+# that was chosen rather than one that regressed, and a red nobody can act on
+# is a red nobody reads.
+#
+# A major whose only release is the version in this tree has no predecessor to
+# put on the socket. The job says so and stops, rather than failing: nothing
+# was built that it could have tested. That state lasts from the version bump
+# until the second release of that major, and the run summary names it so it
+# cannot pass for coverage.
 
 on:
-  # Restore these two alongside the first release:
-  #   push:
-  #     branches: ["main"]
-  #   pull_request:
-  #     branches: ["main"]
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions: {}
@@ -74,11 +81,18 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
-      # The previous release is "the newest published tag that is not the
-      # version in this tree". Taking the newest tag unconditionally would
-      # silently compare a just-tagged release against itself, and the smoke
-      # script's own equal-version guard would then fail the job for a
-      # confusing reason.
+      # The previous release is the newest published tag carrying this version's
+      # major that is not the version in this tree. The major filter is the
+      # window decision at the top of this file, made executable: without it
+      # this resolves to whatever was published last, which crosses the major
+      # boundary the moment a release sits on the other side of it. Excluding
+      # the current version keeps a just-tagged release from being compared
+      # against itself, which the smoke script's own equal-version guard would
+      # otherwise fail for a confusing reason.
+      #
+      # Each grep is allowed to match nothing: under `pipefail` an unmatched
+      # grep would otherwise abort the step rather than leave `prev` empty,
+      # turning the documented no-predecessor case into an opaque failure.
       - name: Resolve the previous released version
         id: prev
         env:
@@ -87,19 +101,31 @@ jobs:
           set -euo pipefail
           current="$(cargo metadata --format-version 1 --no-deps \
             | jq -r '.packages[] | select(.name == "inkentry-cli") | .version')"
-          echo "current version: $current"
+          major="${current%%.*}"
+          echo "current version: $current (major $major)"
 
           prev="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 --json tagName \
-            --jq '.[].tagName' | grep -v "^v${current}$" | head -n 1)"
+            --jq '.[].tagName' \
+            | { grep -E "^v${major}\." || true; } \
+            | { grep -v "^v${current}$" || true; } \
+            | head -n 1)"
 
           if [ -z "$prev" ]; then
-            echo "ERROR: could not resolve a previous release to test against" >&2
-            exit 1
+            echo "no release in major $major other than $current; the skew window starts here"
+            {
+              echo "### No skew run"
+              echo
+              echo "\`$current\` is the only release in major \`$major\`, so there is no"
+              echo "previously released peer to put on a socket with it. This job resumes"
+              echo "at the next release of this major."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           echo "previous release: $prev"
           echo "tag=$prev" >> "$GITHUB_OUTPUT"
 
       - name: Download the previous release
+        if: steps.prev.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.prev.outputs.tag }}
@@ -142,9 +168,11 @@ jobs:
           INKENTRY_SECRET_STORE=file ./prev-release/inkentry-server --version
 
       - name: Build the current binaries
+        if: steps.prev.outputs.tag != ''
         run: cargo build --release -p inkentry-cli -p inkentry-server --bins
 
       - name: Cache the embedder model
+        if: steps.prev.outputs.tag != ''
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.skew-model-cache
@@ -156,6 +184,7 @@ jobs:
       # a warm cache, which is the difference between the search step running
       # and the job failing for having skipped it.
       - name: Warm the embedder model cache
+        if: steps.prev.outputs.tag != ''
         run: |
           set -euo pipefail
           # Linked into place the same way the smoke script does it, so both
@@ -190,12 +219,14 @@ jobs:
           fi
 
       - name: Current CLI against the previous released server
+        if: steps.prev.outputs.tag != ''
         run: |
           ./scripts/skew-smoke.sh \
             target/release/inkentry \
             prev-release/inkentry-server
 
       - name: Previous released CLI against the current server
+        if: steps.prev.outputs.tag != ''
         run: |
           ./scripts/skew-smoke.sh \
             prev-release/inkentry \
