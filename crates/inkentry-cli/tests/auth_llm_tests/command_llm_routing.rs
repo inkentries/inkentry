@@ -38,7 +38,7 @@ fn health_body(llm: bool) -> serde_json::Value {
 // A inkentry-server mock. `llm_payload` is the text the `/llm/complete` SSE
 // stream carries; it is only mounted when the server advertises an LLM, so a
 // server without one cannot accidentally answer a misrouted request.
-async fn server_mock(llm_payload: Option<String>) -> MockServer {
+pub(crate) async fn server_mock(llm_payload: Option<String>) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/health"))
@@ -76,7 +76,7 @@ async fn count_path(server: &MockServer, needle: &str) -> usize {
 
 // ── project fixtures ──────────────────────────────────────────────────────
 
-fn write_loopback_state(state_dir: &Path, url: &str) {
+pub(crate) fn write_loopback_state(state_dir: &Path, url: &str) {
     std::fs::create_dir_all(state_dir).expect("create state dir");
     let port: u16 = url
         .rsplit(':')
@@ -100,7 +100,7 @@ fn write_server_config(project_dir: &Path, server_url: &str) {
 
 // A git project with one substantive commit, so harvest has something to
 // extract.
-fn write_git_project(dir: &Path) {
+pub(crate) fn write_git_project(dir: &Path) {
     isolate_git_config();
     let run = |args: &[&str]| {
         let status = std::process::Command::new("git")
@@ -134,7 +134,7 @@ fn write_git_project(dir: &Path) {
     ]);
 }
 
-fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
+pub(crate) fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
         .env_remove("INKENTRY_SERVER_URL")
@@ -149,7 +149,7 @@ fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
 
 // Build an index so project-scoped commands have a `.inkentry/` project and a
 // db to work from. Offline, so it contacts nothing.
-fn seed_index(home: &Path, project: &Path, db: &Path) {
+pub(crate) fn seed_index(home: &Path, project: &Path, db: &Path) {
     base_cmd(home, project)
         .env("INKENTRY_NO_SERVER", "1")
         .arg("index")
@@ -161,7 +161,7 @@ fn seed_index(home: &Path, project: &Path, db: &Path) {
         .success();
 }
 
-fn combined(output: &std::process::Output) -> String {
+pub(crate) fn combined(output: &std::process::Output) -> String {
     format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -187,7 +187,7 @@ fn assert_no_internal_names(output: &str) {
 }
 
 // A harvest extraction reply matching the command's JSON schema.
-fn harvest_payload() -> String {
+pub(crate) fn harvest_payload() -> String {
     serde_json::json!({
         "entries": [{
             "sha": "HEAD",
