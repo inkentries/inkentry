@@ -134,6 +134,21 @@ impl MemoryStore {
         super::apply_test_page_cap(&conn)?;
         let store = Self { conn };
         store.create_schema()?;
+        // WAL for the same reason `index.db` uses it (see `storage/db.rs`): in
+        // the default rollback-journal mode every autocommit write is a journal
+        // file create + fsync + delete, and the sync paths commit once per row
+        // (`add_note`, `apply_remote_note`, `set_remote_id`). On NTFS that
+        // per-row barrier measured ~0.26s, making sync cost scale with row
+        // count rather than request count.
+        //
+        // Set *after* `create_schema`, never before: journal mode is persisted
+        // in the file header, so setting it up front would convert a store this
+        // build refuses — and refusing a store that does not fit the schema
+        // without half-converting it is the whole point of `create_schema`.
+        store
+            .conn
+            .execute_batch("PRAGMA journal_mode = WAL")
+            .context("setting journal mode")?;
         Ok(store)
     }
 

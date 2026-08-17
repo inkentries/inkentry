@@ -20,12 +20,19 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 // Seed `n` distinct live notes: distinct titles give distinct entity_ids (no
 // dedupe collision), and each is unstamped so all `n` land in the push set.
+//
+// Wrapped in one transaction: `add_note` autocommits, and a per-row commit
+// barrier is ~0.26s on the Windows CI runner, which made these tests scale at
+// tens of seconds per hundred seeded notes. The seeding is arrange-phase setup,
+// so committing it as one unit changes nothing the tests assert on.
 fn seed_notes(store: &MemoryStore, n: usize) {
+    store.execute_batch("BEGIN").unwrap();
     for i in 0..n {
         store
             .add_note("note", &format!("T{i}"), "body", &[], &[], None, None)
             .unwrap();
     }
+    store.execute_batch("COMMIT").unwrap();
 }
 
 // Echoes every received entry back as `created` with a distinct cloud id, so
