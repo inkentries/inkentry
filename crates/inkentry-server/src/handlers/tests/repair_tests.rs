@@ -460,6 +460,12 @@ async fn a_sweep_with_no_ready_embedder_is_a_quiet_no_op() {
 
     let stats = sweep(&state).await;
     assert!(stats.stopped_early, "{stats:?}");
+    assert!(
+        !stats.stopped_saturated,
+        "a not-ready embedder must not be reported as saturation: the ready \
+         transition raises for it, so re-raising here would spin against a \
+         model that is still loading; {stats:?}"
+    );
     assert_eq!(stats.repaired, 0, "{stats:?}");
     assert_eq!(stats.failed, 0, "{stats:?}");
     assert_eq!(
@@ -609,11 +615,79 @@ async fn a_sweep_stops_quietly_when_the_request_path_holds_every_permit() {
 
     let stats = sweep(&ready).await;
     assert!(stats.stopped_early, "{stats:?}");
+    assert!(
+        stats.stopped_saturated,
+        "saturation must be distinguishable from a not-ready embedder: it is \
+         the one stop with no future edge, so only the caller re-raising keeps \
+         the rest of the backlog reachable; {stats:?}"
+    );
     assert_eq!(stats.repaired, 0, "{stats:?}");
     assert_eq!(vectorless_count(&ready).await, 1);
 
     drop(held);
     assert_eq!(sweep(&ready).await.repaired, 1, "and it retries later");
+}
+
+// The failure the distinction above exists to prevent, end to end through the
+// worker rather than through a single sweep.
+//
+// A permit is released silently. If a sweep that met a saturated request path
+// simply returned, the rows it had not reached would wait for an unrelated
+// future write or a restart, and on a healthy server there is no such write:
+// every subsequent one gets its vector at insert time and raises nothing.
+// These are the rows a client's sync believes already landed, so nothing
+// re-pushes them either.
+#[tokio::test]
+async fn a_backlog_left_by_a_saturated_request_path_still_completes() {
+    let state = make_state_with_slot(4, crate::EmbedderSlot::loading());
+    post_batch_to(&state, "drain", json!([note_item("t", "e0")])).await;
+
+    let (slot, _recorder) = recording_slot(4);
+    let ready = crate::AppState {
+        embedder: slot,
+        ..state.clone()
+    };
+    assert_eq!(vectorless_count(&ready).await, 1);
+
+    let held: Vec<_> = (0..crate::EMBED_QUEUE_CAPACITY)
+        .map(|_| {
+            let Ok(permit) = ready.embed_admission.try_acquire() else {
+                panic!("the pool must start with every permit free");
+            };
+            permit
+        })
+        .collect();
+
+    let worker = tokio::spawn(crate::repair::run_repair_worker(
+        ready.clone(),
+        8,
+        Duration::from_millis(20),
+    ));
+    ready.repair_signal.raise();
+
+    // Long enough for the worker to wake, meet the saturated path and stop.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        vectorless_count(&ready).await,
+        1,
+        "nothing can be repaired while every permit is held"
+    );
+
+    // Nothing here raises the signal. Only the worker's own re-raise can bring
+    // it back, so if the row is repaired after this the re-raise is the reason.
+    drop(held);
+    for _ in 0..100 {
+        if vectorless_count(&ready).await == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        vectorless_count(&ready).await,
+        0,
+        "once permits free up the worker must come back on its own"
+    );
+    worker.abort();
 }
 
 #[tokio::test]

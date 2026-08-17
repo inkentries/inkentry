@@ -202,12 +202,6 @@ pub async fn add_note(
 
     let embedding = body.vector.as_deref().or(server_embedding.as_deref());
     let dim = embedding.map(|v| v.len()).unwrap_or(0);
-    // This route stores text-only rather than failing, exactly as the batch
-    // route does, so it leaves the same repairable rows behind and owes the
-    // same signal. It does not yet report the state on the wire.
-    if embedding.is_none() {
-        state.repair_signal.raise();
-    }
 
     let db = state.db.lock().await;
     let model = db.embedding_model.clone();
@@ -223,6 +217,19 @@ pub async fn add_note(
         embedding,
         None,
     )?;
+
+    // This route stores text-only rather than failing, exactly as the batch
+    // route does, so it leaves the same repairable rows behind and owes the
+    // same signal. It does not yet report the state on the wire.
+    //
+    // Raised after the insert, never before it. The sweep contends for the
+    // very lock this write holds, so a signal raised earlier can wake a
+    // worker that takes the lock first, finds an empty backlog, and parks,
+    // leaving this row stored with nothing pending and no edge to bring
+    // anyone back.
+    if embedding.is_none() {
+        state.repair_signal.raise();
+    }
 
     // ── Conflict detection ────────────────────────────────────────────────────
     // Only run if the entry has an embedding and conflict detection is enabled

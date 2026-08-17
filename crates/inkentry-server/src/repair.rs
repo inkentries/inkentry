@@ -59,6 +59,11 @@ pub struct RepairStats {
     /// progress was possible: the embedder is not ready, or the request path
     /// has taken every admission permit.
     pub stopped_early: bool,
+    /// Whether that early stop was admission saturation specifically. The
+    /// caller must re-raise on this and only this: an embedder that is not
+    /// ready has a ready transition coming that raises for it, whereas a
+    /// permit is released with no edge at all, so nobody would ever ask again.
+    pub stopped_saturated: bool,
 }
 
 /// How many vectorless rows one sweep reads, embeds and writes back at a time.
@@ -99,14 +104,23 @@ pub async fn run_repair_worker(state: AppState, page_size: usize, debounce: Dura
         last_attempt = Some(Instant::now());
 
         match repair_missing_embeddings(&state, page_size).await {
-            Ok(stats) if stats.repaired > 0 || stats.failed > 0 => {
-                tracing::info!(
-                    "memory vector repair: {} repaired, {} still unembeddable",
-                    stats.repaired,
-                    stats.failed,
-                );
+            Ok(stats) => {
+                if stats.repaired > 0 || stats.failed > 0 {
+                    tracing::info!(
+                        "memory vector repair: {} repaired, {} still unembeddable",
+                        stats.repaired,
+                        stats.failed,
+                    );
+                }
+                // Saturation is the one stop with no future edge to wait on,
+                // so the sweep asks for itself again. The debounce floor above
+                // bounds how fast that can come round, and a sweep that
+                // exhausts the backlog still never re-raises, so an idle
+                // server keeps its zero wakeups.
+                if stats.stopped_saturated {
+                    state.repair_signal.raise();
+                }
             }
-            Ok(_) => {}
             Err(e) => tracing::warn!("memory vector repair pass ended: {e}"),
         }
     }
@@ -146,8 +160,13 @@ pub async fn repair_missing_embeddings(
 
         let vectors = match embed_page(state, &page).await {
             PageOutcome::Vectors(v) => v,
-            PageOutcome::Stop => {
+            PageOutcome::StopNotReady => {
                 stats.stopped_early = true;
+                return Ok(stats);
+            }
+            PageOutcome::StopSaturated => {
+                stats.stopped_early = true;
+                stats.stopped_saturated = true;
                 return Ok(stats);
             }
         };
@@ -174,10 +193,15 @@ enum PageOutcome {
     /// One slot per input row: `None` where the embedder refused that row's
     /// text even on its own.
     Vectors(Vec<Option<Vec<f32>>>),
-    /// No progress is possible right now. Not an error: the embedder is not
-    /// ready, or the request path holds every admission permit and the sweep
-    /// must not compete with it.
-    Stop,
+    /// The embedder is not ready. Stopping here schedules nothing on purpose:
+    /// the ready transition is a real future edge and raises the signal
+    /// itself, so re-raising would only spin against a model still loading.
+    StopNotReady,
+    /// The request path holds every admission permit. Unlike the case above
+    /// this has **no** future edge: permits are released silently and nothing
+    /// raises when they are, so a sweep that ends here must ask again or the
+    /// rest of the backlog waits for an unrelated write or a restart.
+    StopSaturated,
 }
 
 async fn embed_page(state: &AppState, page: &[crate::db::VectorlessNote]) -> PageOutcome {
@@ -191,7 +215,7 @@ async fn embed_page(state: &AppState, page: &[crate::db::VectorlessNote]) -> Pag
         Ok(crate::handlers::StorageEmbedding::Vectors(vectors)) => {
             PageOutcome::Vectors(vectors.into_iter().map(Some).collect())
         }
-        Ok(crate::handlers::StorageEmbedding::NotReady) => PageOutcome::Stop,
+        Ok(crate::handlers::StorageEmbedding::NotReady) => PageOutcome::StopNotReady,
         Ok(crate::handlers::StorageEmbedding::Failed) => {
             // One text in this page is poison and the batched call cannot say
             // which. Retrying row by row costs the vector of the offending row
@@ -206,9 +230,10 @@ async fn embed_page(state: &AppState, page: &[crate::db::VectorlessNote]) -> Pag
                 match crate::handlers::embed_for_storage(state, &[text]).await {
                     Ok(crate::handlers::StorageEmbedding::Vectors(mut v)) => out.push(v.pop()),
                     Ok(crate::handlers::StorageEmbedding::Failed) => out.push(None),
-                    Ok(crate::handlers::StorageEmbedding::NotReady) | Err(_) => {
-                        return PageOutcome::Stop;
+                    Ok(crate::handlers::StorageEmbedding::NotReady) => {
+                        return PageOutcome::StopNotReady;
                     }
+                    Err(_busy) => return PageOutcome::StopSaturated,
                 }
             }
             PageOutcome::Vectors(out)
@@ -216,6 +241,6 @@ async fn embed_page(state: &AppState, page: &[crate::db::VectorlessNote]) -> Pag
         // The only error `embed_for_storage` produces is a full admission
         // queue, which means the request path is saturated. Backing off is the
         // correct response, not a failure to report.
-        Err(_busy) => PageOutcome::Stop,
+        Err(_busy) => PageOutcome::StopSaturated,
     }
 }
