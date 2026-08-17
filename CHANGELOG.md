@@ -258,6 +258,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The post-commit hook no longer does nothing when `inkentry` is off `PATH`.**
+  It gated on `command -v inkentry` and invoked a bare command, so every source
+  build and every custom install directory silently skipped indexing and
+  harvesting on each commit. It now embeds the installing binary's absolute
+  path, quoted through the same helper the pre-push hook already used. A hook
+  whose binary has since been removed still exits 0 rather than failing the
+  commit. Re-run `inkentry hooks install` to re-resolve a moved binary.
+
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's
