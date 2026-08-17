@@ -11,7 +11,15 @@ pub(super) struct AddNoteRequest {
     pub(super) body: String,
     pub(super) tags: Vec<String>,
     pub(super) linked_files: Vec<String>,
-    pub(super) embedding: Option<Vec<f32>>,
+    /// Locally-computed embedding, letting the server store this entry without
+    /// re-embedding it. The three travel together or not at all: the accept
+    /// side refuses a vector whose model and precision it cannot check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) vector: Option<Vec<f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) vector_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) vector_precision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) source_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

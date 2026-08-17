@@ -1,5 +1,8 @@
+use std::sync::{Arc, Mutex};
+
 use axum::body::Body;
 use axum::http::{self, Request};
+use inkentry_core::embeddings::{PUSHED_VECTOR_PRECISION, pushed_vector_model_tag};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -312,7 +315,9 @@ async fn batch_pairs_each_server_side_vector_with_its_own_entry() {
         {"kind": "note", "title": "slot-0", "body": "b", "external_id": "e0"},
         {"kind": "note", "title": "slot-1", "body": "b", "external_id": "e1"},
         {"kind": "note", "title": "slot-2", "body": "b", "external_id": "e2",
-         "embedding": [0.0, 0.0, 0.0, 1.0]},
+         "vector": [0.0, 0.0, 0.0, 1.0],
+         "vector_model": pushed_vector_model_tag(),
+         "vector_precision": PUSHED_VECTOR_PRECISION},
     ]);
     let (status, body) = post_batch(app.clone(), "pairing", entries).await;
     assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
@@ -333,5 +338,211 @@ async fn batch_pairs_each_server_side_vector_with_its_own_entry() {
         "slot-2",
         "the client-supplied vector must be stored as-is, not replaced by a \
          server-side one"
+    );
+}
+
+// ── Client-pushed vectors ─────────────────────────────────────────────
+
+// Records every text it is asked to embed, so a test can prove an entry was
+// never embedded at all rather than inferring it from the stored vector.
+struct RecordingEmbedder {
+    dim: usize,
+    embedded: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl inkentry_core::embeddings::EmbeddingBackend for RecordingEmbedder {
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let mut seen = self.embedded.lock().unwrap();
+        for t in texts {
+            seen.push((*t).to_string());
+        }
+        Ok(texts.iter().map(|_| vec![0.5_f32; self.dim]).collect())
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+}
+
+fn app_with_recording_embedder(dim: usize) -> (axum::Router, Arc<Mutex<Vec<String>>>) {
+    let embedded = Arc::new(Mutex::new(Vec::new()));
+    let app = super::support::make_app_with_slot(
+        dim,
+        crate::EmbedderSlot::ready(Arc::new(RecordingEmbedder {
+            dim,
+            embedded: embedded.clone(),
+        })),
+    );
+    (app, embedded)
+}
+
+fn pushed_entry(external_id: &str, title: &str, vector: Value) -> Value {
+    json!({
+        "kind": "note",
+        "title": title,
+        "body": "b",
+        "external_id": external_id,
+        "vector": vector,
+        "vector_model": pushed_vector_model_tag(),
+        "vector_precision": PUSHED_VECTOR_PRECISION,
+    })
+}
+
+// A client that pushes its own vector must skip server-side embedding
+// entirely. Asserted against what the embedder was asked to do, not against
+// the stored row: a re-embed that happened to produce a similar vector would
+// pass a response-shaped check while still costing exactly what the push
+// exists to avoid.
+#[tokio::test]
+async fn batch_with_a_pushed_vector_never_calls_the_embedder_for_that_entry() {
+    let (app, embedded) = app_with_recording_embedder(4);
+    let entries = json!([
+        pushed_entry("p1", "pushed", json!([0.0, 0.0, 0.0, 1.0])),
+        note_item("text only", "t1"),
+    ]);
+    let (status, body) = post_batch(app, "pushed", entries).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["created"], json!(2));
+
+    let seen = embedded.lock().unwrap();
+    assert!(
+        !seen.iter().any(|t| t.contains("pushed")),
+        "an entry carrying its own vector must never reach the embedder: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|t| t.contains("text only")),
+        "the text-only entry must still be embedded server-side: {seen:?}"
+    );
+}
+
+// The old `embedding` name is gone rather than aliased. Unknown fields are
+// ignored on this wire by contract, so the cut shows up as the name carrying
+// no meaning: the entry is embedded server-side as if it had sent nothing.
+#[tokio::test]
+async fn batch_no_longer_honours_the_old_embedding_field_name() {
+    let (app, embedded) = app_with_recording_embedder(4);
+    let entries = json!([{
+        "kind": "note",
+        "title": "old name",
+        "body": "b",
+        "external_id": "old1",
+        "embedding": [0.0, 0.0, 0.0, 1.0],
+    }]);
+    let (status, body) = post_batch(app, "oldname", entries).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["created"], json!(1));
+
+    let seen = embedded.lock().unwrap();
+    assert!(
+        seen.iter().any(|t| t.contains("old name")),
+        "the old field name must not stand in for a pushed vector: {seen:?}"
+    );
+}
+
+// The dimension guard predates the rename and must still bite through it.
+#[tokio::test]
+async fn batch_rejects_a_pushed_vector_of_the_wrong_dimension() {
+    let (app, _) = make_app(0.92);
+    let entries = json!([pushed_entry("d1", "wrong dim", json!([1.0, 0.0]))]);
+    let (status, body) = post_batch(app, "dim", entries).await;
+    assert_eq!(
+        status,
+        http::StatusCode::BAD_REQUEST,
+        "a pushed vector of the wrong length must be refused; body: {body}"
+    );
+}
+
+// A non-finite component is refused before it can reach `note_embeddings`,
+// where it would make that row's distance comparisons meaningless and skew
+// KNN for the whole project with nothing reporting an error.
+//
+// JSON has no infinity literal, so the way one arrives is a number inside
+// f64 range but outside f32 range: decoding to f32 saturates to an infinity.
+// Both signs are covered because they saturate through different arithmetic.
+#[tokio::test]
+async fn batch_rejects_a_pushed_vector_with_a_non_finite_component() {
+    for raw in ["1e300", "-1e300"] {
+        let overflowing: Value = serde_json::from_str(raw).expect("valid JSON number");
+        let (app, _) = make_app(0.92);
+        let entries = json!([pushed_entry(
+            "nf1",
+            "non finite",
+            json!([overflowing, 0.0, 0.0, 0.0])
+        )]);
+        let (status, body) = post_batch(app, "nonfinite", entries).await;
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "a pushed vector whose first component is `{raw}` must be refused; body: {body}"
+        );
+    }
+}
+
+// NaN cannot be expressed in JSON, so no request can carry one to the check
+// above: `null` is rejected as a decode failure long before validation. The
+// NaN half of the rule is therefore only reachable by a caller inside this
+// crate, and is pinned directly so that removing it fails something.
+#[test]
+fn validation_rejects_a_nan_component() {
+    let vector = [f32::NAN, 0.0, 0.0, 0.0];
+    let result = super::super::validate_pushed_vector(
+        Some(&vector),
+        Some(pushed_vector_model_tag()),
+        Some(PUSHED_VECTOR_PRECISION),
+        4,
+    );
+    assert!(
+        result.is_err(),
+        "a vector carrying NaN must be refused even though no JSON request can express one"
+    );
+}
+
+// A vector with no model tag or no precision is refused rather than stored:
+// an untagged vector cannot be checked against what this server embeds with,
+// so storing it would put a vector of unknown provenance in the index.
+#[tokio::test]
+async fn batch_rejects_a_pushed_vector_missing_its_model_or_precision() {
+    for missing in ["vector_model", "vector_precision"] {
+        let (app, _) = make_app(0.92);
+        let mut entry = pushed_entry("m1", "untagged", json!([1.0, 0.0, 0.0, 0.0]));
+        entry.as_object_mut().unwrap().remove(missing);
+        let (status, body) = post_batch(app, "untagged", json!([entry])).await;
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "a pushed vector without `{missing}` must be refused; body: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn batch_rejects_a_pushed_vector_with_a_foreign_model_or_precision() {
+    for (field, value) in [
+        ("vector_model", "some-other-model"),
+        ("vector_precision", "int8"),
+    ] {
+        let (app, _) = make_app(0.92);
+        let mut entry = pushed_entry("f1", "foreign", json!([1.0, 0.0, 0.0, 0.0]));
+        entry.as_object_mut().unwrap()[field] = json!(value);
+        let (status, body) = post_batch(app, "foreign", json!([entry])).await;
+        assert_eq!(
+            status,
+            http::StatusCode::BAD_REQUEST,
+            "a pushed vector whose `{field}` is `{value}` must be refused; body: {body}"
+        );
+    }
+}
+
+// Non-regression: a text-only push is unchanged by any of the above.
+#[tokio::test]
+async fn batch_without_a_vector_still_takes_the_server_side_embed_branch() {
+    let (app, embedded) = app_with_recording_embedder(4);
+    let (status, body) = post_batch(app, "textonly", json!([note_item("plain", "e1")])).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["created"], json!(1));
+    assert!(
+        embedded.lock().unwrap().iter().any(|t| t.contains("plain")),
+        "a text-only entry must still be embedded server-side"
     );
 }

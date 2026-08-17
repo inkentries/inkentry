@@ -107,8 +107,9 @@ pub struct Capabilities {
     /// /memory/batch`, advertised as a top-level `bool` in
     /// `/v1/health` (NOT an entry in the `capabilities` array). When set, the
     /// sync push may send the locally-computed fp32/896 vector instead of making
-    /// the server re-embed; when unset (older server / OSS team server) the push
-    /// stays text-only. Not surfaced in user-facing output.
+    /// the server re-embed; when unset (an older server, or one whose embedder
+    /// is not ready) the push stays text-only. Not surfaced in user-facing
+    /// output.
     #[serde(skip_serializing)]
     pub accepts_pushed_vectors: bool,
 }
