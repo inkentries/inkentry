@@ -9,6 +9,19 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Internal
+
+- **`cargo test -p inkentry-server --bins` no longer aborts the whole run.**
+  `Args` binds fields to `INKENTRY_*` variables and clap reads all of them on
+  every parse, so a test setting one raced every test that parses. The loser
+  hit clap's `Error::exit()`, killing the harness with status 2 and naming no
+  failing test. The per-variable `#[serial]` groups could not prevent it: they
+  exclude the sibling test naming the same variable, not the dozen that parse.
+  Parses and environment mutations in that module now share one lock, and
+  every test parse goes through `try_parse_from`, so a parse that fails anyway
+  fails its own test instead of the run. `cargo nextest`, which CI uses, gave
+  each test its own process and never showed this.
+
 ### Added
 
 - **A memory entry stored without a vector is now repaired.** Entries stored

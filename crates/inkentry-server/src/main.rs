@@ -852,12 +852,79 @@ mod arg_tests {
     use super::{Args, normalize_reasoning_effort};
     use clap::Parser;
 
+    // `Args` binds fields to INKENTRY_* variables, and clap reads every one of
+    // them on every parse. So a test that sets such a variable and a test that
+    // parses contend even when neither touches the other's field, and a
+    // `#[serial]` group keyed per variable does not separate them: it excludes
+    // the sibling test naming the same variable, not the dozen here that parse.
+    //
+    // Losing that race costs the whole run rather than one test, because
+    // clap's failure path is `Error::exit()`. `cargo nextest` gives each test
+    // its own process and never shows it; plain `cargo test` aborts with
+    // status 2 and names no failing test.
+    //
+    // Every parse and every environment mutation below goes through this lock.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        // One panicking test must not cascade into every later test failing on
+        // a poisoned lock: the guarded data is the process environment, which
+        // each helper restores itself.
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    // Parse under the lock. `try_parse_from` rather than `parse_from` throughout
+    // so that a parse which fails anyway fails its own test with a message,
+    // instead of calling `exit(2)` on the whole harness.
+    fn try_parse_args<'a>(argv: impl IntoIterator<Item = &'a str>) -> Result<Args, clap::Error> {
+        let _guard = env_lock();
+        Args::try_parse_from(argv)
+    }
+
+    fn parse_args<'a>(argv: impl IntoIterator<Item = &'a str>) -> Args {
+        try_parse_args(argv).unwrap_or_else(|e| panic!("args must parse: {e}"))
+    }
+
+    // Parse with `vars` applied for the duration, each restored afterwards.
+    // `None` removes a variable rather than setting it.
+    fn parse_args_with_env<'a>(
+        vars: &[(&str, Option<&str>)],
+        argv: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Args, clap::Error> {
+        let _guard = env_lock();
+        let restore: Vec<_> = vars
+            .iter()
+            .map(|(k, _)| (*k, std::env::var_os(k)))
+            .collect();
+        // SAFETY: `env_lock` is this module's single serialization point for
+        // process environment access, so nothing else reads or writes while
+        // these are applied.
+        unsafe {
+            for (k, v) in vars {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        let parsed = Args::try_parse_from(argv);
+        unsafe {
+            for (k, previous) in restore {
+                match previous {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        parsed
+    }
+
     // Reasoning is off by default: harvest wants the answer, and an
     // unbounded reasoning pass exhausts the token budget before any content
     // arrives. The default must send `none`.
     #[test]
     fn reasoning_is_disabled_by_default() {
-        let args = Args::parse_from(["inkentry-server"]);
+        let args = parse_args(["inkentry-server"]);
         assert_eq!(args.llm_reasoning_effort, "none");
         assert_eq!(
             normalize_reasoning_effort(&args.llm_reasoning_effort),
@@ -870,15 +937,14 @@ mod arg_tests {
     // default: with no proxy configured the rate limiter must fall back to the
     // TCP peer, which the caller cannot choose.
     #[test]
-    #[serial_test::serial(trusted_proxies_env)]
     fn no_proxy_is_trusted_by_default() {
-        let args = Args::parse_from(["inkentry-server"]);
+        let args = parse_args(["inkentry-server"]);
         assert!(args.trusted_proxy.is_empty());
     }
 
     #[test]
     fn trusted_proxies_accept_repetition_and_comma_separation() {
-        let args = Args::parse_from([
+        let args = parse_args([
             "inkentry-server",
             "--trusted-proxy",
             "10.0.0.5,10.0.0.6",
@@ -899,13 +965,12 @@ mod arg_tests {
     // through clap's `value_delimiter` rather than any code of ours, so its
     // comma-splitting is worth pinning independently of the flag.
     #[test]
-    #[serial_test::serial(trusted_proxies_env)]
     fn trusted_proxies_are_comma_split_from_the_environment() {
-        // SAFETY: pinned to the `trusted_proxies_env` serial group, so no other
-        // test reads or writes this variable concurrently.
-        unsafe { std::env::set_var("INKENTRY_TRUSTED_PROXIES", "10.0.0.5,2001:db8::1") };
-        let args = Args::parse_from(["inkentry-server"]);
-        unsafe { std::env::remove_var("INKENTRY_TRUSTED_PROXIES") };
+        let args = parse_args_with_env(
+            &[("INKENTRY_TRUSTED_PROXIES", Some("10.0.0.5,2001:db8::1"))],
+            ["inkentry-server"],
+        )
+        .expect("a comma-separated list of valid addresses must parse");
         assert_eq!(
             args.trusted_proxy,
             vec![
@@ -916,12 +981,11 @@ mod arg_tests {
     }
 
     #[test]
-    #[serial_test::serial(trusted_proxies_env)]
     fn an_environment_trusted_proxy_that_is_not_an_ip_is_rejected_at_startup() {
-        // SAFETY: see the sibling test; same serial group.
-        unsafe { std::env::set_var("INKENTRY_TRUSTED_PROXIES", "10.0.0.5,proxy.internal") };
-        let parsed = Args::try_parse_from(["inkentry-server"]);
-        unsafe { std::env::remove_var("INKENTRY_TRUSTED_PROXIES") };
+        let parsed = parse_args_with_env(
+            &[("INKENTRY_TRUSTED_PROXIES", Some("10.0.0.5,proxy.internal"))],
+            ["inkentry-server"],
+        );
         assert!(
             parsed.is_err(),
             "one bad entry must fail startup rather than silently narrowing the trust list"
@@ -931,7 +995,7 @@ mod arg_tests {
     #[test]
     fn a_trusted_proxy_that_is_not_an_ip_is_rejected_at_startup() {
         assert!(
-            Args::try_parse_from(["inkentry-server", "--trusted-proxy", "proxy.internal"]).is_err(),
+            try_parse_args(["inkentry-server", "--trusted-proxy", "proxy.internal"]).is_err(),
             "a hostname would have to be resolved per request to compare against a peer"
         );
     }
@@ -957,7 +1021,7 @@ mod arg_tests {
     /// opt-in (loopback is firewall-exempt and the safer default).
     #[test]
     fn default_host_is_loopback() {
-        let args = Args::parse_from(["inkentry-server"]);
+        let args = parse_args(["inkentry-server"]);
         assert_eq!(
             args.host, "127.0.0.1",
             "server binary default host must be 127.0.0.1 (loopback), not the wildcard"
@@ -970,13 +1034,12 @@ mod arg_tests {
     // precedence. Precedence lives in `resolve_llm_key` alone, so this pins the
     // absence against a future tidy-up.
     #[test]
-    #[serial_test::serial(llm_key_env)]
     fn the_key_env_var_does_not_populate_the_inline_key_arg() {
-        // SAFETY: pinned to the `llm_key_env` serial group, so no other test
-        // reads or writes INKENTRY_LLM_KEY concurrently.
-        unsafe { std::env::set_var("INKENTRY_LLM_KEY", "sk-from-env") };
-        let args = Args::parse_from(["inkentry-server"]);
-        unsafe { std::env::remove_var("INKENTRY_LLM_KEY") };
+        let args = parse_args_with_env(
+            &[("INKENTRY_LLM_KEY", Some("sk-from-env"))],
+            ["inkentry-server"],
+        )
+        .expect("an unread variable must not affect parsing");
 
         assert_eq!(
             args.llm_key, None,
@@ -985,12 +1048,12 @@ mod arg_tests {
     }
 
     #[test]
-    #[serial_test::serial(llm_key_env)]
     fn the_key_env_var_does_not_populate_the_key_file_arg_either() {
-        // SAFETY: see the sibling test; same serial group.
-        unsafe { std::env::set_var("INKENTRY_LLM_KEY", "/etc/passwd") };
-        let args = Args::parse_from(["inkentry-server"]);
-        unsafe { std::env::remove_var("INKENTRY_LLM_KEY") };
+        let args = parse_args_with_env(
+            &[("INKENTRY_LLM_KEY", Some("/etc/passwd"))],
+            ["inkentry-server"],
+        )
+        .expect("an unread variable must not affect parsing");
 
         assert_eq!(args.llm_key_file, None);
     }
@@ -999,7 +1062,7 @@ mod arg_tests {
     /// (e.g. the container entrypoint / a shared team server).
     #[test]
     fn explicit_wildcard_host_is_honoured() {
-        let args = Args::parse_from(["inkentry-server", "--host", "0.0.0.0"]);
+        let args = parse_args(["inkentry-server", "--host", "0.0.0.0"]);
         assert_eq!(args.host, "0.0.0.0");
     }
 
@@ -1152,7 +1215,7 @@ mod arg_tests {
     /// The TLS flags parse as paths and read their env vars.
     #[test]
     fn tls_flags_parse() {
-        let args = Args::parse_from([
+        let args = parse_args([
             "inkentry-server",
             "--tls-cert",
             "/etc/inkentry/tls-cert",
@@ -1517,7 +1580,7 @@ mod arg_tests {
     /// `--key-file` parses as a path arg.
     #[test]
     fn key_file_flag_parses() {
-        let args = Args::parse_from(["inkentry-server", "--key-file", "/etc/inkentry/server-key"]);
+        let args = parse_args(["inkentry-server", "--key-file", "/etc/inkentry/server-key"]);
         assert_eq!(
             args.key_file.as_deref(),
             Some(std::path::Path::new("/etc/inkentry/server-key"))
@@ -1529,7 +1592,7 @@ mod arg_tests {
     /// `--model-dir` parses as a path arg, for the air-gapped load path.
     #[test]
     fn model_dir_flag_parses() {
-        let args = Args::parse_from(["inkentry-server", "--model-dir", "/srv/inkentry/models"]);
+        let args = parse_args(["inkentry-server", "--model-dir", "/srv/inkentry/models"]);
         assert_eq!(
             args.model_dir.as_deref(),
             Some(std::path::Path::new("/srv/inkentry/models"))
@@ -1539,22 +1602,9 @@ mod arg_tests {
     /// Unset by default: the online Hugging Face Hub path stays the default
     /// (no regression for the common case).
     #[test]
-    #[serial_test::serial(model_dir_env)]
     fn model_dir_defaults_to_none() {
-        // Serialized against model_dir_env_var_is_honoured: both read/write
-        // the real process env var, and cargo test runs in threads within one
-        // process, so an unguarded reader can observe another test's
-        // temporarily-set value.
-        let prev = std::env::var("INKENTRY_MODEL_DIR").ok();
-        // SAFETY: guarded by #[serial] so no other test reads/writes this var
-        // concurrently.
-        unsafe { std::env::remove_var("INKENTRY_MODEL_DIR") };
-
-        let args = Args::parse_from(["inkentry-server"]);
-
-        if let Some(v) = prev {
-            unsafe { std::env::set_var("INKENTRY_MODEL_DIR", v) };
-        }
+        let args = parse_args_with_env(&[("INKENTRY_MODEL_DIR", None)], ["inkentry-server"])
+            .expect("the default parse must succeed");
 
         assert_eq!(args.model_dir, None);
     }
@@ -1563,19 +1613,12 @@ mod arg_tests {
     /// the same convention as `INKENTRY_SERVER_TLS_CERT`/`INKENTRY_LLM_URL`, so
     /// a systemd unit or container entrypoint can set it without a flag.
     #[test]
-    #[serial_test::serial(model_dir_env)]
     fn model_dir_env_var_is_honoured() {
-        let prev = std::env::var("INKENTRY_MODEL_DIR").ok();
-        // SAFETY: guarded by #[serial] so no other test reads/writes this var
-        // concurrently; restored before returning.
-        unsafe { std::env::set_var("INKENTRY_MODEL_DIR", "/srv/inkentry/models") };
-
-        let args = Args::parse_from(["inkentry-server"]);
-
-        match prev {
-            Some(v) => unsafe { std::env::set_var("INKENTRY_MODEL_DIR", v) },
-            None => unsafe { std::env::remove_var("INKENTRY_MODEL_DIR") },
-        }
+        let args = parse_args_with_env(
+            &[("INKENTRY_MODEL_DIR", Some("/srv/inkentry/models"))],
+            ["inkentry-server"],
+        )
+        .expect("a model dir from the environment must parse");
 
         assert_eq!(
             args.model_dir.as_deref(),
@@ -1593,7 +1636,7 @@ mod arg_tests {
     /// `--embedding-url` is unknown to clap, not silently accepted.
     #[test]
     fn embedding_url_flag_is_unknown() {
-        let err = Args::try_parse_from(["inkentry-server", "--embedding-url", "http://x:1234"])
+        let err = try_parse_args(["inkentry-server", "--embedding-url", "http://x:1234"])
             .expect_err("--embedding-url must no longer parse");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
@@ -1601,7 +1644,7 @@ mod arg_tests {
     /// `--embedding-model` is unknown to clap, not silently accepted.
     #[test]
     fn embedding_model_flag_is_unknown() {
-        let err = Args::try_parse_from(["inkentry-server", "--embedding-model", "some-model"])
+        let err = try_parse_args(["inkentry-server", "--embedding-model", "some-model"])
             .expect_err("--embedding-model must no longer parse");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
@@ -1625,20 +1668,16 @@ mod arg_tests {
     /// are plain unread variables now (no `env = "..."` attribute maps them to
     /// any field): parsing must succeed and must not be influenced by them.
     #[test]
-    #[serial_test::serial]
     fn embedding_env_vars_are_inert() {
-        // SAFETY: test-only, guarded by #[serial_test::serial] against
-        // concurrent env mutation from other tests.
-        unsafe {
-            std::env::set_var("INKENTRY_EMBEDDING_URL", "http://127.0.0.1:1234");
-            std::env::set_var("INKENTRY_EMBEDDING_MODEL", "some-model");
-        }
-        let args = Args::parse_from(["inkentry-server"]);
+        let args = parse_args_with_env(
+            &[
+                ("INKENTRY_EMBEDDING_URL", Some("http://127.0.0.1:1234")),
+                ("INKENTRY_EMBEDDING_MODEL", Some("some-model")),
+            ],
+            ["inkentry-server"],
+        )
+        .expect("unread variables must leave parsing unaffected");
         assert_eq!(args.host, "127.0.0.1", "parsing must succeed unaffected");
-        unsafe {
-            std::env::remove_var("INKENTRY_EMBEDDING_URL");
-            std::env::remove_var("INKENTRY_EMBEDDING_MODEL");
-        }
     }
 
     // ── Self-contained health probe ──────────────────────────────────────────
