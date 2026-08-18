@@ -296,7 +296,7 @@ fn write_inkentry_gitignore(inkentry_dir: &std::path::Path) {
                              memory.db*\n\
                              # Per-run index lock + its pid sidecar (holds a local process id).\n\
                              index.lock*\n\
-                             # Diagnostics from the detached background index phases.\n\
+                             # Diagnostics from detached background runs.\n\
                              *.log\n";
     if let Err(e) = std::fs::create_dir_all(inkentry_dir) {
         eprintln!("Warning: could not create {}: {e}", inkentry_dir.display());

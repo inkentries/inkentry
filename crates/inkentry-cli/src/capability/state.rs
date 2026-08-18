@@ -76,6 +76,10 @@ pub struct ServerLimits {
     pub max_batch_chunks: Option<usize>,
     /// Per-chunk token truncation cap the embedder enforces, if known.
     pub embedder_token_cap: Option<usize>,
+    /// CPU threads the server budgeted for a forward pass. `Some(1)` is the one
+    /// value worth acting on: embedding is single-threaded there, and the
+    /// `INKENTRY_EMBED_THREADS` override is what a user needs to be told about.
+    pub embed_threads: Option<usize>,
 }
 
 /// Feature availability for a server-connected tier.

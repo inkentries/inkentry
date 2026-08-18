@@ -230,6 +230,19 @@ would resolve to more than one project until the file is committed. An existing
 `project_id` or `.inkentry/.gitignore` is never overwritten, so re-running `init`
 is safe.
 
+Inside a git repository with an `origin` remote, `init` also writes two entries
+to that clone's `.git/config`, and prints that it did:
+
+| Entry | Value | Why |
+|---|---|---|
+| `remote.origin.fetch` (added, not replaced) | `+refs/notes/inkentry*:refs/notes/origin/inkentry*` | teammates' memory notes arrive on your next `git fetch` |
+| `notes.rewriteRef` | `refs/notes/inkentry` | your memory notes survive `git commit --amend` and `git rebase` |
+
+Both are additive, local to this clone, and confined to inkentry's own notes
+namespace. `init` deliberately sets no push refspec and never modifies your
+remote, so neither entry publishes anything: sharing your own memory is a
+separate opt-in step, covered in section 5.
+
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
 via candle); a pre-quantized Q8_0 GGUF (~339 MB) is downloaded once on first use
@@ -277,9 +290,12 @@ inkentry memory add --kind decision \
 inkentry memory list --kind decision
 ```
 
-Memory is stored locally in the project's `.inkentry/memory.db` (and mirrored to
-git notes by default), so it travels with the repo. No server or database
-service to run.
+Memory is stored locally in the project's `.inkentry/memory.db` and mirrored
+into git notes (`refs/notes/inkentry`) by default, so it stays with your clone
+rather than in a service you have to run. Getting it to teammates is a separate
+step you opt into: `inkentry hooks install --pre-push` publishes those notes on
+`git push` (see section 5). Reading their memory needs nothing installed, since
+`init` already configured the fetch side.
 
 ## 4. Start an agent session
 
@@ -300,19 +316,67 @@ The default output is compact (a few recent entries per section). Pass
 `--budget <N>` (alias `--max-tokens`) to cap total output at N tokens, or
 `--limit <N>` to widen the per-section count.
 
-## 5. Set up automatic memory harvesting (optional)
+## 5. Git hooks: harvesting and sharing (optional)
 
-Install a git post-commit hook so `inkentry` automatically extracts memories from commit messages:
+Two hooks are available, and they do unrelated jobs. Neither is installed for
+you.
+
+### Post-commit: harvest memory from new commits
 
 ```bash
 inkentry hooks install
 ```
 
-Other developers without `inkentry` installed are unaffected. To remove:
+This writes a post-commit hook that brings the index up to date and extracts
+memories from each new commit, both detached so `git commit` is never blocked.
+
+**Harvesting needs an LLM, and a default install has none.** It is the only
+feature in inkentry that does: indexing, full-text and semantic search, chunk
+summaries and every `inkentry memory` command work with no LLM configured. So
+the hook runs happily from the day you install it while harvesting nothing, and
+starts producing entries once you point inkentry at an OpenAI-compatible
+chat-completions endpoint. See [Using your own LLM
+endpoint](#using-your-own-llm-endpoint-advanced) for that, and note the caveat
+there about restarting a daemon that is already running.
+
+### Pre-push: publish your memory to the remote
+
+```bash
+inkentry hooks install --pre-push
+```
+
+From then on, every `git push` to a named remote merges the remote's memory
+notes into yours and pushes `refs/notes/inkentry` alongside your commits. A
+publish that fails warns on stderr and exits 0, so sharing memory can never cost
+you your push.
+
+Reading and publishing are deliberately asymmetric, and the asymmetry is the
+design rather than an oversight:
+
+- **Reading a teammate's memory is automatic.** `init` configured the fetch
+  refspec (section 2), so their notes arrive on your next `git fetch` with
+  nothing to install.
+- **Publishing your own is opt-in.** Until you install this hook, or push
+  `refs/notes/inkentry` by hand, your memory stays in your clone. inkentry will
+  not quietly change what your `git push` sends.
+
+Tying publication to `git push` is also what keeps notes resolvable: a note on a
+commit you have not pushed could otherwise reach the remote while the commit it
+describes does not.
+
+### Removing them
+
+Developers who do not have `inkentry` installed are unaffected by either hook.
+To remove both:
 
 ```bash
 inkentry hooks uninstall
 ```
+
+A pre-existing hook that inkentry did not write is reported and left alone,
+never overwritten or deleted. For the full behaviour, including `--ci` and how
+the hooks directory is resolved under husky or lefthook, see the [commands
+reference](commands.md#inkentry-hooks).
 
 ---
 
@@ -502,6 +566,11 @@ inkentry index .                             # bring the index up to date (idemp
 inkentry plumbing ls-files --stale           # list files that need re-indexing (JSONL; no rows = fresh)
 ```
 
+`ls-files` is a plumbing command, so it uses grep-style exit codes: printing no
+rows exits **1**, meaning a fully fresh index reads as a non-zero exit. Fine
+interactively, worth guarding in a `set -e` script. `inkentry status` is the
+porcelain health check.
+
 ---
 
 ## Next steps
@@ -572,18 +641,26 @@ After setup, all `inkentry memory` commands transparently use the server. Seed i
 with your existing local memory, then keep recording decisions as usual:
 
 ```bash
-inkentry plumbing push  # one-way: seed the server with your existing local entries
-inkentry sync           # force a synchronous two-way reconcile (usually not needed; see below)
+inkentry sync  # two-way: push your existing local entries up, pull teammates' entries down
 ```
 
-In the default `local_first` mode you rarely run `inkentry sync` by hand. Your
-writes commit to the local `memory.db` immediately and never block on the
-network; from an interactive terminal a background reconciler then drains what
-you recorded up to the server and pulls teammates' entries down, so the shared
-memory converges on its own. `inkentry sync` is the explicit escape hatch for
-when you want that reconcile to happen synchronously now rather than in the
-background, such as a CI job that needs entries pushed before it exits. Code
-never travels; only memory does.
+`sync` is safe to re-run: with nothing new to push it says so and exits 0.
+
+> There is a one-way equivalent, `inkentry plumbing push`, but reach for it only
+> in a script you have written the exit handling for. Plumbing commands use
+> grep-style exit codes, and `push` exits **1** whenever no entry was newly
+> created. That includes the entirely successful case where the server already
+> has everything, so under `set -e` or in a CI job a clean run reads as a
+> failure. `sync` is the porcelain command and exits 0 there.
+
+Beyond that first seed, in the default `local_first` mode you rarely run
+`inkentry sync` by hand. Your writes commit to the local `memory.db` immediately
+and never block on the network; from an interactive terminal a background
+reconciler then drains what you recorded up to the server and pulls teammates'
+entries down, so the shared memory converges on its own. `inkentry sync` is the
+explicit escape hatch for when you want that reconcile to happen synchronously
+now rather than in the background, such as a CI job that needs entries pushed
+before it exits. Code never travels; only memory does.
 
 For full setup and deployment guide: **[Server setup](server-setup.md)**: Docker, configuration, API reference.
 

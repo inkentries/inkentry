@@ -7,6 +7,7 @@ pub mod handlers;
 pub mod rate_limiter;
 pub mod relay;
 pub mod relay_handlers;
+pub mod repair;
 pub mod security;
 pub mod uuid_v7;
 
@@ -397,6 +398,10 @@ pub struct AppState {
     /// embed-consuming handler (`/index/embed`, `/search`,
     /// `/memory/search`). See [`EmbedAdmission`].
     pub embed_admission: EmbedAdmission,
+    /// CPU threads the embedder was budgeted at startup, reported through
+    /// `/v1/health` so a client can say why indexing is slow on this host
+    /// without reading the server's log.
+    pub embed_threads: usize,
     /// Optional LLM backend for `/llm/complete`.
     pub llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>>,
     /// Server-side hard ceiling for `max_tokens` on `/llm/complete`.
@@ -420,6 +425,10 @@ pub struct AppState {
     /// [`relay`] module docs for why this is a distinct role from the
     /// `/memory*` team-hosting routes above.
     pub relay: relay::RelayRegistry,
+    /// Wakeup handle for the background pass that fills in vectors for rows
+    /// stored without one. Raised by the embedder becoming ready and by every
+    /// write that stores a vectorless row; never by a timer. See [`repair`].
+    pub repair_signal: repair::RepairSignal,
 }
 
 pub fn default_conflict_threshold() -> f32 {

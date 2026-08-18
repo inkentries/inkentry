@@ -427,6 +427,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         ) {
             cprintln!("{line}");
         }
+        if let Some(line) = embed_threads_line(tier.server_limits().and_then(|l| l.embed_threads)) {
+            cprintln!("{line}");
+        }
     }
     if let Some(line) = memory_embedding_line(&mem_path_text) {
         cprintln!("{line}");
@@ -788,6 +791,17 @@ fn embedding_state_line(
     })
 }
 
+/// The server's embed thread budget, rendered only when it is 1. That is the
+/// case where a first index takes hours instead of minutes, and the override
+/// that fixes it is otherwise reachable only by reading the server log.
+fn embed_threads_line(embed_threads: Option<usize>) -> Option<String> {
+    (embed_threads? == 1).then(|| {
+        "  \x1b[2mThe server is embedding single-threaded; set INKENTRY_EMBED_THREADS=<n> \
+         and restart it (`inkentry server stop`) if this host can spare the cores.\x1b[0m"
+            .to_string()
+    })
+}
+
 pub(crate) fn format_age(unix_ts: i64) -> String {
     let Some(then) = chrono::DateTime::<chrono::Utc>::from_timestamp(unix_ts, 0) else {
         return "unknown".to_string();
@@ -1059,6 +1073,7 @@ mod tests {
                 inkentry_server::EMBED_QUEUE_CAPACITY,
                 inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
             ),
+            embed_threads: 4,
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(
@@ -1068,6 +1083,7 @@ mod tests {
             started_by: None,
             trusted_proxies: Default::default(),
             relay: relay_declaring(&team_server.uri(), "proj"),
+            repair_signal: inkentry_server::repair::RepairSignal::new(),
         };
         let app = inkentry_server::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1171,6 +1187,7 @@ mod tests {
                 inkentry_server::EMBED_QUEUE_CAPACITY,
                 inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
             ),
+            embed_threads: 4,
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(
@@ -1180,6 +1197,7 @@ mod tests {
             started_by: None,
             trusted_proxies: Default::default(),
             relay: relay_declaring(&team_server.uri(), "proj"),
+            repair_signal: inkentry_server::repair::RepairSignal::new(),
         };
         let app = inkentry_server::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1295,6 +1313,28 @@ mod tests {
         assert!(line.contains("offline"), "got: {line}");
         // item 37: offline has no sync configuration to poll.
         assert!(!line.contains("pending"), "got: {line}");
+    }
+
+    // ── embed_threads_line: surfacing the override at the moment it matters ──
+
+    #[test]
+    fn single_threaded_server_names_the_override_variable() {
+        let line = embed_threads_line(Some(1)).expect("a single-threaded budget is worth saying");
+        assert!(
+            line.contains("INKENTRY_EMBED_THREADS"),
+            "the override is the whole point of the line: {line}"
+        );
+    }
+
+    #[test]
+    fn a_multi_threaded_or_unreported_budget_says_nothing() {
+        for threads in [Some(2), Some(4), Some(64), None] {
+            assert_eq!(
+                embed_threads_line(threads),
+                None,
+                "only a single-threaded budget earns a line; got one for {threads:?}"
+            );
+        }
     }
 
     // ── embedding_state_line: what status knows about its own worker (no guessing) ──

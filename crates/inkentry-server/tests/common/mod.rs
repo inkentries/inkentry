@@ -57,6 +57,7 @@ pub fn make_test_state(dim: usize, auth_key: Option<String>) -> inkentry_server:
             inkentry_server::EMBED_QUEUE_CAPACITY,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
+        embed_threads: 4,
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(
@@ -66,5 +67,6 @@ pub fn make_test_state(dim: usize, auth_key: Option<String>) -> inkentry_server:
         started_by: None,
         trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     }
 }

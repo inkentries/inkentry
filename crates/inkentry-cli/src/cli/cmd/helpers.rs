@@ -106,23 +106,89 @@ pub(crate) fn project_display_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
+/// Where a detached run's diagnostics land, relative to the project's
+/// `.inkentry/` directory. Named in `hooks install` output, so a user told that
+/// something runs on every commit is also told where it reports.
+pub(crate) const BACKGROUND_LOG_NAME: &str = ".inkentry/background.log";
+
+/// The absolute path of [`BACKGROUND_LOG_NAME`] for the project the current
+/// directory sits in, or `None` outside a project.
+pub(crate) fn background_log_path() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    inkentry_core::config::find_project_dir(&cwd).map(|d| d.join("background.log"))
+}
+
+/// Open the background log for appending, `0600`, refusing to follow a symlink
+/// at the path. Appending rather than truncating is what lets the two detached
+/// runs a single commit fires (index, then harvest) both survive in one file.
+fn open_background_log(path: &std::path::Path) -> Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc_o_nofollow());
+    }
+    opts.open(path)
+        .with_context(|| format!("opening {}", path.display()))
+}
+
 /// Detach: re-exec this binary with the same CLI arguments but without
-/// `--detach`, with all stdio closed, so the caller (e.g. a git hook) regains
-/// its prompt immediately while inkentry continues in the background.
+/// `--detach`, so the caller (e.g. a git hook) regains its prompt immediately
+/// while inkentry continues in the background.
+///
+/// The child's output goes to the project's background log rather than to a
+/// null sink: detached from a terminal, a null sink turns every failure into
+/// silence, and the failures worth reporting (an unavailable LLM stopping
+/// `harvest`) recur on every commit without ever being seen. Inheriting the
+/// parent's streams is not the alternative: a pipe reader (`git commit`, CI)
+/// blocks until the detached child exits, and one that closes first SIGPIPEs
+/// the child mid-run.
+///
+/// A log that cannot be opened falls back to the null sink, since diagnostics
+/// must never be what stops the work from starting.
 pub(crate) fn spawn_detached() -> Result<()> {
     let exe = std::env::current_exe().context("resolving current executable")?;
     let args: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| a != "--detach")
         .collect();
-    std::process::Command::new(exe)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(&args).stdin(std::process::Stdio::null());
+
+    match background_log_path().and_then(|p| open_log_pair(&p, &args)) {
+        Some((out, err)) => {
+            cmd.stdout(out).stderr(err);
+        }
+        None => {
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+        }
+    }
+
+    cmd.spawn()
         .context("spawning detached background process")?;
     Ok(())
+}
+
+/// Two independent handles onto the append-opened log, with a header naming the
+/// run already written: an error alone says nothing about which of a commit's
+/// two background runs produced it, or when.
+fn open_log_pair(
+    path: &std::path::Path,
+    args: &[String],
+) -> Option<(std::fs::File, std::fs::File)> {
+    use std::io::Write;
+    let mut out = open_background_log(path).ok()?;
+    let _ = writeln!(
+        out,
+        "\n=== inkentry {} ({}) ===",
+        args.join(" "),
+        chrono::Utc::now().to_rfc3339()
+    );
+    let err = out.try_clone().ok()?;
+    Some((out, err))
 }
 
 /// `O_NOFOLLOW`, which `std` does not expose. Defined here to avoid pulling in

@@ -11,6 +11,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A memory entry stored without a vector is now repaired.** Entries stored
+  while the embedder was loading, unavailable or disabled were absent from
+  semantic search and no re-push fixed them; the server now fills those vectors
+  in. Every element of `POST …/memory/batch`'s `results` gained an `embedded`
+  boolean describing the stored row.
 - **`GET /v1/health` advertises `accepts_pushed_vectors`.** A client that has
   already embedded an entry locally can send that vector and skip server-side
   embedding, but only against a server that says it accepts one. The flag is
@@ -298,6 +303,56 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `status --format json` carries the discarded version as `index_rebuilt_from`
   (`null` otherwise). The rebuild is still a statement, not a gate, and it still
   leaves a working tool.
+- **Embedding no longer collapses to a single thread on hosts with two physical
+  cores.** The thread budget reserved a flat two physical cores for request
+  serving, which on a 2-core host reserved the whole machine and left a first
+  index running for hours. It now reserves a quarter of the host, capped at two,
+  from the physical and logical counts separately and takes the smaller result:
+  hosts with eight or more physical cores are unchanged, smaller ones keep a
+  proportional share. When the budget does resolve to 1, the server log and
+  `inkentry status` now name the `INKENTRY_EMBED_THREADS` override, and
+  `/v1/health` reports the resolved value as `limits.embed_threads`. (#112)
+
+- **`hooks install` no longer promises harvesting it cannot do.** Harvest is the
+  only LLM-backed feature and a default install has no LLM, so the install now
+  resolves the LLM route and says harvesting stays inactive until one is
+  reachable, carrying the same guidance `harvest` itself fails with. The hook is
+  installed either way, and configuring an LLM later needs no reinstall.
+
+- **`--detach` no longer converts every failure into silence.** A detached run's
+  stdout and stderr went to a null sink, so a per-commit harvest could fail on
+  every commit with nothing to find. Both now append to
+  `.inkentry/background.log`, under a header naming the run and its time.
+
+- **The post-commit hook no longer does nothing when `inkentry` is off `PATH`.**
+  It gated on `command -v inkentry` and invoked a bare command, so every source
+  build and every custom install directory silently skipped indexing and
+  harvesting on each commit. It now embeds the installing binary's absolute
+  path, quoted through the same helper the pre-push hook already used. A hook
+  whose binary has since been removed still exits 0 rather than failing the
+  commit. Re-run `inkentry hooks install` to re-resolve a moved binary.
+
+- **A server key file saved with a UTF-8 BOM no longer makes every request fail
+  with 401.** The BOM (`EF BB BF`), which many Windows editors write by default,
+  survived the key's trim because U+FEFF is a format character rather than
+  whitespace, so it was hashed as part of the key. No client could match it: a
+  bearer token arrives as header-safe ASCII, so nothing an operator could send,
+  including the file's exact contents, would ever authenticate, and the server
+  logged a normal startup. A leading BOM is now stripped from every key source
+  (`--key`, `--key-file`, `INKENTRY_SERVER_KEY`, the systemd `server-key`
+  credential), and a resolved key still holding a byte an HTTP header cannot
+  carry now refuses startup with an error naming the source it came from.
+- **Docs: memory did not "travel with the repo" by default, as the getting-started
+  guide and the README both claimed.** Publishing your own memory notes is opt-in
+  and needs `inkentry hooks install --pre-push`; only the fetch side is automatic.
+  Both documents now say so, and the getting-started guide documents `--pre-push`,
+  the two `.git/config` entries `init` writes, and the fact that the post-commit
+  hook's harvesting is inactive until an LLM is configured. Its team-setup section
+  now recommends `inkentry sync` over `inkentry plumbing push`, whose plumbing
+  exit code 1 on an empty delta made an already-synced run look like a failure.
+  The supported-language lists in the README and CLAUDE.md now state that
+  `inkentry languages` is build-dependent (`rich-formats` adds DOCX, spreadsheets
+  and PDF, and is on for every release binary).
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's
@@ -380,6 +435,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Bumped `h2` to 0.4.16** for RUSTSEC-2026-0258 (unbounded empty DATA frames).
 - **The local relay no longer opens outbound connections to a caller-chosen
   host.** `POST /local/relay/push` took `server_url` and `bearer` from the
   request body, and the daemon then connected there carrying that credential,

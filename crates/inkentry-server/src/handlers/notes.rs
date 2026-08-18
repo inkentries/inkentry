@@ -10,8 +10,8 @@ use utoipa::ToSchema;
 use crate::{AppError, AppState, ErrorBody};
 
 use super::{
-    embed_for_storage, require_embedder, require_project, validate_project_slug,
-    validate_pushed_vector, validate_title_body,
+    StorageEmbedding, embed_for_storage, require_embedder, require_project, storage_embedding_text,
+    validate_project_slug, validate_pushed_vector, validate_title_body,
 };
 
 // ── Request / Response types ──────────────────────────────────────────────────
@@ -191,10 +191,11 @@ pub async fn add_note(
     // Done before the DB lock is taken, under an admission permit: see
     // `embed_for_storage`.
     let server_embedding: Option<Vec<f32>> = if body.vector.is_none() {
-        let text = format!("title: {} | text: {}", body.title, body.body);
-        embed_for_storage(&state, &[text.as_str()])
-            .await?
-            .and_then(|mut vectors| vectors.pop())
+        let text = storage_embedding_text(&body.title, &body.body);
+        match embed_for_storage(&state, &[text.as_str()]).await? {
+            StorageEmbedding::Vectors(mut vectors) => vectors.pop(),
+            StorageEmbedding::NotReady | StorageEmbedding::Failed => None,
+        }
     } else {
         None
     };
@@ -216,6 +217,19 @@ pub async fn add_note(
         embedding,
         None,
     )?;
+
+    // This route stores text-only rather than failing, exactly as the batch
+    // route does, so it leaves the same repairable rows behind and owes the
+    // same signal. It does not yet report the state on the wire.
+    //
+    // Raised after the insert, never before it. The sweep contends for the
+    // very lock this write holds, so a signal raised earlier can wake a
+    // worker that takes the lock first, finds an empty backlog, and parks,
+    // leaving this row stored with nothing pending and no edge to bring
+    // anyone back.
+    if embedding.is_none() {
+        state.repair_signal.raise();
+    }
 
     // ── Conflict detection ────────────────────────────────────────────────────
     // Only run if the entry has an embedding and conflict detection is enabled

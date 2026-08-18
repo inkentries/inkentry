@@ -36,6 +36,7 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
             inkentry_server::EMBED_QUEUE_CAPACITY,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
+        embed_threads: 4,
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(
@@ -45,6 +46,7 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
         started_by: None,
         trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     };
     let app = inkentry_server::router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
