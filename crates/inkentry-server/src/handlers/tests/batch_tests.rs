@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use axum::body::Body;
 use axum::http::{self, Request};
 use inkentry_core::embeddings::{PUSHED_VECTOR_PRECISION, pushed_vector_model_tag};
@@ -7,7 +5,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::support::{
-    list_notes_via_http, make_app, make_app_with_auth_key, note_item, post_batch, post_note,
+    app_with_recording_embedder, list_notes_via_http, make_app, make_app_with_auth_key, note_item,
+    post_batch, post_note,
 };
 
 // ── POST /memory/batch ────────────────────────────────────────────────
@@ -343,40 +342,6 @@ async fn batch_pairs_each_server_side_vector_with_its_own_entry() {
 
 // ── Client-pushed vectors ─────────────────────────────────────────────
 
-// Records every text it is asked to embed, so a test can prove an entry was
-// never embedded at all rather than inferring it from the stored vector.
-struct RecordingEmbedder {
-    dim: usize,
-    embedded: Arc<Mutex<Vec<String>>>,
-}
-
-#[async_trait::async_trait]
-impl inkentry_core::embeddings::EmbeddingBackend for RecordingEmbedder {
-    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut seen = self.embedded.lock().unwrap();
-        for t in texts {
-            seen.push((*t).to_string());
-        }
-        Ok(texts.iter().map(|_| vec![0.5_f32; self.dim]).collect())
-    }
-
-    fn dimension(&self) -> usize {
-        self.dim
-    }
-}
-
-fn app_with_recording_embedder(dim: usize) -> (axum::Router, Arc<Mutex<Vec<String>>>) {
-    let embedded = Arc::new(Mutex::new(Vec::new()));
-    let app = super::support::make_app_with_slot(
-        dim,
-        crate::EmbedderSlot::ready(Arc::new(RecordingEmbedder {
-            dim,
-            embedded: embedded.clone(),
-        })),
-    );
-    (app, embedded)
-}
-
 fn pushed_entry(external_id: &str, title: &str, vector: Value) -> Value {
     json!({
         "kind": "note",
@@ -544,5 +509,112 @@ async fn batch_without_a_vector_still_takes_the_server_side_embed_branch() {
     assert!(
         embedded.lock().unwrap().iter().any(|t| t.contains("plain")),
         "a text-only entry must still be embedded server-side"
+    );
+}
+
+// ── `embedded`: whether the stored row is in the vector index ──────────
+
+// The whole point of the field: an entry accepted while no embedder can serve
+// it is still stored and still counted as created, but the caller is told
+// plainly that it is not searchable by vector.
+#[tokio::test]
+async fn batch_reports_embedded_false_when_no_embedder_is_ready() {
+    for slot in [
+        crate::EmbedderSlot::disabled(),
+        crate::EmbedderSlot::loading(),
+    ] {
+        let app = super::support::make_app_with_slot(4, slot);
+        let (status, body) = post_batch(app, "degraded", json!([note_item("t", "e1")])).await;
+        assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+        assert_eq!(body["created"], json!(1), "the entry is still stored");
+        assert_eq!(
+            body["results"][0]["embedded"],
+            json!(false),
+            "an entry stored with no vector must say so: {body}"
+        );
+    }
+}
+
+// The same field on the healthy path, so `false` above is a real signal rather
+// than a constant.
+#[tokio::test]
+async fn batch_reports_embedded_true_for_a_server_side_embed() {
+    let (app, _) = app_with_recording_embedder(4);
+    let (status, body) = post_batch(app, "healthy", json!([note_item("t", "e1")])).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["results"][0]["embedded"], json!(true), "body: {body}");
+}
+
+// A client vector is never second-guessed by the server's own readiness: the
+// entry lands in the index even though nothing on this server could have
+// embedded it.
+#[tokio::test]
+async fn batch_reports_embedded_true_for_a_pushed_vector_while_the_embedder_is_not_ready() {
+    let app = super::support::make_app_with_slot(4, crate::EmbedderSlot::loading());
+    let entries = json!([pushed_entry("p1", "pushed", json!([0.0, 0.0, 0.0, 1.0]))]);
+    let (status, body) = post_batch(app, "pushed-cold", entries).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["created"], json!(1), "body: {body}");
+    assert_eq!(body["results"][0]["embedded"], json!(true), "body: {body}");
+}
+
+// A re-push of an entry that landed vectorless is the only thing a client with
+// a full outbox ever sees again. Omitting the field on a skip would restore
+// exactly the silence the field exists to end, so it reports the state of the
+// row on the server: still not in the index.
+#[tokio::test]
+async fn batch_reports_embedded_false_on_a_dedupe_hit_whose_row_has_no_vector() {
+    let app = super::support::make_app_with_slot(4, crate::EmbedderSlot::disabled());
+    let (_, first) = post_batch(app.clone(), "reskip", json!([note_item("t", "e1")])).await;
+    assert_eq!(first["results"][0]["embedded"], json!(false));
+
+    let (status, body) = post_batch(app, "reskip", json!([note_item("t", "e1")])).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["skipped"], json!(1), "counts are untouched: {body}");
+    assert_eq!(body["created"], json!(0), "counts are untouched: {body}");
+    assert_eq!(
+        body["results"][0]["embedded"],
+        json!(false),
+        "a dedupe hit must report the stored row's state, not the payload's: {body}"
+    );
+}
+
+#[tokio::test]
+async fn batch_reports_embedded_true_on_a_dedupe_hit_whose_row_has_a_vector() {
+    let (app, _) = app_with_recording_embedder(4);
+    post_batch(app.clone(), "reskip-ok", json!([note_item("t", "e1")])).await;
+
+    let (status, body) = post_batch(app, "reskip-ok", json!([note_item("t", "e1")])).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["skipped"], json!(1), "body: {body}");
+    assert_eq!(body["results"][0]["embedded"], json!(true), "body: {body}");
+}
+
+// `external_id` is the client entry's stable local id, not a content hash, so
+// a client may edit an entry and re-push it under the same id. The server
+// keeps the old text, so adopting the payload's vector would leave the row
+// holding a vector describing text the server does not store. A row's vector
+// stays derived from that row's own stored text, which is the repair pass's
+// job and not this request's.
+#[tokio::test]
+async fn a_dedupe_hit_is_not_given_the_pushed_payloads_vector() {
+    let app = super::support::make_app_with_slot(4, crate::EmbedderSlot::disabled());
+    post_batch(app.clone(), "novec", json!([note_item("t", "e1")])).await;
+
+    let entries = json!([pushed_entry("e1", "edited", json!([0.0, 0.0, 0.0, 1.0]))]);
+    let (status, body) = post_batch(app.clone(), "novec", entries).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["results"][0]["status"], json!("skipped"), "{body}");
+    assert_eq!(
+        body["results"][0]["embedded"],
+        json!(false),
+        "the skipped payload's vector must not be adopted by the existing row: {body}"
+    );
+
+    let (_, again) = post_batch(app, "novec", json!([note_item("t", "e1")])).await;
+    assert_eq!(
+        again["results"][0]["embedded"],
+        json!(false),
+        "and it must not have been adopted behind the response either: {again}"
     );
 }

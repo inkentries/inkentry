@@ -301,6 +301,50 @@ client's* own `external_id`, carried so `POST …/memory/batch` can be idempoten
 It is absent on entries created through the single-note route, and it is unique
 only within a project.
 
+### Whether a stored entry is in the vector index
+
+A memory write never fails because no vector could be produced. If the client
+sends no `vector` and the server's embedder is loading, unavailable, disabled,
+or simply refuses the text, the entry is still stored and still counted as
+created; it is only absent from semantic search.
+
+`POST …/memory/batch` says so per entry. Every element of `results` carries
+`embedded`, on `created` and `skipped` alike:
+
+```json
+{
+  "created": 1,
+  "skipped": 1,
+  "failed": 0,
+  "results": [
+    { "status": "created", "external_id": "a1", "id": "0199a0f1-…", "embedded": true },
+    { "status": "skipped", "external_id": "a2", "id": "0199a0ee-…", "embedded": false }
+  ]
+}
+```
+
+`embedded` describes **the stored row this result refers to, as of this
+response**, never the payload that was sent. On a `skipped` dedupe hit it
+reports the row already on the server, which is what makes the field useful to
+a client whose outbox believes everything landed: from then on it sees nothing
+but skips.
+
+`false` does not mean "never will be". A row stored without a vector is
+repaired in the background: the server reads it back, embeds its stored text
+and fills in the vector, after which the same entry re-pushed reports `true`. A
+dedupe hit whose row has no vector is one of the events that asks for that
+pass, so re-pushing is a way to prompt it. The repair is driven only by such
+events, never by a timer, so a server with nothing to repair does no work.
+
+A dedupe hit is never given the vector its skipped payload carried.
+`external_id` is the client's own stable entry id and not a content hash, so a
+client may edit an entry and re-push it under the same id; the server keeps the
+old text (entry edits do not propagate on re-push). A row's vector is always
+derived from that row's own stored `title` and `body`.
+
+The single-note route stores under the same policy and is repaired the same
+way, but its response does not yet carry the field.
+
 ### Conflict detection on write
 
 `POST /v1/projects/{project_id}/memory` checks whether a semantically similar

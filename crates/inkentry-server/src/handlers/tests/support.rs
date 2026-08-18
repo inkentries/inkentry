@@ -52,6 +52,7 @@ pub(super) fn make_app(conflict_threshold: f32) -> (axum::Router, i32) {
         started_by: None,
         trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
+        repair_signal: crate::repair::RepairSignal::new(),
     };
     (router(state), dim as i32)
 }
@@ -106,11 +107,18 @@ impl inkentry_core::embeddings::EmbeddingBackend for MockEmbedder {
 
 // Build an app with the given embedder slot (dim used only to size the DB).
 pub(super) fn make_app_with_slot(dim: usize, embedder: crate::EmbedderSlot) -> axum::Router {
+    crate::router(make_state_with_slot(dim, embedder))
+}
+
+// The state behind `make_app_with_slot`, for tests that need to reach past the
+// router: the repair pass takes an `AppState` directly, and the repair signal
+// is only observable on the state a request was served from.
+pub(super) fn make_state_with_slot(dim: usize, embedder: crate::EmbedderSlot) -> AppState {
     register_sqlite_vec();
     let db = ServerDb::open(std::path::Path::new(":memory:"), dim, "test-model")
         .expect("failed to open in-memory server db");
     let instance_id = db.get_or_create_instance_id().expect("instance_id in test");
-    let state = AppState {
+    AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         auth: Arc::new(ApiKeyAuth::new(None)),
         conflict_threshold: 0.92,
@@ -126,8 +134,49 @@ pub(super) fn make_app_with_slot(dim: usize, embedder: crate::EmbedderSlot) -> a
         started_by: None,
         trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
-    };
-    crate::router(state)
+        repair_signal: crate::repair::RepairSignal::new(),
+    }
+}
+
+// Records every text it is asked to embed, so a test can prove an entry was
+// never embedded at all rather than inferring it from the stored vector. Also
+// the only way to prove which text the repair pass embedded a row with.
+pub(super) struct RecordingEmbedder {
+    pub(super) dim: usize,
+    pub(super) embedded: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl inkentry_core::embeddings::EmbeddingBackend for RecordingEmbedder {
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let mut seen = self.embedded.lock().unwrap();
+        for t in texts {
+            seen.push((*t).to_string());
+        }
+        Ok(texts.iter().map(|_| vec![0.5_f32; self.dim]).collect())
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+}
+
+pub(super) fn recording_slot(
+    dim: usize,
+) -> (crate::EmbedderSlot, Arc<std::sync::Mutex<Vec<String>>>) {
+    let embedded = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let slot = crate::EmbedderSlot::ready(Arc::new(RecordingEmbedder {
+        dim,
+        embedded: embedded.clone(),
+    }));
+    (slot, embedded)
+}
+
+pub(super) fn app_with_recording_embedder(
+    dim: usize,
+) -> (axum::Router, Arc<std::sync::Mutex<Vec<String>>>) {
+    let (slot, embedded) = recording_slot(dim);
+    (make_app_with_slot(dim, slot), embedded)
 }
 
 // Build an app with a ready mock embedder of the given dimension.
@@ -213,6 +262,7 @@ pub(super) fn make_app_with_llm_limit_and_proxies(
         started_by: None,
         trusted_proxies,
         relay: crate::relay::RelayRegistry::disabled(),
+        repair_signal: crate::repair::RepairSignal::new(),
     };
     router(state)
 }
@@ -282,6 +332,7 @@ pub(super) fn make_app_with_auth_key(key: Option<&str>) -> axum::Router {
         started_by: None,
         trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
+        repair_signal: crate::repair::RepairSignal::new(),
     };
     crate::router(state)
 }
@@ -378,6 +429,7 @@ pub(super) async fn spawn_test_server(
         started_by: None,
         trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
+        repair_signal: crate::repair::RepairSignal::new(),
     };
     let app = crate::router_with_timeout(state, request_timeout);
 
@@ -450,6 +502,7 @@ pub(super) async fn spawn_test_server_with_embed_and_admission(
         started_by: None,
         trusted_proxies: Default::default(),
         relay: crate::relay::RelayRegistry::disabled(),
+        repair_signal: crate::repair::RepairSignal::new(),
     };
     let app = crate::router_with_timeouts(state, request_timeout, embed_request_timeout);
 

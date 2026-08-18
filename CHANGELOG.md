@@ -11,6 +11,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A memory entry stored without a vector is now repaired.** Entries stored
+  while the embedder was loading, unavailable or disabled were absent from
+  semantic search and no re-push fixed them; the server now fills those vectors
+  in. Every element of `POST …/memory/batch`'s `results` gained an `embedded`
+  boolean describing the stored row.
 - **`GET /v1/health` advertises `accepts_pushed_vectors`.** A client that has
   already embedded an entry locally can send that vector and skip server-side
   embedding, but only against a server that says it accepts one. The flag is
@@ -294,6 +299,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   verb exits 1 on an empty result and these are the lines an agent copies into a
   script.
 
+- **A server key file saved with a UTF-8 BOM no longer makes every request fail
+  with 401.** The BOM (`EF BB BF`), which many Windows editors write by default,
+  survived the key's trim because U+FEFF is a format character rather than
+  whitespace, so it was hashed as part of the key. No client could match it: a
+  bearer token arrives as header-safe ASCII, so nothing an operator could send,
+  including the file's exact contents, would ever authenticate, and the server
+  logged a normal startup. A leading BOM is now stripped from every key source
+  (`--key`, `--key-file`, `INKENTRY_SERVER_KEY`, the systemd `server-key`
+  credential), and a resolved key still holding a byte an HTTP header cannot
+  carry now refuses startup with an error naming the source it came from.
 - **Docs: memory did not "travel with the repo" by default, as the getting-started
   guide and the README both claimed.** Publishing your own memory notes is opt-in
   and needs `inkentry hooks install --pre-push`; only the fetch side is automatic.
@@ -387,6 +402,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Bumped `h2` to 0.4.16** for RUSTSEC-2026-0258 (unbounded empty DATA frames).
 - **The local relay no longer opens outbound connections to a caller-chosen
   host.** `POST /local/relay/push` took `server_url` and `bearer` from the
   request body, and the daemon then connected there carrying that credential,

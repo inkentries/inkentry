@@ -1313,9 +1313,14 @@
         "description": "Per-entry outcome in the batch response.",
         "required": [
           "status",
-          "external_id"
+          "external_id",
+          "embedded"
         ],
         "properties": {
+          "embedded": {
+            "type": "boolean",
+            "description": "Whether the stored row this result refers to is in the vector index\n**as of this response**. Present on every result, `\"created\"` and\n`\"skipped\"` alike, and always describing the stored row rather than the\nrequest: a dedupe-hit reports the state of the row already on the\nserver, not of the payload that was skipped.\n\n`false` does not mean \"never will be\". A row stored without a vector\nraises a repair signal as it is written, so a background pass may\nalready be embedding it by the time this response is read."
+          },
           "external_id": {
             "type": "string"
           },

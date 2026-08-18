@@ -300,37 +300,61 @@ fn require_embedder(
 ///   returns.
 ///
 /// The whole slice goes in one call: batching is both what keeps the lock-free
-/// window short and what makes the embed itself cheaper. `None` means "store
-/// these text-only": no ready backend, an embed error, or a vector count that
-/// does not line up with the input.
-async fn embed_for_storage(
+/// window short and what makes the embed itself cheaper.
+pub(crate) async fn embed_for_storage(
     state: &AppState,
     texts: &[&str],
-) -> Result<Option<Vec<Vec<f32>>>, AppError> {
+) -> Result<StorageEmbedding, AppError> {
     if texts.is_empty() {
-        return Ok(None);
+        return Ok(StorageEmbedding::Vectors(Vec::new()));
     }
     // Only the *ready* backend embeds; loading/unavailable/disabled stores
     // text-only, since a memory write must not block on model warm-up.
     let Some(embedder) = state.embedder.backend() else {
-        return Ok(None);
+        return Ok(StorageEmbedding::NotReady);
     };
     let _admission = state.embed_admission.try_acquire()?;
     match embedder.embed(texts).await {
-        Ok(vectors) if vectors.len() == texts.len() => Ok(Some(vectors)),
+        Ok(vectors) if vectors.len() == texts.len() => Ok(StorageEmbedding::Vectors(vectors)),
         Ok(vectors) => {
             tracing::warn!(
                 "server-side embedding returned {} vectors for {} entries, storing without vectors",
                 vectors.len(),
                 texts.len(),
             );
-            Ok(None)
+            Ok(StorageEmbedding::Failed)
         }
         Err(e) => {
             tracing::warn!("server-side embedding failed, storing without vector: {e}");
-            Ok(None)
+            Ok(StorageEmbedding::Failed)
         }
     }
+}
+
+/// Outcome of [`embed_for_storage`].
+///
+/// The two degraded arms are kept apart for [`crate::repair`], not for the
+/// write paths: a write signals repair either way, but the repair pass must
+/// stop on `NotReady` (nothing it retries can make progress) and fall back to
+/// smaller units on `Failed` (one text in the page is poison and the rest are
+/// still embeddable).
+pub(crate) enum StorageEmbedding {
+    /// One vector per input text, in input order.
+    Vectors(Vec<Vec<f32>>),
+    /// No backend is ready: loading, unavailable, or disabled.
+    NotReady,
+    /// The embedder answered with an error, or with a vector count that does
+    /// not line up with the input. A count mismatch is a failure rather than a
+    /// partial success on purpose: with the input-to-output mapping unknown,
+    /// any assignment could attach a vector to the wrong text.
+    Failed,
+}
+
+/// The one text a memory row is embedded from. Both write paths and the repair
+/// pass call this, so a repaired row's vector cannot describe a differently
+/// shaped string than the one the push path would have produced.
+pub(crate) fn storage_embedding_text(title: &str, body: &str) -> String {
+    format!("title: {title} | text: {body}")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
