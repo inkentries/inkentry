@@ -42,6 +42,18 @@ to a different repo to fetch the GGUF and tokenizer from there instead (it must
 host both files). See `docs/embedder-artifact/` for the text that accompanies
 the distributed artifact.
 
+### Why our repo sits under `spelunk-cloud`
+
+`spelunk-cloud` is the Hugging Face org of inkentry's predecessor product, and
+the embedder repo stays there deliberately. Moving it under an inkentry-named
+org would change the `hf-hub` cache key every existing install already holds on
+disk, so each one would re-download ~339 MB to gain a tidier URL and nothing
+else. Hosting the artifacts ourselves instead would trade a working
+third-party dependency for an ongoing hosting obligation. Neither is worth
+buying, so the name is settled rather than unfinished rebranding: that org is
+ours, and it is the repo to fetch from. The default is `DEFAULT_GGUF_REPO` in
+`crates/inkentry-server/src/embed_hub.rs`.
+
 ### Other bundled inference dependencies
 
 The candle runtime (`candle-core`, `candle-nn`, `candle-transformers`), the
