@@ -290,6 +290,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`hooks install` no longer promises harvesting it cannot do.** Harvest is the
+  only LLM-backed feature and a default install has no LLM, so the install now
+  resolves the LLM route and says harvesting stays inactive until one is
+  reachable, carrying the same guidance `harvest` itself fails with. The hook is
+  installed either way, and configuring an LLM later needs no reinstall.
+
+- **`--detach` no longer converts every failure into silence.** A detached run's
+  stdout and stderr went to a null sink, so a per-commit harvest could fail on
+  every commit with nothing to find. Both now append to
+  `.inkentry/background.log`, under a header naming the run and its time.
+
 - **The post-commit hook no longer does nothing when `inkentry` is off `PATH`.**
   It gated on `command -v inkentry` and invoked a bare command, so every source
   build and every custom install directory silently skipped indexing and

@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use std::path::Path;
 
+use crate::{capability, config::Config};
+
 #[derive(Args, Debug)]
 pub struct HooksArgs {
     #[command(subcommand)]
@@ -28,9 +30,9 @@ pub struct HooksInstallArgs {
     pub ci: bool,
 }
 
-pub fn hooks(args: HooksArgs) -> Result<()> {
+pub async fn hooks(args: HooksArgs, cfg: Config) -> Result<()> {
     match args.command {
-        HooksCommand::Install(a) => hooks_install(a),
+        HooksCommand::Install(a) => hooks_install(a, &cfg).await,
         HooksCommand::Uninstall => hooks_uninstall(),
     }
 }
@@ -290,7 +292,7 @@ fn write_hook(dir: &Path, spec: &HookSpec, body: &str) -> Result<Installed> {
     })
 }
 
-fn hooks_install(args: HooksInstallArgs) -> Result<()> {
+async fn hooks_install(args: HooksInstallArgs, cfg: &Config) -> Result<()> {
     if args.ci {
         print!("{CI_STEP}");
         return Ok(());
@@ -299,7 +301,7 @@ fn hooks_install(args: HooksInstallArgs) -> Result<()> {
     if args.pre_push {
         return install_pre_push();
     }
-    install_post_commit()
+    install_post_commit(cfg).await
 }
 
 /// Install the post-commit hook in the repo at `dir`. Exposed so `inkentry
@@ -313,8 +315,22 @@ fn cwd() -> Result<std::path::PathBuf> {
     std::env::current_dir().context("getting current directory")
 }
 
-fn install_post_commit() -> Result<()> {
-    match install_post_commit_hook(&cwd()?)? {
+/// What the install prints instead of leaving the harvest promise unqualified.
+///
+/// The guidance itself is [`capability::no_llm_message`], the same text
+/// `harvest` fails with, so the two cannot drift; only the framing that makes
+/// it read as a caveat rather than a failure belongs here.
+fn harvest_inactive_notice(reason: capability::NoLlmReason) -> String {
+    format!(
+        "Harvesting stays inactive until an LLM is reachable; indexing still runs on \
+         every commit. Configuring one later needs no reinstall.\n{}",
+        capability::no_llm_message(reason)
+    )
+}
+
+async fn install_post_commit(cfg: &Config) -> Result<()> {
+    let dir = cwd()?;
+    match install_post_commit_hook(&dir)? {
         Installed::AlreadyPresent(p) => {
             println!("Hook already installed at {}", p.display());
             return Ok(());
@@ -325,6 +341,16 @@ fn install_post_commit() -> Result<()> {
     println!("After each commit, inkentry will:");
     println!("  - Re-index the project");
     println!("  - Harvest memory from the new commit");
+    // Harvest is the only LLM-backed feature and the hook runs it detached, so
+    // an install that stays silent here promises something the user would never
+    // see fail.
+    if let Some(reason) = capability::resolve_llm_route(cfg, &dir).await.reason() {
+        println!("{}", harvest_inactive_notice(reason));
+    }
+    println!(
+        "Failures from either run are recorded in {}.",
+        super::helpers::BACKGROUND_LOG_NAME
+    );
     println!("Teammates without inkentry installed are unaffected.");
     Ok(())
 }
@@ -561,6 +587,23 @@ mod tests {
             recorded.contains("harvest --git-range HEAD~1..HEAD --detach"),
             "the hook must harvest through the embedded binary: {recorded:?}"
         );
+    }
+
+    // The caveat frames the guidance; it must never restate it, or the install
+    // and the failure a user eventually hits would give different remedies.
+    #[test]
+    fn the_caveat_carries_the_shared_no_llm_guidance_verbatim() {
+        for reason in [
+            capability::NoLlmReason::Offline,
+            capability::NoLlmReason::LocalConfiguredButNotServed,
+            capability::NoLlmReason::NoLlmAnywhere,
+        ] {
+            let notice = harvest_inactive_notice(reason);
+            assert!(
+                notice.contains(&capability::no_llm_message(reason)),
+                "the caveat must carry the shared text verbatim: {notice}"
+            );
+        }
     }
 
     // Both hooks embed the same binary through the same quoting, so a path with
