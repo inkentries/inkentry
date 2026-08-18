@@ -2,15 +2,19 @@
 
 `inkentry memory` is a per-project knowledge store. Use it to capture decisions, context, requirements, questions, and handoff notes that would otherwise live only in chat history or someone's head.
 
-Memory entries are stored in a local SQLite database by default, and — with
-`store_in_git_notes` enabled (the default) — also written through to
-`refs/notes/inkentry` on `HEAD`, so they travel with the repository. No external
+Memory entries are stored in a local SQLite database by default, and (with
+`store_in_git_notes` enabled, the default) also written through to
+`refs/notes/inkentry` on `HEAD`. Sharing them is a separate, opt-in step:
+`git push` does not push `refs/notes/*`, so your entries stay on your machine
+until you install the pre-push hook with `inkentry hooks install --pre-push`
+(see [Sharing memory across clones via
+git-notes](#sharing-memory-across-clones-via-git-notes)). No external
 database or server is required. (You can make git-notes the primary backend with
 `--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
-To verify that memory really travels with the repository, inspect the notes by
+To verify that entries are being written to git notes, inspect them by
 hand with stock git. They live on the `inkentry` ref, so you must name it: plain
 `git notes show HEAD` reads git's default `commits` ref and reports "no note
 found" even when inkentry has written entries.

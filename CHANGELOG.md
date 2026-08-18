@@ -290,6 +290,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Docs: the memory-sharing claim is corrected in the remaining four places.**
+  `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
+  said memory travels with the repository. `git push` does not push
+  `refs/notes/*`, so entries stay local until the pre-push hook is installed.
+- **Docs: `SKILL.md` notes the plumbing exit-code contract where the commands are
+  recommended**, not only in the plumbing reference section, since a plumbing
+  verb exits 1 on an empty result and these are the lines an agent copies into a
+  script.
 - **An index rebuilt for a new schema now says so, instead of reading as an
   empty repository.** Opening an `index.db` this build cannot read discards and
   recreates it, keeping the recorded usage history; the only account of that was

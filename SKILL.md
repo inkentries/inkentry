@@ -75,7 +75,7 @@ and you run it.
 inkentry retrieves context; **your model reasons over it.** For an open-ended question that needs tracing across files, run this loop yourself using the primitives below.
 
 1. **Search** for the concept: `inkentry search "<question or key terms>"` (add `--graph` to pull in call-graph neighbours; `--only-text` for a no-server full-text pass). Results interleave code chunks and memory entries, so a prior decision on the topic surfaces alongside the code. Read the top results.
-2. **Trace** structure from a symbol the results surfaced: `inkentry plumbing graph-edges --symbol <symbol>` (or `--file <path>`) emits the call, import, and extends/implements edges as JSONL. This tells you callers/callees to follow.
+2. **Trace** structure from a symbol the results surfaced: `inkentry plumbing graph-edges --symbol <symbol>` (or `--file <path>`) emits the call, import, and extends/implements edges as JSONL. This tells you callers/callees to follow. Like every plumbing command it exits 1 when it finds nothing, so guard it if you put it in a script that stops on error.
 3. **Read** the exact code:
    - a specific indexed chunk: `inkentry chunks <file>` (add `--format jsonl` for machine-readable output);
    - lines outside a chunk: open the file with your own file-read tool (you are in the repo).
@@ -172,8 +172,9 @@ inkentry memory add --kind note --title "Follow-up observation" --body "..." \
 **Kinds:** `decision` · `context` · `requirement` · `note` · `intent` · `answer` · `handoff` · `question` · `antipattern`
 
 By default (`store_in_git_notes = true`) `memory add` also writes the entry to
-`refs/notes/inkentry` on `HEAD`, so memory travels with the code. Graceful no-op
-outside a git repo.
+`refs/notes/inkentry` on `HEAD`. Those notes stay on this machine until the
+pre-push hook is installed (`inkentry hooks install --pre-push`), because
+`git push` does not push `refs/notes/*`. Graceful no-op outside a git repo.
 
 To check those notes by hand with stock git, point it at the `inkentry` ref.
 Plain `git notes show` reads git's default `commits` ref and reports "no note
@@ -304,7 +305,7 @@ inkentry index .
 1. `AGENT=true inkentry search "<topic>"` — code and memory in one ranked list (semantic ranking requires server + index)
 2. `AGENT=true inkentry search "<topic>" --only-text` — full-text only, no server needed
 3. Read reported file/line ranges
-4. `AGENT=true inkentry plumbing graph-edges --symbol <symbol>` — trace call chains
+4. `AGENT=true inkentry plumbing graph-edges --symbol <symbol>` — trace call chains (exits 1 when the symbol has no edges)
 5. `AGENT=true inkentry search "<topic>" --only-memory` — check recorded context for *why*
 
 **Making changes:**
