@@ -1,17 +1,17 @@
-//! Secret scanning on the git-commit harvest (`inkentry harvest --source git`).
-//!
-//! A commit message is already in shared git history, so harvest does not leak
-//! anything new by reading one. What it does is *promote* that text into
-//! memory, which is written to `refs/notes/inkentry` and pushed to a team or
-//! hosted server, the same destination `memory add` refuses to write a
-//! matched secret to. This path therefore applies the same scanner.
-//!
-//! The failure shape is deliberately not `memory add`'s. `add` aborts the
-//! whole command, which is right for one interactive title/body; a `--branch`
-//! walk can cover thousands of commits, so one match skips that commit and the
-//! walk continues. The tests below pin that difference: a match must not end
-//! the run, and the warning must name the commit SHA without echoing what
-//! matched.
+// Secret scanning on the git-commit harvest (`inkentry harvest --source git`).
+//
+// A commit message is already in shared git history, so harvest does not leak
+// anything new by reading one. What it does is *promote* that text into
+// memory, which is written to `refs/notes/inkentry` and pushed to a team or
+// hosted server, the same destination `memory add` refuses to write a
+// matched secret to. This path therefore applies the same scanner.
+//
+// The failure shape is deliberately not `memory add`'s. `add` aborts the
+// whole command, which is right for one interactive title/body; a `--branch`
+// walk can cover thousands of commits, so one match skips that commit and the
+// walk continues. The tests below pin that difference: a match must not end
+// the run, and the warning must name the commit SHA without echoing what
+// matched.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, isolate_git_config};
@@ -141,7 +141,7 @@ async fn inference_mock() -> MockServer {
     server
 }
 
-/// Every `/llm/complete` prompt this mock received, concatenated.
+// Every `/llm/complete` prompt this mock received, concatenated.
 async fn llm_prompts(server: &MockServer) -> String {
     server
         .received_requests()
@@ -175,7 +175,7 @@ fn head_sha(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A git project with one indexable source file, ready for further commits.
+// A git project with one indexable source file, ready for further commits.
 fn init_project(dir: &Path) {
     isolate_git_config();
     std::fs::write(
@@ -205,8 +205,8 @@ fn init_project(dir: &Path) {
     );
 }
 
-/// Add an empty commit carrying `subject` (and `body`, when non-empty), and
-/// return its full SHA.
+// Add an empty commit carrying `subject` (and `body`, when non-empty), and
+// return its full SHA.
 fn commit(dir: &Path, subject: &str, body: &str) -> String {
     let mut args = vec!["commit", "--allow-empty", "-q", "-m", subject];
     if !body.is_empty() {
@@ -230,8 +230,8 @@ fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
     cmd
 }
 
-/// Point loopback auto-discovery at `url` so harvest resolves both inference
-/// routes to the mock without a team `server_url`.
+// Point loopback auto-discovery at `url` so harvest resolves both inference
+// routes to the mock without a team `server_url`.
 fn write_loopback_state(state_dir: &Path, url: &str) {
     std::fs::create_dir_all(state_dir).expect("create state dir");
     let port: u16 = url
@@ -244,8 +244,8 @@ fn write_loopback_state(state_dir: &Path, url: &str) {
     std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
 }
 
-/// `inkentry index` offline, so the project has the `.inkentry/` directory
-/// harvest requires (ADR-067) without contacting anything.
+// `inkentry index` offline, so the project has the `.inkentry/` directory
+// harvest requires (ADR-067) without contacting anything.
 fn seed_index(home: &Path, project: &Path, db: &Path) {
     base_cmd(home, project)
         .env("INKENTRY_NO_SERVER", "1")
@@ -266,7 +266,7 @@ fn combined(output: &std::process::Output) -> String {
     )
 }
 
-/// The `source_ref` of every note in `mem_db`.
+// The `source_ref` of every note in `mem_db`.
 fn stored_source_refs(mem_db: &Path) -> Vec<String> {
     plumbing_helpers::register_sqlite_vec();
     if !mem_db.exists() {

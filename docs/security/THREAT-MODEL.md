@@ -114,9 +114,9 @@ User filesystem
         │    (query text only; note content stays in memory.db — NOT sent to server)
         └─► KNN search ─► memory.db (local sqlite-vec)
 ```
-(*) **Every route into memory scans, and it is worth reading which does what
-rather than trusting the summary.** `inkentry harvest` has two sources and they
-live in different files, so "harvest scans" is not one fact:
+(*) **Three routes write into memory, and each scans at a different point.**
+`inkentry harvest` is two of those routes, and they live in two different files,
+so "harvest scans" is not one fact to check. What each scans, and when:
 
 - `inkentry memory add` (`cli/cmd/memory/add.rs`) runs `contains_secret` on the
   resolved `title` and `body` before **any** persistence. See requirement 8
@@ -130,6 +130,14 @@ live in different files, so "harvest scans" is not one fact:
   before the extraction request is built, so a matched message reaches neither
   the LLM nor the store.
 
+**Why the commit walk scans text that is already public.** A commit message is
+already in the repository's shared history, so harvest reading one leaks nothing
+that was private. What the scan stops is harvest *promoting* that text into
+`memory.db` and `refs/notes/inkentry`, which travel to every clone and, with a
+team or hosted `server_url`, off the machine entirely. That promotion is the
+whole of the delta: it is why this walk running unscanned was a low-severity gap
+rather than a leak, and why it was still worth closing.
+
 **One scanner, two failure shapes, sized to the call pattern.** `memory add`
 **aborts the command** on a match: it is one interactive entry, so refusing it
 costs the author one retry. The git-commit harvest **skips that commit and
@@ -137,8 +145,8 @@ continues the walk**, warning with the commit SHA and never the matched text: a
 `--branch` walk can cover thousands of commits, and aborting the run over a
 single long-since-rotated credential in one old message would discard every
 other commit in it. That is the same drop-and-warn posture `inkentry index`
-takes for a secret-bearing code chunk. The divergence is deliberate; the two
-routes are not meant to converge.
+takes for a secret-bearing code chunk. The divergence is deliberate, not a route
+that was missed.
 
 **Memory data-flow rule (ADR-004):** Note text for storage is never sent to the
 loopback inkentry-server. For `memory search`, only the query string crosses the
@@ -240,7 +248,7 @@ unauthenticated (no bearer required or sent).
 |--------|------|-----------|--------|-----------|
 | Credentials in source code indexed into vector DB | A | Medium | High | `secrets.rs` scanner drops matching chunks before storage; `.env*`/`*.pem`/`*.key` files excluded |
 | **Source code sent off-machine for embedding** | A | Medium | **High** | The default loopback server embeds natively on-machine, so nothing leaves. Egress requires an explicit remote team `server_url` (chunk text crosses to that server, which always embeds natively in-process; there is no operator flag to forward embedding to a third party). This is an explicit operator/user choice; users must be informed via docs. **Enforced** for the local-tier default: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across `init`/`index`/`search` and fails loudly, naming the destination, on any escape past loopback. |
-| **Memory notes / commit messages sent off-machine for LLM** | A | Low | **High** | `inkentry harvest` sends git commit messages to `inkentry-server`'s LLM endpoint. Under `--source claude-code` it sends Claude Code session transcripts instead, which that source requires `--confirm` to read. It sends no indexed code: no command runs an LLM over retrieved context (ADR-079). The entries it derives are then embedded through the same server, so memory content crosses on that path. On the default loopback server both the LLM and the embedder run on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `INKENTRY_LLM_URL`, or `--llm-url`) pointing off-machine. A team `server_url` is an explicit user choice. An `llm_url`, since it became a project config key, **can** be inherited from a checked-in `.inkentry/config.toml`, so cloning a repository can point harvest at an endpoint the developer did not choose. Note this is unattended once the post-commit hook is installed: that hook runs `harvest --git-range HEAD~1..HEAD --detach` on **every commit**, so the redirect repeats without further prompting. What bounds it: git does not track hooks, so a clone never carries one and installing it is the developer's own deliberate step; what the hook sends is commit messages only, never indexed code and never Claude Code transcripts (those need `--source claude-code`, which the hook does not pass, and `--confirm`); harvest is the only feature that calls an LLM at all; and a personal `llm_url` or `INKENTRY_LLM_URL` outranks the project file. Treat a project config from an untrusted repository as you would any other executable content in it. |
+| **Memory notes / commit messages sent off-machine for LLM** | A | Low | **High** | `inkentry harvest` sends git commit messages to `inkentry-server`'s LLM endpoint, minus any whose message matches a credential pattern: those are dropped before the request is built, so they never cross. Under `--source claude-code` it sends Claude Code session transcripts instead, which that source requires `--confirm` to read. It sends no indexed code: no command runs an LLM over retrieved context (ADR-079). The entries it derives are then embedded through the same server, so memory content crosses on that path. On the default loopback server both the LLM and the embedder run on-machine; egress requires a remote team `server_url`, or an `llm_url` (config key, `INKENTRY_LLM_URL`, or `--llm-url`) pointing off-machine. A team `server_url` is an explicit user choice. An `llm_url`, since it became a project config key, **can** be inherited from a checked-in `.inkentry/config.toml`, so cloning a repository can point harvest at an endpoint the developer did not choose. Note this is unattended once the post-commit hook is installed: that hook runs `harvest --git-range HEAD~1..HEAD --detach` on **every commit**, so the redirect repeats without further prompting. What bounds it: git does not track hooks, so a clone never carries one and installing it is the developer's own deliberate step; what the hook sends is commit messages only, never indexed code and never Claude Code transcripts (those need `--source claude-code`, which the hook does not pass, and `--confirm`); harvest is the only feature that calls an LLM at all; and a personal `llm_url` or `INKENTRY_LLM_URL` outranks the project file. Treat a project config from an untrusted repository as you would any other executable content in it. |
 | **Memory entries sent off-machine by the daemon's local relay, outside the CLI's own process** | A | Medium | **High** | The relay only ever connects to a (server, project) pair this machine's own configuration already declares (`RelayPolicy`), so it egresses exactly where an explicit team `server_url` already sends memory — it changes *when and by which process* that happens, not *whether*. **Coverage gap, deliberate and recorded:** `crates/inkentry-cli/tests/egress_containment.rs` traps outbound connections by wrapping the **CLI subprocess**, so it cannot observe the daemon's relay legs at all. Nothing about the local-tier default is weakened by that (a local-tier project declares no team target, so `RelayPolicy` resolves nothing and no session is ever created — `empty_registry_makes_no_outbound_calls_and_starts_no_sessions`), but the harness must not be read as covering daemon egress. See [Local relay](#local-relay--localrelay-adr-037-p2). |
 | Server memory accessible without auth | B | Low | High | No `--key` / `INKENTRY_SERVER_KEY` by default, so any process that can reach the port reads all notes — but `check_bind_safety` (ADR-066 §4) confines a keyless bind to loopback, so "any process that can reach the port" means any local process, which is the deliberate local posture (ADR-056), not an exposed one. A keyed non-loopback bind additionally requires TLS. |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `inkentry-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `INKENTRY_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
@@ -523,10 +531,10 @@ push configuration.
 
 | Code path | Scanner called? | Notes |
 |-----------|:-:|-------|
-| `inkentry index` (chunk storage) | Yes — `contains_secret()` in `parse_phase.rs` | Credentials dropped before DB write |
-| `inkentry harvest --source claude-code` (`harvest_claude.rs`) | Yes: `contains_secret()` on the session transcript before extraction, and on the LLM body before storing | A match skips that session or entry; the rest of the run continues |
-| `inkentry harvest --source git` / `--source failures` (`harvest.rs`) | Yes: `contains_secret()` on each commit's subject and body, before the extraction request is built | A match skips that commit and the walk continues; the warning names the SHA only. Deliberately not `add.rs`'s abort: see the note under the Mode A memory data flow |
-| `inkentry memory add` → git-notes write-through | Yes — `contains_secret()` on `title` and `body` in `add.rs`, before *either* store | A match aborts the whole command; nothing is written to SQLite or `refs/notes/inkentry`, and the error does not echo the matched text |
+| `inkentry index` (chunk storage) | Yes, `contains_secret()` in `parse_phase.rs` | Credentials dropped before DB write |
+| `inkentry harvest --source claude-code` (`harvest_claude.rs`) | Yes, `contains_secret()` on the session transcript before extraction, and on the LLM body before storing | A match skips that session or entry; the rest of the run continues |
+| `inkentry harvest --source git` / `--source failures` (`harvest.rs`) | Yes, `contains_secret()` on each commit's subject and body before the extraction request is built | A match skips that commit and the walk continues; the warning names the SHA only. Deliberately not `add.rs`'s abort: see the note under the Mode A memory data flow |
+| `inkentry memory add` → git-notes write-through | Yes, `contains_secret()` on `title` and `body` in `add.rs`, before *either* store | A match aborts the whole command; nothing is written to SQLite or `refs/notes/inkentry`, and the error does not echo the matched text |
 
 **Residual risk:** A user who types
 `inkentry memory add --title "DB creds" --body "password=s3cr3t"` is refused, because
@@ -539,7 +547,7 @@ safe to fill with secrets.
 
 | Control | Status |
 |---------|--------|
-| Secret scanning on `memory add` write-through path | **Implemented** — `cli/cmd/memory/add.rs`, before either store. Satisfies (and exceeds) binding requirement 8 below. |
+| Secret scanning on every route that writes through to git notes | **Implemented.** `memory add` (`cli/cmd/memory/add.rs`) scans before either store and refuses the command; both harvest sources (`harvest.rs`, `harvest_claude.rs`) scan before the extraction request is built and skip the matching commit or session. Satisfies (and exceeds) binding requirement 8 below. |
 | `store_in_git_notes = false` opt-out | Available in `~/.config/inkentry/config.toml`; not the default. |
 | Documentation warning that notes travel with the repo | Added in `docs/memory.md` and `SKILL.md` (PR #276). |
 | `git push` does not push notes by default | True — but not a reliable control; depends on user's git config. |
@@ -593,5 +601,5 @@ From this threat model, the following requirements are binding:
 5. **CI must gate on `cargo audit` and `cargo deny`.**
 6. **inkentry-server documentation must warn** that the server is unauthenticated by default and should only be exposed beyond localhost when `--key` / `INKENTRY_SERVER_KEY` is set.
 7. **Config documentation must warn** that setting a remote team `server_url` (or running a `inkentry-server` with an external `--llm-url` shim) transmits source code and memory content off the machine.
-8. **Secret scanner must run on the git-notes write-through path.** **Met, and met more strictly than specified.** The requirement as originally written asked that `add.rs` call `contains_secret` before `append_to_git_notes()`, skip only the git-notes write on a match, and still complete the SQLite write. `cli/cmd/memory/add.rs` instead scans both `title` and `body` before *any* persistence and refuses the command outright, so a matching entry reaches neither store. The stricter behaviour is the one to keep: a note that cannot be written to git notes because it holds a credential is not a note that should sit in `memory.db` either, where `inkentry sync` could later carry it to a team server. Requirement restated to match: **`memory add` must refuse to persist an entry whose title or body matches a secret pattern, to any store, without echoing the matched text.** Binding for any release with `store_in_git_notes = true` as the default.
+8. **Secret scanner must run on the git-notes write-through path.** **Met, and met more strictly than specified.** The requirement as originally written asked that `add.rs` call `contains_secret` before `append_to_git_notes()`, skip only the git-notes write on a match, and still complete the SQLite write. `cli/cmd/memory/add.rs` instead scans both `title` and `body` before *any* persistence and refuses the command outright, so a matching entry reaches neither store. The stricter behaviour is the one to keep: a note that cannot be written to git notes because it holds a credential is not a note that should sit in `memory.db` either, where `inkentry sync` could later carry it to a team server. Requirement restated to match: **`memory add` must refuse to persist an entry whose title or body matches a secret pattern, to any store, without echoing the matched text.** The same scanner is binding on the two unattended routes into the same store: **`inkentry harvest` must scan each commit message or session transcript before the extraction request is built, and must skip a matching item rather than persist it**, warning by SHA or session id and never echoing the match. Harvest skips and continues where `add` refuses because a walk of thousands of commits and one interactive entry are not the same call pattern; see the Mode A memory data flow for the shapes. Binding for any release with `store_in_git_notes = true` as the default.
 9. **The relay's destination must not be describable by a request.** Any surface that makes the daemon open an outbound connection must resolve its destination from local on-disk configuration (`declared_team_targets` → `RelayPolicy`), never from a request field. Binding: this is the whole of what separates the relay from an open egress proxy on loopback. See [Local relay](#local-relay--localrelay-adr-037-p2).

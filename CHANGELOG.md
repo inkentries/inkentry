@@ -478,7 +478,9 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
-- **`inkentry harvest`'s git-commit walk now secret-scans each commit message**, skipping a matching commit (warning with its SHA only) and continuing the walk, instead of promoting it into memory unchecked.
+- **`inkentry harvest`'s git-commit walk now secret-scans each commit message**,
+  skipping a matching commit (warning with its SHA only) and continuing the walk,
+  instead of promoting it into memory and on to `refs/notes/inkentry` unchecked.
 - **Bumped `h2` to 0.4.16** for RUSTSEC-2026-0258 (unbounded empty DATA frames).
 - **The local relay no longer opens outbound connections to a caller-chosen
   host.** `POST /local/relay/push` took `server_url` and `bearer` from the

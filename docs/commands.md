@@ -879,7 +879,10 @@ stores them in the project's memory, skipping near-duplicates.
 A commit whose message matches a known credential pattern is skipped outright:
 it is not sent to the LLM and nothing derived from it is stored. Harvest warns
 with that commit's SHA (never the matched text) and carries on with the rest of
-the walk, so one old credential in a long history does not cost you the run.
+the walk, so one old credential in a long history does not cost you the run. The
+run's summary line counts what it skipped this way. Both commit-walking sources
+behave like this, `git` and `failures`; `--source claude-code` does the same at
+session granularity, naming the session it skipped.
 
 ```
 inkentry harvest [--git-range HEAD~10..HEAD | --branch <ref>]

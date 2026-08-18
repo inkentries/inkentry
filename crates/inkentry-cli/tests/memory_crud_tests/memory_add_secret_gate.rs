@@ -1,22 +1,22 @@
-//! Integration tests for the secret-scan gate on `inkentry memory add` (issue #344).
-//!
-//! Acceptance criteria tested:
-//! (a) Secret in body  → exits non-zero, no SQLite row, no git note
-//! (b) Secret in title → exits non-zero, no SQLite row, no git note
-//! (c) Clean input     → succeeds, SQLite row written, git note written
-//!                       (store_in_git_notes = true, the default)
-//! (d) Clean input, store_in_git_notes = false → succeeds, SQLite row written,
-//!                                               no git note attempted
-//!
-//! The `store_in_git_notes` git-notes path requires a git repo; tests that
-//! exercise it run inside a temporary `git init` directory.  Tests that only
-//! check the error/SQLite side can use a plain temp dir.
-//!
-//! (a) and (b) also guard the divergence from the git-commit harvest, which
-//! applies the same scanner but skips the matching commit and continues the
-//! walk (`git_harvest_tests/harvest_secret_scan.rs`).  Aborting is right here
-//! because one `add` is one entry; homogenising the two would make a single
-//! old credential in commit #40 of 4000 abandon the other 3960.
+// Integration tests for the secret-scan gate on `inkentry memory add` (issue #344).
+//
+// Acceptance criteria tested:
+// (a) Secret in body  → exits non-zero, no SQLite row, no git note
+// (b) Secret in title → exits non-zero, no SQLite row, no git note
+// (c) Clean input     → succeeds, SQLite row written, git note written
+//                       (store_in_git_notes = true, the default)
+// (d) Clean input, store_in_git_notes = false → succeeds, SQLite row written,
+//                                               no git note attempted
+//
+// The `store_in_git_notes` git-notes path requires a git repo; tests that
+// exercise it run inside a temporary `git init` directory.  Tests that only
+// check the error/SQLite side can use a plain temp dir.
+//
+// (a) and (b) also guard the divergence from the git-commit harvest, which
+// applies the same scanner but skips the matching commit and continues the
+// walk (`git_harvest_tests/harvest_secret_scan.rs`).  Aborting is right here
+// because one `add` is one entry; homogenising the two would make a single
+// old credential in commit #40 of 4000 abandon the other 3960.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin};
@@ -28,8 +28,8 @@ use tempfile::TempDir;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/// Write a minimal inkentry config that points at a fresh memory DB.
-/// Set `store_in_git_notes = true` or `false` via the `git_notes` arg.
+// Write a minimal inkentry config that points at a fresh memory DB.
+// Set `store_in_git_notes = true` or `false` via the `git_notes` arg.
 fn write_config(dir: &Path, mem_db: &Path, git_notes: bool) -> PathBuf {
     let content = format!(
         concat!(
@@ -44,7 +44,7 @@ fn write_config(dir: &Path, mem_db: &Path, git_notes: bool) -> PathBuf {
     cfg
 }
 
-/// Build `inkentry --config <cfg> memory --db <mem_db> add --kind note …` command.
+// Build `inkentry --config <cfg> memory --db <mem_db> add --kind note …` command.
 fn memory_add_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
     let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
@@ -61,7 +61,7 @@ fn memory_add_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
     cmd
 }
 
-/// Count memory rows in `mem_db`.  Returns 0 if the DB doesn't exist yet.
+// Count memory rows in `mem_db`.  Returns 0 if the DB doesn't exist yet.
 fn row_count(mem_db: &Path) -> i64 {
     if !mem_db.exists() {
         return 0;
