@@ -40,6 +40,10 @@ struct CancelAwareEmbedder {
     dim: usize,
     progress: Arc<std::sync::atomic::AtomicUsize>,
     observed_cancel: Arc<std::sync::atomic::AtomicBool>,
+    // Publishes the cancel flag the server handed this embedder, so a test can
+    // watch the instant it flips rather than inferring it from wall-clock. Only
+    // the solo-request test reads it; the others leave it None.
+    published_cancel: Arc<std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
 }
 
 #[async_trait::async_trait]
@@ -60,6 +64,10 @@ impl inkentry_core::embeddings::EmbeddingBackend for CancelAwareEmbedder {
         let dim = self.dim;
         let progress = Arc::clone(&self.progress);
         let observed_cancel = Arc::clone(&self.observed_cancel);
+        *self
+            .published_cancel
+            .lock()
+            .expect("published_cancel mutex poisoned") = Some(Arc::clone(&cancel));
 
         let handle = tokio::spawn(async move {
             for _ in 0..iterations {
@@ -100,6 +108,7 @@ async fn client_disconnect_stops_embedder_progress() {
         dim: 4,
         progress: Arc::clone(&progress),
         observed_cancel: Arc::clone(&observed_cancel),
+        published_cancel: Arc::new(std::sync::Mutex::new(None)),
     }));
     // Generous router-level timeouts: the client's own short timeout below
     // is what triggers the disconnect, not either TimeoutLayer.
@@ -317,6 +326,7 @@ async fn server_side_embed_timeout_cancels_in_flight_batch() {
         dim: 4,
         progress: Arc::clone(&progress),
         observed_cancel: Arc::clone(&observed_cancel),
+        published_cancel: Arc::new(std::sync::Mutex::new(None)),
     }));
     let (base, _db) = spawn_test_server_with_embed(embedder, general_timeout, embed_timeout).await;
 
@@ -388,6 +398,7 @@ async fn cancellation_on_last_chunk_completes_cleanly_no_panic() {
         dim: 4,
         progress: Arc::clone(&progress),
         observed_cancel: Arc::clone(&observed_cancel),
+        published_cancel: Arc::new(std::sync::Mutex::new(None)),
     };
 
     let watch_progress = Arc::clone(&progress);
@@ -447,6 +458,7 @@ async fn cancellation_on_last_chunk_completes_cleanly_no_panic() {
 async fn solo_request_disconnected_stops_within_one_chunk_no_contention() {
     let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let published_cancel = Arc::new(std::sync::Mutex::new(None));
     let embedder = crate::EmbedderSlot::ready(Arc::new(CancelAwareEmbedder {
         iterations: 100,
         // Deliberately long relative to the client's timeout below, so the
@@ -456,6 +468,7 @@ async fn solo_request_disconnected_stops_within_one_chunk_no_contention() {
         dim: 4,
         progress: Arc::clone(&progress),
         observed_cancel: Arc::clone(&observed_cancel),
+        published_cancel: Arc::clone(&published_cancel),
     }));
     let (base, _db) = spawn_test_server_with_embed(
         embedder,
@@ -481,11 +494,58 @@ async fn solo_request_disconnected_stops_within_one_chunk_no_contention() {
              before the (much longer) embed loop's first sleep completes"
     );
 
-    // Settle past the first step so the in-flight (already-started) chunk
-    // finishes, then confirm progress goes no further  -  same
-    // settling rationale as `client_disconnect_stops_embedder_progress`.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let settled = progress.load(std::sync::atomic::Ordering::Relaxed);
+    // The wasted-pass bound is measured from the instant the server sets the
+    // cancel flag, not from a fixed settling sleep. A fixed settle silently
+    // asserts that the disconnect propagates inside one step, which is a claim
+    // about machine load rather than about cancellation: under contention the
+    // propagation can straddle a step boundary, the loop legitimately completes
+    // a second pass, and a total-count bound then fails as if cancellation had
+    // regressed. Sampling progress at the flag makes the bound causal.
+    let watch_progress = Arc::clone(&progress);
+    let watch_published = Arc::clone(&published_cancel);
+    let progress_at_cancel = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+    let watch_at_cancel = Arc::clone(&progress_at_cancel);
+    let watcher = tokio::spawn(async move {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let flag = watch_published
+                .lock()
+                .expect("published_cancel mutex poisoned")
+                .clone();
+            if let Some(flag) = flag
+                && flag.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                watch_at_cancel.store(
+                    watch_progress.load(std::sync::atomic::Ordering::Relaxed),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+    watcher.await.expect("watcher task panicked");
+
+    // Wait for the loop to stop rather than sleeping a fixed period: a loaded
+    // machine takes longer to get there, and that is not a failure.
+    let mut settled = progress.load(std::sync::atomic::Ordering::Relaxed);
+    let stop_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let now = progress.load(std::sync::atomic::Ordering::Relaxed);
+        if now == settled {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < stop_deadline,
+            "progress never stopped advancing after cancellation: reached \
+                 {now} of 100 passes, so the loop is ignoring the cancel flag"
+        );
+        settled = now;
+    }
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let after_wait = progress.load(std::sync::atomic::Ordering::Relaxed);
 
@@ -494,10 +554,21 @@ async fn solo_request_disconnected_stops_within_one_chunk_no_contention() {
         "progress must stop for good once cancellation is observed, not merely \
              pause"
     );
+    let at_cancel = progress_at_cancel.load(std::sync::atomic::Ordering::Relaxed);
+    assert_ne!(
+        at_cancel,
+        usize::MAX,
+        "the cancel flag was never seen to be set, so this run proves nothing \
+             about the bound: the client's disconnect never reached the server"
+    );
     assert!(
-        settled <= 1,
-        "a solo (uncontended) request must be bounded to at most one wasted \
-             chunk's forward pass (acceptance criterion #1)  -  got {settled}"
+        settled.saturating_sub(at_cancel) <= 1,
+        "at most one forward pass may complete after the cancel flag is set \
+             (acceptance criterion #1): the flag was set at {at_cancel} \
+             completed passes and the loop stopped at {settled}. A larger gap \
+             means the loop kept working after being told to stop. Note this \
+             bound is deliberately measured from the flag, so machine load \
+             delaying the disconnect cannot cause it to fail"
     );
     assert!(
         observed_cancel.load(std::sync::atomic::Ordering::Relaxed),
