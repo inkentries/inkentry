@@ -130,14 +130,25 @@ Error: this memory store was written by an older product (schema version 10) and
 
 The store isn't touched — same bytes before and after.
 
-**Search goes silent, not an error.** `inkentry search` exits `0` with `No
-results found.` `inkentry status` shows `Files: 0 / Chunks: 0 / Embeddings:
-0` alongside intact usage history — that combination means a rebuilt index,
-not a missing one. `RUST_LOG=warn inkentry index .` logs the rebuild:
+**The index is rebuilt empty, and says so.** The first command to open an
+`index.db` this build cannot read discards it and recreates it at the current
+schema, keeping the recorded usage history. That run prints:
 
 ```
-WARN inkentry_core::storage::db: index.db was written by an older schema and cannot be read by this build; rebuilding it empty. Run `inkentry index` to repopulate it. found_version=15 carried_usage_rows=2
+notice: this index was written by schema version 15 and cannot be read by this build, so it was rebuilt empty (recorded usage history was kept). Run `inkentry index .` to repopulate it.
 ```
+
+Until you reindex, the emptiness stays attributed rather than looking like an
+empty repository. `inkentry search` exits `0` as before, but the line names
+the cause:
+
+```
+No results found (the index was rebuilt from schema version 15 and not reindexed since, so it holds nothing; run `inkentry index .`).
+```
+
+`inkentry status` says the same next to its zeros, and
+`inkentry status --format json` carries it as `index_rebuilt_from` (the
+discarded version, or `null`). Both go quiet once `inkentry index .` has run.
 
 Fix: `inkentry index .` — which you were going to run anyway.
 

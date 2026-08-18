@@ -27,7 +27,36 @@ pub(crate) fn open_project_db(
         );
     }
     let database = Database::open(&db_path)?;
+    announce_index_rebuild(&database);
     Ok((db_path, database))
+}
+
+/// How to name the schema a rebuild discarded. Version `0` is an index from
+/// before `user_version` was stamped at all, so there is no number to print.
+pub(crate) fn replaced_schema(found: i32) -> String {
+    if found == 0 {
+        "an older, unstamped schema".to_string()
+    } else {
+        format!("schema version {found}")
+    }
+}
+
+/// State the rebuild on the run that performed it.
+///
+/// [`Database::rebuilt_from`] is `None` on every other open, so a normal run
+/// prints nothing. Stderr, not the log: the rebuild's `tracing::warn!` sits
+/// below the CLI's default `error` filter, and raising that filter would
+/// surface every unrelated warning in the workspace with it.
+pub(crate) fn announce_index_rebuild(db: &Database) {
+    let Some(found) = db.rebuilt_from() else {
+        return;
+    };
+    eprintln!(
+        "notice: this index was written by {} and cannot be read by this build, so it was \
+         rebuilt empty (recorded usage history was kept). Run `inkentry index .` to \
+         repopulate it.",
+        replaced_schema(found)
+    );
 }
 
 /// Build a `ServerInferenceClient` from config, returning an error if

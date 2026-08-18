@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 /// Methods are implemented across sub-modules in the `storage` package.
 pub struct Database {
     pub(super) conn: Connection,
+    rebuilt_from: Option<i32>,
 }
 
 /// Version stamped into `PRAGMA user_version` by [`Database::open`].
@@ -35,6 +36,18 @@ const _: () = assert!(
      from an older build is misread as one from a newer build"
 );
 
+/// `index_meta` key recording that the file the caller is holding is one
+/// [`Database::rebuild`] emptied, and which version it replaced.
+///
+/// The in-memory [`Database::rebuilt_from`] only reaches the run that did the
+/// rebuild; every run after it opens a file that is merely empty. Without a
+/// durable record, "emptied by a rebuild" and "never indexed" are the same
+/// store, which is what made a rebuilt index read as an empty repository.
+///
+/// [`Database::mark_reindexed`] removes it, so the marker means "not
+/// repopulated since", not "was rebuilt once".
+const REBUILT_FROM_KEY: &str = "rebuilt_from_version";
+
 impl Database {
     /// Open (or create) the database at `path` and run all migrations.
     ///
@@ -50,9 +63,51 @@ impl Database {
             .with_context(|| format!("opening database at {}", path.display()))?;
         Self::apply_connection_pragmas(&conn)?;
 
-        let mut db = Self { conn };
+        let mut db = Self {
+            conn,
+            rebuilt_from: None,
+        };
         db.create_schema(path)?;
         Ok(db)
+    }
+
+    /// The schema version this open discarded, on the one run that discarded
+    /// it, or `None` on an open that changed nothing. A caller with a user in
+    /// front of it says so here; the `tracing::warn!` [`rebuild`](Self::rebuild)
+    /// also emits is below the CLI's default filter and reaches nobody.
+    pub fn rebuilt_from(&self) -> Option<i32> {
+        self.rebuilt_from
+    }
+
+    /// The version a rebuild replaced, while the index it left behind still
+    /// holds nothing a reindex would put back. `None` on an index no rebuild
+    /// touched, and once [`mark_reindexed`](Self::mark_reindexed) has run.
+    ///
+    /// This is what separates an emptied index from one that was never built,
+    /// on every run after the rebuild rather than only on the rebuild itself.
+    pub fn unpopulated_since_rebuild(&self) -> Result<Option<i32>> {
+        let recorded: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM index_meta WHERE key = ?1",
+                rusqlite::params![REBUILT_FROM_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("reading the index rebuild marker")?;
+        Ok(recorded.and_then(|v| v.parse().ok()))
+    }
+
+    /// Drop the rebuild marker: an index run has been through this store, so
+    /// whatever it holds now is what the source tree produced.
+    pub fn mark_reindexed(&self) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM index_meta WHERE key = ?1",
+                rusqlite::params![REBUILT_FROM_KEY],
+            )
+            .context("clearing the index rebuild marker")?;
+        Ok(())
     }
 
     /// Per-connection settings, applied on every connection this type opens —
@@ -137,6 +192,13 @@ impl Database {
         Self::apply_connection_pragmas(&self.conn)?;
         self.create_fresh()?;
         self.write_usage(&carried)?;
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?1, ?2)",
+                rusqlite::params![REBUILT_FROM_KEY, found.to_string()],
+            )
+            .context("recording the index rebuild marker")?;
+        self.rebuilt_from = Some(found);
         Ok(())
     }
 
@@ -600,6 +662,97 @@ mod tests {
     }
 
     #[test]
+    fn a_rebuild_names_the_version_it_replaced_on_the_run_that_replaced_it() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        legacy_index_at(&path, 15);
+
+        let db = Database::open(&path).expect("open");
+
+        assert_eq!(
+            db.rebuilt_from(),
+            Some(15),
+            "the run that discarded an index must be able to say so; a tracing::warn! \
+             below the CLI's default filter reaches nobody"
+        );
+    }
+
+    #[test]
+    fn a_normal_open_of_a_current_index_reports_nothing() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+
+        let db = Database::open(&path).expect("first open");
+        assert_eq!(db.rebuilt_from(), None);
+        assert_eq!(db.unpopulated_since_rebuild().unwrap(), None);
+        drop(db);
+
+        let db = Database::open(&path).expect("second open");
+        assert_eq!(db.rebuilt_from(), None);
+        assert_eq!(db.unpopulated_since_rebuild().unwrap(), None);
+    }
+
+    #[test]
+    fn a_rebuilt_index_still_says_it_was_emptied_on_later_opens() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        legacy_index_at(&path, 15);
+        drop(Database::open(&path).expect("rebuilding open"));
+
+        let db = Database::open(&path).expect("later open");
+
+        assert_eq!(
+            db.rebuilt_from(),
+            None,
+            "a later open rebuilds nothing and must not claim to"
+        );
+        assert_eq!(
+            db.unpopulated_since_rebuild().unwrap(),
+            Some(15),
+            "the search that meets the emptiness is a later run than the rebuild, so \
+             the fact has to outlive the handle that produced it"
+        );
+    }
+
+    // The tell this replaces was "no files, but usage rows survived". Usage
+    // accrues on every `search`, so a store that was init'd over a tree with
+    // nothing indexable and then searched wears the same signature without any
+    // rebuild ever happening.
+    #[test]
+    fn an_index_that_was_never_rebuilt_is_not_reported_as_emptied() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+        db.record_usage("search");
+        db.record_usage("search");
+
+        assert_eq!(db.stats().unwrap().file_count, 0);
+        assert_eq!(db.unpopulated_since_rebuild().unwrap(), None);
+    }
+
+    #[test]
+    fn reindexing_clears_the_rebuild_marker() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        legacy_index_at(&path, 15);
+
+        let db = Database::open(&path).expect("open");
+        assert_eq!(db.unpopulated_since_rebuild().unwrap(), Some(15));
+        db.mark_reindexed().expect("mark reindexed");
+        drop(db);
+
+        let db = Database::open(&path).expect("reopen");
+        assert_eq!(
+            db.unpopulated_since_rebuild().unwrap(),
+            None,
+            "the marker means `not repopulated since`, so a reindex has to retire it"
+        );
+    }
+
+    #[test]
     fn an_index_predating_the_stamp_is_rebuilt_rather_than_read_as_fresh() {
         register_sqlite_vec();
         let tmp = tempfile::tempdir().unwrap();
@@ -1049,7 +1202,10 @@ mod tests {
         // virtual table the open transaction is writing into. `Database` opens
         // its own connection, so build a second `Database` over the reader's
         // (already-migrated) file rather than a raw `Connection`.
-        let reader_db = Database { conn: reader };
+        let reader_db = Database {
+            conn: reader,
+            rebuilt_from: None,
+        };
         reader_db
             .search_similar(&vec![0.2f32; crate::embeddings::EMBEDDING_DIM], 5)
             .expect(
