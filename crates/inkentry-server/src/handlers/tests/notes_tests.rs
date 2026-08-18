@@ -137,7 +137,9 @@ async fn add_note_oversized_body_returns_400() {
         "kind": "note",
         "title": "normal title",
         "body": "x".repeat(crate::handlers::MAX_BODY_LEN + 1),
-        "embedding": [1.0, 0.0, 0.0, 0.0],
+        "vector": [1.0, 0.0, 0.0, 0.0],
+        "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+        "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
     });
     let req = Request::builder()
         .method("POST")
@@ -245,7 +247,9 @@ async fn add_note_body_at_exact_cap_returns_201() {
         "kind": "note",
         "title": "normal title",
         "body": "x".repeat(crate::handlers::MAX_BODY_LEN),
-        "embedding": [1.0, 0.0, 0.0, 0.0],
+        "vector": [1.0, 0.0, 0.0, 0.0],
+        "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+        "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
     });
     let req = Request::builder()
         .method("POST")
@@ -288,7 +292,9 @@ async fn add_note_body_one_over_cap_returns_400() {
         "kind": "note",
         "title": "normal title",
         "body": "x".repeat(crate::handlers::MAX_BODY_LEN + 1),
-        "embedding": [1.0, 0.0, 0.0, 0.0],
+        "vector": [1.0, 0.0, 0.0, 0.0],
+        "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+        "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
     });
     let req = Request::builder()
         .method("POST")

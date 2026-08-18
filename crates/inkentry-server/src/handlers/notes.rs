@@ -10,8 +10,8 @@ use utoipa::ToSchema;
 use crate::{AppError, AppState, ErrorBody};
 
 use super::{
-    embed_for_storage, require_embedder, require_project, validate_embedding_dim,
-    validate_project_slug, validate_title_body,
+    embed_for_storage, require_embedder, require_project, validate_project_slug,
+    validate_pushed_vector, validate_title_body,
 };
 
 // ── Request / Response types ──────────────────────────────────────────────────
@@ -29,10 +29,16 @@ pub struct AddNoteRequest {
     /// Source file paths this entry is linked to.
     #[serde(default)]
     pub linked_files: Vec<String>,
-    /// Pre-computed embedding vector from the client. Optional: if omitted and the
-    /// server's embedder is ready, the server embeds the entry.
-    /// If neither is available, the entry is stored without a vector (text search only).
-    pub embedding: Option<Vec<f32>>,
+    /// Locally-computed embedding vector from the client. Optional: if omitted
+    /// and the server's embedder is ready, the server embeds the entry.
+    /// If neither is available, the entry is stored without a vector (text
+    /// search only).
+    pub vector: Option<Vec<f32>>,
+    /// Model tag for a pushed `vector`. Required whenever `vector` is present.
+    pub vector_model: Option<String>,
+    /// Precision of a pushed `vector`; must be `fp32`. Required whenever
+    /// `vector` is present.
+    pub vector_precision: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -112,9 +118,10 @@ pub struct SupersedeRequest {
 
 /// Add a memory entry to a project. The project is auto-created on first write.
 ///
-/// The `embedding` field is optional. If omitted and the server's embedder is ready,
+/// The `vector` field is optional. If omitted and the server's embedder is ready,
 /// the server embeds the entry before storage. If neither is available, the
-/// entry is stored without a vector (text search only, no KNN).
+/// entry is stored without a vector (text search only, no KNN). A `vector` must
+/// arrive with its `vector_model` and `vector_precision`, or it is refused.
 ///
 /// Returns **201** on success. Returns **409** when the new entry is semantically
 /// close to one or more existing active entries (similarity ≥ conflict_threshold).
@@ -149,7 +156,12 @@ pub async fn add_note(
     validate_title_body(&body.title, &body.body)?;
     {
         let configured_dim = state.db.lock().await.embedding_dim;
-        validate_embedding_dim(body.embedding.as_deref(), configured_dim)?;
+        validate_pushed_vector(
+            body.vector.as_deref(),
+            body.vector_model.as_deref(),
+            body.vector_precision.as_deref(),
+            configured_dim,
+        )?;
     }
 
     // Reject entries that contain prompt-injection patterns.
@@ -178,7 +190,7 @@ pub async fn add_note(
     // Server-side embedding: embed the entry when no client vector is supplied.
     // Done before the DB lock is taken, under an admission permit: see
     // `embed_for_storage`.
-    let server_embedding: Option<Vec<f32>> = if body.embedding.is_none() {
+    let server_embedding: Option<Vec<f32>> = if body.vector.is_none() {
         let text = format!("title: {} | text: {}", body.title, body.body);
         embed_for_storage(&state, &[text.as_str()])
             .await?
@@ -187,7 +199,7 @@ pub async fn add_note(
         None
     };
 
-    let embedding = body.embedding.as_deref().or(server_embedding.as_deref());
+    let embedding = body.vector.as_deref().or(server_embedding.as_deref());
     let dim = embedding.map(|v| v.len()).unwrap_or(0);
 
     let db = state.db.lock().await;

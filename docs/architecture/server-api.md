@@ -88,6 +88,7 @@ Returns `200` JSON (unauthenticated: no bearer token required or attached):
   "instance_id": "550e8400-e29b-41d4-a716-446655440000",
   "started_by": 501,
   "embedding_dim": 896,
+  "accepts_pushed_vectors": true,
   "embedder": { "state": "ready" },
   "capabilities": [
     "memory",
@@ -109,7 +110,12 @@ capability-tiers.md). A server with no embedder and no LLM configured emits
 `["memory"]`. `embedder.state` is one of `ready`, `loading`, `unavailable`
 (terminal failure), or `disabled` (no embedder configured at all), present so
 a client can distinguish "still warming up" from "not configured" even before
-`capabilities` reflects readiness. `limits` (verified against `handlers.rs`)
+`capabilities` reflects readiness. `accepts_pushed_vectors` says whether this
+server will store a vector the client computed itself instead of re-embedding
+the text; it is `true` only while the embedder is ready, since the pushed
+vector is checked against that embedder's model and dimension. A client
+reading `false`, or an older server omitting the field, pushes text only.
+`limits` (verified against `handlers.rs`)
 advertises the server's own `/index/embed` sizing so a client can batch
 correctly against the server it's actually talking to; a server predating this
 field should be assumed to enforce the old blanket 30s request budget with no

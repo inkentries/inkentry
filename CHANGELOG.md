@@ -11,6 +11,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`GET /v1/health` advertises `accepts_pushed_vectors`.** A client that has
+  already embedded an entry locally can send that vector and skip server-side
+  embedding, but only against a server that says it accepts one. The flag is
+  ready-gated alongside `index.embed` and `search.semantic`: `true` only while
+  the embedder is ready with a known dimension, and `false` while it is loading,
+  unavailable or disabled. Absent on an older server, which a client reads as
+  `false` and pushes text only.
+
+  Until now no self-hosted server ever set it, so the client's whole
+  pushed-vector path was unreachable and every pushed entry was re-embedded on
+  arrival.
 - **Unified `search` over code and memory.** One `search` command returns code
   chunks and memory entries interleaved into a single ranked list, fused by
   reciprocal rank fusion on rank position alone (`RRF_K = 60`, code-before-memory
@@ -106,6 +117,22 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `plumbing push` accepts `--source <path>` and `--include-archived`.
 
 ### Changed
+
+- **BREAKING: the memory write routes take `vector` / `vector_model` /
+  `vector_precision` in place of a bare `embedding`.** `POST
+  /v1/projects/{id}/memory` and `POST /v1/projects/{id}/memory/batch` now use
+  the same three field names the hosted API already uses, so one client payload
+  means the same thing against either. **The old `embedding` name is removed
+  outright with no alias**: unknown fields are ignored on this wire, so a
+  request still sending it is accepted and the entry is embedded server-side as
+  if no vector had been supplied.
+
+  A vector must arrive with **both** its `vector_model` and `vector_precision`,
+  or the write is refused with `400`. An untagged vector cannot be checked
+  against what the server itself embeds with, and storing one would put a vector
+  of unknown provenance in the same index as the server's own. `vector_model`
+  must name the server's embedding model and `vector_precision` must be `fp32`;
+  the existing dimension check is unchanged.
 
 - **BREAKING: a store written by an older build is not opened in place, and there
   is no migration path.** Both schema ladders are gone, and the two stores answer
@@ -266,6 +293,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   whose binary has since been removed still exits 0 rather than failing the
   commit. Re-run `inkentry hooks install` to re-resolve a moved binary.
 
+- **Docs: memory did not "travel with the repo" by default, as the getting-started
+  guide and the README both claimed.** Publishing your own memory notes is opt-in
+  and needs `inkentry hooks install --pre-push`; only the fetch side is automatic.
+  Both documents now say so, and the getting-started guide documents `--pre-push`,
+  the two `.git/config` entries `init` writes, and the fact that the post-commit
+  hook's harvesting is inactive until an LLM is configured. Its team-setup section
+  now recommends `inkentry sync` over `inkentry plumbing push`, whose plumbing
+  exit code 1 on an empty delta made an already-synced run look like a failure.
+  The supported-language lists in the README and CLAUDE.md now state that
+  `inkentry languages` is build-dependent (`rich-formats` adds DOCX, spreadsheets
+  and PDF, and is on for every release binary).
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's

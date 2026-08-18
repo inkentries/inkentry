@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use super::backend::{MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note, NoteId};
-use crate::embeddings::blob_to_vec;
+use crate::embeddings::{PUSHED_VECTOR_PRECISION, blob_to_vec, pushed_vector_model_tag};
 
 mod cloud_api;
 mod peer;
@@ -99,14 +99,25 @@ impl RemoteMemoryBackend {
 #[async_trait]
 impl MemoryBackend for RemoteMemoryBackend {
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)> {
-        let embedding = input.embedding.as_deref().map(blob_to_vec);
+        let vector = input.embedding.as_deref().map(blob_to_vec);
+        // The tags only mean anything alongside a vector, and the accept side
+        // refuses a vector that arrives without them.
+        let (vector_model, vector_precision) = match vector {
+            Some(_) => (
+                Some(pushed_vector_model_tag().to_string()),
+                Some(PUSHED_VECTOR_PRECISION.to_string()),
+            ),
+            None => (None, None),
+        };
         let body = AddNoteRequest {
             kind: input.kind,
             title: input.title,
             body: input.body,
             tags: input.tags,
             linked_files: input.linked_files,
-            embedding,
+            vector,
+            vector_model,
+            vector_precision,
             source_ref: input.source_ref,
             valid_at: input.valid_at,
         };

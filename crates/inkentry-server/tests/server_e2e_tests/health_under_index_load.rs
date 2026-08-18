@@ -198,7 +198,9 @@ async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
             "kind": "note",
             "title": "seed",
             "body": "seed entry for the concurrent memory search probe",
-            "embedding": vec![0.0_f32; DIM],
+            "vector": vec![0.0_f32; DIM],
+            "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+            "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
         }))
         .send()
         .await

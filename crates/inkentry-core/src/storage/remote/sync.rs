@@ -23,9 +23,9 @@
 //! destination advertises the `accepts_pushed_vectors` capability the CLI MAY
 //! attach the locally-computed full-precision (fp32/896) vector it already
 //! holds, tagged with the model and precision the accept side validates. A
-//! server without the capability (an older server, or the OSS team server)
-//! never receives a vector and re-embeds — so text-only remains the universal
-//! fallback.
+//! server without the capability (an older server, or one whose embedder is
+//! not ready) never receives a vector and re-embeds, so text-only remains the
+//! universal fallback.
 
 use std::time::Duration;
 
@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use super::encode_project_id;
 use super::retry::{RetryPolicy, send_retrying_while_shed};
+use crate::embeddings::{PUSHED_VECTOR_PRECISION, pushed_vector_model_tag};
 
 /// Per-request timeout for the sync HTTP client. `POST /memory/batch` performs
 /// server-side embedding backfill, an inference-class operation: a cold embedder
@@ -44,23 +45,6 @@ use super::retry::{RetryPolicy, send_retrying_while_shed};
 /// since only a hung connection ever reaches it and a slow-but-progressing pull
 /// is no longer cut short at 30s.
 const SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// Precision tag sent alongside a client-pushed memory vector. Memory vectors
-/// cross to the cloud, so they are ALWAYS full-precision fp32 — never the
-/// int8/halfvec quantisation used for the local code index. The accept side
-/// rejects (4xx) any other precision, so it is never sent.
-const PUSHED_VECTOR_PRECISION: &str = "fp32";
-
-/// The `vector_model` tag a vector-accepting server validates for exact string
-/// equality. It is the model *family* portion of [`crate::embeddings::MODEL_ID`]
-/// (`"F2LLM-v2-330M@896"`) with the `@<dim>` suffix stripped — the dimension is
-/// carried by the fixed 896-dim contract, and the accept side compares only the
-/// family string (its own model constant has no `@<dim>` suffix). Deriving it
-/// from `MODEL_ID` keeps a single source of truth for the model identity.
-fn pushed_vector_model_tag() -> &'static str {
-    let id = crate::embeddings::MODEL_ID;
-    id.split('@').next().unwrap_or(id)
-}
 
 /// One entry pushed to `POST /memory/batch`.
 ///
@@ -99,8 +83,8 @@ impl BatchPushItem {
     /// Attach a locally-computed embedding to this item, gated on the
     /// destination server advertising `accepts_pushed_vectors`.
     ///
-    /// When `server_accepts_vectors` is false (an older server, or the OSS team
-    /// server) or `vector` is `None` (the local row has no embedding), the item
+    /// When `server_accepts_vectors` is false (an older server, or one whose
+    /// embedder is not ready) or `vector` is `None` (the local row has no embedding), the item
     /// is left text-only — the server re-embeds. When both hold, the fp32 vector
     /// is attached alongside its model tag and `vector_precision = "fp32"`, and
     /// the server stores it verbatim (no re-embed). Precision is ALWAYS fp32;
