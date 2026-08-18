@@ -14,6 +14,8 @@ mod backend_kind_diagnostic;
 mod cloud_first_slug_passthrough;
 #[path = "auth_llm_tests/command_llm_routing.rs"]
 mod command_llm_routing;
+#[path = "auth_llm_tests/hooks_install_llm_truthfulness.rs"]
+mod hooks_install_llm_truthfulness;
 #[path = "auth_llm_tests/inference_server_message.rs"]
 mod inference_server_message;
 #[path = "auth_llm_tests/llm_daemon_spawn_e2e.rs"]

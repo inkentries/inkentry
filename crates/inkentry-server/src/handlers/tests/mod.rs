@@ -14,6 +14,7 @@ mod health_tests;
 mod liveness_tests;
 mod llm_tests;
 mod notes_tests;
+mod repair_tests;
 mod search_tests;
 mod sync_tests;
 mod timeout_tests;

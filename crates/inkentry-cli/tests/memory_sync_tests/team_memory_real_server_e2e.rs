@@ -54,6 +54,7 @@ async fn spawn_real_server(db_path: &Path) -> String {
             inkentry_server::EMBED_QUEUE_CAPACITY,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
+        embed_threads: 4,
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: Arc::new(inkentry_server::rate_limiter::RateLimiter::new(1000, 60)),
@@ -61,6 +62,7 @@ async fn spawn_real_server(db_path: &Path) -> String {
         started_by: None,
         trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     };
     let app = inkentry_server::router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
