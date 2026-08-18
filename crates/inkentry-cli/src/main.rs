@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
         Command::Memory(args) => cli::cmd::memory(args, cfg).await,
         Command::Harvest(args) => cli::cmd::harvest(args, cfg).await,
         Command::Import(args) => cli::cmd::import(args, cfg).await,
-        Command::Hooks(args) => cli::cmd::hooks(args),
+        Command::Hooks(args) => cli::cmd::hooks(args, cfg).await,
         Command::Links(args) => cli::cmd::links(args, cfg).await,
         Command::Plumbing(args) => {
             if let Err(e) = cli::cmd::plumbing(args, cfg).await {

@@ -507,6 +507,12 @@ lenient_health_field!(
     "a non-negative integer number of tokens"
 );
 lenient_health_field!(
+    lenient_embed_threads,
+    Option<usize>,
+    "limits.embed_threads",
+    "a non-negative integer number of threads"
+);
+lenient_health_field!(
     lenient_accepts_pushed_vectors,
     bool,
     "accepts_pushed_vectors",
@@ -536,6 +542,8 @@ struct ServerLimitsBody {
     max_batch_chunks: Option<usize>,
     #[serde(default, deserialize_with = "lenient_embedder_token_cap")]
     embedder_token_cap: Option<usize>,
+    #[serde(default, deserialize_with = "lenient_embed_threads")]
+    embed_threads: Option<usize>,
 }
 
 impl From<ServerLimitsBody> for ServerLimits {
@@ -544,6 +552,7 @@ impl From<ServerLimitsBody> for ServerLimits {
             embed_request_timeout_secs: body.embed_request_timeout_secs,
             max_batch_chunks: body.max_batch_chunks,
             embedder_token_cap: body.embedder_token_cap,
+            embed_threads: body.embed_threads,
         }
     }
 }
@@ -960,6 +969,7 @@ mod tests {
                 inkentry_server::EMBED_QUEUE_CAPACITY,
                 inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
             ),
+            embed_threads: 4,
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(
@@ -1050,6 +1060,7 @@ mod tests {
             "embed_request_timeout_secs": 1800,
             "max_batch_chunks": 256,
             "embedder_token_cap": 5792,
+            "embed_threads": 1,
         });
         Mock::given(method("GET"))
             .and(path("/v1/health"))
@@ -1066,6 +1077,12 @@ mod tests {
         assert_eq!(limits.embed_request_timeout_secs, Some(1800));
         assert_eq!(limits.max_batch_chunks, Some(256));
         assert_eq!(limits.embedder_token_cap, Some(5792));
+        assert_eq!(
+            limits.embed_threads,
+            Some(1),
+            "a single-threaded budget must reach the CLI, since that is the one \
+             value status turns into advice"
+        );
     }
 
     // A server that does NOT advertise `limits` (pre-dates the field) must

@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use std::path::Path;
 
+use crate::{capability, config::Config};
+
 #[derive(Args, Debug)]
 pub struct HooksArgs {
     #[command(subcommand)]
@@ -28,26 +30,36 @@ pub struct HooksInstallArgs {
     pub ci: bool,
 }
 
-pub fn hooks(args: HooksArgs) -> Result<()> {
+pub async fn hooks(args: HooksArgs, cfg: Config) -> Result<()> {
     match args.command {
-        HooksCommand::Install(a) => hooks_install(a),
+        HooksCommand::Install(a) => hooks_install(a, &cfg).await,
         HooksCommand::Uninstall => hooks_uninstall(),
     }
 }
 
-const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
-# inkentry post-commit hook — installed by `inkentry hooks install`
+/// The post-commit hook. `{inkentry}` is substituted with the shell-quoted
+/// absolute path of this binary by [`post_commit_hook_body`].
+const POST_COMMIT_HOOK_TEMPLATE: &str = r#"#!/bin/sh
+# inkentry post-commit hook (installed by `inkentry hooks install`)
 # Keeps the inkentry index in sync and harvests memory from new commits.
-# Silently skips if `inkentry` is not in PATH, so teammates without inkentry are unaffected.
+#
+# The path below is absolute rather than a PATH lookup: a source build or a
+# custom install directory is not on PATH at all, and GUI git clients on macOS
+# inherit their environment from launchd rather than from your shell profile.
+# Re-run `inkentry hooks install` after moving the binary to re-resolve it.
+#
+# Skipping when that path holds nothing executable is what keeps a commit from
+# ever failing here. Teammates are unaffected because git does not clone hooks,
+# so this file only exists for whoever installed it.
 
-if ! command -v inkentry >/dev/null 2>&1; then
-  exit 0
-fi
+INKENTRY={inkentry}
+
+[ -x "$INKENTRY" ] || exit 0
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 
-inkentry index "$PROJECT_ROOT" --detach
-inkentry harvest --git-range HEAD~1..HEAD --detach
+"$INKENTRY" index "$PROJECT_ROOT" --detach
+"$INKENTRY" harvest --git-range HEAD~1..HEAD --detach
 "#;
 
 /// The pre-push shim. `{inkentry}` is substituted with the shell-quoted absolute
@@ -117,6 +129,17 @@ fn sh_quoted(path: &Path) -> String {
 fn pre_push_hook_body() -> Result<String> {
     let exe = std::env::current_exe().context("resolving the path of the inkentry binary")?;
     Ok(PRE_PUSH_HOOK_TEMPLATE.replace("{inkentry}", &sh_quoted(&exe)))
+}
+
+/// The post-commit hook, with `exe`'s shell-quoted path embedded.
+fn post_commit_hook_body_for(exe: &Path) -> String {
+    POST_COMMIT_HOOK_TEMPLATE.replace("{inkentry}", &sh_quoted(exe))
+}
+
+/// The post-commit hook, with this binary's resolved absolute path embedded.
+fn post_commit_hook_body() -> Result<String> {
+    let exe = std::env::current_exe().context("resolving the path of the inkentry binary")?;
+    Ok(post_commit_hook_body_for(&exe))
 }
 
 /// Whether inkentry's own pre-push hook is installed in the repo holding `dir`.
@@ -269,7 +292,7 @@ fn write_hook(dir: &Path, spec: &HookSpec, body: &str) -> Result<Installed> {
     })
 }
 
-fn hooks_install(args: HooksInstallArgs) -> Result<()> {
+async fn hooks_install(args: HooksInstallArgs, cfg: &Config) -> Result<()> {
     if args.ci {
         print!("{CI_STEP}");
         return Ok(());
@@ -278,22 +301,36 @@ fn hooks_install(args: HooksInstallArgs) -> Result<()> {
     if args.pre_push {
         return install_pre_push();
     }
-    install_post_commit()
+    install_post_commit(cfg).await
 }
 
 /// Install the post-commit hook in the repo at `dir`. Exposed so `inkentry
 /// init --hook` shares this resolution logic rather than re-implementing it
 /// against a hardcoded `$GIT_DIR/hooks`.
 pub(crate) fn install_post_commit_hook(dir: &Path) -> Result<Installed> {
-    write_hook(dir, &POST_COMMIT, POST_COMMIT_HOOK)
+    write_hook(dir, &POST_COMMIT, &post_commit_hook_body()?)
 }
 
 fn cwd() -> Result<std::path::PathBuf> {
     std::env::current_dir().context("getting current directory")
 }
 
-fn install_post_commit() -> Result<()> {
-    match install_post_commit_hook(&cwd()?)? {
+/// What the install prints instead of leaving the harvest promise unqualified.
+///
+/// The guidance itself is [`capability::no_llm_message`], the same text
+/// `harvest` fails with, so the two cannot drift; only the framing that makes
+/// it read as a caveat rather than a failure belongs here.
+fn harvest_inactive_notice(reason: capability::NoLlmReason) -> String {
+    format!(
+        "Harvesting stays inactive until an LLM is reachable; indexing still runs on \
+         every commit. Configuring one later needs no reinstall.\n{}",
+        capability::no_llm_message(reason)
+    )
+}
+
+async fn install_post_commit(cfg: &Config) -> Result<()> {
+    let dir = cwd()?;
+    match install_post_commit_hook(&dir)? {
         Installed::AlreadyPresent(p) => {
             println!("Hook already installed at {}", p.display());
             return Ok(());
@@ -304,6 +341,16 @@ fn install_post_commit() -> Result<()> {
     println!("After each commit, inkentry will:");
     println!("  - Re-index the project");
     println!("  - Harvest memory from the new commit");
+    // Harvest is the only LLM-backed feature and the hook runs it detached, so
+    // an install that stays silent here promises something the user would never
+    // see fail.
+    if let Some(reason) = capability::resolve_llm_route(cfg, &dir).await.reason() {
+        println!("{}", harvest_inactive_notice(reason));
+    }
+    println!(
+        "Failures from either run are recorded in {}.",
+        super::helpers::BACKGROUND_LOG_NAME
+    );
     println!("Teammates without inkentry installed are unaffected.");
     Ok(())
 }
@@ -375,11 +422,11 @@ mod tests {
     #[test]
     fn post_commit_hook_runs_the_top_level_harvest_command() {
         assert!(
-            POST_COMMIT_HOOK.contains("inkentry harvest --git-range HEAD~1..HEAD --detach"),
+            POST_COMMIT_HOOK_TEMPLATE.contains("harvest --git-range HEAD~1..HEAD --detach"),
             "post-commit hook must call the top-level harvest command"
         );
         assert!(
-            !POST_COMMIT_HOOK.contains("inkentry memory harvest"),
+            !POST_COMMIT_HOOK_TEMPLATE.contains("memory harvest"),
             "post-commit hook must not use the deprecated subcommand spelling"
         );
     }
@@ -423,7 +470,7 @@ mod tests {
         );
         let body = std::fs::read_to_string(&hook_path).unwrap();
         assert!(
-            body.contains("inkentry harvest --git-range HEAD~1..HEAD --detach"),
+            body.contains("harvest --git-range HEAD~1..HEAD --detach"),
             "the rewritten hook must call the top-level command: {body}"
         );
         assert!(
@@ -454,6 +501,175 @@ mod tests {
             std::fs::read_to_string(&hook_path).unwrap(),
             foreign,
             "the foreign hook body must be left untouched"
+        );
+    }
+
+    // A stand-in for the inkentry binary that records how it was invoked, at a
+    // location no PATH lookup can reach.
+    #[cfg(unix)]
+    fn recording_binary(dir: &Path, log: &Path) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let bin = dir.join("inkentry");
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", sh_quoted(log)),
+        )
+        .unwrap();
+        set_executable(&bin);
+        bin
+    }
+
+    #[cfg(unix)]
+    fn set_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    // A PATH holding git and nothing else: the hook still needs `git
+    // rev-parse`, but must not be able to find any inkentry through it.
+    #[cfg(unix)]
+    fn path_with_git_only() -> String {
+        let out = std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("locate git");
+        let git = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        Path::new(&git)
+            .parent()
+            .expect("git has a directory")
+            .display()
+            .to_string()
+    }
+
+    // Run an installed hook the way git does: executed directly, from the work
+    // tree, with no arguments.
+    #[cfg(unix)]
+    fn run_hook(hook: &Path, dir: &Path) -> std::process::ExitStatus {
+        std::process::Command::new(hook)
+            .current_dir(dir)
+            .env("PATH", path_with_git_only())
+            .status()
+            .expect("run the hook")
+    }
+
+    #[cfg(unix)]
+    fn write_post_commit_hook(dir: &Path, body: &str) -> std::path::PathBuf {
+        let hooks_dir = resolve_hooks_dir(dir).unwrap();
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook = hooks_dir.join(POST_COMMIT.name);
+        std::fs::write(&hook, body).unwrap();
+        set_executable(&hook);
+        hook
+    }
+
+    // The defect this replaces: the hook probed PATH for a bare `inkentry`, so
+    // every source build and every custom install directory ran nothing at all.
+    #[cfg(unix)]
+    #[test]
+    fn the_post_commit_hook_runs_a_binary_that_is_not_on_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        let log = dir.join("invocations.txt");
+        let exe = recording_binary(&dir.join("not-on-path"), &log);
+        let hook = write_post_commit_hook(&dir, &post_commit_hook_body_for(&exe));
+
+        assert!(run_hook(&hook, &dir).success(), "the hook must exit 0");
+
+        let recorded = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            recorded.contains("index "),
+            "the hook must re-index through the embedded binary: {recorded:?}"
+        );
+        assert!(
+            recorded.contains("harvest --git-range HEAD~1..HEAD --detach"),
+            "the hook must harvest through the embedded binary: {recorded:?}"
+        );
+    }
+
+    // The caveat frames the guidance; it must never restate it, or the install
+    // and the failure a user eventually hits would give different remedies.
+    #[test]
+    fn the_caveat_carries_the_shared_no_llm_guidance_verbatim() {
+        for reason in [
+            capability::NoLlmReason::Offline,
+            capability::NoLlmReason::LocalConfiguredButNotServed,
+            capability::NoLlmReason::NoLlmAnywhere,
+        ] {
+            let notice = harvest_inactive_notice(reason);
+            assert!(
+                notice.contains(&capability::no_llm_message(reason)),
+                "the caveat must carry the shared text verbatim: {notice}"
+            );
+        }
+    }
+
+    // Both hooks embed the same binary through the same quoting, so a path with
+    // a space, a quote or a backslash cannot work in one and break in the other.
+    #[test]
+    fn both_hooks_embed_the_path_through_the_shared_quoting_helper() {
+        let exe = std::env::current_exe().unwrap();
+        let quoted = sh_quoted(&exe);
+        let post_commit = post_commit_hook_body().expect("resolve current_exe");
+
+        assert!(
+            post_commit.contains(&quoted),
+            "expected {quoted} in: {post_commit}"
+        );
+        assert!(
+            pre_push_hook_body().unwrap().contains(&quoted),
+            "the two hooks must embed the identical quoted path"
+        );
+        assert!(
+            !post_commit.contains("{inkentry}"),
+            "placeholder left unsubstituted: {post_commit}"
+        );
+        assert!(
+            !post_commit.contains("command -v"),
+            "the hook must not look inkentry up on PATH: {post_commit}"
+        );
+    }
+
+    // The silent skip is deliberate: it must survive the move to an embedded
+    // path, so a binary that has since been deleted still costs nobody a commit.
+    #[cfg(unix)]
+    #[test]
+    fn a_post_commit_hook_whose_binary_is_gone_does_not_fail_the_commit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        let gone = dir.join("uninstalled").join("inkentry");
+        let hook = write_post_commit_hook(&dir, &post_commit_hook_body_for(&gone));
+
+        assert!(
+            run_hook(&hook, &dir).success(),
+            "a missing binary must exit 0, not fail the commit"
+        );
+
+        std::fs::write(dir.join("g.txt"), "y").unwrap();
+        assert!(
+            commit_all(&dir).success(),
+            "the commit itself must still succeed"
+        );
+    }
+
+    // The loud 127 on a moved binary is the pre-push hook's intended behaviour:
+    // a push that silently stops publishing is worse than one that stops. So the
+    // post-commit skip must not follow the shared path helper into the shim.
+    #[test]
+    fn the_pre_push_hook_keeps_failing_loudly_on_a_missing_binary() {
+        let statements: Vec<&str> = PRE_PUSH_HOOK_TEMPLATE
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+
+        assert_eq!(
+            statements,
+            vec![r#"exec {inkentry} plumbing publish-notes --best-effort "$@" >/dev/null"#],
+            "the shim runs one command and guards nothing"
         );
     }
 
@@ -545,6 +761,26 @@ mod tests {
         std::fs::write(dir.join("f.txt"), "x").unwrap();
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "init"]);
+    }
+
+    // A commit that actually runs the installed post-commit hook, so its exit
+    // status is the commit's own.
+    #[cfg(unix)]
+    fn commit_all(dir: &Path) -> std::process::ExitStatus {
+        crate::cli::cmd::test_support::isolate_git_config();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .status()
+                .expect("run git")
+        };
+        assert!(run(&["add", "."]).success());
+        run(&["commit", "-q", "-m", "second"])
     }
 
     fn set_hooks_path(dir: &Path, path: &str) {

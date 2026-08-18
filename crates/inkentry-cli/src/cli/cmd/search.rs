@@ -98,6 +98,19 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     let as_of = crate::utils::dates::parse_as_of(args.as_of.as_deref())?;
     let mem_path = db_path.with_file_name("memory.db");
 
+    // Read the index's rebuild state before anything else opens it, so a run
+    // that rebuilds says so here and every later run can tell an emptied index
+    // from one that was never built. Guarded on the file existing because
+    // `Database::open` would otherwise create the very index a `--only-memory`
+    // search is entitled not to have.
+    let mut rebuilt_unpopulated: Option<i32> = None;
+    if db_path.exists()
+        && let Ok(db) = Database::open(&db_path)
+    {
+        super::helpers::announce_index_rebuild(&db);
+        rebuilt_unpopulated = db.unpopulated_since_rebuild().unwrap_or(None);
+    }
+
     // Fill in server_url/project_id from the auto-discovered loopback tier so the
     // inference client can be built. `get_inference_tier` (not `get_tier`):
     // local_first prefers the local embedder even with an explicit server_url.
@@ -287,6 +300,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             code_coverage,
             code_refresh_pending,
             memory_missing,
+            rebuilt_unpopulated,
         );
     }
 
@@ -442,6 +456,7 @@ fn print_empty(
     code_coverage: Option<(i64, i64)>,
     code_refresh_pending: i64,
     memory_missing: i64,
+    rebuilt_unpopulated: Option<i32>,
 ) -> Result<()> {
     match crate::utils::effective_format(&args.format) {
         "json" => {
@@ -460,12 +475,18 @@ fn print_empty(
             code_coverage,
             code_refresh_pending,
             memory_missing,
+            rebuilt_unpopulated,
         )
     );
     Ok(())
 }
 
 /// Build the empty-result message: bare when complete, qualified otherwise.
+///
+/// `rebuilt_unpopulated` is the version a rebuild discarded while the index it
+/// left behind is still empty. Unlike the coverage and freshness qualifiers it
+/// holds under `--only-text` too: full-text search over an emptied index finds
+/// nothing for the same reason semantic search does.
 fn empty_message(
     want_code: bool,
     want_memory: bool,
@@ -473,17 +494,26 @@ fn empty_message(
     code_coverage: Option<(i64, i64)>,
     code_refresh_pending: i64,
     memory_missing: i64,
+    rebuilt_unpopulated: Option<i32>,
 ) -> String {
     let code_partial =
         want_code && !only_text && matches!(code_coverage, Some((e, t)) if t > 0 && e < t);
     let code_stale = want_code && !only_text && code_refresh_pending > 0;
     let memory_partial = want_memory && !only_text && memory_missing > 0;
+    let rebuilt = if want_code { rebuilt_unpopulated } else { None };
 
-    if !code_partial && !code_stale && !memory_partial {
+    if !code_partial && !code_stale && !memory_partial && rebuilt.is_none() {
         return "No results found.".to_string();
     }
 
     let mut parts: Vec<String> = Vec::new();
+    if let Some(found) = rebuilt {
+        parts.push(format!(
+            "the index was rebuilt from {} and not reindexed since, so it holds nothing; \
+             run `inkentry index .`",
+            super::helpers::replaced_schema(found)
+        ));
+    }
     if let (true, Some((e, t))) = (code_partial, code_coverage) {
         parts.push(format!("code searchable {e}/{t} chunks"));
     }
@@ -786,7 +816,7 @@ mod tests {
     #[test]
     fn empty_message_is_bare_when_every_in_scope_corpus_is_complete() {
         // Full code coverage, fresh, no missing memory: bare line.
-        let m = empty_message(true, true, false, Some((100, 100)), 0, 0);
+        let m = empty_message(true, true, false, Some((100, 100)), 0, 0, None);
         assert_eq!(m, "No results found.");
     }
 
@@ -794,13 +824,13 @@ mod tests {
     fn empty_message_only_text_is_always_bare() {
         // FTS covers every chunk/note, so a text-only search's absence is
         // unqualified regardless of embedding coverage.
-        let m = empty_message(true, true, true, Some((0, 100)), 5, 9);
+        let m = empty_message(true, true, true, Some((0, 100)), 5, 9, None);
         assert_eq!(m, "No results found.");
     }
 
     #[test]
     fn empty_message_names_partial_code_coverage_and_fraction() {
-        let m = empty_message(true, true, false, Some((40, 100)), 0, 0);
+        let m = empty_message(true, true, false, Some((40, 100)), 0, 0, None);
         assert!(m.starts_with("No results found ("), "qualified: {m}");
         assert!(m.contains("40/100"), "names the fraction: {m}");
         assert_ne!(m, "No results found.");
@@ -809,7 +839,7 @@ mod tests {
     #[test]
     fn empty_message_names_pending_freshness_so_it_is_not_unqualified() {
         // Coverage 100% but a refresh is draining: never a bare absence.
-        let m = empty_message(true, true, false, Some((100, 100)), 3, 0);
+        let m = empty_message(true, true, false, Some((100, 100)), 3, 0, None);
         assert_ne!(m, "No results found.");
         assert!(m.contains("re-embedding"), "names refinement-pending: {m}");
         assert!(m.contains("rankings may still shift"), "{m}");
@@ -817,7 +847,7 @@ mod tests {
 
     #[test]
     fn empty_message_names_partial_memory() {
-        let m = empty_message(true, true, false, Some((100, 100)), 0, 2);
+        let m = empty_message(true, true, false, Some((100, 100)), 0, 2, None);
         assert_ne!(m, "No results found.");
         assert!(m.contains("2 memory entries not embedded yet"), "{m}");
     }
@@ -826,10 +856,46 @@ mod tests {
     fn empty_message_ignores_out_of_scope_corpus_incompleteness() {
         // --only-code: memory incompleteness is out of scope, so a full code
         // corpus still yields the bare line.
-        let m = empty_message(true, false, false, Some((100, 100)), 0, 7);
+        let m = empty_message(true, false, false, Some((100, 100)), 0, 7, None);
         assert_eq!(m, "No results found.");
         // --only-memory: partial code coverage is out of scope.
-        let m = empty_message(false, true, false, Some((0, 100)), 4, 0);
+        let m = empty_message(false, true, false, Some((0, 100)), 4, 0, None);
+        assert_eq!(m, "No results found.");
+    }
+
+    // ── empty_message: rebuilt-and-empty vs never-indexed ──────────────────────
+
+    #[test]
+    fn empty_message_names_a_rebuilt_index_that_was_never_repopulated() {
+        // A rebuilt index reads as complete on every other signal: zero chunks
+        // means zero missing embeddings and nothing pending, so the coverage
+        // qualifiers stay silent and the line was bare.
+        let m = empty_message(true, true, false, Some((0, 0)), 0, 0, Some(15));
+        assert_ne!(m, "No results found.");
+        assert!(m.contains("rebuilt from schema version 15"), "{m}");
+        assert!(m.contains("inkentry index ."), "names the fix: {m}");
+    }
+
+    #[test]
+    fn empty_message_names_a_rebuilt_index_under_only_text_too() {
+        // Full-text search over an emptied index finds nothing for the same
+        // reason semantic search does, so this qualifier is not embedding-shaped.
+        let m = empty_message(true, true, true, Some((0, 0)), 0, 0, Some(15));
+        assert!(m.contains("rebuilt from"), "{m}");
+    }
+
+    #[test]
+    fn empty_message_names_an_unstamped_rebuild_without_inventing_a_version() {
+        let m = empty_message(true, true, false, Some((0, 0)), 0, 0, Some(0));
+        assert!(m.contains("an older, unstamped schema"), "{m}");
+        assert!(!m.contains("version 0"), "no such schema version: {m}");
+    }
+
+    #[test]
+    fn empty_message_ignores_a_rebuilt_code_index_under_only_memory() {
+        // --only-memory never reads the code index, so its state cannot explain
+        // the absence.
+        let m = empty_message(false, true, false, None, 0, 0, Some(15));
         assert_eq!(m, "No results found.");
     }
 

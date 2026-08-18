@@ -866,6 +866,9 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         // provenance: additive-only status fields.
         "embedding_refresh_pending",
         "summary_scheme",
+        // Tells an index this build emptied from one nobody ever indexed; the
+        // two are otherwise the same zeros.
+        "index_rebuilt_from",
         "embed_worker_alive",
         "embed_tokens",
         "drift_candidates",
@@ -2070,6 +2073,150 @@ fn test_status_honors_state_dir_override_for_embed_worker_pid() {
     assert!(
         !pid_file.exists(),
         "the reader must resolve INKENTRY_STATE_DIR (not HOME) to find and clean up the stale pid record"
+    );
+}
+
+// Re-stamp an index with a schema version this build does not accept, so the
+// next open discards and recreates it. The rebuild branches on the stamp alone,
+// so a re-stamped index takes exactly the path a genuinely older one does,
+// without pinning the test to a shape no released binary writes any more.
+fn downstamp_index(project_dir: &std::path::Path, to: i32) -> std::path::PathBuf {
+    let db_path = project_dir.join(".inkentry").join("index.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(&format!("PRAGMA user_version = {to};"))
+        .unwrap();
+    drop(conn);
+    db_path
+}
+
+// A rebuilt index and a never-indexed project print the same zeros, and until
+// this landed nothing at the CLI's default log level told them apart: `search`
+// said `No results found.` and exited 0, so a successful upgrade read as an
+// empty repository. The rebuild has to state itself on the run that performs
+// it, and the emptiness it leaves has to stay attributable on every run after.
+#[test]
+fn a_rebuilt_index_states_itself_and_stays_attributable_until_reindexed() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+    downstamp_index(&project_dir, 15);
+
+    // The run that rebuilds says so, without RUST_LOG.
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("rebuilt empty"))
+        .stderr(predicate::str::contains("schema version 15"))
+        .stdout(
+            predicate::str::contains("No results found (")
+                .and(predicate::str::contains("inkentry index .")),
+        );
+
+    // A later run rebuilds nothing, so it must not claim to, but the absence is
+    // still explained: this is the run a user actually meets after upgrading.
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("rebuilt empty").not())
+        .stdout(predicate::str::contains("rebuilt from schema version 15"));
+
+    // `status` computes the same fact and now states it.
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("emptied by a rebuild"))
+        .stdout(predicate::str::contains("inkentry index ."));
+
+    // The rebuild is a statement, not a gate: the tool still works, and the
+    // reindex it asked for clears the fact rather than leaving it stuck on.
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("emptied by a rebuild").not());
+
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lib.rs"));
+}
+
+// `status --format json` carries the same fact for the tooling that reads it
+// there, and a never-rebuilt index reports null rather than an absent key.
+#[test]
+fn status_json_reports_the_rebuild_that_emptied_the_index() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    let out = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["status", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        v["index_rebuilt_from"],
+        serde_json::Value::Null,
+        "an index no rebuild touched must not be reported as emptied"
+    );
+
+    downstamp_index(&project_dir, 15);
+
+    let out = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["status", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["index_rebuilt_from"], serde_json::json!(15));
+    assert_eq!(
+        v["indexed_files"],
+        serde_json::json!(0),
+        "the emptiness and its cause have to be readable together"
     );
 }
 

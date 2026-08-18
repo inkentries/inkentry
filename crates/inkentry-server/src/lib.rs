@@ -398,6 +398,10 @@ pub struct AppState {
     /// embed-consuming handler (`/index/embed`, `/search`,
     /// `/memory/search`). See [`EmbedAdmission`].
     pub embed_admission: EmbedAdmission,
+    /// CPU threads the embedder was budgeted at startup, reported through
+    /// `/v1/health` so a client can say why indexing is slow on this host
+    /// without reading the server's log.
+    pub embed_threads: usize,
     /// Optional LLM backend for `/llm/complete`.
     pub llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>>,
     /// Server-side hard ceiling for `max_tokens` on `/llm/complete`.

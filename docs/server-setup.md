@@ -627,12 +627,24 @@ count at startup.
 
 | Env | Default | Purpose |
 |---|---|---|
-| `INKENTRY_EMBED_THREADS` | `max(1, physical cores − 2)` | CPU threads the native embedder may use. Reserves ~2 cores for request serving. |
+| `INKENTRY_EMBED_THREADS` | see below | CPU threads the native embedder may use. |
+
+The default reserves a quarter of the host, capped at two, from each of two
+counts and takes the smaller result: physical cores (embed throughput plateaus
+there, because SMT siblings share the vector units a forward pass saturates)
+and logical processors (what the OS actually hands the async runtime to
+schedule on). Any host with eight or more physical cores gets `physical − 2`, as
+before; smaller hosts keep a proportional share instead of surrendering the
+machine. A 2-physical/4-logical laptop resolves to 2 threads, not 1.
 
 Precedence: `INKENTRY_EMBED_THREADS` > an already-set `RAYON_NUM_THREADS` >
 the bounded default. A pre-set `RAYON_NUM_THREADS` is respected and never
 overridden. The resolved value and its source are logged at startup
-(`embed CPU thread budget resolved`). GPU (Metal/CUDA) builds are unaffected.
+(`embed CPU thread budget resolved`), and the value is reported as
+`limits.embed_threads` on `/v1/health`. When it resolves to 1, both that log
+and `inkentry status` name this variable, since a single-threaded first index
+is the difference between minutes and hours. GPU (Metal/CUDA) builds are
+unaffected.
 
 This budget is not what keeps the server answering while an embedder is busy,
 and lowering it will not make a slow probe fast. `/v1/health` and every other
