@@ -979,6 +979,7 @@ mod tests {
             started_by: None,
             trusted_proxies: Default::default(),
             relay: inkentry_server::relay::RelayRegistry::disabled(),
+            repair_signal: inkentry_server::repair::RepairSignal::new(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

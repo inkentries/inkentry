@@ -62,6 +62,7 @@ async fn spawn_real_server(db_path: &Path) -> String {
         started_by: None,
         trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     };
     let app = inkentry_server::router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

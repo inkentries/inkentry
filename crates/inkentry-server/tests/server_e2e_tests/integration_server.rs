@@ -376,6 +376,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         started_by: None,
         trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     };
 
     // Query with t=1500 — should return only the note at t=2000.

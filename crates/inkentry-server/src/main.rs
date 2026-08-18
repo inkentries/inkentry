@@ -381,12 +381,20 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         // config declares, and only on a loopback bind (see the `relay`
         // module docs).
         relay: RelayRegistry::for_bind(&args.host, RelayPolicy::from_local_config()),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     };
 
     // Keep a handle to the embedder slot so the background load task can flip it
     // `loading → ready | unavailable` after the listener binds.
     let embedder_slot = state.embedder.clone();
+    let repair_signal = state.repair_signal.clone();
     let model_dir = args.model_dir.clone();
+
+    tokio::spawn(inkentry_server::repair::run_repair_worker(
+        state.clone(),
+        inkentry_server::repair::REPAIR_PAGE_SIZE,
+        inkentry_server::repair::REPAIR_DEBOUNCE,
+    ));
 
     let app = router(state);
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -455,6 +463,11 @@ async fn run(budget: ThreadBudget) -> Result<()> {
                     slot.set_ready(
                         Arc::new(native) as Arc<dyn inkentry_core::embeddings::EmbeddingBackend>
                     );
+                    // Anything stored while the model was warming up went in
+                    // without a vector. This is also the restart recovery
+                    // floor: a process that comes up with a working model
+                    // always re-examines the backlog once.
+                    repair_signal.raise();
                 }
                 Ok(Err(e)) => {
                     let msg = embedder_load_failure_message(&e);
@@ -475,7 +488,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     }
     // Silence "unused" for the non-embed-native build (no background load).
     #[cfg(not(feature = "embed-native"))]
-    let _ = (load_native, &embedder_slot, &model_dir);
+    let _ = (load_native, &embedder_slot, &model_dir, &repair_signal);
 
     let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
     match tls_config {
@@ -592,8 +605,14 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
 /// set-but-empty `INKENTRY_SERVER_KEY`, or an empty credential file) becomes
 /// `None`, so "empty key" is treated as "no key" everywhere — both by the
 /// bind-safety guard and by the auth provider.
+///
+/// A leading UTF-8 BOM is stripped first: an editor that writes one (the
+/// Windows default) would otherwise put U+FEFF inside the key, and `str::trim`
+/// cannot remove it because U+FEFF is a format character, not whitespace. The
+/// strip runs before the trim so a BOM ahead of leading whitespace is handled.
 fn normalize_api_key(key: Option<&str>) -> Option<String> {
-    key.map(str::trim)
+    key.map(|k| k.strip_prefix('\u{feff}').unwrap_or(k))
+        .map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_owned)
 }
@@ -601,6 +620,27 @@ fn normalize_api_key(key: Option<&str>) -> Option<String> {
 /// Filename systemd exposes for `LoadCredential=server-key:...` under
 /// `$CREDENTIALS_DIRECTORY`.
 const SERVER_KEY_CREDENTIAL: &str = "server-key";
+
+/// Accept a resolved key, or refuse startup when it can never authenticate.
+///
+/// A bearer token reaches the auth provider through `HeaderValue::to_str`,
+/// which yields only printable ASCII and tab, so a key holding any other byte
+/// cannot equal any token a client is able to send. That is not a likely
+/// failure but an unsatisfiable one, so it is a hard error rather than a
+/// warning, and it names `source` because the resulting 401 cannot.
+fn accept_key(key: String, source: &str) -> Result<Option<String>> {
+    if let Some(byte) = key
+        .bytes()
+        .find(|b| !(0x20..0x7f).contains(b) && *b != b'\t')
+    {
+        anyhow::bail!(
+            "the API key from {source} contains a byte (0x{byte:02x}) that cannot be sent in an \
+             HTTP Authorization header, so no request could ever authenticate against it. \
+             Use a key of printable ASCII characters."
+        );
+    }
+    Ok(Some(key))
+}
 
 /// Resolve the shared API key from all supported sources, in precedence order
 /// (a blank value at any level is ignored and falls through to the next):
@@ -621,24 +661,24 @@ fn resolve_api_key(
     credentials_dir: Option<&std::path::Path>,
 ) -> Result<Option<String>> {
     if let Some(k) = normalize_api_key(key) {
-        return Ok(Some(k));
+        return accept_key(k, "--key");
     }
     if let Some(path) = key_file {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading --key-file {}", path.display()))?;
         if let Some(k) = normalize_api_key(Some(&raw)) {
-            return Ok(Some(k));
+            return accept_key(k, &format!("--key-file {}", path.display()));
         }
     }
     if let Some(k) = normalize_api_key(env_key) {
-        return Ok(Some(k));
+        return accept_key(k, "INKENTRY_SERVER_KEY");
     }
     if let Some(dir) = credentials_dir {
         let path = dir.join(SERVER_KEY_CREDENTIAL);
         match std::fs::read_to_string(&path) {
             Ok(raw) => {
                 if let Some(k) = normalize_api_key(Some(&raw)) {
-                    return Ok(Some(k));
+                    return accept_key(k, &format!("systemd credential {}", path.display()));
                 }
             }
             // A credentials dir without our credential is normal (systemd may
@@ -1152,6 +1192,28 @@ mod arg_tests {
         );
     }
 
+    // The BOM is stripped ahead of the trim, so a BOM followed by leading
+    // whitespace leaves neither behind.
+    #[test]
+    fn bom_is_stripped_before_surrounding_whitespace() {
+        assert_eq!(
+            super::normalize_api_key(Some("\u{feff}secret")).as_deref(),
+            Some("secret")
+        );
+        assert_eq!(
+            super::normalize_api_key(Some("\u{feff}  secret  \n")).as_deref(),
+            Some("secret")
+        );
+    }
+
+    // A file holding nothing but a BOM is as empty as a whitespace-only one: it
+    // must resolve to None and fall through, not to a one-character key.
+    #[test]
+    fn bom_only_value_normalises_to_none() {
+        assert_eq!(super::normalize_api_key(Some("\u{feff}")), None);
+        assert_eq!(super::normalize_api_key(Some("\u{feff}\n")), None);
+    }
+
     // ── ADR-056 single-trust-domain notice ──────────────────────────────────
 
     /// The notice fires for a keyed shared bind (`0.0.0.0` + key) — the
@@ -1305,6 +1367,151 @@ mod arg_tests {
     fn missing_key_file_is_fatal() {
         let path = std::path::Path::new("/nonexistent/inkentry/server-key");
         assert!(super::resolve_api_key(None, Some(path), None, None).is_err());
+    }
+
+    // ── Byte-order mark / non-transmittable keys ────────────────────────────
+
+    // A key file authored on Windows starts with a UTF-8 BOM. str::trim does not
+    // remove it (U+FEFF is a format character, not whitespace), so without an
+    // explicit strip the stored hash covers bytes no HTTP client can ever send,
+    // and every request 401s, including one presenting the file's exact
+    // contents.
+    #[tokio::test]
+    async fn bom_prefixed_key_file_authenticates_with_the_typed_key() {
+        use inkentry_server::auth::{ApiKeyAuth, AuthProvider};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_key_file(&dir, "server-key", "\u{feff}file-secret\n");
+
+        let key = super::resolve_api_key(None, Some(&path), None, None).unwrap();
+        assert_eq!(key.as_deref(), Some("file-secret"));
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            axum::http::HeaderValue::from_static("Bearer file-secret"),
+        );
+        assert!(
+            ApiKeyAuth::new(key).authenticate(&headers).await.is_ok(),
+            "the key the operator typed must authenticate against a BOM-prefixed key file"
+        );
+    }
+
+    // Every source funnels through one normalisation, so all four are stripped by
+    // the same code, including inline --key, which can carry a BOM from a paste.
+    #[test]
+    fn every_key_source_is_bom_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_key_file(&dir, "kf", "\u{feff}from-file");
+        write_key_file(&dir, "server-key", "\u{feff}from-cred");
+
+        assert_eq!(
+            super::resolve_api_key(Some("\u{feff}inline"), None, None, None)
+                .unwrap()
+                .as_deref(),
+            Some("inline")
+        );
+        assert_eq!(
+            super::resolve_api_key(None, Some(&file), None, None)
+                .unwrap()
+                .as_deref(),
+            Some("from-file")
+        );
+        assert_eq!(
+            super::resolve_api_key(None, None, Some("\u{feff}from-env"), None)
+                .unwrap()
+                .as_deref(),
+            Some("from-env")
+        );
+        assert_eq!(
+            super::resolve_api_key(None, None, None, Some(dir.path()))
+                .unwrap()
+                .as_deref(),
+            Some("from-cred")
+        );
+    }
+
+    // A key carrying any byte an Authorization header cannot hold can never match
+    // a presented token, so startup is refused instead of leaving a server that
+    // 401s every request. The refusal names the source, which is the one thing a
+    // 401 cannot tell the operator.
+    #[test]
+    fn untransmittable_key_refuses_startup_naming_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_key_file(&dir, "kf", "sécret");
+        let cred = tempfile::tempdir().unwrap();
+        write_key_file(&cred, "server-key", "sécret");
+
+        let cases: [(anyhow::Error, String); 4] = [
+            (
+                super::resolve_api_key(Some("sécret"), None, None, None).unwrap_err(),
+                "--key".to_string(),
+            ),
+            (
+                super::resolve_api_key(None, Some(&file), None, None).unwrap_err(),
+                file.display().to_string(),
+            ),
+            (
+                super::resolve_api_key(None, None, Some("sécret"), None).unwrap_err(),
+                "INKENTRY_SERVER_KEY".to_string(),
+            ),
+            (
+                super::resolve_api_key(None, None, None, Some(cred.path())).unwrap_err(),
+                cred.path().join("server-key").display().to_string(),
+            ),
+        ];
+        for (err, source) in cases {
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(&source),
+                "the refusal must name {source}, got: {msg}"
+            );
+        }
+    }
+
+    // A control character is refused for the same reason as a non-ASCII byte: it
+    // cannot ride in a header value either.
+    #[test]
+    fn control_character_key_refuses_startup() {
+        assert!(super::resolve_api_key(Some("sec\u{7}ret"), None, None, None).is_err());
+    }
+
+    // The guard refuses only what a header cannot carry: any printable-ASCII key
+    // resolves untouched, spaces, punctuation and interior tabs included.
+    #[test]
+    fn printable_ascii_key_is_accepted_unchanged() {
+        let all_printable: String = (0x21u8..0x7f).map(char::from).collect();
+        for key in [all_printable.as_str(), "two words\tand a tab", "s3cret"] {
+            assert_eq!(
+                super::resolve_api_key(Some(key), None, None, None)
+                    .unwrap()
+                    .as_deref(),
+                Some(key)
+            );
+        }
+    }
+
+    // ADR-056: the keyless local posture is untouched. No key configured means
+    // nothing to validate and nothing to refuse, and a loopback bind still
+    // starts.
+    #[test]
+    fn no_key_configured_still_starts() {
+        assert_eq!(
+            super::resolve_api_key(None, None, None, None).unwrap(),
+            None
+        );
+        assert!(super::check_bind_safety("127.0.0.1", 7777, false, false).is_ok());
+    }
+
+    // A BOM-only file is empty, so resolution falls through to the next source
+    // exactly as it does for a whitespace-only one.
+    #[test]
+    fn bom_only_source_falls_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_key_file(&dir, "kf", "\u{feff}");
+        write_key_file(&dir, "server-key", "cred-secret");
+        let key = super::resolve_api_key(None, Some(&file), None, Some(dir.path())).unwrap();
+        assert_eq!(key.as_deref(), Some("cred-secret"));
     }
 
     /// `--key-file` parses as a path arg.

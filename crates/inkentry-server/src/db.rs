@@ -118,6 +118,32 @@ pub struct ServerNote {
     pub distance: Option<f64>,
 }
 
+/// A live row already carrying a pushed `remote_id`, as returned by
+/// [`ServerDb::find_by_remote_ids`].
+#[derive(Debug, Clone)]
+pub struct ExistingNote {
+    /// The entry's exported UUIDv7 identity, never the integer row id: a
+    /// caller acking a dedupe-hit across the wire must be handed the same id
+    /// `/memory/since` uses.
+    pub sync_id: String,
+    /// Whether this row currently has a `note_embeddings` row.
+    pub has_embedding: bool,
+}
+
+/// An active note with no vector, as returned by
+/// [`ServerDb::notes_missing_embeddings`].
+///
+/// Carries the text rather than only the id because the repair pass has to
+/// drop the global lock before it embeds: re-reading the text afterwards would
+/// mean a second query per page and a second window for the row to change.
+#[derive(Debug, Clone)]
+pub struct VectorlessNote {
+    /// The `notes` row id, the join key `note_embeddings` is addressed by.
+    pub rowid: i64,
+    pub title: String,
+    pub body: String,
+}
+
 /// A near-duplicate found by [`ServerDb::search_notes_for_conflicts`].
 ///
 /// Carries both identities on purpose: `id` is what the 409 body reports,
@@ -452,24 +478,30 @@ impl ServerDb {
     }
 
     /// Bulk-lookup active notes by their cross-machine `remote_id` (the batch
-    /// push idempotency key), returning each match's `sync_id` (not the row
-    /// id: a caller acking a dedupe-hit back across the wire must hand out
-    /// the same id `/memory/since` uses). Scoped to the project and to live
-    /// rows only: an archived row with the same `remote_id` does not count as
-    /// existing, so a re-push after archiving creates a fresh row rather than
-    /// a no-op. Mirrors cloud-api's `find_by_external_ids`.
+    /// push idempotency key). Scoped to the project and to live rows only: an
+    /// archived row with the same `remote_id` does not count as existing, so a
+    /// re-push after archiving creates a fresh row rather than a no-op.
+    /// Mirrors cloud-api's `find_by_external_ids`.
+    ///
+    /// `has_embedding` travels with the id because a dedupe-skip has to report
+    /// whether the row it matched is in the vector index, and a batch is up to
+    /// [`crate::handlers::MAX_BATCH_ENTRIES`] entries: asking per entry would
+    /// be a query per entry inside the write loop, under the global lock.
     pub fn find_by_remote_ids(
         &self,
         project_id: i64,
         remote_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, String>> {
+    ) -> Result<std::collections::HashMap<String, ExistingNote>> {
         if remote_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
         let placeholders = remote_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT remote_id, sync_id FROM notes
-             WHERE project_id = ? AND status = 'active' AND remote_id IN ({placeholders})"
+            "SELECT n.remote_id, n.sync_id,
+                    EXISTS(SELECT 1 FROM note_embeddings e WHERE e.note_id = n.id)
+             FROM   notes n
+             WHERE  n.project_id = ? AND n.status = 'active'
+                    AND n.remote_id IN ({placeholders})"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(remote_ids.len() + 1);
@@ -481,16 +513,98 @@ impl ServerDb {
             Ok((
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
+                row.get::<_, bool>(2)?,
             ))
         })?;
         let mut map = std::collections::HashMap::new();
         for row in rows {
-            let (remote_id, sync_id) = row?;
+            let (remote_id, sync_id, has_embedding) = row?;
             if let (Some(rid), Some(sid)) = (remote_id, sync_id) {
-                map.insert(rid, sid);
+                map.insert(
+                    rid,
+                    ExistingNote {
+                        sync_id: sid,
+                        has_embedding,
+                    },
+                );
             }
         }
         Ok(map)
+    }
+
+    /// One page of active notes that have no `note_embeddings` row, ordered by
+    /// row id and starting strictly after `after_rowid`.
+    ///
+    /// The cursor is what makes a repair sweep terminate. Paging by `LIMIT`
+    /// alone works only while every row read is then repaired; a row the
+    /// embedder refuses stays a candidate, so the next page would return the
+    /// same row forever. Advancing past everything read, repaired or not,
+    /// bounds the sweep at one pass over the backlog.
+    ///
+    /// Server-wide: no project filter. There is one vec0 table at one
+    /// dimension for the whole server, so every project's vectorless rows are
+    /// the same backlog.
+    pub fn notes_missing_embeddings(
+        &self,
+        after_rowid: i64,
+        limit: usize,
+    ) -> Result<Vec<VectorlessNote>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT n.id, n.title, n.body
+             FROM   notes n
+             WHERE  n.status = 'active' AND n.id > ?1
+                    AND NOT EXISTS (SELECT 1 FROM note_embeddings e WHERE e.note_id = n.id)
+             ORDER  BY n.id
+             LIMIT  ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![after_rowid, limit as i64], |row| {
+            Ok(VectorlessNote {
+                rowid: row.get(0)?,
+                title: row.get(1)?,
+                body: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Give a row its vector, unless the row stopped qualifying since it was
+    /// read. Returns whether anything was written.
+    ///
+    /// Both guards matter because the repair pass necessarily drops the global
+    /// lock to embed, so the row can be deleted, archived or embedded by
+    /// another path in the meantime. `note_embeddings` is a vec0 virtual table
+    /// with no foreign key: an insert against a deleted row is accepted and
+    /// leaves a vector no query would ever join back to a note.
+    pub fn insert_embedding_if_missing(&self, rowid: i64, vector: &[f32]) -> Result<bool> {
+        let still_active: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM notes WHERE id = ?1 AND status = 'active'",
+                rusqlite::params![rowid],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !still_active {
+            return Ok(false);
+        }
+        let already_embedded: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM note_embeddings WHERE note_id = ?1",
+                rusqlite::params![rowid],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if already_embedded {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT INTO note_embeddings (note_id, embedding) VALUES (?1, ?2)",
+            rusqlite::params![rowid, inkentry_core::embeddings::vec_to_blob(vector)],
+        )?;
+        Ok(true)
     }
 
     pub fn get_note(&self, project_id: i64, note_id: &str) -> Result<Option<ServerNote>> {
@@ -1010,7 +1124,7 @@ mod tests {
         assert_eq!(found_a.len(), 1);
         assert_eq!(found_b.len(), 1);
         assert_ne!(
-            found_a["shared-ext-id"], found_b["shared-ext-id"],
+            found_a["shared-ext-id"].sync_id, found_b["shared-ext-id"].sync_id,
             "the two projects' rows must be distinct notes"
         );
     }
@@ -1081,8 +1195,8 @@ mod tests {
             .find_by_remote_ids(project.id, &["archived-id".to_string()])
             .expect("lookup before archive");
         assert_eq!(
-            found.get("archived-id"),
-            Some(&sync_id),
+            found.get("archived-id").map(|n| n.sync_id.as_str()),
+            Some(sync_id.as_str()),
             "live note must be found"
         );
 
