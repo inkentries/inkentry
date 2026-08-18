@@ -1,6 +1,6 @@
 [package]
 name = "inkentry-embed"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 edition = "2024"
 description = "Native F2LLM-v2-330M embedder (candle) for inkentry"
 license = "MIT"
