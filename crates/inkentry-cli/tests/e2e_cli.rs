@@ -2277,9 +2277,8 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     // legitimately serve embedding here. Under the default `local_first`
     // mode that routing is now correctly refused (see the `get_inference_tier`
     // routing fix) in favor of the local loopback embedder, which this test
-    // does not configure - so force `cloud_first` via env (a project-level
-    // `.inkentry/config.toml`, which `write_config_with_server` writes to,
-    // silently drops a `mode` key; see `write_project_server_config`).
+    // does not configure - so force `cloud_first` via env, which outranks
+    // both config files.
     inkentry_bin_in(home.path())
         .env("INKENTRY_MODE", "cloud_first")
         .current_dir(&project_dir)
@@ -2334,4 +2333,42 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     );
     let _: serde_json::Value = serde_json::from_slice(&output.stdout)
         .expect("stdout must stay machine-clean JSON with all notices on stderr");
+}
+
+// A key the project config is not read for is named on stderr rather
+// than dropped in silence, and the rest of the file still loads.
+#[test]
+fn unread_project_config_key_is_named_on_stderr() {
+    let home = tempdir().unwrap();
+    let project_dir = home.path().join("proj");
+    fs::create_dir_all(project_dir.join(".inkentry")).unwrap();
+    fs::write(
+        project_dir.join(".inkentry").join("config.toml"),
+        "project_id = \"team/proj\"\nlmstudio_base_url = \"http://127.0.0.1:1234\"\n",
+    )
+    .unwrap();
+
+    let output = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .args(["status", "--format", "json"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lmstudio_base_url"),
+        "the unread key must be named, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("has no effect"),
+        "the warning must say the key did nothing, got stderr: {stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "an unread key must not fail a command"
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("stdout must stay machine-clean JSON with the warning on stderr");
+    assert_eq!(parsed["mode"], "offline");
 }

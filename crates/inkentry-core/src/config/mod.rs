@@ -86,17 +86,28 @@ struct ProjectIndexConfig {
 /// `server_key` is deliberately absent (ADR-071 D4): a credential in a
 /// committed file is in the repo's history for good and readable by anyone
 /// with repo access. A file that still has a `server_key` line keeps working
-/// for its other fields: serde silently drops the unrecognized key, the
-/// same way the removed `memory_server_*` aliases are dropped. Use
-/// `inkentry auth set-key --server <url>` instead.
+/// for its other fields, and is named on stderr so its owner knows there is
+/// something to rotate. Use `inkentry auth set-key --server <url>` instead.
+///
+/// Every *other* key the file is not read for is named on stderr instead of
+/// dropped in silence. The keys this struct declares are mirrored in
+/// [`PROJECT_CONFIG_KEYS`], which the warning reads; adding a field here means
+/// adding it there.
 #[derive(Debug, Default, Deserialize)]
 struct ProjectConfig {
     /// Canonical server URL (preferred).
     server_url: Option<String>,
     project_id: Option<String>,
+    /// Base URL of the inference endpoint. A team pointing at one approved
+    /// provider states it once here rather than in every developer's own file.
+    /// The credential it is presented to is not a config key in either file.
+    llm_url: Option<String>,
     /// Path to a PEM CA bundle to trust in addition to the built-in roots, for a
     /// team server presenting a self-signed / internal-CA certificate.
     server_ca: Option<String>,
+    /// How this project's memory is governed. Overrides a personal
+    /// value; `INKENTRY_MODE` still wins over both.
+    mode: Option<SyncMode>,
     /// `[index]` table: per-field override of the built-in file filter.
     index: Option<ProjectIndexConfig>,
 }
@@ -117,10 +128,15 @@ pub struct Config {
     /// LM Studio / Ollama, or a self-hosted gateway), passed on to the
     /// auto-spawned `inkentry-server` so it gains LLM capability.
     ///
-    /// Personal config (`~/.config/inkentry/config.toml`) or `INKENTRY_LLM_URL`
-    /// only, never `.inkentry/config.toml`: a checked-in endpoint points the
-    /// whole team at one developer's machine, and it is the natural sibling of
-    /// the LLM credential that `ProjectConfig` already excludes (ADR-071 D4).
+    /// Settable in either file, with `.inkentry/config.toml` winning over the
+    /// personal one and `INKENTRY_LLM_URL` winning over both. A team endpoint
+    /// is usually one approved provider rather than a developer's own machine,
+    /// so it is a project-wide fact worth committing, and anyone running a
+    /// local model still outranks it from their personal file or the
+    /// environment. The credential the endpoint is presented to does not
+    /// follow it into either file (`inkentry auth set-key --llm` or
+    /// `INKENTRY_LLM_KEY`): a committed credential is in the repository's
+    /// history for good (ADR-071 D4).
     #[serde(default)]
     pub llm_url: Option<String>,
 
@@ -163,11 +179,19 @@ pub struct Config {
 
     /// Sync mode: `offline` / `local_first` / `cloud_first`.
     ///
+    /// Settable in **either** config file, with `.inkentry/config.toml`
+    /// (project-level) winning over `~/.config/inkentry/config.toml`
+    /// (personal), and `INKENTRY_MODE` winning over both. Unlike
+    /// `server_url`, a personal value is *not* discarded: this field names no
+    /// host and can only choose among behaviours toward the server the project
+    /// already picked, so a personal value cannot send anything anywhere the
+    /// project config did not already permit.
+    ///
     /// Stored as `Option` so the serde default can preserve today's behaviour:
     /// when absent, [`Config::resolve_mode`] derives the effective mode from
     /// `server_url` (no `server_url` ⇒ `offline`; `server_url` present ⇒
-    /// `local_first`). An explicit value here pins the mode; `INKENTRY_MODE`
-    /// overrides it, and `INKENTRY_NO_SERVER=1` forces `offline` regardless.
+    /// `local_first`). An explicit value here pins the mode, and
+    /// `INKENTRY_NO_SERVER=1` forces `offline` regardless.
     /// Always read it through [`Config::resolve_mode`], never directly.
     #[serde(default)]
     pub mode: Option<SyncMode>,
@@ -342,7 +366,9 @@ impl Config {
     /// `server_url` is the one field step 2 is not allowed to set (see the
     /// `server_url` field doc): a team server is a project-wide decision, so
     /// only the checked-in project config or an explicit env var may supply
-    /// it, never a single developer's personal file.
+    /// it, never a single developer's personal file. `mode` layers the normal
+    /// way over all four steps; step 3 names on stderr any key it is
+    /// not read for.
     ///
     /// Pass `path` to override the global config location (used by `--config` flag).
     pub fn load(path: Option<&Path>) -> Result<Self> {
@@ -397,16 +423,18 @@ impl Config {
 
         // ── 2. Merge project-level config (.inkentry/config.toml) ─────────────
         // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
-        // file never carries a credential. A file that still has a
-        // `server_key` line keeps working for its other fields: the parse
-        // above silently drops the unrecognized key.
+        // file never carries a credential. A file that still has one keeps
+        // working for its other fields; every key this file is not read for,
+        // credentials included, is named on stderr.
         if let Some(root) = project_root
             && let Some(proj_path) = find_project_config(root)
         {
             let raw = std::fs::read_to_string(&proj_path)
                 .with_context(|| format!("reading project config at {}", proj_path.display()))?;
-            let proj: ProjectConfig =
-                toml::from_str(&raw).map_err(|e| config_parse_error(&proj_path, e))?;
+            let proj = parse_project_config(&raw, &proj_path)?;
+            for warning in project_config_key_warnings(&raw, &proj_path) {
+                eprintln!("{warning}");
+            }
 
             if let Some(v) = proj.server_url {
                 cfg.server_url = Some(v);
@@ -416,6 +444,12 @@ impl Config {
             }
             if let Some(v) = proj.server_ca {
                 cfg.server_ca = Some(v);
+            }
+            if let Some(v) = proj.mode {
+                cfg.mode = Some(v);
+            }
+            if let Some(v) = proj.llm_url {
+                cfg.llm_url = Some(v);
             }
             // `[index]` overrides the global value per field: an absent key in the
             // project table leaves the global (or default) value in place.
@@ -603,6 +637,74 @@ fn parse_global_config(raw: &str, path: &Path) -> Result<Config> {
         }
         config_parse_error(path, source)
     })
+}
+
+/// Parse a project-level `.inkentry/config.toml`, with the same `mode`
+/// diagnostic [`parse_global_config`] gives the personal file.
+fn parse_project_config(raw: &str, path: &Path) -> Result<ProjectConfig> {
+    toml::from_str::<ProjectConfig>(raw).map_err(|source| {
+        if let Some(bad) = bad_mode_value(raw) {
+            return anyhow::anyhow!(
+                "invalid `mode` value {bad:?} in the inkentry config file {path} \
+                 (expected one of: {valid})",
+                path = path.display(),
+                valid = SyncMode::valid_values(),
+            );
+        }
+        config_parse_error(path, source)
+    })
+}
+
+/// The keys `.inkentry/config.toml` is read for. Single source of
+/// truth for the merge in [`Config::load_with_store_from`] and for
+/// [`project_config_key_warnings`], so the two cannot drift.
+const PROJECT_CONFIG_KEYS: &[&str] = &[
+    "server_url",
+    "project_id",
+    "server_ca",
+    "mode",
+    "llm_url",
+    "index",
+];
+
+/// Keys the project config has no field for that name a credential (ADR-071
+/// D4). These get their own wording rather than the generic one: the file is
+/// committed, so the value is already in the repository's history and no
+/// change to the client can take it back. Rotation is the only remedy, and a
+/// line at load time is the one thing that reaches the person holding the file.
+const PROJECT_CONFIG_CREDENTIAL_KEYS: &[&str] = &["server_key"];
+
+/// Warnings for keys present in a project `.inkentry/config.toml` that it is
+/// not read for. Pure so the wording is unit-testable without
+/// capturing stderr; [`Config::load_with_store_from`] prints the result.
+///
+/// A malformed file yields nothing: the typed parse alongside this already
+/// fails with a diagnostic that points at the offending line.
+fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
+    let Ok(table) = raw.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    table
+        .keys()
+        .filter(|key| !PROJECT_CONFIG_KEYS.contains(&key.as_str()))
+        .map(|key| {
+            let path = path.display();
+            if PROJECT_CONFIG_CREDENTIAL_KEYS.contains(&key.as_str()) {
+                return format!(
+                    "Warning: `{key}` in {path} has no effect, and a credential in a committed \
+                     file is already in the repository's history: rotate it, then set the \
+                     replacement with `inkentry auth set-key --server <url>` or \
+                     INKENTRY_SERVER_KEY."
+                );
+            }
+            format!(
+                "Warning: `{key}` in {path} has no effect: the project config is read for \
+                 {read} only. Check the spelling, or set it in \
+                 ~/.config/inkentry/config.toml instead.",
+                read = PROJECT_CONFIG_KEYS.join(", "),
+            )
+        })
+        .collect()
 }
 
 /// If `raw` sets `mode` to a string that is not a valid [`SyncMode`], return
@@ -1361,6 +1463,205 @@ project_id = "team/proj"
             Some("http://proj.example.com:7777".to_string())
         );
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
+    }
+
+    // ── `mode` in the project config ──────────────────────────────────────────
+
+    // Write a personal config and a project `.inkentry/config.toml`, then load
+    // with project discovery anchored at the project root. `None` writes no
+    // project file at all, which is not the same as writing an empty one.
+    fn load_layered(personal: &str, project: Option<&str>) -> (TempDir, Result<Config>) {
+        let tmp = TempDir::new().unwrap();
+        let global = tmp.path().join("global.toml");
+        std::fs::write(&global, personal).unwrap();
+
+        let proj_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        if let Some(body) = project {
+            let inkentry_dir = proj_dir.join(".inkentry");
+            std::fs::create_dir_all(&inkentry_dir).unwrap();
+            std::fs::write(inkentry_dir.join("config.toml"), body).unwrap();
+        }
+
+        let cfg =
+            Config::load_with_store_from(Some(&global), &MemoryStore::default(), Some(&proj_dir));
+        (tmp, cfg)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn project_config_mode_takes_effect() {
+        // The defect: a team writes server_url, project_id and mode together in
+        // the checked-in config and gets local_first anyway, with no warning.
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered(
+            "",
+            Some(
+                r#"server_url = "http://127.0.0.1:7788"
+project_id = "github.com/sass/sass"
+mode = "cloud_first"
+"#,
+            ),
+        );
+        let cfg = cfg.unwrap();
+        assert_eq!(cfg.mode, Some(SyncMode::CloudFirst));
+        assert_eq!(cfg.resolve_mode(), SyncMode::CloudFirst);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn mode_precedence_across_personal_project_and_env() {
+        // Every combination of the three sources, asserted as one table so a
+        // change to any single layer cannot pass by agreeing with the others.
+        // The project column is three-valued: `None` is no file at all,
+        // `Some("")` a file that sets no `mode`, and that middle case is what
+        // proves a project config does not blank a personal value merely by
+        // existing.
+        const OFF: Option<SyncMode> = Some(SyncMode::Offline);
+        const LOCAL: Option<SyncMode> = Some(SyncMode::LocalFirst);
+        const CLOUD: Option<SyncMode> = Some(SyncMode::CloudFirst);
+        type Row = (
+            Option<&'static str>,
+            Option<&'static str>,
+            Option<&'static str>,
+            Option<SyncMode>,
+        );
+
+        // personal, project, INKENTRY_MODE, pinned mode
+        let rows: &[Row] = &[
+            (None, None, None, None),
+            (None, Some(""), None, None),
+            (None, Some("cloud_first"), None, CLOUD),
+            (Some("offline"), None, None, OFF),
+            (Some("offline"), Some(""), None, OFF),
+            (Some("offline"), Some("cloud_first"), None, CLOUD),
+            (None, None, Some("local_first"), LOCAL),
+            (None, Some(""), Some("local_first"), LOCAL),
+            (None, Some("cloud_first"), Some("local_first"), LOCAL),
+            (Some("offline"), None, Some("local_first"), LOCAL),
+            (Some("offline"), Some(""), Some("local_first"), LOCAL),
+            (
+                Some("offline"),
+                Some("cloud_first"),
+                Some("local_first"),
+                LOCAL,
+            ),
+        ];
+
+        for (personal, project, env, expected) in rows {
+            clear_inkentry_env();
+            if let Some(v) = env {
+                unsafe { std::env::set_var("INKENTRY_MODE", v) };
+            }
+            let mode_line = |m: &str| {
+                if m.is_empty() {
+                    String::new()
+                } else {
+                    format!("mode = \"{m}\"\n")
+                }
+            };
+            let personal_body = personal.map(mode_line).unwrap_or_default();
+            let project_body =
+                project.map(|m| format!("project_id = \"team/proj\"\n{}", mode_line(m)));
+            let (_tmp, cfg) = load_layered(&personal_body, project_body.as_deref());
+            assert_eq!(
+                cfg.unwrap().mode,
+                *expected,
+                "personal={personal:?} project={project:?} env={env:?}"
+            );
+        }
+        clear_inkentry_env();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn no_server_env_forces_offline_over_a_project_config_mode() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered(
+            "",
+            Some(
+                "server_url = \"http://team.example:7777\"\nproject_id = \"team/proj\"\nmode = \"cloud_first\"\n",
+            ),
+        );
+        let cfg = cfg.unwrap();
+        unsafe { std::env::set_var("INKENTRY_NO_SERVER", "1") };
+        let resolved = cfg.resolve_mode();
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
+        assert_eq!(resolved, SyncMode::Offline);
+    }
+
+    // ── keys the project config does not read ─────────────────────────────────
+
+    fn project_warnings(raw: &str) -> Vec<String> {
+        project_config_key_warnings(raw, Path::new("/repo/.inkentry/config.toml"))
+    }
+
+    #[test]
+    fn a_key_the_project_config_does_not_read_is_named_in_a_warning() {
+        let warnings =
+            project_warnings("server_url = \"https://team.example\"\ndb_path = \"/tmp/x\"\n");
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        let warning = &warnings[0];
+        assert!(warning.contains("db_path"), "must name the key: {warning}");
+        assert!(
+            warning.contains("/repo/.inkentry/config.toml"),
+            "must name the file: {warning}"
+        );
+    }
+
+    #[test]
+    fn keys_the_project_config_reads_produce_no_warning() {
+        assert!(
+            project_warnings(
+                "server_url = \"https://team.example\"\nproject_id = \"p\"\nserver_ca = \"/ca.pem\"\nmode = \"cloud_first\"\n\n[index]\nexclude = [\"x/**\"]\n"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_credential_in_the_project_config_is_named_so_it_can_be_rotated() {
+        // The file is committed, so the value is already in the repository's
+        // history. Dropping it silently leaves the only person who can rotate
+        // it unaware there is anything to rotate.
+        let warnings = project_warnings(
+            "server_url = \"https://team.example\"\nserver_key = \"team-shared-key\"\n",
+        )
+        .join("\n");
+        assert!(
+            warnings.contains("server_key"),
+            "`server_key` must be named, got: {warnings}"
+        );
+        assert!(
+            warnings.contains("rotate"),
+            "`server_key` must say to rotate it, got: {warnings}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn an_unread_project_key_does_not_fail_the_load() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered(
+            "",
+            Some(
+                "server_url = \"https://team.example\"\nproject_id = \"team/proj\"\nnot_a_key = 1\n",
+            ),
+        );
+        let cfg = cfg.expect("an unread key must warn, never fail the load");
+        assert_eq!(cfg.server_url, Some("https://team.example".to_string()));
+        assert_eq!(cfg.project_id, Some("team/proj".to_string()));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn invalid_project_config_mode_names_the_value_and_the_file() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered("", Some("mode = \"sideways\"\n"));
+        let err = cfg.unwrap_err().to_string();
+        assert!(err.contains("sideways"), "got: {err}");
+        assert!(err.contains(".inkentry"), "got: {err}");
+        assert!(err.contains(SyncMode::valid_values()), "got: {err}");
     }
 
     // ── [auth] WorkOS tokens ───────────────────────────────────────────────────
@@ -2184,26 +2485,57 @@ project_id = "team/new"
 
     #[test]
     #[serial_test::serial]
-    fn llm_url_in_project_config_is_ignored() {
+    fn llm_url_in_project_config_takes_effect() {
         clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let global = tmp.path().join("config.toml");
-        std::fs::write(&global, "").unwrap();
-
-        let project = tmp.path().join("proj");
-        std::fs::create_dir_all(project.join(".inkentry")).unwrap();
-        std::fs::write(
-            project.join(".inkentry").join("config.toml"),
-            "llm_url = \"http://team-box.example:1234\"\n",
-        )
-        .unwrap();
-
-        let store = MemoryStore::default();
-        let cfg = Config::load_with_store_from(Some(&global), &store, Some(&project)).unwrap();
-
+        let (_tmp, cfg) = load_layered("", Some("llm_url = \"http://gateway.example:1234\"\n"));
         assert_eq!(
-            cfg.llm_url, None,
-            "an endpoint URL in a checked-in project config must not configure the CLI"
+            cfg.unwrap().llm_url.as_deref(),
+            Some("http://gateway.example:1234"),
+            "a team endpoint stated once in the project config must configure the CLI"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_project_config_wins_over_personal_and_env_wins_over_both() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered(
+            "llm_url = \"http://personal.example:1\"\n",
+            Some("llm_url = \"http://project.example:2\"\n"),
+        );
+        assert_eq!(
+            cfg.unwrap().llm_url.as_deref(),
+            Some("http://project.example:2"),
+            "the project file must win over the personal one"
+        );
+
+        unsafe { std::env::set_var("INKENTRY_LLM_URL", "http://env.example:3") };
+        let (_tmp2, cfg2) = load_layered(
+            "llm_url = \"http://personal.example:1\"\n",
+            Some("llm_url = \"http://project.example:2\"\n"),
+        );
+        unsafe { std::env::remove_var("INKENTRY_LLM_URL") };
+        assert_eq!(
+            cfg2.unwrap().llm_url.as_deref(),
+            Some("http://env.example:3"),
+            "the environment must win over both files"
+        );
+    }
+
+    #[test]
+    fn the_llm_credential_does_not_follow_its_url_into_the_project_config() {
+        // The endpoint is a project-wide fact; the key presented to it is not.
+        // A committed credential is in the repository's history for good.
+        let warnings =
+            project_warnings("llm_url = \"http://gateway.example:1234\"\nllm_key = \"sk-live\"\n")
+                .join("\n");
+        assert!(
+            warnings.contains("llm_key"),
+            "`llm_key` must still be an unread key: {warnings}"
+        );
+        assert!(
+            !warnings.contains("`llm_url`"),
+            "`llm_url` is read here now and must not warn: {warnings}"
         );
     }
 

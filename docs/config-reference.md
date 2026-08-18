@@ -26,7 +26,8 @@ Load order (later overrides earlier):
    never a single developer's.
 3. `.inkentry/config.toml`, discovered by walking up from the current
    directory (project-level, team-wide). Only `server_url`, `project_id`,
-   `server_ca`, and `[index]` are read from this file.
+   `server_ca`, `mode`, `llm_url`, and `[index]` are read from this file; any
+   other key in it is named in a warning on stderr and ignored.
 4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`,
    `INKENTRY_PROJECT_ID`, `INKENTRY_SERVER_CA`, `INKENTRY_LLM_URL`,
    `INKENTRY_LLM_MODEL`, `INKENTRY_MODE`.
@@ -114,7 +115,8 @@ inference target there already. See
 [Third-party models → The local-LLM guarantee](third-party-models.md#the-local-llm-guarantee-and-where-it-stops).
 
 **Precedence**, highest first: `inkentry server start --llm-url` (for that
-daemon only) > `INKENTRY_LLM_URL` > `llm_url` here > unset. An empty value is
+daemon only) > `INKENTRY_LLM_URL` > `llm_url` in `.inkentry/config.toml` >
+`llm_url` in the personal config > unset. An empty value is
 handled differently in the two override positions: `INKENTRY_LLM_URL=""`
 overrides and blanks this field, leaving no endpoint at all, while
 `--llm-url ""` is discarded and leaves the environment or config value in
@@ -204,10 +206,17 @@ configured `server_url`.
 
 When unset, the effective mode is derived: no `server_url` means `offline`; a
 configured `server_url` means `local_first`. `INKENTRY_NO_SERVER=1` forces
-`offline` regardless of this setting, as a hard kill-switch. `mode` is only
-read from the personal config, not from `.inkentry/config.toml`. See
+`offline` regardless of this setting, as a hard kill-switch. See
 [Team server and sync modes](memory.md#team-server-and-sync-modes) for the
 full picture.
+
+**Settable in either file**, unlike `server_url` above. `.inkentry/config.toml`
+wins over the personal config, and `INKENTRY_MODE` wins over both, so a project
+that states a mode gets it on every teammate's machine while a project that
+states nothing leaves the choice personal. `mode` names no host, so a personal
+value can only pick among behaviours toward the server the project config
+already chose, never send anything somewhere new. An unrecognised value is a
+hard error in either file.
 
 `mode` also decides which server answers LLM calls for
 `inkentry harvest` and index-time summaries, and it is the one setting
@@ -248,7 +257,8 @@ Prefer one of these instead of hand-editing this field:
 Do **not** commit a `server_key` to `.inkentry/config.toml`: the project file
 does not accept this field at all (see
 [Project config fields](#inkentryconfigtoml-project-level)); a line present
-there anyway is silently dropped and never resolves to a credential. See
+there anyway never resolves to a credential, and is named on stderr telling
+you to rotate it. See
 [`inkentry auth`](commands.md#inkentry-auth) for the full command reference.
 
 ### `project_id`
@@ -342,32 +352,46 @@ value in place.
 
 ## `.inkentry/config.toml` (project-level)
 
-Safe to commit; contains no secrets by design. Only four keys are read from
-this file - `server_url`, `project_id`, `server_ca`, and `[index]` - anything
-else (including any personal field documented above) is silently ignored.
+Safe to commit; contains no secrets by design. Six keys are read from this
+file - `server_url`, `project_id`, `server_ca`, `mode`, `llm_url`, and
+`[index]` - and anything else (including any personal field documented above)
+is ignored, with one warning line per key naming it and this file.
 
 ```toml
 # .inkentry/config.toml
 server_url = "https://inkentry.internal.example.com"
 project_id = "my-awesome-app"
 server_ca = "/etc/inkentry/internal-ca.pem"
+mode = "cloud_first"
+llm_url = "https://llm.internal.example.com"
 
 [index]
 exclude = ["fixtures/**"]
 ```
 
+The warning is never a refusal: the key is ignored, the rest of the file loads,
+and the command runs. It goes to stderr, so `--format json` output is
+unaffected.
+
 **`server_key` is deliberately not accepted here.** A credential in a
 committed file stays in the repo's history forever and is readable by anyone
 with repo access, so the project config has no field for it at all: a stray
-`server_key` line is silently dropped, and the file's other keys still load
-normally. Use `inkentry auth set-key --server <url>` (or `INKENTRY_SERVER_KEY`
-in CI) to set a shared team credential per developer instead.
+`server_key` line has no effect, and the file's other keys still load normally.
+It is **named on stderr and you are told to rotate it**, because by the time
+the file is committed the value is already in the history and nothing the
+client does can take it back. The person holding the file is the only one who
+can rotate the credential, so staying silent would keep it from the one reader
+who could act. The removed `memory_server_key` alias is treated the same way.
+Use `inkentry auth set-key --server <url>` (or `INKENTRY_SERVER_KEY` in CI) to
+set a shared team credential per developer instead.
 
-**`llm_url` is not accepted here either**, for a related reason: it is the
-endpoint a credential is presented to, and it is a per-developer choice. A
-committed value would point every teammate's local daemon at whichever machine
-the author happened to be running an LLM on. Set it in the personal config or
-via `INKENTRY_LLM_URL`.
+**`llm_url` is accepted here**, and the credential it is presented to is not.
+A team usually points at one approved provider, so the endpoint is a
+project-wide fact worth committing once instead of asking every developer to
+repeat it. Anyone running a local model still wins from their personal config
+or `INKENTRY_LLM_URL`. The key is a different matter: store it with
+`inkentry auth set-key --llm`, or pass `INKENTRY_LLM_KEY`, never in either
+file.
 
 ## `~/.config/inkentry/config.toml` (personal)
 
@@ -400,9 +424,10 @@ relocation option.
 **`inference_url`.** Populated at runtime when inkentry auto-discovers a
 loopback server, and never read from either TOML file.
 
-An unrecognised key parses without error and does nothing, so a typo is silent.
-Check spelling against the field list above if a setting appears to have no
-effect.
+An unrecognised key parses without error and does nothing. In
+`.inkentry/config.toml` it is named in a warning; in the personal config it is
+silent, so check spelling against the field list above if a setting there
+appears to have no effect.
 
 ---
 

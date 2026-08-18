@@ -180,25 +180,31 @@ guess wrong about, and each restriction is part of the contract:
   repository must never be able to hand a secret to whoever clones it. Use
   `inkentry auth set-key --server <url>`, `inkentry login`, or
   `INKENTRY_SERVER_KEY`.
-- `llm_url` is **ignored in the project config**, which follows from the
-  allowlist below rather than being an exception to it, and is named here
-  because it looks like `server_url` and is not. An LLM endpoint is a
-  per-developer choice: a committed value points every teammate's local daemon
-  at whichever machine the author was running a model on. Set it in the
-  personal config or via `INKENTRY_LLM_URL`. Its credential is not a config key
-  in either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
+- `llm_url` reads from **both** files, project winning over personal, and
+  `INKENTRY_LLM_URL` winning over both. A team endpoint is usually one approved
+  provider rather than a developer's own machine, so it is worth stating once
+  for the project, and anyone running a local model still outranks it from
+  their personal file or the environment. Its credential does **not** follow it
+  into either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
   same reasoning as `server_key`.
+
+`mode` reads from **both** files, project winning over personal,
+because it names no host and so cannot route anything anywhere the project
+config did not already choose.
 
 Beyond those three:
 
 - Unrecognised keys are ignored rather than rejected. A config written for a
   newer inkentry still loads on an older one, and a config carrying a removed key
   still loads. A key ignored because it is in the wrong file behaves the same
-  way: the rest of the file is unaffected.
+  way: the rest of the file is unaffected. In `.inkentry/config.toml` an ignored
+  key is also **named on stderr**, which changes nothing about what loads. A
+  key that names a credential is named too, and says to rotate it: the file is
+  committed, so the value is already in the repository's history.
 - The **project-level allowlist** is itself stable. A checked-in
   `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
-  `server_ca`, and `[index]`. Adding a key to that allowlist is additive and
-  allowed; removing one is a breaking change.
+  `server_ca`, `mode`, `llm_url`, and `[index]`. Adding a key to that allowlist is additive
+  and allowed; removing one is a breaking change.
 - Environment variable overrides (`INKENTRY_*`) are stable on the same terms as
   the keys they override. They are not subject to the file restrictions above:
   `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`, and `INKENTRY_LLM_URL` all take

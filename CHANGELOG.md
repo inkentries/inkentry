@@ -298,6 +298,28 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   recommended**, not only in the plumbing reference section, since a plumbing
   verb exits 1 on an empty result and these are the lines an agent copies into a
   script.
+- **`mode` in `.inkentry/config.toml` now takes effect.** The project config
+  read four keys and dropped everything else without a word, so a team that
+  wrote `server_url`, `project_id` and `mode = "cloud_first"` together (the
+  shape the team-server docs show) silently ran `local_first`, with memory
+  staying in each developer's own store while the setup read as
+  server-authoritative. `mode` is now read from either file: the project config
+  wins over the personal one, and `INKENTRY_MODE` still wins over both.
+  `INKENTRY_NO_SERVER=1` still forces `offline` regardless.
+- **A `server_key` line in `.inkentry/config.toml` now says so, and says to
+  rotate.** The field is still never read from a committed file; it used to be
+  dropped in silence, which kept the exposure from the only person who could act
+  on it.
+- **`llm_url` is now a project config key.** A team usually points at one
+  approved provider, so the endpoint is a project-wide fact worth stating once
+  rather than asking every developer to repeat it; the project file wins over
+  the personal one and `INKENTRY_LLM_URL` wins over both, so anyone running a
+  local model still overrides it. The credential does not follow it into either
+  file.
+- **A key `.inkentry/config.toml` is not read for is named on stderr** instead
+  of being dropped in silence, with `llm_url` carrying its own message and its
+  own reason. This is a warning, never a refusal: the key is ignored, the rest
+  of the file loads, and the command runs unchanged.
 - **An index rebuilt for a new schema now says so, instead of reading as an
   empty repository.** Opening an `index.db` this build cannot read discards and
   recreates it, keeping the recorded usage history; the only account of that was
