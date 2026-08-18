@@ -10,11 +10,16 @@
   To unload:
     launchctl unload ~/Library/LaunchAgents/inkentry-server.plist
     rm ~/Library/LaunchAgents/inkentry-server.plist
+
+  Upgrading from a build whose Label was cloud.spelunk.server: unload before
+  replacing the file. `launchctl unload` reads the Label out of the file it is
+  given, so replacing it first leaves the old job running under the old Label.
+    launchctl remove cloud.spelunk.server
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>cloud.spelunk.server</string>
+    <string>com.inkentry.server</string>
 
     <key>ProgramArguments</key>
     <array>
