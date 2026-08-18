@@ -114,12 +114,31 @@ User filesystem
         │    (query text only; note content stays in memory.db — NOT sent to server)
         └─► KNN search ─► memory.db (local sqlite-vec)
 ```
-(*) Both paths scan. `inkentry harvest` (harvest_claude.rs) runs
-`contains_secret` on harvested text before storing, and `inkentry memory add`
-(`cli/cmd/memory/add.rs`) runs it on the resolved `title` and `body` before
-**any** persistence — see requirement 8 below, which the implementation
-over-satisfies by refusing the whole command rather than skipping only the
-git-notes write.
+(*) **Every route into memory scans, and it is worth reading which does what
+rather than trusting the summary.** `inkentry harvest` has two sources and they
+live in different files, so "harvest scans" is not one fact:
+
+- `inkentry memory add` (`cli/cmd/memory/add.rs`) runs `contains_secret` on the
+  resolved `title` and `body` before **any** persistence. See requirement 8
+  below, which the implementation over-satisfies by refusing the whole command
+  rather than skipping only the git-notes write.
+- `inkentry harvest --source claude-code`
+  (`cli/cmd/memory/harvest_claude.rs`) runs it on each session's combined
+  transcript before extraction, and again on the LLM's body before storing.
+- `inkentry harvest --source git` and `--source failures`
+  (`cli/cmd/memory/harvest.rs`) run it on each commit's subject and body
+  before the extraction request is built, so a matched message reaches neither
+  the LLM nor the store.
+
+**One scanner, two failure shapes, sized to the call pattern.** `memory add`
+**aborts the command** on a match: it is one interactive entry, so refusing it
+costs the author one retry. The git-commit harvest **skips that commit and
+continues the walk**, warning with the commit SHA and never the matched text: a
+`--branch` walk can cover thousands of commits, and aborting the run over a
+single long-since-rotated credential in one old message would discard every
+other commit in it. That is the same drop-and-warn posture `inkentry index`
+takes for a secret-bearing code chunk. The divergence is deliberate; the two
+routes are not meant to converge.
 
 **Memory data-flow rule (ADR-004):** Note text for storage is never sent to the
 loopback inkentry-server. For `memory search`, only the query string crosses the
@@ -230,7 +249,7 @@ unauthenticated (no bearer required or sent).
 | LLM endpoint credential (`llm_url`) exposed in the process table, at rest, or in transit | A | Medium | High | Stored in the OS secret store via `inkentry auth set-key --llm`, never in `config.toml`; read from stdin/prompt and refused as an argument. The CLI resolves it only on the daemon-spawn path and passes it to the child in its environment: no input emits `--llm-key`/`--llm-key-file` into the spawned daemon's argv, and the endpoint URL/model travel as arguments precisely because they are not secret. `INKENTRY_LLM_KEY` is the CI/non-interactive escape hatch. Never logged at any level, and not echoed by the refusal below. When a credential resolves against a plaintext `http://` non-loopback endpoint, `inkentry-server` refuses to start rather than sending it in the clear; the check is scoped to a credential being present, so keyless LAN endpoints are unaffected. |
 | Detached `inkentry-server` daemon reads the OS keychain, raising an authorization prompt no user can answer (or, worse, being granted standing access) | A | Medium | Medium | **Structural:** the server crate reaches for no secret store at all. The CLI resolves the credential in the user's own session and hands it over out of band. Enforced by `the_server_crate_never_reaches_for_a_secret_store`, a source-level scan of `crates/inkentry-server/src/`, so a future reach fails CI rather than shipping. |
 | `inkentry memory add`/edit interactive `$EDITOR` draft written to a predictable temp path, enabling symlink/TOCTOU clobber and a world-readable info-leak window | A | Low | Medium | **Fixed:** the draft is created via `tempfile::Builder` (unpredictable name, `O_EXCL`, mode `0600` on unix) instead of a PID-derived path in `std::env::temp_dir()`. The `NamedTempFile` handle is kept open across the `$EDITOR`/`$VISUAL` spawn and the body is read back by seeking the retained handle (not by re-opening the path), so a symlink swapped in at the draft's path during the edit window is not followed. |
-| **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | Medium | **High** | **Mitigated (requirement 8 implemented).** `cli/cmd/memory/add.rs` calls `contains_secret` on both `title` and `body` before any persistence and, on a match, aborts the command with a message that does not echo the matched text — so neither SQLite nor `refs/notes/inkentry` receives it. This is stricter than requirement 8 specified (which asked only that the git-notes write be skipped). **Residual:** `contains_secret` is a finite regex list, so a credential in an unrecognised format still reaches both stores; the scanner reduces the chance of an accident, it is not a boundary. See [git-notes memory](#git-notes-memory-refsnotesinkentry). |
+| **Memory note body contains a credential written to git notes and pushed to a shared/public remote** | A | Medium | **High** | **Mitigated (requirement 8 implemented).** `cli/cmd/memory/add.rs` calls `contains_secret` on both `title` and `body` before any persistence and, on a match, aborts the command with a message that does not echo the matched text — so neither SQLite nor `refs/notes/inkentry` receives it. This is stricter than requirement 8 specified (which asked only that the git-notes write be skipped). The harvest routes reach the same store and apply the same scanner, but skip the matching session/commit instead of ending the run, because a bulk walk and a single interactive write are not the same call pattern; the shapes are set out under the Mode A memory data flow above. **Residual:** `contains_secret` is a finite regex list, so a credential in an unrecognised format still reaches both stores; the scanner reduces the chance of an accident, it is not a boundary. See [git-notes memory](#git-notes-memory-refsnotesinkentry). |
 | **Sensitive architectural context (decisions, handoffs) in git notes exposed on clone to any repo reader** | A | **Medium** | **Medium** | Notes attached to `refs/notes/inkentry` are fetched by `git fetch` when the refspec is included; anyone with clone access reads the full history of notes. **Documentation control only** — users must understand that `store_in_git_notes = true` (default) means notes are as public as the repo. |
 
 ### E — Elevation of Privilege
@@ -505,7 +524,8 @@ push configuration.
 | Code path | Scanner called? | Notes |
 |-----------|:-:|-------|
 | `inkentry index` (chunk storage) | Yes — `contains_secret()` in `parse_phase.rs` | Credentials dropped before DB write |
-| `inkentry harvest` (harvest_claude.rs) | Yes — `contains_secret()` before storing | Harvested bodies screened |
+| `inkentry harvest --source claude-code` (`harvest_claude.rs`) | Yes: `contains_secret()` on the session transcript before extraction, and on the LLM body before storing | A match skips that session or entry; the rest of the run continues |
+| `inkentry harvest --source git` / `--source failures` (`harvest.rs`) | Yes: `contains_secret()` on each commit's subject and body, before the extraction request is built | A match skips that commit and the walk continues; the warning names the SHA only. Deliberately not `add.rs`'s abort: see the note under the Mode A memory data flow |
 | `inkentry memory add` → git-notes write-through | Yes — `contains_secret()` on `title` and `body` in `add.rs`, before *either* store | A match aborts the whole command; nothing is written to SQLite or `refs/notes/inkentry`, and the error does not echo the matched text |
 
 **Residual risk:** A user who types

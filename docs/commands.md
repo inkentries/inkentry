@@ -876,6 +876,11 @@ one command: a one-time **backfill** over a range of history, and the
 commit messages (or session logs) to the LLM, extracts significant entries, and
 stores them in the project's memory, skipping near-duplicates.
 
+A commit whose message matches a known credential pattern is skipped outright:
+it is not sent to the LLM and nothing derived from it is stored. Harvest warns
+with that commit's SHA (never the matched text) and carries on with the rest of
+the walk, so one old credential in a long history does not cost you the run.
+
 ```
 inkentry harvest [--git-range HEAD~10..HEAD | --branch <ref>]
                  [--source git|claude-code|failures]

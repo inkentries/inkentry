@@ -11,6 +11,12 @@
 //! The `store_in_git_notes` git-notes path requires a git repo; tests that
 //! exercise it run inside a temporary `git init` directory.  Tests that only
 //! check the error/SQLite side can use a plain temp dir.
+//!
+//! (a) and (b) also guard the divergence from the git-commit harvest, which
+//! applies the same scanner but skips the matching commit and continues the
+//! walk (`git_harvest_tests/harvest_secret_scan.rs`).  Aborting is right here
+//! because one `add` is one entry; homogenising the two would make a single
+//! old credential in commit #40 of 4000 abandon the other 3960.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin};

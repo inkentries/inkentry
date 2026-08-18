@@ -10,6 +10,8 @@ mod git_notes_fallback;
 mod graph_edges;
 #[path = "git_harvest_tests/harvest_ref_injection.rs"]
 mod harvest_ref_injection;
+#[path = "git_harvest_tests/harvest_secret_scan.rs"]
+mod harvest_secret_scan;
 #[path = "git_harvest_tests/harvest_upfront_check.rs"]
 mod harvest_upfront_check;
 #[path = "git_harvest_tests/init_notes_refspec.rs"]
