@@ -34,8 +34,12 @@ inkentry --version
 Preview what it would do without writing anything:
 
 ```powershell
-& ([scriptblock]::Create((irm https://get.inkentry.com/install.ps1))) -DryRun
+$env:INKENTRY_DRY_RUN=1; irm https://get.inkentry.com/install.ps1 | iex
 ```
+
+It prints the release, the download URL, where the binaries would go, and
+whether your user `PATH` would change. A pipe cannot carry a parameter, which
+is why the preview is an environment variable here and a flag on Unix.
 
 #### Scoop
 
