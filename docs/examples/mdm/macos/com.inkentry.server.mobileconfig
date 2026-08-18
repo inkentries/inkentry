@@ -1,31 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  macOS configuration profile (.mobileconfig) for spelunk.
+  macOS configuration profile (.mobileconfig) for inkentry.
 
   WHAT THIS DOES
   This profile installs a managed launchd LaunchDaemon that keeps a shared,
-  always-on `spelunk-server` running on a managed host (for example a build
+  always-on `inkentry-server` running on a managed host (for example a build
   host or a team server). It is the macOS-native, MDM-deployable form of the
-  LaunchAgent shipped in packaging/spelunk-server.plist, promoted to a
+  LaunchAgent shipped in packaging/inkentry-server.plist, promoted to a
   system-scoped LaunchDaemon so it runs without an interactive login session.
 
   WHAT THIS DOES NOT DO
-  spelunk has NO macOS managed-preferences (MCX) domain. The CLI and server
+  inkentry has NO macOS managed-preferences (MCX) domain. The CLI and server
   read their settings from TOML config files and environment variables, not
-  from a macOS preference domain. So this profile does not push spelunk's
+  from a macOS preference domain. So this profile does not push inkentry's
   application settings the way an MCX "Forced preferences" payload would. To
-  pre-configure spelunk itself (server_url, project_id, models cache, etc.),
+  pre-configure inkentry itself (server_url, project_id, models cache, etc.),
   deploy the config file and/or environment via an MDM file or script payload
-  see ../README.md ("Pushing spelunk configuration").
+  see ../README.md ("Pushing inkentry configuration").
 
   REACHING IT OFF-HOST
   This job binds a routable interface (--host 0.0.0.0) and serves HTTPS
-  in-process: spelunk-server terminates TLS itself (ADR-066), with nothing in
+  in-process: inkentry-server terminates TLS itself (ADR-066), with nothing in
   front of it. A non-loopback bind is refused unless BOTH the TLS cert/key
-  (--tls-cert/--tls-key) AND an API key (SPELUNK_SERVER_KEY) are set, so a
+  (--tls-cert/--tls-key) AND an API key (INKENTRY_SERVER_KEY) are set, so a
   team-reachable server carries all three. Bring your own PEM certificate
-  (internal CA, certbot, or a cloud-issued cert); spelunk-server does not renew
+  (internal CA, certbot, or a cloud-issued cert); inkentry-server does not renew
   it, so the operator does. For a purely on-host server instead, set
   --host 127.0.0.1 and drop the --tls-* args (loopback plaintext, no key needed).
 
@@ -33,22 +33,22 @@
   1. Regenerate every PayloadUUID below (`uuidgen`) so this profile does not
      collide with another org's profile.
   2. Set PayloadOrganization to your organization name.
-  3. Confirm the binary path matches where your fleet installs spelunk-server
+  3. Confirm the binary path matches where your fleet installs inkentry-server
      (the install script places it in /usr/local/bin when run as root).
-  4. Install your PEM cert chain at /etc/spelunk/tls-cert (public, 0644) and the
-     private key at /etc/spelunk/tls-key (root-only, 0600), or edit the paths
+  4. Install your PEM cert chain at /etc/inkentry/tls-cert (public, 0644) and the
+     private key at /etc/inkentry/tls-key (root-only, 0600), or edit the paths
      below to match your host.
-  5. Adjust the --port, --db path, and SPELUNK_SERVER_KEY to suit your
+  5. Adjust the --port, --db path, and INKENTRY_SERVER_KEY to suit your
      deployment. For a shared server, ALWAYS set an API key (see README).
 -->
 <plist version="1.0">
 <dict>
 	<key>PayloadDisplayName</key>
-	<string>spelunk-server (managed LaunchDaemon)</string>
+	<string>inkentry-server (managed LaunchDaemon)</string>
 	<key>PayloadDescription</key>
-	<string>Installs and keeps the shared spelunk-server daemon running on a managed macOS host.</string>
+	<string>Installs and keeps the shared inkentry-server daemon running on a managed macOS host.</string>
 	<key>PayloadIdentifier</key>
-	<string>cloud.spelunk.server.profile</string>
+	<string>com.inkentry.server.profile</string>
 	<key>PayloadOrganization</key>
 	<string>Example Organization</string>
 	<key>PayloadScope</key>
@@ -63,11 +63,11 @@
 	<array>
 		<dict>
 			<key>PayloadDisplayName</key>
-			<string>spelunk-server LaunchDaemon</string>
+			<string>inkentry-server LaunchDaemon</string>
 			<key>PayloadDescription</key>
 			<string>com.apple.ManagedClient.preferences payload that writes a launchd LaunchDaemon job.</string>
 			<key>PayloadIdentifier</key>
-			<string>cloud.spelunk.server.profile.launchd</string>
+			<string>com.inkentry.server.profile.launchd</string>
 			<key>PayloadType</key>
 			<string>com.apple.ManagedClient.preferences</string>
 			<key>PayloadUUID</key>
@@ -78,10 +78,10 @@
 			<dict>
 				<!--
 				  The launchd domain. macOS materialises this payload as a
-				  LaunchDaemon plist named cloud.spelunk.server, owned by root
+				  LaunchDaemon plist named com.inkentry.server, owned by root
 				  and run at boot, with no interactive login required.
 				-->
-				<key>cloud.spelunk.server</key>
+				<key>com.inkentry.server</key>
 				<dict>
 					<key>Forced</key>
 					<array>
@@ -89,11 +89,11 @@
 							<key>mcx_preference_settings</key>
 							<dict>
 								<key>Label</key>
-								<string>cloud.spelunk.server</string>
+								<string>com.inkentry.server</string>
 								<key>ProgramArguments</key>
 								<array>
 									<!-- Path the install script uses when run as root. -->
-									<string>/usr/local/bin/spelunk-server</string>
+									<string>/usr/local/bin/inkentry-server</string>
 									<!--
 									  Routable bind + in-process HTTPS. A non-loopback bind is
 									  refused unless the --tls-* args below AND an API key are
@@ -106,27 +106,27 @@
 									<string>7777</string>
 									<!-- Persistent DB path for a shared/always-on host. -->
 									<string>--db</string>
-									<string>/var/lib/spelunk/spelunk.db</string>
+									<string>/var/lib/inkentry/inkentry.db</string>
 									<!--
 									  Operator-provided PEM. The cert chain is public (0644);
 									  the private key is root-only (0600). Bring your own
 									  (internal CA / certbot / cloud); the server does not renew.
 									-->
 									<string>--tls-cert</string>
-									<string>/etc/spelunk/tls-cert</string>
+									<string>/etc/inkentry/tls-cert</string>
 									<string>--tls-key</string>
-									<string>/etc/spelunk/tls-key</string>
+									<string>/etc/inkentry/tls-key</string>
 								</array>
 								<key>EnvironmentVariables</key>
 								<dict>
 									<!--
 									  Set a real API key. This job binds a routable
-									  interface, so an unset key makes spelunk-server
+									  interface, so an unset key makes inkentry-server
 									  refuse to start (a non-loopback bind requires
 									  both TLS and a key). You can also inject it
 									  out-of-band rather than committing it here.
 									-->
-									<key>SPELUNK_SERVER_KEY</key>
+									<key>INKENTRY_SERVER_KEY</key>
 									<string>replace-with-your-shared-api-key</string>
 									<key>RUST_LOG</key>
 									<string>info</string>
@@ -136,9 +136,9 @@
 								<key>KeepAlive</key>
 								<true/>
 								<key>StandardOutPath</key>
-								<string>/var/log/spelunk-server.log</string>
+								<string>/var/log/inkentry-server.log</string>
 								<key>StandardErrorPath</key>
-								<string>/var/log/spelunk-server.err</string>
+								<string>/var/log/inkentry-server.err</string>
 							</dict>
 						</dict>
 					</array>
