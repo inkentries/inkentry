@@ -378,6 +378,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Bumped `h2` to 0.4.16** for RUSTSEC-2026-0258 (unbounded empty DATA frames).
 - **The local relay no longer opens outbound connections to a caller-chosen
   host.** `POST /local/relay/push` took `server_url` and `bearer` from the
   request body, and the daemon then connected there carrying that credential,
