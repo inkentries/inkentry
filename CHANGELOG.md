@@ -285,6 +285,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Docs: memory did not "travel with the repo" by default, as the getting-started
+  guide and the README both claimed.** Publishing your own memory notes is opt-in
+  and needs `inkentry hooks install --pre-push`; only the fetch side is automatic.
+  Both documents now say so, and the getting-started guide documents `--pre-push`,
+  the two `.git/config` entries `init` writes, and the fact that the post-commit
+  hook's harvesting is inactive until an LLM is configured. Its team-setup section
+  now recommends `inkentry sync` over `inkentry plumbing push`, whose plumbing
+  exit code 1 on an empty delta made an already-synced run look like a failure.
+  The supported-language lists in the README and CLAUDE.md now state that
+  `inkentry languages` is build-dependent (`rich-formats` adds DOCX, spreadsheets
+  and PDF, and is on for every release binary).
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's
