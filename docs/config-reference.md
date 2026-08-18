@@ -257,7 +257,8 @@ Prefer one of these instead of hand-editing this field:
 Do **not** commit a `server_key` to `.inkentry/config.toml`: the project file
 does not accept this field at all (see
 [Project config fields](#inkentryconfigtoml-project-level)); a line present
-there anyway is silently dropped and never resolves to a credential. See
+there anyway never resolves to a credential, and is named on stderr telling
+you to rotate it. See
 [`inkentry auth`](commands.md#inkentry-auth) for the full command reference.
 
 ### `project_id`
@@ -374,12 +375,14 @@ unaffected.
 **`server_key` is deliberately not accepted here.** A credential in a
 committed file stays in the repo's history forever and is readable by anyone
 with repo access, so the project config has no field for it at all: a stray
-`server_key` line is silently dropped (no warning, unlike other unread keys),
-and the file's other keys still load normally. The removed `memory_server_url`
-and `memory_server_key` aliases are silent for the same reason. Use `inkentry
-auth set-key --server <url>` (or `INKENTRY_SERVER_KEY` in CI) to set a shared
-team credential per developer instead. If a key ever reached this file, rotate
-it: git history keeps it whatever the client does with the field.
+`server_key` line has no effect, and the file's other keys still load normally.
+It is **named on stderr and you are told to rotate it**, because by the time
+the file is committed the value is already in the history and nothing the
+client does can take it back. The person holding the file is the only one who
+can rotate the credential, so staying silent would keep it from the one reader
+who could act. The removed `memory_server_key` alias is treated the same way.
+Use `inkentry auth set-key --server <url>` (or `INKENTRY_SERVER_KEY` in CI) to
+set a shared team credential per developer instead.
 
 **`llm_url` is not accepted here either**, for a related reason: it is the
 endpoint a credential is presented to, and it is a per-developer choice. A

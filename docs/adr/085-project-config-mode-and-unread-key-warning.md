@@ -1,17 +1,32 @@
-# ADR-085: `mode` in the project config, and naming the keys that file is not read for
+# ADR-085: naming the keys `.inkentry/config.toml` is not read for
 
 **Date:** 2026-08-17
 **Deciders:** architect (this record); founder (Johan) sign-off via PR review
-**Relationship to prior ADRs:** extends
+**Relationship to prior ADRs:** **overturns** the silence half of
 [ADR-071](071-per-server-client-bearer-scoping.md) D4, which removed `server_key`
-from the checked-in project config and chose silence for a file that still
-carries the line. That choice is preserved here, and the reasoning behind it is
-what makes the general rule below stop short of it. Operates inside
+from the checked-in project config and chose to say nothing about a file that
+still carries the line. D4's exclusion of the field stands; its silence does
+not. See D2. Operates inside
 [ADR-004](004-unified-memory-storage.md)'s "one canonical store per project"
 model without reopening it: `mode` is the setting that says which store that is,
 and this ADR only changes where the setting may be written.
 
 ## Context
+
+### What is a bug here, and what is a decision
+
+Reading `mode` from `.inkentry/config.toml` is **a bug fix, not a decision.**
+The shipped documentation already told teams to put `mode` in that file, the
+field's own doc comment never named a file, and the code simply never merged
+it. Nothing was chosen; something was missed. That half needs no record beyond
+the fix itself.
+
+This ADR exists for the three things the fix exposed, none of which the bug
+report settles: which file wins when both set `mode` (D1), what a config file
+should say about a key it is not read for (D2), and how the two are kept from
+drifting apart again (D3). D2 in particular changes user-visible output and
+touches a frozen stability guarantee, and it reverses a decision recorded in an
+earlier ADR.
 
 ### The defect
 
@@ -140,25 +155,28 @@ committed endpoint points the whole team at one developer's machine. Every other
 unread key, whether misplaced, stale or simply mistyped, gets the generic line,
 which names the keys the file *is* read for.
 
-**`server_key` and the `memory_server_*` aliases stay silent**, as ADR-071 D4
-decided. The distinction is what the reader could still expect to happen. The
-warning exists for a key that names a real setting whose effect did not occur;
-these three name nothing anywhere in the product, and their remedy is not a
-config edit. For `server_key` it is "rotate the credential, because the
-repository's history retains it regardless of what the client now does with the
-field", which D4 already established is a documentation matter that no
-load-time line can carry. D4's second argument stands too: a permanent runtime
-message whose only job is to describe a removed field is code with a
-one-release problem and no end date. The exemption is a three-name list beside
-the allowlist, and reopening D4 is a separate decision this ADR does not take.
+**A key that names a credential is warned about loudest, and told to rotate.**
+This reverses ADR-071 D4's choice of silence, on review, and the reasoning that
+overturns it is short: a credential in a committed file is the one unread key
+where silence does active harm. Every other unread key is inert, so saying
+nothing costs a user only a puzzle. This one is a live exposure, the value is
+already in the repository's history, and **nothing the client does can take it
+back**. The only remedy is rotation, and the only person who can rotate it is
+the person holding the file. Dropping the line in silence withholds the fact
+from the single reader who could act on it.
 
-The counter-argument is recorded rather than dismissed: a `server_key` line in a
-committed file is a live security problem, and a warning is the only channel
-that reaches the person who has one. What decides it here is that the warning
-would announce the exposure to every developer on the team, on every command, in
-a repository where the credential is already readable by all of them, while
-saying nothing they can act on that the docs do not say better. If that trade
-is later judged wrong, it is judged on its own terms, in its own record.
+D4's argument for silence was that rotation is a documentation matter no
+load-time line can carry. That is backwards for the case it governs: the docs
+can say "rotate a key that reached this file", but only the tool knows a key
+*did* reach it. The counter-argument D4 raised, that the warning announces the
+exposure to every developer on the team, does not survive either, because the
+credential sits in a file all of them can already read. The warning tells them
+nothing the repository does not.
+
+`server_key` and `memory_server_key` therefore get a line naming the key, the
+file, and rotation as the remedy. `memory_server_url` is a removed alias that
+names no credential, so it gets a line pointing at `server_url`, the key that
+replaced it.
 
 ### D3 - the allowlist is one list
 
@@ -213,5 +231,7 @@ is precisely this defect: a key that merges but warns, or warns but merges.
    still succeeds.
 5. `llm_url` in a project config stays excluded and gets its own message.
 6. A project config still carrying a `server_key` line keeps working for its
-   other fields and stays silent, as do the `memory_server_*` aliases.
+   other fields, and the key is named on stderr with rotation as the remedy.
+   `memory_server_key` behaves the same; `memory_server_url` names `server_url`
+   as its replacement.
 7. `INKENTRY_NO_SERVER=1` forces `offline` over a project-config `mode`.

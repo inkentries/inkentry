@@ -86,9 +86,8 @@ struct ProjectIndexConfig {
 /// `server_key` is deliberately absent (ADR-071 D4): a credential in a
 /// committed file is in the repo's history for good and readable by anyone
 /// with repo access. A file that still has a `server_key` line keeps working
-/// for its other fields: serde silently drops the unrecognized key, the
-/// same way the removed `memory_server_*` aliases are dropped. Use
-/// `inkentry auth set-key --server <url>` instead.
+/// for its other fields, and is named on stderr so its owner knows there is
+/// something to rotate. Use `inkentry auth set-key --server <url>` instead.
 ///
 /// Every *other* key the file is not read for is named on stderr instead of
 /// dropped in silence (ADR-085), `llm_url` with its own reasoning. The keys
@@ -415,10 +414,9 @@ impl Config {
 
         // ── 2. Merge project-level config (.inkentry/config.toml) ─────────────
         // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
-        // file never carries a credential. A file that still has a
-        // `server_key` line keeps working for its other fields, and stays
-        // silent about it, as does a `memory_server_*` alias; every other key
-        // this file is not read for is named on stderr (ADR-085).
+        // file never carries a credential. A file that still has one keeps
+        // working for its other fields; every key this file is not read for,
+        // credentials included, is named on stderr (ADR-085).
         if let Some(root) = project_root
             && let Some(proj_path) = find_project_config(root)
         {
@@ -650,14 +648,16 @@ fn parse_project_config(raw: &str, path: &Path) -> Result<ProjectConfig> {
 /// [`project_config_key_warnings`], so the two cannot drift.
 const PROJECT_CONFIG_KEYS: &[&str] = &["server_url", "project_id", "server_ca", "mode", "index"];
 
-/// Keys removed from the project config by a recorded decision, which stay
-/// silent: `server_key` (ADR-071 D4) and the `memory_server_*` aliases whose
-/// silent drop D4 took as its precedent. ADR-085's warning exists for a key
-/// whose effect a reader could still reasonably expect; these have no effect
-/// anywhere in the product, and their remedy is a docs matter (rotate the
-/// credential, use the replacement key) that a load-time line cannot carry.
-const PROJECT_CONFIG_RETIRED_KEYS: &[&str] =
-    &["server_key", "memory_server_url", "memory_server_key"];
+/// Keys the project config has no field for that name a credential (ADR-071
+/// D4). These get their own wording rather than the generic one: the file is
+/// committed, so the value is already in the repository's history and no
+/// change to the client can take it back. Rotation is the only remedy, and a
+/// line at load time is the one thing that reaches the person holding the file.
+const PROJECT_CONFIG_CREDENTIAL_KEYS: &[&str] = &["server_key", "memory_server_key"];
+
+/// Removed aliases that still name a real setting, paired with the key that
+/// replaced them so the warning can say where the value should go.
+const PROJECT_CONFIG_RETIRED_ALIASES: &[(&str, &str)] = &[("memory_server_url", "server_url")];
 
 /// Warnings for keys present in a project `.inkentry/config.toml` that it is
 /// not read for (ADR-085). Pure so the wording is unit-testable without
@@ -671,12 +671,26 @@ fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
     };
     table
         .keys()
-        .filter(|key| {
-            !PROJECT_CONFIG_KEYS.contains(&key.as_str())
-                && !PROJECT_CONFIG_RETIRED_KEYS.contains(&key.as_str())
-        })
+        .filter(|key| !PROJECT_CONFIG_KEYS.contains(&key.as_str()))
         .map(|key| {
             let path = path.display();
+            if PROJECT_CONFIG_CREDENTIAL_KEYS.contains(&key.as_str()) {
+                return format!(
+                    "Warning: `{key}` in {path} has no effect, and a credential in a committed \
+                     file is already in the repository's history: rotate it, then set the \
+                     replacement with `inkentry auth set-key --server <url>` or \
+                     INKENTRY_SERVER_KEY."
+                );
+            }
+            if let Some((_, replacement)) = PROJECT_CONFIG_RETIRED_ALIASES
+                .iter()
+                .find(|(k, _)| *k == key)
+            {
+                return format!(
+                    "Warning: `{key}` in {path} has no effect: it was replaced by \
+                     `{replacement}`."
+                );
+            }
             if key == "llm_url" {
                 return format!(
                     "Warning: `llm_url` in {path} has no effect, and is deliberately not read \
@@ -1626,14 +1640,30 @@ mode = "cloud_first"
     }
 
     #[test]
-    fn retired_project_keys_stay_silent() {
-        // ADR-071 D4 and the `memory_server_*` removal before it: these keys do
-        // nothing anywhere, and their remedy lives in the docs.
+    fn a_credential_in_the_project_config_is_named_so_it_can_be_rotated() {
+        // The file is committed, so the value is already in the repository's
+        // history. Dropping it silently leaves the only person who can rotate
+        // it unaware there is anything to rotate.
+        for key in ["server_key", "memory_server_key"] {
+            let warnings = project_warnings(&format!(
+                "server_url = \"https://team.example\"\n{key} = \"team-shared-key\"\n"
+            ));
+            let joined = warnings.join("\n");
+            assert!(joined.contains(key), "`{key}` must be named, got: {joined}");
+            assert!(
+                joined.contains("rotate"),
+                "`{key}` must say to rotate it, got: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_removed_alias_names_the_key_that_replaced_it() {
+        let warnings =
+            project_warnings("memory_server_url = \"http://old.example:7777\"\n").join("\n");
         assert!(
-            project_warnings(
-                "server_url = \"https://team.example\"\nserver_key = \"team-shared-key\"\nmemory_server_url = \"http://old.example:7777\"\nmemory_server_key = \"old\"\n"
-            )
-            .is_empty()
+            warnings.contains("memory_server_url") && warnings.contains("`server_url`"),
+            "a removed alias must point at its replacement, got: {warnings}"
         );
     }
 

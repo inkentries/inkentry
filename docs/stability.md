@@ -189,11 +189,9 @@ guess wrong about, and each restriction is part of the contract:
   in either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
   same reasoning as `server_key`.
 
-`mode` is the counter-example that shows the pattern is not "project keys and
-personal keys": it is read from **both** files, project winning over personal,
+`mode` reads from **both** files, project winning over personal,
 because it names no host and so cannot route anything anywhere the project
-config did not already choose. See
-[ADR-085](adr/085-project-config-mode-and-unread-key-warning.md).
+config did not already choose.
 
 Beyond those three:
 
@@ -201,9 +199,9 @@ Beyond those three:
   newer inkentry still loads on an older one, and a config carrying a removed key
   still loads. A key ignored because it is in the wrong file behaves the same
   way: the rest of the file is unaffected. In `.inkentry/config.toml` an ignored
-  key is also **named on stderr**, which changes nothing about what loads;
-  `server_key` and the removed `memory_server_*` aliases are exempt and stay
-  silent.
+  key is also **named on stderr**, which changes nothing about what loads. A
+  key that names a credential is named too, and says to rotate it: the file is
+  committed, so the value is already in the repository's history.
 - The **project-level allowlist** is itself stable. A checked-in
   `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
   `server_ca`, `mode`, and `[index]`. Adding a key to that allowlist is additive

@@ -2277,9 +2277,8 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     // legitimately serve embedding here. Under the default `local_first`
     // mode that routing is now correctly refused (see the `get_inference_tier`
     // routing fix) in favor of the local loopback embedder, which this test
-    // does not configure - so force `cloud_first` via env (a project-level
-    // `.inkentry/config.toml`, which `write_config_with_server` writes to,
-    // silently drops a `mode` key; see `write_project_server_config`).
+    // does not configure - so force `cloud_first` via env, which outranks
+    // both config files.
     inkentry_bin_in(home.path())
         .env("INKENTRY_MODE", "cloud_first")
         .current_dir(&project_dir)
