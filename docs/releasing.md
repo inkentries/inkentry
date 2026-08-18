@@ -14,14 +14,26 @@ Releases are fully automated via GitHub Actions. Pushing a version tag triggers
 5. Creates a GitHub Release and attaches all `.tar.gz` archives and the `.deb` as downloadable assets.
 6. Auto-generates release notes from merged pull requests and commits.
 
-Two install paths live outside this workflow:
+Three install paths live outside this workflow:
 
-- **`install.sh`** is fetched directly from the canonical copy on `main`
-  (`https://raw.githubusercontent.com/inkentries/inkentry/refs/heads/main/install.sh`),
-  so the documented command always matches the committed script. It resolves the
-  latest release tag via the GitHub API and downloads the matching tarball — it
-  does not need updating per release. (The Windows `install.ps1` is fetched the
-  same way.)
+- **`install.sh` and `install.ps1`** are not in this repository. They live in
+  `inkentries/get.inkentry.com`, served over GitHub Pages at
+  `https://get.inkentry.com/install.sh` and `.../install.ps1`, which are the
+  commands `README.md` and `docs/getting-started.md` publish. Neither needs a
+  per-release edit: each resolves the newest release tag through the GitHub
+  API, falling back to the newest release of any kind because
+  `/releases/latest` excludes pre-releases and so 404s for the whole
+  `v1.0.0-rc` cycle.
+
+  They do need an edit when asset naming changes, and nothing checks it. The
+  scripts rebuild the archive name from the git tag
+  (`inkentry-<tag>-<target>.tar.gz`) to match `.github/workflows/release.yml`,
+  and that agreement is held by hand: the tap and the bucket below at least
+  have a generator job here, while nothing in this repository writes or
+  verifies the installer. The scripts shipped with the wrong shape once
+  already, and a person running the command caught it, not CI. **If you change
+  what the release workflow names its assets, change the scripts in
+  `inkentries/get.inkentry.com` in the same round of work.**
 - **Homebrew tap** lives in the separate `inkentries/homebrew-inkentry`
   repo, seeded at v0.9.8. The `update-homebrew-formula` job in
   `.github/workflows/release.yml` regenerates `Formula/inkentry.rb` with the new
