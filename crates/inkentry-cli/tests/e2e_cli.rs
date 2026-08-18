@@ -2335,7 +2335,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         .expect("stdout must stay machine-clean JSON with all notices on stderr");
 }
 
-// ADR-085: a key the project config is not read for is named on stderr rather
+// A key the project config is not read for is named on stderr rather
 // than dropped in silence, and the rest of the file still loads.
 #[test]
 fn unread_project_config_key_is_named_on_stderr() {

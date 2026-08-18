@@ -214,7 +214,7 @@ async fn cli_memory_round_trips_against_a_real_team_server() {
 
 // The team-setup shape: `server_url`, `project_id` and `mode` together in the
 // checked-in `.inkentry/config.toml`, with nothing in the personal config
-// beyond a personal key. Until ADR-085 the `mode` line was dropped, the project
+// beyond a personal key. The `mode` line used to be dropped, so the project
 // silently ran `local_first`, and memory a team believed was server-authoritative
 // was sitting in each developer's own `memory.db`.
 //

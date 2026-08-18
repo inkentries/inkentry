@@ -305,7 +305,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   staying in each developer's own store while the setup read as
   server-authoritative. `mode` is now read from either file: the project config
   wins over the personal one, and `INKENTRY_MODE` still wins over both.
-  `INKENTRY_NO_SERVER=1` still forces `offline` regardless. See ADR-085.
+  `INKENTRY_NO_SERVER=1` still forces `offline` regardless.
 - **A `server_key` line in `.inkentry/config.toml` now says so, and says to
   rotate.** The field is still never read from a committed file; it used to be
   dropped in silence, which kept the exposure from the only person who could act

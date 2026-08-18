@@ -215,8 +215,7 @@ that states a mode gets it on every teammate's machine while a project that
 states nothing leaves the choice personal. `mode` names no host, so a personal
 value can only pick among behaviours toward the server the project config
 already chose, never send anything somewhere new. An unrecognised value is a
-hard error in either file. See
-[ADR-085](adr/085-project-config-mode-and-unread-key-warning.md).
+hard error in either file.
 
 `mode` also decides which server answers LLM calls for
 `inkentry harvest` and index-time summaries, and it is the one setting

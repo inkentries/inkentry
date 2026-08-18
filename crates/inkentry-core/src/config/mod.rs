@@ -90,7 +90,7 @@ struct ProjectIndexConfig {
 /// something to rotate. Use `inkentry auth set-key --server <url>` instead.
 ///
 /// Every *other* key the file is not read for is named on stderr instead of
-/// dropped in silence (ADR-085), `llm_url` with its own reasoning. The keys
+/// dropped in silence, `llm_url` with its own reasoning. The keys
 /// this struct declares are mirrored in [`PROJECT_CONFIG_KEYS`], which the
 /// warning reads; adding a field here means adding it there.
 #[derive(Debug, Default, Deserialize)]
@@ -101,7 +101,7 @@ struct ProjectConfig {
     /// Path to a PEM CA bundle to trust in addition to the built-in roots, for a
     /// team server presenting a self-signed / internal-CA certificate.
     server_ca: Option<String>,
-    /// How this project's memory is governed (ADR-085). Overrides a personal
+    /// How this project's memory is governed. Overrides a personal
     /// value; `INKENTRY_MODE` still wins over both.
     mode: Option<SyncMode>,
     /// `[index]` table: per-field override of the built-in file filter.
@@ -172,7 +172,7 @@ pub struct Config {
     ///
     /// Settable in **either** config file, with `.inkentry/config.toml`
     /// (project-level) winning over `~/.config/inkentry/config.toml`
-    /// (personal), and `INKENTRY_MODE` winning over both (ADR-085). Unlike
+    /// (personal), and `INKENTRY_MODE` winning over both. Unlike
     /// `server_url`, a personal value is *not* discarded: this field names no
     /// host and can only choose among behaviours toward the server the project
     /// already picked, so a personal value cannot send anything anywhere the
@@ -358,7 +358,7 @@ impl Config {
     /// `server_url` field doc): a team server is a project-wide decision, so
     /// only the checked-in project config or an explicit env var may supply
     /// it, never a single developer's personal file. `mode` layers the normal
-    /// way over all four steps (ADR-085); step 3 names on stderr any key it is
+    /// way over all four steps; step 3 names on stderr any key it is
     /// not read for.
     ///
     /// Pass `path` to override the global config location (used by `--config` flag).
@@ -416,7 +416,7 @@ impl Config {
         // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
         // file never carries a credential. A file that still has one keeps
         // working for its other fields; every key this file is not read for,
-        // credentials included, is named on stderr (ADR-085).
+        // credentials included, is named on stderr.
         if let Some(root) = project_root
             && let Some(proj_path) = find_project_config(root)
         {
@@ -643,7 +643,7 @@ fn parse_project_config(raw: &str, path: &Path) -> Result<ProjectConfig> {
     })
 }
 
-/// The keys `.inkentry/config.toml` is read for (ADR-085). Single source of
+/// The keys `.inkentry/config.toml` is read for. Single source of
 /// truth for the merge in [`Config::load_with_store_from`] and for
 /// [`project_config_key_warnings`], so the two cannot drift.
 const PROJECT_CONFIG_KEYS: &[&str] = &["server_url", "project_id", "server_ca", "mode", "index"];
@@ -653,14 +653,10 @@ const PROJECT_CONFIG_KEYS: &[&str] = &["server_url", "project_id", "server_ca", 
 /// committed, so the value is already in the repository's history and no
 /// change to the client can take it back. Rotation is the only remedy, and a
 /// line at load time is the one thing that reaches the person holding the file.
-const PROJECT_CONFIG_CREDENTIAL_KEYS: &[&str] = &["server_key", "memory_server_key"];
-
-/// Removed aliases that still name a real setting, paired with the key that
-/// replaced them so the warning can say where the value should go.
-const PROJECT_CONFIG_RETIRED_ALIASES: &[(&str, &str)] = &[("memory_server_url", "server_url")];
+const PROJECT_CONFIG_CREDENTIAL_KEYS: &[&str] = &["server_key"];
 
 /// Warnings for keys present in a project `.inkentry/config.toml` that it is
-/// not read for (ADR-085). Pure so the wording is unit-testable without
+/// not read for. Pure so the wording is unit-testable without
 /// capturing stderr; [`Config::load_with_store_from`] prints the result.
 ///
 /// A malformed file yields nothing: the typed parse alongside this already
@@ -682,20 +678,11 @@ fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
                      INKENTRY_SERVER_KEY."
                 );
             }
-            if let Some((_, replacement)) = PROJECT_CONFIG_RETIRED_ALIASES
-                .iter()
-                .find(|(k, _)| *k == key)
-            {
-                return format!(
-                    "Warning: `{key}` in {path} has no effect: it was replaced by \
-                     `{replacement}`."
-                );
-            }
             if key == "llm_url" {
                 return format!(
-                    "Warning: `llm_url` in {path} has no effect, and is deliberately not read \
-                     there: a committed endpoint points the whole team at one developer's \
-                     machine. Set it in ~/.config/inkentry/config.toml, or in INKENTRY_LLM_URL."
+                    "Warning: `llm_url` in {path} has no effect: the inference endpoint is \
+                     read per developer, not per project. Set it in \
+                     ~/.config/inkentry/config.toml, or in INKENTRY_LLM_URL."
                 );
             }
             format!(
@@ -1466,7 +1453,7 @@ project_id = "team/proj"
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
     }
 
-    // ── `mode` in the project config (ADR-085) ────────────────────────────────
+    // ── `mode` in the project config ──────────────────────────────────────────
 
     // Write a personal config and a project `.inkentry/config.toml`, then load
     // with project discovery anchored at the project root. `None` writes no
@@ -1591,7 +1578,7 @@ mode = "cloud_first"
         assert_eq!(resolved, SyncMode::Offline);
     }
 
-    // ── keys the project config does not read (ADR-085) ───────────────────────
+    // ── keys the project config does not read ─────────────────────────────────
 
     fn project_warnings(raw: &str) -> Vec<String> {
         project_config_key_warnings(raw, Path::new("/repo/.inkentry/config.toml"))
@@ -1634,8 +1621,8 @@ mode = "cloud_first"
             "must name where it can be set: {warning}"
         );
         assert!(
-            warning.contains("one developer's machine"),
-            "must carry its own reasoning: {warning}"
+            warning.contains("per developer, not per project"),
+            "must say why it is not read here: {warning}"
         );
     }
 
@@ -1644,26 +1631,17 @@ mode = "cloud_first"
         // The file is committed, so the value is already in the repository's
         // history. Dropping it silently leaves the only person who can rotate
         // it unaware there is anything to rotate.
-        for key in ["server_key", "memory_server_key"] {
-            let warnings = project_warnings(&format!(
-                "server_url = \"https://team.example\"\n{key} = \"team-shared-key\"\n"
-            ));
-            let joined = warnings.join("\n");
-            assert!(joined.contains(key), "`{key}` must be named, got: {joined}");
-            assert!(
-                joined.contains("rotate"),
-                "`{key}` must say to rotate it, got: {joined}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_removed_alias_names_the_key_that_replaced_it() {
-        let warnings =
-            project_warnings("memory_server_url = \"http://old.example:7777\"\n").join("\n");
+        let warnings = project_warnings(
+            "server_url = \"https://team.example\"\nserver_key = \"team-shared-key\"\n",
+        )
+        .join("\n");
         assert!(
-            warnings.contains("memory_server_url") && warnings.contains("`server_url`"),
-            "a removed alias must point at its replacement, got: {warnings}"
+            warnings.contains("server_key"),
+            "`server_key` must be named, got: {warnings}"
+        );
+        assert!(
+            warnings.contains("rotate"),
+            "`server_key` must say to rotate it, got: {warnings}"
         );
     }
 

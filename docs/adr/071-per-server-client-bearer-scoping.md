@@ -221,13 +221,6 @@ corrected as part of this work.
 
 ### D4 – `server_key` is removed entirely from the committed project config
 
-> **The choice of silence below is superseded by
-> [ADR-085](085-project-config-mode-and-unread-key-warning.md) D2.** Removing
-> the field stands. Saying nothing about a file that still carries the line
-> does not: the value is already in the repository's history, rotation is the
-> only remedy, and the person holding the file is the only one who can
-> perform it. A `server_key` line is now named on stderr and says to rotate.
-
 `ProjectConfig` (`config.rs:256-266`) drops the `server_key` field outright.
 Nothing in the client reads a `server_key` out of `.spelunk/config.toml` any
 more, at any tier. A file that still has the line gets **no load-time
