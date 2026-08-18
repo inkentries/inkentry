@@ -11,6 +11,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A memory entry stored without a vector is now repaired.** Entries stored
+  while the embedder was loading, unavailable or disabled were absent from
+  semantic search and no re-push fixed them; the server now fills those vectors
+  in. Every element of `POST …/memory/batch`'s `results` gained an `embedded`
+  boolean describing the stored row.
 - **`GET /v1/health` advertises `accepts_pushed_vectors`.** A client that has
   already embedded an entry locally can send that vector and skip server-side
   embedding, but only against a server that says it accepts one. The flag is

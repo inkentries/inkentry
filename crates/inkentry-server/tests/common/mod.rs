@@ -66,5 +66,6 @@ pub fn make_test_state(dim: usize, auth_key: Option<String>) -> inkentry_server:
         started_by: None,
         trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
+        repair_signal: inkentry_server::repair::RepairSignal::new(),
     }
 }

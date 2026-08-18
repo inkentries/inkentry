@@ -10,8 +10,8 @@ use utoipa::ToSchema;
 use crate::{AppError, AppState, ErrorBody};
 
 use super::{
-    MAX_BATCH_ENTRIES, embed_for_storage, validate_project_slug, validate_pushed_vector,
-    validate_title_body,
+    MAX_BATCH_ENTRIES, StorageEmbedding, embed_for_storage, storage_embedding_text,
+    validate_project_slug, validate_pushed_vector, validate_title_body,
 };
 
 // ── Batch push (wire parity with cloud-api's POST /memory/batch) ────────────
@@ -64,6 +64,16 @@ pub struct BatchItemResult {
     /// can still recover the id from a plain re-push.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Whether the stored row this result refers to is in the vector index
+    /// **as of this response**. Present on every result, `"created"` and
+    /// `"skipped"` alike, and always describing the stored row rather than the
+    /// request: a dedupe-hit reports the state of the row already on the
+    /// server, not of the payload that was skipped.
+    ///
+    /// `false` does not mean "never will be". A row stored without a vector
+    /// raises a repair signal as it is written, so a background pass may
+    /// already be embedding it by the time this response is read.
+    pub embedded: bool,
 }
 
 /// Response body for `POST /memory/batch`; always `207 Multi-Status`.
@@ -178,16 +188,12 @@ pub async fn push_memory_batch(
         .iter()
         .map(|&i| {
             let entry = &body.entries[i];
-            format!(
-                "title: {} | text: {}",
-                entry.title,
-                entry.body.as_deref().unwrap_or("")
-            )
+            storage_embedding_text(&entry.title, entry.body.as_deref().unwrap_or(""))
         })
         .collect();
     let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let mut server_embeddings: Vec<Option<Vec<f32>>> = vec![None; body.entries.len()];
-    if let Some(vectors) = embed_for_storage(&state, &text_refs).await? {
+    if let StorageEmbedding::Vectors(vectors) = embed_for_storage(&state, &text_refs).await? {
         for (&i, vector) in pending.iter().zip(vectors) {
             server_embeddings[i] = Some(vector);
         }
@@ -214,9 +220,15 @@ pub async fn push_memory_batch(
     let mut results = Vec::with_capacity(body.entries.len());
     let mut created = 0u32;
     let mut skipped = 0u32;
+    // Set by any result reporting `embedded: false`, whether it is a row this
+    // request stored without a vector or a dedupe-hit on one stored earlier.
+    // A dedupe hit writes nothing, but it is a free look at a row nothing else
+    // was ever going to re-examine: the client's outbox believes that entry
+    // landed, so a re-push is the last chance to notice.
+    let mut needs_repair = false;
 
     for (i, entry) in body.entries.iter().enumerate() {
-        if let Some(existing_id) = existing.get(&entry.external_id) {
+        if let Some(existing_note) = existing.get(&entry.external_id) {
             // Carry the already-assigned id even on a dedupe-skip: a caller
             // that lost track of a prior "created" ack (e.g. a local write
             // failure between receiving the ack and stamping it) must be able
@@ -225,8 +237,10 @@ pub async fn push_memory_batch(
             results.push(BatchItemResult {
                 status: "skipped",
                 external_id: entry.external_id.clone(),
-                id: Some(existing_id.clone()),
+                id: Some(existing_note.sync_id.clone()),
+                embedded: existing_note.has_embedding,
             });
+            needs_repair |= !existing_note.has_embedding;
             skipped += 1;
             continue;
         }
@@ -254,13 +268,26 @@ pub async fn push_memory_batch(
         // Record it immediately so a later entry in this same batch sharing
         // the external_id is skipped instead of re-inserted (see the `mut`
         // comment on `existing` above).
-        existing.insert(entry.external_id.clone(), note_id.clone());
+        existing.insert(
+            entry.external_id.clone(),
+            crate::db::ExistingNote {
+                sync_id: note_id.clone(),
+                has_embedding: embedding.is_some(),
+            },
+        );
         results.push(BatchItemResult {
             status: "created",
             external_id: entry.external_id.clone(),
             id: Some(note_id),
+            embedded: embedding.is_some(),
         });
+        needs_repair |= embedding.is_none();
         created += 1;
+    }
+    drop(db);
+
+    if needs_repair {
+        state.repair_signal.raise();
     }
 
     Ok((
