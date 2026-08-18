@@ -1,21 +1,21 @@
-# Example managed spelunk configuration.
+# Example managed inkentry configuration.
 #
 # Deploy this file to each user's global config path so a fleet of machines
-# points at the same shared spelunk-server without any per-user setup:
+# points at the same shared inkentry-server without any per-user setup:
 #
-#   ~/.config/spelunk/config.toml
+#   ~/.config/inkentry/config.toml
 #
-# spelunk uses ~/.config on every platform (macOS included); it does NOT use
+# inkentry uses ~/.config on every platform (macOS included); it does NOT use
 # ~/Library/Application Support. Push it there with your MDM's file/script
-# payload (see README.md, "Pushing spelunk configuration").
+# payload (see README.md, "Pushing inkentry configuration").
 #
 # Every key below is a real field read by Config::load in
-# crates/spelunk-core/src/config.rs. Remove the ones you do not need; all are
-# optional and fall back to sensible defaults.
+# crates/inkentry-core/src/config/mod.rs. Remove the ones you do not need; all
+# are optional and fall back to sensible defaults.
 #
 # IMPORTANT: do NOT bake a personal credential into this file. The shared API
-# key for a team server is better delivered as the SPELUNK_SERVER_KEY
-# environment variable (see spelunk.env.example); that takes precedence and
+# key for a team server is better delivered as the INKENTRY_SERVER_KEY
+# environment variable (see inkentry.env.example); that takes precedence and
 # keeps the secret out of a world-readable config file.
 
 # --- Shared team memory server -----------------------------------------------
@@ -23,9 +23,9 @@
 # long-lived deployed server. Leave unset to keep every machine fully local.
 # Must be https:// for any non-loopback host: plaintext http:// is accepted only
 # to 127.0.0.1/::1/localhost, and there is no opt-out. If the server's
-# certificate is signed by an internal CA, set SPELUNK_SERVER_CA (or server_ca)
+# certificate is signed by an internal CA, set INKENTRY_SERVER_CA (or server_ca)
 # to the CA bundle on each machine.
-server_url = "https://spelunk.internal"
+server_url = "https://inkentry.internal"
 
 # Human-readable project slug. Required when server_url points at a non-loopback
 # host. It is sent to the server exactly as configured, slug or UUID: nothing is
@@ -40,13 +40,13 @@ mode = "local_first"
 
 # --- Optional: point at your own LLM endpoint ---------------------------------
 # Embeddings have no config here: the model and its compute path are pinned
-# product-wide to spelunk-server's bundled native embedder. LLM features
+# product-wide to inkentry-server's bundled native embedder. LLM features
 # (summaries, harvest) are different: the server has no LLM of its
 # own, so set this only if you run a shared OpenAI-compatible chat-completions
 # endpoint (LM Studio, Ollama, vLLM, ...) for the server to use.
 # llm_model = "google/gemma-3n-e4b"
 
 # --- Optional: git-notes memory ----------------------------------------------
-# `spelunk memory add` also appends entries to refs/notes/spelunk by default.
+# `inkentry memory add` also appends entries to refs/notes/inkentry by default.
 # Set to false to opt a fleet out of writing git notes.
 # store_in_git_notes = true
