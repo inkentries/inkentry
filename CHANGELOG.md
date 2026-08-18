@@ -285,6 +285,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Docs: the memory-sharing claim is corrected in the remaining four places.**
+  `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
+  said memory travels with the repository. `git push` does not push
+  `refs/notes/*`, so entries stay local until the pre-push hook is installed.
+- **Docs: `SKILL.md` notes the plumbing exit-code contract where the commands are
+  recommended**, not only in the plumbing reference section, since a plumbing
+  verb exits 1 on an empty result and these are the lines an agent copies into a
+  script.
+
 - **Docs: memory did not "travel with the repo" by default, as the getting-started
   guide and the README both claimed.** Publishing your own memory notes is opt-in
   and needs `inkentry hooks install --pre-push`; only the fetch side is automatic.

@@ -51,7 +51,7 @@ re-derived at all. An existing `project_id` in config is never rewritten, so
 re-running `init` (or running it after a rename) does not change an established
 slug.
 
-**Memory notes travel with the repository:** When run inside a git repo with an
+**Teammates' memory arrives on fetch:** When run inside a git repo with an
 `origin` remote, `init` configures `remote.origin.fetch` so teammates'
 `refs/notes/inkentry` arrives on `git fetch`, landing on the tracking ref
 `refs/notes/origin/inkentry`, and does a one-time best-effort fetch of that ref
@@ -953,8 +953,9 @@ section for the full flag reference.
 `inkentry memory failures` is a shortcut for `inkentry memory list --kind antipattern`.
 
 **git-notes write-through:** when `store_in_git_notes` is true (the default),
-`inkentry memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`,
-so memory travels with the code. The repo is resolved from the database in
+`inkentry memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`.
+Publishing those notes to a remote is opt-in and needs the pre-push hook (see
+`hooks install --pre-push`). The repo is resolved from the database in
 use, the `--db <path>` directory when given, otherwise the discovered
 `.inkentry` project, not the invocation's working directory: pointing `--db`
 at another project's database writes notes to that project's repo. Outside a
