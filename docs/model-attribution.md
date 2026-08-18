@@ -46,9 +46,13 @@ the distributed artifact.
 
 `spelunk-cloud` is the Hugging Face org of inkentry's predecessor product, and
 the embedder repo stays there deliberately. Moving it under an inkentry-named
-org would change the `hf-hub` cache key every existing install already holds on
-disk, so each one would re-download ~339 MB to gain a tidier URL and nothing
-else. Hosting the artifacts ourselves instead would trade a working
+org would buy a tidier URL and nothing else, and it would not be free. The org
+name is part of the `hf-hub` cache key, so every existing install would refetch
+`tokenizer.json` (about 8 MB), and the air-gapped provisioning procedure in
+`docs/server-setup.md` hard-codes the current cache directory name in a
+copy-paste command. The ~339 MB GGUF would *not* be refetched: the loader reads
+it from a flat path at the cache root and skips the download when the file is
+already present. Hosting the artifacts ourselves instead would trade a working
 third-party dependency for an ongoing hosting obligation. Neither is worth
 buying, so the name is settled rather than unfinished rebranding: that org is
 ours, and it is the repo to fetch from. The default is `DEFAULT_GGUF_REPO` in

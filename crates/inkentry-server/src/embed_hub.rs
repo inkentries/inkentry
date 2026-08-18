@@ -52,9 +52,14 @@ const GGUF_REPO_ENV: &str = "INKENTRY_EMBEDDER_GGUF_REPO";
 /// involved. Override with the env var (see [`GGUF_REPO_ENV`]).
 ///
 /// The `spelunk-cloud` org is the predecessor product's name, kept
-/// deliberately: renaming it would cost every existing install a fresh
-/// ~339 MB download for a cosmetic gain. Settled, not rename drift; a rename
-/// sweep leaves this alone.
+/// deliberately. Renaming it buys a tidier URL and nothing else, and it is
+/// not free: the org is part of the hf-hub cache key, so existing installs
+/// refetch `tokenizer.json` (~8 MB), and the air-gapped provisioning
+/// procedure in `docs/server-setup.md` hard-codes the current cache directory
+/// name in a copy-paste command. The ~339 MB GGUF is *not* refetched:
+/// [`load_from_hub`] reads it from a flat path at the cache root and skips
+/// the download when it is already there. A rename sweep leaves this alone;
+/// see `docs/model-attribution.md` for the same reasoning in prose.
 const DEFAULT_GGUF_REPO: &str = "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF";
 
 /// Filename of the Q8_0-quantized GGUF cached next to the HF download.
