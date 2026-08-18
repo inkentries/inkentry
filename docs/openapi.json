@@ -1902,13 +1902,19 @@
         "description": "Server-enforced limits relevant to sizing an `/index/embed` request, so a\nclient can clamp its batching to what this server build supports.\n\nAbsent `limits` (an older server pre-dating this field) means \"assume the\nlegacy 30s / no-embed-exemption profile\", not \"unlimited\".",
         "required": [
           "embed_request_timeout_secs",
-          "max_batch_chunks"
+          "max_batch_chunks",
+          "embed_threads"
         ],
         "properties": {
           "embed_request_timeout_secs": {
             "type": "integer",
             "format": "int64",
             "description": "Wall-clock budget (seconds) this server allows a single `/index/embed`\nrequest before returning `408`. A client should keep its per-request\nbatch's *expected* duration comfortably under this, not just under its\nown client-side timeout: the server will cut it off regardless of\nwhat the client is willing to wait for.",
+            "minimum": 0
+          },
+          "embed_threads": {
+            "type": "integer",
+            "description": "CPU threads this server budgeted for a forward pass. `1` means embedding\nis single-threaded here, which is the difference between minutes and\nhours on a first index; a client surfaces the `INKENTRY_EMBED_THREADS`\noverride on seeing it.",
             "minimum": 0
           },
           "embedder_token_cap": {

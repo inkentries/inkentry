@@ -405,6 +405,7 @@ mod tests {
                 inkentry_server::EMBED_QUEUE_CAPACITY,
                 inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
             ),
+            embed_threads: 4,
             llm: None,
             max_tokens_ceiling: 8192,
             rate_limiter: std::sync::Arc::new(inkentry_server::rate_limiter::RateLimiter::new(

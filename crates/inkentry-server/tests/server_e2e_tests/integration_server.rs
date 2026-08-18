@@ -368,6 +368,7 @@ async fn since_endpoint_returns_entries_after_timestamp() {
             inkentry_server::EMBED_QUEUE_CAPACITY,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
+        embed_threads: 4,
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: Arc::new(RateLimiter::new(1000, 60)),

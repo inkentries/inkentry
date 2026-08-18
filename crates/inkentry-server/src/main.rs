@@ -228,6 +228,9 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         source = budget.source,
         "embed CPU thread budget resolved"
     );
+    if let Some(hint) = embed_threads_hint(budget.threads) {
+        tracing::warn!("embedding will run single-threaded on this host; {hint}");
+    }
 
     // Resolve the API key from --key / --key-file / INKENTRY_SERVER_KEY /
     // systemd LoadCredential (see resolve_api_key for precedence). A blank
@@ -367,6 +370,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
             inkentry_server::EMBED_QUEUE_CAPACITY,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
+        embed_threads: budget.threads,
         llm,
         max_tokens_ceiling,
         rate_limiter,
@@ -526,12 +530,29 @@ struct ThreadBudget {
     source: &'static str,
 }
 
+/// Largest reservation either term will take, matching the flat two-core
+/// reservation this budget used to apply at every size.
+const MAX_RESERVED: usize = 2;
+
 /// CPU threads candle may use for a forward pass, so a running embed leaves
-/// cores free to serve requests. Precedence: `INKENTRY_EMBED_THREADS` > an
-/// already-set `RAYON_NUM_THREADS` > `max(1, physical - 2)`. A zero or
+/// capacity to serve requests. Precedence: `INKENTRY_EMBED_THREADS` > an
+/// already-set `RAYON_NUM_THREADS` > the computed default. A zero or
 /// unparseable override is `None`/`Some(0)` here and falls through.
+///
+/// The default takes the smaller of two reservations, because the two things
+/// being protected are counted in different units. Embed throughput plateaus at
+/// the physical core count (SMT siblings share the vector units a forward pass
+/// saturates), so the pool is capped there. Serving requests needs *scheduling*
+/// capacity, which the OS hands out in logical processors, so the async runtime
+/// is what the second reservation keeps room for. A flat two-core reservation
+/// conflated the two: on a 2-physical/4-logical host it took 100% of the
+/// physical cores and left three logical processors idle. Reserving a quarter
+/// of each count instead, capped at [`MAX_RESERVED`], leaves every host with
+/// eight or more processors on exactly its previous budget while smaller hosts
+/// keep a proportional share.
 fn embed_thread_budget(
     physical: usize,
+    logical: usize,
     rayon_override: Option<usize>,
     inkentry_override: Option<usize>,
 ) -> usize {
@@ -541,10 +562,25 @@ fn embed_thread_budget(
     if let Some(n) = rayon_override.filter(|&n| n > 0) {
         return n;
     }
-    physical.saturating_sub(2).max(1)
+    let embed_cap = physical.saturating_sub((physical / 4).min(MAX_RESERVED));
+    // Floored at one so some scheduling capacity always stays outside the pool
+    // wherever there is more than one processor to divide.
+    let runtime_floor = logical.saturating_sub((logical / 4).clamp(1, MAX_RESERVED));
+    embed_cap.min(runtime_floor).max(1)
 }
 
-/// Read the physical core count and env overrides, then resolve the budget and
+/// Text offered when the resolved budget leaves embedding single-threaded. The
+/// override has always worked; it was simply undiscoverable at the one moment
+/// it is worth knowing about.
+const EMBED_THREADS_HINT: &str =
+    "set INKENTRY_EMBED_THREADS=<n> to raise it if this host can spare the cores";
+
+/// The hint, but only for a single-threaded budget: on a larger one it is noise.
+fn embed_threads_hint(threads: usize) -> Option<&'static str> {
+    (threads == 1).then_some(EMBED_THREADS_HINT)
+}
+
+/// Read the host's core counts and env overrides, then resolve the budget and
 /// which source won (for the startup log).
 fn resolve_embed_thread_budget() -> ThreadBudget {
     fn env_threads(key: &str) -> Option<usize> {
@@ -552,7 +588,7 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
     }
     let rayon = env_threads("RAYON_NUM_THREADS");
     let inkentry = env_threads("INKENTRY_EMBED_THREADS");
-    let threads = embed_thread_budget(num_cpus::get_physical(), rayon, inkentry);
+    let threads = embed_thread_budget(num_cpus::get_physical(), num_cpus::get(), rayon, inkentry);
     let source = if inkentry.filter(|&n| n > 0).is_some() {
         "INKENTRY_EMBED_THREADS"
     } else if rayon.filter(|&n| n > 0).is_some() {
@@ -1680,42 +1716,95 @@ mod arg_tests {
 mod thread_budget_tests {
     use super::embed_thread_budget;
 
-    /// No overrides: reserve 2 cores for the async runtime + OS.
+    // A 2-physical/4-logical ultrabook is ordinary developer hardware. The old
+    // flat "reserve 2 physical cores" gave it a single embed thread, i.e. it
+    // reserved the whole machine.
     #[test]
-    fn default_reserves_two_cores() {
-        assert_eq!(embed_thread_budget(10, None, None), 8);
-        assert_eq!(embed_thread_budget(4, None, None), 2);
+    fn dual_core_smt_host_gets_more_than_one_thread() {
+        assert!(embed_thread_budget(2, 4, None, None) > 1);
     }
 
-    /// Tiny hosts must never yield 0 threads.
+    // Everything from 8 physical cores up keeps the two-core reservation it
+    // had before, SMT or not: both proportional terms saturate at MAX_RESERVED
+    // there, so the change is confined to smaller hosts.
     #[test]
-    fn tiny_hosts_clamp_to_one() {
-        assert_eq!(embed_thread_budget(1, None, None), 1);
-        assert_eq!(embed_thread_budget(2, None, None), 1);
-        assert_eq!(embed_thread_budget(3, None, None), 1);
+    fn hosts_of_eight_physical_cores_and_up_are_unchanged() {
+        for physical in 8..=64 {
+            for logical in [physical, physical * 2] {
+                assert_eq!(
+                    embed_thread_budget(physical, logical, None, None),
+                    physical - 2,
+                    "physical={physical} logical={logical}"
+                );
+            }
+        }
+    }
+
+    // Deliberate change below 8 physical cores: the reservation shrinks with
+    // the host instead of swallowing it. A genuine dual core with no SMT still
+    // resolves to 1, because one of its two processors is all there is to keep
+    // for the runtime.
+    #[test]
+    fn smaller_hosts_reserve_proportionally() {
+        assert_eq!(embed_thread_budget(4, 8, None, None), 3);
+        assert_eq!(embed_thread_budget(4, 4, None, None), 3);
+        assert_eq!(embed_thread_budget(3, 3, None, None), 2);
+        assert_eq!(embed_thread_budget(2, 4, None, None), 2);
+        assert_eq!(embed_thread_budget(2, 2, None, None), 1);
+    }
+
+    #[test]
+    fn hint_offered_only_when_embedding_is_single_threaded() {
+        assert!(super::embed_threads_hint(1).is_some());
+        assert!(super::embed_threads_hint(2).is_none());
+        assert!(super::embed_threads_hint(8).is_none());
+    }
+
+    #[test]
+    fn hint_names_the_override_variable() {
+        assert!(
+            super::embed_threads_hint(1)
+                .expect("single-threaded budget offers a hint")
+                .contains("INKENTRY_EMBED_THREADS")
+        );
+    }
+
+    // Never 0, and never more threads than the host has cores to run them on.
+    #[test]
+    fn budget_stays_within_available_parallelism() {
+        for physical in 1..=64 {
+            for logical in [physical, physical * 2] {
+                let n = embed_thread_budget(physical, logical, None, None);
+                assert!(n >= 1, "physical={physical} logical={logical} gave {n}");
+                assert!(
+                    n <= physical,
+                    "physical={physical} logical={logical} gave {n}"
+                );
+            }
+        }
     }
 
     /// `INKENTRY_EMBED_THREADS` wins over both the default and a set
     /// `RAYON_NUM_THREADS`.
     #[test]
     fn inkentry_override_wins() {
-        assert_eq!(embed_thread_budget(10, None, Some(3)), 3);
-        assert_eq!(embed_thread_budget(10, Some(6), Some(3)), 3);
+        assert_eq!(embed_thread_budget(10, 20, None, Some(3)), 3);
+        assert_eq!(embed_thread_budget(10, 20, Some(6), Some(3)), 3);
     }
 
     /// A user-set `RAYON_NUM_THREADS` is respected when there is no inkentry
     /// override — don't override CI / power users.
     #[test]
     fn rayon_override_respected_without_inkentry() {
-        assert_eq!(embed_thread_budget(10, Some(4), None), 4);
+        assert_eq!(embed_thread_budget(10, 20, Some(4), None), 4);
     }
 
     /// Zero (and, upstream, unparseable) overrides are ignored and fall through
     /// to the next source.
     #[test]
     fn zero_overrides_fall_through() {
-        assert_eq!(embed_thread_budget(10, Some(0), Some(0)), 8);
-        assert_eq!(embed_thread_budget(10, Some(0), None), 8);
-        assert_eq!(embed_thread_budget(10, Some(4), Some(0)), 4);
+        assert_eq!(embed_thread_budget(10, 20, Some(0), Some(0)), 8);
+        assert_eq!(embed_thread_budget(10, 20, Some(0), None), 8);
+        assert_eq!(embed_thread_budget(10, 20, Some(4), Some(0)), 4);
     }
 }

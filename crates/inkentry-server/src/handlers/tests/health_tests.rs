@@ -262,6 +262,22 @@ async fn live_health_keys_match_the_recorded_peer_fixture() {
         names
     }
 
+    // `added_since_recording` names the keys this server has gained since the
+    // recording was taken, one by one rather than tolerating extra keys
+    // wholesale, so a key that vanishes from the live body still fails.
+    fn assert_keys_match(live: &Value, recorded: &Value, at: &str, added_since_recording: &[&str]) {
+        let live_keys: Vec<String> = keys(live, at)
+            .into_iter()
+            .filter(|k| !added_since_recording.contains(&k.as_str()))
+            .collect();
+        assert_eq!(
+            live_keys,
+            keys(recorded, at),
+            "`{at}` and the recorded peer fixture no longer carry the same keys, \
+             so the skew replay is asserting against a shape no peer sends"
+        );
+    }
+
     let recorded: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../inkentry-cli/tests/fixtures/skew/health-v0.9.5-ready.json"
@@ -270,29 +286,19 @@ async fn live_health_keys_match_the_recorded_peer_fixture() {
 
     let live = get_health_json(make_app_with_embedder(4)).await;
 
-    // Keys this server has gained since the recording was taken. Named one by
-    // one rather than tolerating extra keys wholesale, so a key that vanishes
-    // from the live body still fails this assertion.
-    const ADDED_SINCE_RECORDING: [&str; 1] = ["accepts_pushed_vectors"];
-    let live_keys: Vec<String> = keys(&live, "live body")
-        .into_iter()
-        .filter(|k| !ADDED_SINCE_RECORDING.contains(&k.as_str()))
-        .collect();
-
-    assert_eq!(
-        live_keys,
-        keys(&recorded, "recorded body"),
-        "the live health body and the recorded peer fixture no longer carry the \
-         same top-level keys, so the skew replay is asserting against a shape no \
-         peer sends"
+    assert_keys_match(
+        &live,
+        &recorded,
+        "the live body",
+        &["accepts_pushed_vectors"],
     );
-    for nested in ["embedder", "limits"] {
-        assert_eq!(
-            keys(&live[nested], nested),
-            keys(&recorded[nested], nested),
-            "`{nested}` drifted between the live body and the recorded fixture"
-        );
-    }
+    assert_keys_match(&live["embedder"], &recorded["embedder"], "embedder", &[]);
+    assert_keys_match(
+        &live["limits"],
+        &recorded["limits"],
+        "limits",
+        &["embed_threads"],
+    );
 
     // The CLI's lenient reads distinguish "absent" from "present and null", so
     // an omitted-rather-than-null token cap would silently change which branch
