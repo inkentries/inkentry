@@ -221,6 +221,35 @@ corrected as part of this work.
 
 ### D4 – `server_key` is removed entirely from the committed project config
 
+> **Amended after review of the shipped behaviour (2026-08-18). The silence
+> half below is overturned; the removal half stands.** A `server_key` line in
+> `.inkentry/config.toml` is now **named on stderr, with an instruction to
+> rotate it**. The field is still not read, at any tier, exactly as this
+> decision requires: what changed is only that the file no longer stays quiet
+> about a credential sitting in it. Current behaviour is documented in
+> `docs/config-reference.md` and `docs/stability.md`; the text below is kept
+> as the record of the reasoning at the time.
+>
+> Both arguments for silence were reconsidered and neither survived.
+>
+> The first was that rotation is a documentation matter, which no load-time
+> line can carry. That has it backwards. The docs can say "rotate a key that
+> reached this file", and `config-reference.md` already did, but **only the
+> tool knows whether a key actually did reach it**. Staying silent withheld
+> the one fact the docs could never supply, from the one reader able to act
+> on it.
+>
+> The second was that a warning announces the exposure to every developer on
+> the team. It does not: the credential is sitting in a committed file that
+> all of them can already read. The warning tells them nothing the repository
+> does not, and it tells the one person who can rotate it something they may
+> otherwise never learn.
+>
+> The concern about a "warn but still parse" branch tempting someone to
+> recreate the line is unaffected, because nothing parses it. The message is
+> emitted from the same path that reports any other unread project-config
+> key, so it is not a bespoke branch kept alive for a dead field.
+
 `ProjectConfig` (`config.rs:256-266`) drops the `server_key` field outright.
 Nothing in the client reads a `server_key` out of `.spelunk/config.toml` any
 more, at any tier. A file that still has the line gets **no load-time
