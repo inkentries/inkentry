@@ -91,8 +91,11 @@ inkentry sync             # two-way sync of local memory with the configured ser
 ```
 
 Memory is stored in local SQLite and written through to git notes by default
-(`store_in_git_notes`), so it travels with the repo. Set `server_url` to share
-across a team.
+(`store_in_git_notes`), so it stays with your clone. Sharing it over git is
+opt-in: `inkentry init` sets up the fetch side, so teammates' entries reach you
+automatically, but your own stay local until you run `inkentry hooks install
+--pre-push` to publish them on `git push`. Set `server_url` instead to share
+through a team server.
 
 ### Code graph
 
@@ -167,6 +170,14 @@ inkentry ships with a [Claude Code skill](SKILL.md) and [agent guide](docs/agent
 Tree-sitter AST-aware chunking for: **Rust**, **Go**, **Python**, **TypeScript**, **JavaScript**, **JSX**, **TSX**, **Java**, **C**, **C++**, **PHP**, **Ruby**, **C#**, **Swift**, **Kotlin**, **JSON**, **HTML**, **CSS**, **HCL**, **Proto**, **SQL**, **Markdown**.
 
 All other file types are indexed as plain text with a sliding-window chunker.
+
+**`inkentry languages` prints a build-dependent list.** The languages above are
+the ones every build parses. The optional `rich-formats` feature adds **DOCX**,
+**spreadsheets** and **PDF** on top, and `languages` lists those three as well
+when it is on. Every published release binary is built with it, so if you
+installed from a release you have them. A plain `cargo build` from source does
+not: pass `--features rich-formats` to match a release. See [building from
+source](docs/building.md).
 
 ## Documentation
 
