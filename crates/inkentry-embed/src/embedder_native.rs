@@ -98,6 +98,20 @@ fn single_chunk_budget(total_ram_bytes: u64) -> u64 {
     }
 }
 
+/// Render `total_system_ram()`'s result for the startup log line. `0` means
+/// detection failed or the platform isn't supported, not that the host has no
+/// RAM, so it renders as `"unknown"` rather than a false `0.0 GiB`.
+fn ram_display(total_ram_bytes: u64) -> String {
+    if total_ram_bytes == 0 {
+        "unknown".to_string()
+    } else {
+        format!(
+            "{:.1} GiB",
+            total_ram_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        )
+    }
+}
+
 /// Derive the maximum single-chunk token count that keeps the attention scratch
 /// within `budget_bytes`. In `forward_one` (batch = 1) the dominant allocation
 /// is the attention score tensor `[1, n_head, seq, seq]` in f32, so peak scratch
@@ -125,8 +139,9 @@ fn effective_token_cap(token_cap: usize) -> usize {
 /// Total physical system RAM in bytes, best-effort and cross-platform.
 ///
 /// macOS uses the `hw.memsize` sysctl; Linux reads `MemTotal` from
-/// `/proc/meminfo`. On any other platform, or if detection fails, we return a
-/// conservative `0` so the caller falls back to the small (2 GiB) budget.
+/// `/proc/meminfo`; Windows calls `GlobalMemoryStatusEx`. On any other
+/// platform, or if detection fails, we return a conservative `0` so the
+/// caller falls back to the small (2 GiB) budget.
 fn total_system_ram() -> u64 {
     #[cfg(target_os = "macos")]
     {
@@ -162,7 +177,21 @@ fn total_system_ram() -> u64 {
         }
         0
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..unsafe { std::mem::zeroed() }
+        };
+        // SAFETY: `status` is a valid `MEMORYSTATUSEX` with `dwLength` set as
+        // the API requires; `GlobalMemoryStatusEx` writes at most
+        // `size_of::<MEMORYSTATUSEX>()` bytes into it.
+        let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+        if ok != 0 { status.ullTotalPhys } else { 0 }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         0
     }
@@ -634,9 +663,9 @@ impl NativeEmbedder {
 
         tracing::info!(
             "F2LLM-v2-330M ready (dim={DIM}, Q8_0, device={}); \
-             system RAM {:.1} GiB → single-chunk budget {} GiB, token cap {token_cap}",
+             system RAM {} → single-chunk budget {} GiB, token cap {token_cap}",
             if on_gpu { "Metal/GPU" } else { "CPU" },
-            total_ram as f64 / (1024.0 * 1024.0 * 1024.0),
+            ram_display(total_ram),
             budget / (1024 * 1024 * 1024),
         );
 
@@ -899,6 +928,24 @@ mod tests {
     }
 
     // ── single-chunk memory-budget cap ────────────────────────────────────────
+
+    #[test]
+    fn ram_display_reports_unknown_rather_than_a_false_zero() {
+        assert_eq!(ram_display(0), "unknown");
+        assert_eq!(ram_display(8 * 1024 * 1024 * 1024), "8.0 GiB");
+    }
+
+    // A 0 here means detection silently fell back to "unknown" on a platform
+    // that's supposed to detect it — this was Windows's permanent state
+    // before #124.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn total_system_ram_detects_real_memory() {
+        assert!(
+            total_system_ram() > 0,
+            "expected nonzero RAM detection on this platform"
+        );
+    }
 
     /// Budget selection keys off total system RAM: 2 GiB at/below the 16 GiB
     /// threshold, 4 GiB above it.

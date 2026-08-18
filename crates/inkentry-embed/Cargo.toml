@@ -27,6 +27,7 @@ native = [
     "dep:serde_json",
     "dep:tracing",
     "dep:libc",
+    "dep:windows-sys",
 ]
 # metal: enable Metal GPU acceleration on macOS. Add this when building the macOS binary.
 metal = ["native", "candle-core/metal", "candle-nn/metal"]
@@ -55,6 +56,14 @@ tokenizers = { workspace = true, optional = true }
 # (Cargo has no way to gate workspace.dependencies itself by target).
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { version = "0.2", optional = true }
+
+# Windows-only: `GlobalMemoryStatusEx` in `total_system_ram`. Same reasoning as
+# the macOS libc dependency above — one consumer, so it stays out of
+# [workspace.dependencies].
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_System_SystemInformation",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
