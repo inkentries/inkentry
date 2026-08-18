@@ -290,6 +290,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Docs: the memory-sharing claim is corrected in the remaining four places.**
+  `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
+  said memory travels with the repository. `git push` does not push
+  `refs/notes/*`, so entries stay local until the pre-push hook is installed.
+- **Docs: `SKILL.md` notes the plumbing exit-code contract where the commands are
+  recommended**, not only in the plumbing reference section, since a plumbing
+  verb exits 1 on an empty result and these are the lines an agent copies into a
+  script.
 - **`mode` in `.inkentry/config.toml` now takes effect.** The project config
   read four keys and dropped everything else without a word, so a team that
   wrote `server_url`, `project_id` and `mode = "cloud_first"` together (the
@@ -305,8 +313,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 - **A key `.inkentry/config.toml` is not read for is named on stderr** instead
   of being dropped in silence, with `llm_url` carrying its own message and its
   own reason. This is a warning, never a refusal: the key is ignored, the rest
-  of the file loads, and the command runs unchanged. `server_key` and the
-  removed `memory_server_*` aliases stay silent, as before.
+  of the file loads, and the command runs unchanged.
 - **An index rebuilt for a new schema now says so, instead of reading as an
   empty repository.** Opening an `index.db` this build cannot read discards and
   recreates it, keeping the recorded usage history; the only account of that was
