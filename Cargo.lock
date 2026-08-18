@@ -3484,7 +3484,7 @@ dependencies = [
 
 [[package]]
 name = "inkentry-cli"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3529,7 +3529,7 @@ dependencies = [
 
 [[package]]
 name = "inkentry-core"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 dependencies = [
  "anyhow",
  "ast-grep-language",
@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "inkentry-embed"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3598,7 +3598,7 @@ dependencies = [
 
 [[package]]
 name = "inkentry-server"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 dependencies = [
  "anyhow",
  "async-stream",
