@@ -180,13 +180,12 @@ guess wrong about, and each restriction is part of the contract:
   repository must never be able to hand a secret to whoever clones it. Use
   `inkentry auth set-key --server <url>`, `inkentry login`, or
   `INKENTRY_SERVER_KEY`.
-- `llm_url` is **ignored in the project config**, which follows from the
-  allowlist below rather than being an exception to it, and is named here
-  because it looks like `server_url` and is not. An LLM endpoint is a
-  per-developer choice: a committed value points every teammate's local daemon
-  at whichever machine the author was running a model on. Set it in the
-  personal config or via `INKENTRY_LLM_URL`. Its credential is not a config key
-  in either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
+- `llm_url` reads from **both** files, project winning over personal, and
+  `INKENTRY_LLM_URL` winning over both. A team endpoint is usually one approved
+  provider rather than a developer's own machine, so it is worth stating once
+  for the project, and anyone running a local model still outranks it from
+  their personal file or the environment. Its credential does **not** follow it
+  into either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
   same reasoning as `server_key`.
 
 `mode` reads from **both** files, project winning over personal,
@@ -204,7 +203,7 @@ Beyond those three:
   committed, so the value is already in the repository's history.
 - The **project-level allowlist** is itself stable. A checked-in
   `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
-  `server_ca`, `mode`, and `[index]`. Adding a key to that allowlist is additive
+  `server_ca`, `mode`, `llm_url`, and `[index]`. Adding a key to that allowlist is additive
   and allowed; removing one is a breaking change.
 - Environment variable overrides (`INKENTRY_*`) are stable on the same terms as
   the keys they override. They are not subject to the file restrictions above:

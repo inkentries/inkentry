@@ -26,8 +26,8 @@ Load order (later overrides earlier):
    never a single developer's.
 3. `.inkentry/config.toml`, discovered by walking up from the current
    directory (project-level, team-wide). Only `server_url`, `project_id`,
-   `server_ca`, `mode`, and `[index]` are read from this file; any other key
-   in it is named in a warning on stderr and ignored.
+   `server_ca`, `mode`, `llm_url`, and `[index]` are read from this file; any
+   other key in it is named in a warning on stderr and ignored.
 4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`,
    `INKENTRY_PROJECT_ID`, `INKENTRY_SERVER_CA`, `INKENTRY_LLM_URL`,
    `INKENTRY_LLM_MODEL`, `INKENTRY_MODE`.
@@ -115,7 +115,8 @@ inference target there already. See
 [Third-party models → The local-LLM guarantee](third-party-models.md#the-local-llm-guarantee-and-where-it-stops).
 
 **Precedence**, highest first: `inkentry server start --llm-url` (for that
-daemon only) > `INKENTRY_LLM_URL` > `llm_url` here > unset. An empty value is
+daemon only) > `INKENTRY_LLM_URL` > `llm_url` in `.inkentry/config.toml` >
+`llm_url` in the personal config > unset. An empty value is
 handled differently in the two override positions: `INKENTRY_LLM_URL=""`
 overrides and blanks this field, leaving no endpoint at all, while
 `--llm-url ""` is discarded and leaves the environment or config value in
@@ -351,10 +352,10 @@ value in place.
 
 ## `.inkentry/config.toml` (project-level)
 
-Safe to commit; contains no secrets by design. Five keys are read from this
-file - `server_url`, `project_id`, `server_ca`, `mode`, and `[index]` - and
-anything else (including any personal field documented above) is ignored, with
-one warning line per key naming it and this file.
+Safe to commit; contains no secrets by design. Six keys are read from this
+file - `server_url`, `project_id`, `server_ca`, `mode`, `llm_url`, and
+`[index]` - and anything else (including any personal field documented above)
+is ignored, with one warning line per key naming it and this file.
 
 ```toml
 # .inkentry/config.toml
@@ -362,6 +363,7 @@ server_url = "https://inkentry.internal.example.com"
 project_id = "my-awesome-app"
 server_ca = "/etc/inkentry/internal-ca.pem"
 mode = "cloud_first"
+llm_url = "https://llm.internal.example.com"
 
 [index]
 exclude = ["fixtures/**"]
@@ -383,12 +385,13 @@ who could act. The removed `memory_server_key` alias is treated the same way.
 Use `inkentry auth set-key --server <url>` (or `INKENTRY_SERVER_KEY` in CI) to
 set a shared team credential per developer instead.
 
-**`llm_url` is not accepted here either**, for a related reason: it is the
-endpoint a credential is presented to, and it is a per-developer choice. A
-committed value would point every teammate's local daemon at whichever machine
-the author happened to be running an LLM on. Set it in the personal config or
-via `INKENTRY_LLM_URL`. A value here is ignored and says so, in a warning of its
-own that names that reason rather than suggesting a typo.
+**`llm_url` is accepted here**, and the credential it is presented to is not.
+A team usually points at one approved provider, so the endpoint is a
+project-wide fact worth committing once instead of asking every developer to
+repeat it. Anyone running a local model still wins from their personal config
+or `INKENTRY_LLM_URL`. The key is a different matter: store it with
+`inkentry auth set-key --llm`, or pass `INKENTRY_LLM_KEY`, never in either
+file.
 
 ## `~/.config/inkentry/config.toml` (personal)
 

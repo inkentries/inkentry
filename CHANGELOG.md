@@ -310,6 +310,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   rotate.** The field is still never read from a committed file; it used to be
   dropped in silence, which kept the exposure from the only person who could act
   on it.
+- **`llm_url` is now a project config key.** A team usually points at one
+  approved provider, so the endpoint is a project-wide fact worth stating once
+  rather than asking every developer to repeat it; the project file wins over
+  the personal one and `INKENTRY_LLM_URL` wins over both, so anyone running a
+  local model still overrides it. The credential does not follow it into either
+  file.
 - **A key `.inkentry/config.toml` is not read for is named on stderr** instead
   of being dropped in silence, with `llm_url` carrying its own message and its
   own reason. This is a warning, never a refusal: the key is ignored, the rest

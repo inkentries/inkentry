@@ -90,14 +90,18 @@ struct ProjectIndexConfig {
 /// something to rotate. Use `inkentry auth set-key --server <url>` instead.
 ///
 /// Every *other* key the file is not read for is named on stderr instead of
-/// dropped in silence, `llm_url` with its own reasoning. The keys
-/// this struct declares are mirrored in [`PROJECT_CONFIG_KEYS`], which the
-/// warning reads; adding a field here means adding it there.
+/// dropped in silence. The keys this struct declares are mirrored in
+/// [`PROJECT_CONFIG_KEYS`], which the warning reads; adding a field here means
+/// adding it there.
 #[derive(Debug, Default, Deserialize)]
 struct ProjectConfig {
     /// Canonical server URL (preferred).
     server_url: Option<String>,
     project_id: Option<String>,
+    /// Base URL of the inference endpoint. A team pointing at one approved
+    /// provider states it once here rather than in every developer's own file.
+    /// The credential it is presented to is not a config key in either file.
+    llm_url: Option<String>,
     /// Path to a PEM CA bundle to trust in addition to the built-in roots, for a
     /// team server presenting a self-signed / internal-CA certificate.
     server_ca: Option<String>,
@@ -124,10 +128,15 @@ pub struct Config {
     /// LM Studio / Ollama, or a self-hosted gateway), passed on to the
     /// auto-spawned `inkentry-server` so it gains LLM capability.
     ///
-    /// Personal config (`~/.config/inkentry/config.toml`) or `INKENTRY_LLM_URL`
-    /// only, never `.inkentry/config.toml`: a checked-in endpoint points the
-    /// whole team at one developer's machine, and it is the natural sibling of
-    /// the LLM credential that `ProjectConfig` already excludes (ADR-071 D4).
+    /// Settable in either file, with `.inkentry/config.toml` winning over the
+    /// personal one and `INKENTRY_LLM_URL` winning over both. A team endpoint
+    /// is usually one approved provider rather than a developer's own machine,
+    /// so it is a project-wide fact worth committing, and anyone running a
+    /// local model still outranks it from their personal file or the
+    /// environment. The credential the endpoint is presented to does not
+    /// follow it into either file (`inkentry auth set-key --llm` or
+    /// `INKENTRY_LLM_KEY`): a committed credential is in the repository's
+    /// history for good (ADR-071 D4).
     #[serde(default)]
     pub llm_url: Option<String>,
 
@@ -439,6 +448,9 @@ impl Config {
             if let Some(v) = proj.mode {
                 cfg.mode = Some(v);
             }
+            if let Some(v) = proj.llm_url {
+                cfg.llm_url = Some(v);
+            }
             // `[index]` overrides the global value per field: an absent key in the
             // project table leaves the global (or default) value in place.
             if let Some(pidx) = proj.index {
@@ -646,7 +658,14 @@ fn parse_project_config(raw: &str, path: &Path) -> Result<ProjectConfig> {
 /// The keys `.inkentry/config.toml` is read for. Single source of
 /// truth for the merge in [`Config::load_with_store_from`] and for
 /// [`project_config_key_warnings`], so the two cannot drift.
-const PROJECT_CONFIG_KEYS: &[&str] = &["server_url", "project_id", "server_ca", "mode", "index"];
+const PROJECT_CONFIG_KEYS: &[&str] = &[
+    "server_url",
+    "project_id",
+    "server_ca",
+    "mode",
+    "llm_url",
+    "index",
+];
 
 /// Keys the project config has no field for that name a credential (ADR-071
 /// D4). These get their own wording rather than the generic one: the file is
@@ -676,13 +695,6 @@ fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
                      file is already in the repository's history: rotate it, then set the \
                      replacement with `inkentry auth set-key --server <url>` or \
                      INKENTRY_SERVER_KEY."
-                );
-            }
-            if key == "llm_url" {
-                return format!(
-                    "Warning: `llm_url` in {path} has no effect: the inference endpoint is \
-                     read per developer, not per project. Set it in \
-                     ~/.config/inkentry/config.toml, or in INKENTRY_LLM_URL."
                 );
             }
             format!(
@@ -1608,25 +1620,6 @@ mode = "cloud_first"
     }
 
     #[test]
-    fn llm_url_in_project_config_warns_with_its_own_reason() {
-        // The generic message would call it unknown, which is wrong and points
-        // at the wrong fix: `llm_url` is a live key, excluded from this file
-        // for a reason of its own.
-        let warnings = project_warnings("llm_url = \"http://team-box.example:1234\"\n");
-        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
-        let warning = &warnings[0];
-        assert!(warning.contains("llm_url"), "got: {warning}");
-        assert!(
-            warning.contains("INKENTRY_LLM_URL"),
-            "must name where it can be set: {warning}"
-        );
-        assert!(
-            warning.contains("per developer, not per project"),
-            "must say why it is not read here: {warning}"
-        );
-    }
-
-    #[test]
     fn a_credential_in_the_project_config_is_named_so_it_can_be_rotated() {
         // The file is committed, so the value is already in the repository's
         // history. Dropping it silently leaves the only person who can rotate
@@ -2492,26 +2485,57 @@ project_id = "team/new"
 
     #[test]
     #[serial_test::serial]
-    fn llm_url_in_project_config_is_ignored() {
+    fn llm_url_in_project_config_takes_effect() {
         clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let global = tmp.path().join("config.toml");
-        std::fs::write(&global, "").unwrap();
-
-        let project = tmp.path().join("proj");
-        std::fs::create_dir_all(project.join(".inkentry")).unwrap();
-        std::fs::write(
-            project.join(".inkentry").join("config.toml"),
-            "llm_url = \"http://team-box.example:1234\"\n",
-        )
-        .unwrap();
-
-        let store = MemoryStore::default();
-        let cfg = Config::load_with_store_from(Some(&global), &store, Some(&project)).unwrap();
-
+        let (_tmp, cfg) = load_layered("", Some("llm_url = \"http://gateway.example:1234\"\n"));
         assert_eq!(
-            cfg.llm_url, None,
-            "an endpoint URL in a checked-in project config must not configure the CLI"
+            cfg.unwrap().llm_url.as_deref(),
+            Some("http://gateway.example:1234"),
+            "a team endpoint stated once in the project config must configure the CLI"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn llm_url_project_config_wins_over_personal_and_env_wins_over_both() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered(
+            "llm_url = \"http://personal.example:1\"\n",
+            Some("llm_url = \"http://project.example:2\"\n"),
+        );
+        assert_eq!(
+            cfg.unwrap().llm_url.as_deref(),
+            Some("http://project.example:2"),
+            "the project file must win over the personal one"
+        );
+
+        unsafe { std::env::set_var("INKENTRY_LLM_URL", "http://env.example:3") };
+        let (_tmp2, cfg2) = load_layered(
+            "llm_url = \"http://personal.example:1\"\n",
+            Some("llm_url = \"http://project.example:2\"\n"),
+        );
+        unsafe { std::env::remove_var("INKENTRY_LLM_URL") };
+        assert_eq!(
+            cfg2.unwrap().llm_url.as_deref(),
+            Some("http://env.example:3"),
+            "the environment must win over both files"
+        );
+    }
+
+    #[test]
+    fn the_llm_credential_does_not_follow_its_url_into_the_project_config() {
+        // The endpoint is a project-wide fact; the key presented to it is not.
+        // A committed credential is in the repository's history for good.
+        let warnings =
+            project_warnings("llm_url = \"http://gateway.example:1234\"\nllm_key = \"sk-live\"\n")
+                .join("\n");
+        assert!(
+            warnings.contains("llm_key"),
+            "`llm_key` must still be an unread key: {warnings}"
+        );
+        assert!(
+            !warnings.contains("`llm_url`"),
+            "`llm_url` is read here now and must not warn: {warnings}"
         );
     }
 
