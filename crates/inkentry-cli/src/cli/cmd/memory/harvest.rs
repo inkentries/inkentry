@@ -6,6 +6,7 @@ use crate::{
     capability,
     config::Config,
     embeddings::vec_to_blob,
+    indexer::secrets::contains_secret,
     server_client::{LlmMessage, ServerInferenceClient, harvest_requires_server},
     storage::{NoteInput, open_memory_backend},
 };
@@ -88,6 +89,37 @@ fn resolve_range_revs(git_range: &str, commit_count: Option<usize>) -> (Vec<Stri
         }
         _ => (vec![git_range.to_string()], format!("'{git_range}'")),
     }
+}
+
+/// Split `commits` into the ones safe to harvest and the count whose message
+/// matches a secret pattern, warning about each match by SHA.
+///
+/// Harvest promotes a commit message into memory, which is written to
+/// `refs/notes/inkentry` and pushed to a team or hosted server: the same
+/// destination `memory add` refuses a matched secret for, so the same scanner
+/// applies here.
+///
+/// **The failure shape deliberately differs from `memory add`'s.** `add`
+/// aborts the whole command (`cmd/memory/add.rs`), which is right for one
+/// interactive title/body. A `--branch` walk can cover thousands of commits,
+/// so ending the run over one long-since-rotated credential would discard
+/// every other commit in it. Skipping the match and continuing is the posture
+/// `indexer::secrets` already takes for code chunks.
+///
+/// The warning names the SHA only: echoing what matched would copy the
+/// credential into the terminal and into any captured log.
+fn drop_commits_with_secrets(
+    commits: Vec<&(String, String, String)>,
+) -> (Vec<&(String, String, String)>, usize) {
+    let (kept, matched): (Vec<_>, Vec<_>) = commits
+        .into_iter()
+        .partition(|(_, subject, body)| !contains_secret(&format!("{subject}\n{body}")));
+
+    for (sha, _, _) in &matched {
+        eprintln!("  warning: skipping commit {sha} (message matches a secret pattern)");
+    }
+
+    (kept, matched.len())
 }
 
 pub(super) async fn memory_harvest(
@@ -253,6 +285,10 @@ async fn memory_harvest_git(
             pre_filtered.len()
         );
     }
+
+    // Before the LLM sees anything: a matched message must reach neither the
+    // extraction request nor the memory store.
+    let (new_commits, secret_skipped) = drop_commits_with_secrets(new_commits);
 
     if new_commits.is_empty() {
         println!("No commits worth analysing in {range_label}.");
@@ -520,7 +556,7 @@ async fn memory_harvest_git(
 
     let llm_skipped = new_commits.len().saturating_sub(stored + dedup_skipped);
     println!(
-        "\nStored {stored} memory entries. Skipped {} routine (pre-filter), {} by LLM, {} near-duplicate.",
+        "\nStored {stored} memory entries. Skipped {} routine (pre-filter), {secret_skipped} with a possible secret, {} by LLM, {} near-duplicate.",
         pre_filtered.len(),
         llm_skipped,
         dedup_skipped
@@ -649,6 +685,15 @@ async fn memory_harvest_failures(
 
     if new_commits.is_empty() {
         println!("All failure-signal commits already harvested.");
+        return Ok(());
+    }
+
+    // Same store, same scanner, same skip-and-continue shape as the `git`
+    // source above: `--source failures` is a git-commit walk too.
+    let (new_commits, secret_skipped) = drop_commits_with_secrets(new_commits);
+
+    if new_commits.is_empty() {
+        println!("No failure-signal commits left to analyse in {range_label}.");
         return Ok(());
     }
 
@@ -888,7 +933,9 @@ async fn memory_harvest_failures(
         }
     }
 
-    println!("\nStored {stored} antipattern(s). Skipped {dedup_skipped} near-duplicate.");
+    println!(
+        "\nStored {stored} antipattern(s). Skipped {secret_skipped} with a possible secret, {dedup_skipped} near-duplicate."
+    );
     Ok(())
 }
 
