@@ -530,11 +530,7 @@ async fn test_status_offline_without_the_kill_switch_points_at_the_local_daemon(
 
     let config_path = temp.path().join("config.toml");
     let db_path = temp.path().join("index.db");
-    fs::write(
-        &config_path,
-        format!("db_path = {:?}\n", db_path),
-    )
-    .unwrap();
+    fs::write(&config_path, format!("db_path = {:?}\n", db_path)).unwrap();
 
     let mut cmd = inkentry_bin();
     cmd.env("INKENTRY_NO_SERVER", "1")

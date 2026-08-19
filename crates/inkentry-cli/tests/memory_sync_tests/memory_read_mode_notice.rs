@@ -330,6 +330,8 @@ fn status_has_no_mode_line_on_solo_default() {
     // Solo default: no sync configuration, no mode line.
     assert!(!stdout.contains("\n  mode"), "got: {stdout}");
     assert!(!stdout.contains("local_first"), "got: {stdout}");
-    // And the set-server_url hints ARE correct here.
-    assert!(stdout.contains("set server_url to enable"), "got: {stdout}");
+    // The kill-switch is what makes this run offline, so that is what the
+    // search hint names; `server_url` is inert while it is set (#126).
+    assert!(stdout.contains("INKENTRY_NO_SERVER"), "got: {stdout}");
+    assert!(!stdout.contains("server_url"), "got: {stdout}");
 }
