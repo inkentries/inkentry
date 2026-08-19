@@ -7,6 +7,12 @@
 Docker-vs-bare-metal reasoning (both were predicated on the server having no
 in-process TLS, which this ADR removes).
 
+> **The port in the Docker example below is out of date (2026-08-19).** The
+> `-p 443:7777` publish shows the default as it stood when this was written. The
+> defaults have since moved to the 465x range, 4658 for a team deployment, so
+> the equivalent is `-p 443:4658`. See [ADR-089](089-default-port-range.md). The
+> TLS reasoning this ADR exists for is unaffected.
+
 ## Context
 
 `spelunk-server` speaks plaintext HTTP only. It has no TLS: no `--cert`, no
