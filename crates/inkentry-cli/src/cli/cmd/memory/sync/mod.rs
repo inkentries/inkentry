@@ -54,9 +54,7 @@ mod round;
 mod test_support;
 
 pub(in crate::cli::cmd) use local_embed::LocalEmbedPolicy;
-pub(super) use local_embed::{
-    local_embed_summary, pending_embedding_warning, pull_embed_summary, unembedded_warning,
-};
+pub(super) use local_embed::{local_embed_summary, pending_embedding_warning, pull_embed_summary};
 pub(super) use pull::parse_iso_to_secs;
 pub(in crate::cli::cmd) use pull::pull_and_apply;
 pub(in crate::cli::cmd) use push::push_local_oneway;
@@ -144,11 +142,21 @@ pub async fn memory_sync(
         &local_embed,
     )
     .await?;
-    if pushed.without_local_vector > 0 {
-        eprintln!("{}", unembedded_warning(pushed.without_local_vector));
-    }
-    if pulled.without_local_vector > 0 {
-        eprintln!("{}", pending_embedding_warning(pulled.without_local_vector));
+    // One warning, not two. A sync is pull, push, pull: the push stamps
+    // `remote_id` on everything it sends, which moves those rows into the
+    // second pull's repair scope, so the same vectorless row is counted by both
+    // halves. Reporting each would tell a user with two local entries that four
+    // things need embedding. The pull count is taken when it is non-zero
+    // because it is measured last and therefore already includes anything the
+    // push just stamped; the push count is the fallback for a push that could
+    // not stamp, where the rows never reach the pull's scope.
+    let pending = if pulled.without_local_vector > 0 {
+        pulled.without_local_vector
+    } else {
+        pushed.without_local_vector
+    };
+    if pending > 0 {
+        eprintln!("{}", pending_embedding_warning(pending));
     }
     // Appended to the success summaries so relates_to propagation is visible
     // without cluttering the (unchanged) failure/interrupted framing.

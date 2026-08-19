@@ -637,11 +637,11 @@ async fn with_no_embedder_the_pull_succeeds_text_only_and_counts_what_is_pending
     // Both user-facing surfaces must name the count rather than say nothing.
     let clause = pull_embed_summary(&summary);
     assert!(
-        clause.contains("2 pulled entries pending embedding"),
+        clause.contains("2 synced entries pending embedding"),
         "the sync summary must report the pending count: {clause:?}"
     );
     let warning = pending_embedding_warning(summary.without_local_vector);
-    assert!(warning.contains("2 pulled entries"), "{warning}");
+    assert!(warning.contains("2 synced entries"), "{warning}");
     assert!(
         warning.contains("retries automatically"),
         "the warning must say the next run picks them up: {warning}"

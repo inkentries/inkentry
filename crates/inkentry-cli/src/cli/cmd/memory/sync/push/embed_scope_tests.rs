@@ -93,8 +93,8 @@ async fn already_synced_rows_are_left_unembedded() {
     let rows = store.rows_for_sync(false).unwrap();
     let id = rows[0].id.clone();
     // Outside the push set: the cloud already has it. Repairing these rows
-    // belongs to the pull pass, whose scope is the exact complement of this
-    // one, so the two never contend for a row (`pull_embed_tests`).
+    // belongs to the pull pass, which claims `remote_id IS NOT NULL`, so no row
+    // is claimed by both (`pull_embed_tests`).
     store.set_remote_id(&id, "cloud-1").unwrap();
 
     let team = MockServer::start().await;

@@ -64,20 +64,7 @@ pub(super) struct RepairCounts {
     pub(super) without_vector: usize,
 }
 
-/// The one user-facing warning for entries that were pushed with no local
-/// embedding. Emitted once per run by the command layer, which owns all
-/// user-facing output; the shared push pass only counts.
-pub(in crate::cli::cmd::memory) fn unembedded_warning(count: usize) -> String {
-    let entries = if count == 1 { "entry" } else { "entries" };
-    format!(
-        "warning: {count} {entries} pushed without a local embedding, so \
-         `inkentry memory search` cannot surface {} in this project until \
-         `inkentry memory reindex` is run.",
-        if count == 1 { "it" } else { "them" }
-    )
-}
-
-/// The one user-facing warning for pulled entries that are still waiting on a
+/// The one user-facing warning for synced entries that are still waiting on a
 /// local embedding. Emitted once per run by the command layer, which owns all
 /// user-facing output; the shared pull pass only counts.
 ///
@@ -88,7 +75,7 @@ pub(in crate::cli::cmd::memory) fn unembedded_warning(count: usize) -> String {
 pub(in crate::cli::cmd::memory) fn pending_embedding_warning(count: usize) -> String {
     let entries = if count == 1 { "entry" } else { "entries" };
     format!(
-        "warning: {count} pulled {entries} could not be embedded locally, so \
+        "warning: {count} synced {entries} could not be embedded locally, so \
          `inkentry memory search` cannot surface {} semantically yet. The next \
          sync or pull retries automatically; `inkentry memory reindex` does it now.",
         if count == 1 { "it" } else { "them" }
@@ -101,10 +88,10 @@ pub(in crate::cli::cmd::memory) fn pending_embedding_warning(count: usize) -> St
 pub(in crate::cli::cmd::memory) fn pull_embed_summary(summary: &PullSummary) -> String {
     match (summary.embedded_locally, summary.without_local_vector) {
         (0, 0) => String::new(),
-        (embedded, 0) => format!(" Embedded {embedded} pulled entries locally."),
-        (0, pending) => format!(" {pending} pulled entries pending embedding."),
+        (embedded, 0) => format!(" Embedded {embedded} synced entries locally."),
+        (0, pending) => format!(" {pending} synced entries pending embedding."),
         (embedded, pending) => {
-            format!(" Embedded {embedded} pulled entries locally, {pending} pending embedding.")
+            format!(" Embedded {embedded} synced entries locally, {pending} pending embedding.")
         }
     }
 }

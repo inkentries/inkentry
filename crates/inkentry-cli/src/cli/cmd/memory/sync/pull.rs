@@ -129,12 +129,19 @@ pub(super) async fn pull_and_apply_since(
 
 /// Mint the missing local vectors for every synced row.
 ///
-/// The scope is the exact complement of the push's (`remote_id IS NULL`), so
-/// between them the two passes cover the store once and never contend for a
-/// row. Keying off "still has no usable vector" rather than "this pull returned
-/// it" is what makes the pass idempotent across `sync_round`'s two pulls, and
-/// what makes it the catch-up for a row an earlier pull had to leave text-only
-/// because no embedder was reachable then.
+/// The scope is `remote_id IS NOT NULL`, the complement of the push's
+/// `remote_id IS NULL`, so no row is claimed by both. It is not a partition of
+/// the whole store: both scopes are also status-gated, so an **archived** row
+/// that was never synced is in neither, and `memory reindex --include-archived`
+/// remains its only repair. That gap predates this pass and only shows up under
+/// `--as-of`, which is the one query that reads archived rows.
+///
+/// Keying off "still has no usable vector" rather than "this pull returned it"
+/// is what makes the pass idempotent across `sync_round`'s two pulls, and what
+/// makes it the catch-up for a row an earlier pull had to leave text-only
+/// because no embedder was reachable then. It also means the second pull sees
+/// rows the push stamped moments earlier, which is why the command layer emits
+/// one pending-embedding warning rather than one per half.
 async fn embed_synced_rows(
     local: &MemoryStore,
     local_embed: &LocalEmbedPolicy<'_>,

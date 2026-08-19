@@ -5,7 +5,7 @@
 // and never the configured team `server_url`. Routing it there would re-create
 // the exact server-side re-embedding the repair exists to remove.
 
-use super::super::local_embed::{local_embed_summary, unembedded_warning};
+use super::super::local_embed::{local_embed_summary, pending_embedding_warning};
 use super::super::test_support::{fresh_store, spawn_loopback_embedder};
 use super::*;
 use crate::config::{Config, SyncMode};
@@ -476,9 +476,12 @@ fn wrong_dimension_stored_vector_counts_as_missing() {
     );
 }
 
+// One warning now covers both halves of a sync: the push stamps `remote_id`,
+// which moves its rows into the pull's repair scope, so a push-specific second
+// message would double-count the same entries.
 #[test]
-fn the_unembedded_warning_names_the_count_and_the_remedy() {
-    let msg = unembedded_warning(3);
+fn the_pending_embedding_warning_names_the_count_and_the_remedy() {
+    let msg = pending_embedding_warning(3);
     assert!(msg.contains('3'), "must name the count: {msg}");
     assert!(
         msg.contains("inkentry memory reindex"),
@@ -489,7 +492,7 @@ fn the_unembedded_warning_names_the_count_and_the_remedy() {
         "must say what is actually broken: {msg}"
     );
     assert!(
-        unembedded_warning(1).contains("1 entry"),
+        pending_embedding_warning(1).contains("1 synced entry"),
         "singular must not read as '1 entries'"
     );
 }

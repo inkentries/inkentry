@@ -164,10 +164,11 @@ drains, for example `mode  local_first  ·  up to date, last synced 4m ago`.
 Use `inkentry sync` (two-way) whenever you want to force a synchronous reconcile
 with the server instead of waiting on the background drain; for a one-way
 transfer (seeding, CI) reach for the plumbing forms `inkentry plumbing push`
-(local → server) and `inkentry plumbing pull` (server → local). Both the sync
-and push paths also embed the entries they push into the local `memory.db`
-first, so a pushed entry stays findable by semantic `search` on your own
-machine (see [Repair during push and sync](#repair-during-push-and-sync)).
+(local → server) and `inkentry plumbing pull` (server → local). All of these
+paths also embed into the local `memory.db`: a push embeds what it sends and a
+pull embeds what it applies, so an entry stays findable by semantic `search` on
+your own machine whether you wrote it or a teammate did (see
+[Repair during push and sync](#repair-during-push-and-sync)).
 
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause
@@ -945,9 +946,17 @@ as-is instead of re-embedding it.
 
 Scope and limits:
 
-- Only the push set is repaired: entries that are active and not yet synced.
-  Entries already synced, and entries arriving through a pull, are outside it and
-  still need `inkentry memory reindex`.
+- Both directions are repaired, and they divide the store between them: the
+  push repairs active entries not yet synced, and the pull repairs active
+  entries that have been, which is where anything arriving from a teammate
+  lands. An **archived** entry is in neither pass and still needs
+  `inkentry memory reindex --include-archived`, which matters only for
+  point-in-time (`--as-of`) semantic queries, since ordinary search does not
+  read archived entries.
+- A pull repairs by asking which synced entries still lack a vector, rather
+  than by remembering what it just applied. An entry that arrives while no
+  embedder is reachable is therefore picked up by the next sync or pull, even
+  if that run applies nothing at all.
 - The embed always runs against the local loopback embedder, never against a
   configured team `server_url`. This is the same way `reindex` resolves its
   embedder.
