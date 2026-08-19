@@ -4,8 +4,9 @@ use anyhow::{Context, Result};
 
 use crate::storage::{CloudSyncClient, MemoryStore};
 
+use super::local_embed::LocalEmbedPolicy;
 use super::pull::pull_and_apply_since;
-use super::push::{LocalEmbedPolicy, PushSummary, push_local};
+use super::push::{PushSummary, push_local};
 
 /// Outcome of one [`sync_round`]: the push summary plus the total newly
 /// applied entries across both pull passes.

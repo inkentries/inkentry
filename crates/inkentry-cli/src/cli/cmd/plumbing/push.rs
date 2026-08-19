@@ -65,7 +65,7 @@ pub(super) async fn push(
     )?;
 
     let accepts_pushed_vectors = tier.caps().is_some_and(|c| c.accepts_pushed_vectors);
-    let local_embed = LocalEmbedPolicy::for_push(cfg, mem_path);
+    let local_embed = LocalEmbedPolicy::resolve(cfg, mem_path);
     let summary = push_local_oneway(
         &local,
         &client,

@@ -44,16 +44,18 @@ use crate::{
     storage::{CloudSyncClient, MemoryStore},
 };
 
+mod local_embed;
 mod pull;
 mod push;
 mod round;
 #[cfg(test)]
 mod test_support;
 
+pub(in crate::cli::cmd) use local_embed::LocalEmbedPolicy;
+pub(super) use local_embed::{local_embed_summary, unembedded_warning};
 pub(super) use pull::parse_iso_to_secs;
 pub(in crate::cli::cmd) use pull::pull_and_apply;
-pub(in crate::cli::cmd) use push::{LocalEmbedPolicy, push_local_oneway};
-pub(super) use push::{local_embed_summary, unembedded_warning};
+pub(in crate::cli::cmd) use push::push_local_oneway;
 use round::{SyncRoundOutcome, sync_round};
 
 /// Resolve the project slug to sync into, or halt with actionable guidance.
@@ -129,7 +131,7 @@ pub async fn memory_sync(
     // pre-round cursor. See `sync_round` for why a plain push-then-pull (or
     // even pull-then-push) reorder is not sufficient. ───────────────────────
     let accepts_pushed_vectors = tier.caps().is_some_and(|c| c.accepts_pushed_vectors);
-    let local_embed = LocalEmbedPolicy::for_push(cfg, src_path);
+    let local_embed = LocalEmbedPolicy::resolve(cfg, src_path);
     let SyncRoundOutcome { pushed, pulled } = sync_round(
         &local,
         &client,

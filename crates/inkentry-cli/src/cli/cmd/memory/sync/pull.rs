@@ -91,7 +91,8 @@ pub(in crate::cli::cmd::memory) fn parse_iso_to_secs(s: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::push::{LocalEmbedPolicy, push_local};
+    use super::super::local_embed::LocalEmbedPolicy;
+    use super::super::push::push_local;
     use super::super::round::sync_round;
     use super::super::test_support::{fresh_store, register_sqlite_vec, spawn_inkentry_server};
     use super::*;
