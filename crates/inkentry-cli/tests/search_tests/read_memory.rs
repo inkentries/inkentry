@@ -43,7 +43,7 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
     // Index the fixture project. INKENTRY_NO_SERVER=1 forces offline so the embed
     // phase is skipped — these plumbing tests only need parsed chunks + a memory
     // note, not embeddings, and without it the index would auto-discover a
-    // loopback inkentry-server on 127.0.0.1:7777 and fail on a dim mismatch.
+    // loopback inkentry-server on 127.0.0.1:4655 and fail on a dim mismatch.
     inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")

@@ -44,7 +44,7 @@ param(
     # team-reachable server pass 0.0.0.0 together with -TlsCert and -TlsKey.
     [string]$BindHost = "127.0.0.1",
 
-    [int]$Port = 7777,
+    [int]$Port = 4655,
 
     # Operator-provided PEM cert chain (public) and private key. Both or neither.
     # Required for a routable (-BindHost 0.0.0.0) bind; leave empty for loopback.

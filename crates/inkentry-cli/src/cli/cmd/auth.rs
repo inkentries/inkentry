@@ -122,12 +122,12 @@ mod tests {
     fn set_key_then_list_servers_round_trip_via_store() {
         let store = MemoryStore::default();
         let origin =
-            server_keys::set_key_for_origin("https://team.example:7777/ignored", "sk-1", &store)
+            server_keys::set_key_for_origin("https://team.example:4655/ignored", "sk-1", &store)
                 .unwrap();
-        assert_eq!(origin, "https://team.example:7777");
+        assert_eq!(origin, "https://team.example:4655");
 
         let (origins, legacy) = server_keys::list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://team.example:7777".to_string()]);
+        assert_eq!(origins, vec!["https://team.example:4655".to_string()]);
         assert!(!legacy);
     }
 }

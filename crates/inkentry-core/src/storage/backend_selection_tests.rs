@@ -31,7 +31,7 @@ async fn offline_mode_routes_local_even_with_server_url() {
     clear_env();
     register_sqlite_vec();
     let cfg = Config {
-        server_url: Some("http://team.example.com:7777".to_string()),
+        server_url: Some("http://team.example.com:4655".to_string()),
         project_id: Some("team/proj".to_string()),
         mode: Some(SyncMode::Offline),
         ..Default::default()
@@ -52,7 +52,7 @@ async fn local_first_mode_routes_local() {
     clear_env();
     register_sqlite_vec();
     let cfg = Config {
-        server_url: Some("http://team.example.com:7777".to_string()),
+        server_url: Some("http://team.example.com:4655".to_string()),
         project_id: Some("team/proj".to_string()),
         mode: Some(SyncMode::LocalFirst),
         ..Default::default()
@@ -163,9 +163,11 @@ async fn cloud_first_mode_routes_remote() {
         std::env::set_var("INKENTRY_SECRET_STORE", "file");
     }
 
-    // The backend is built without contacting the server at all, so nothing
-    // needs to listen on this port for the routing decision to be observable.
-    let cfg = cloud_first_cfg("http://127.0.0.1:7777", "team/proj");
+    // Port 0 can never have a listener, which is the point: the open path
+    // *does* health-probe, so a real port here sends the developer's own
+    // daemon a burst of requests on every test run (inkentry-oss^5). Only the
+    // routing decision is under test, and it is reached either way.
+    let cfg = cloud_first_cfg("http://127.0.0.1:0", "team/proj");
     let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
         .await
         .unwrap();
@@ -684,7 +686,7 @@ async fn cloud_first_rejects_non_loopback_http() {
     // server for nothing, so the backend would be constructed and the bearer
     // attached to every subsequent memory call over plaintext.
     let cfg = Config {
-        server_url: Some("http://team-server:7777".to_string()),
+        server_url: Some("http://team-server:4655".to_string()),
         project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
         mode: Some(SyncMode::CloudFirst),
         server_key: Some("secret".to_string()),
@@ -713,9 +715,9 @@ async fn cloud_first_rejects_non_loopback_http() {
 async fn cloud_first_rejects_spoofed_loopback_http() {
     clear_env();
     for url in [
-        "http://127.0.0.1.evil.example:7777",
-        "http://127.0.0.1@evil.example:7777",
-        "http://127.0.0.1:1234@evil.example:7777",
+        "http://127.0.0.1.evil.example:4655",
+        "http://127.0.0.1@evil.example:4655",
+        "http://127.0.0.1:1234@evil.example:4655",
     ] {
         let cfg = Config {
             server_url: Some(url.to_string()),
@@ -740,7 +742,7 @@ async fn cloud_first_rejects_spoofed_loopback_http() {
 async fn no_server_kill_switch_forces_local() {
     register_sqlite_vec();
     let cfg = Config {
-        server_url: Some("http://team.example.com:7777".to_string()),
+        server_url: Some("http://team.example.com:4655".to_string()),
         project_id: Some("team/proj".to_string()),
         mode: Some(SyncMode::CloudFirst),
         ..Default::default()

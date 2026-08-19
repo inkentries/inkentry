@@ -181,7 +181,7 @@ async fn push_completes_text_only_when_no_local_embedder_is_available() {
 
 #[test]
 fn a_failed_loopback_probe_leaves_no_embedder_rather_than_the_team_server() {
-    // The one case a live mock cannot pin without owning port 7777: loopback
+    // The one case a live mock cannot pin without owning port 4655: loopback
     // auto-discovery finding nothing while a team `server_url` IS configured.
     // `probe_loopback` yields `Tier::Offline` there, whose `effective_config`
     // is a no-op, and outside `cloud_first` `resolve_inference_url` reads

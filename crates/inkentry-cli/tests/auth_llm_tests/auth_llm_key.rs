@@ -69,7 +69,7 @@ fn set_key_llm_leaves_the_server_key_map_untouched() {
         .arg("auth")
         .arg("set-key")
         .arg("--server")
-        .arg("https://team.example:7777")
+        .arg("https://team.example:4655")
         .write_stdin("sk-team\n")
         .assert()
         .success();
@@ -92,7 +92,7 @@ fn set_key_server_does_not_write_an_llm_key() {
         .arg("auth")
         .arg("set-key")
         .arg("--server")
-        .arg("https://team.example:7777")
+        .arg("https://team.example:4655")
         .write_stdin("sk-team\n")
         .assert()
         .success();
@@ -108,7 +108,7 @@ fn set_key_rejects_both_llm_and_server() {
         .arg("set-key")
         .arg("--llm")
         .arg("--server")
-        .arg("https://team.example:7777")
+        .arg("https://team.example:4655")
         .write_stdin("sk-team\n")
         .assert()
         .failure();

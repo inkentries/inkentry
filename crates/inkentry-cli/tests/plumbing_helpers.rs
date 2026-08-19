@@ -99,6 +99,13 @@ pub fn inkentry_bin() -> Command {
 pub fn inkentry_bin_in(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("inkentry").unwrap();
     cmd.env("INKENTRY_SECRET_STORE", "file") // never the OS keychain in tests
+        // Loopback auto-discovery step 3b probes a fixed port, so without this
+        // a test run finds the developer's own daemon and sends it real
+        // embedding work — invisible to `egress_containment`, which permits
+        // loopback, and invisible to CI, where nothing listens (inkentry-oss^5).
+        // Pointing INKENTRY_STATE_DIR at an empty dir does NOT cover this: that
+        // only defeats step 3a, and 3b is what reaches off the test's world.
+        .env("INKENTRY_TEST_DISCOVERY_PORT", "0")
         .env("HOME", home)
         // `inkentry_config_dir()` uses `dirs::home_dir()` (HOME on Unix); unset
         // XDG_CONFIG_HOME so the file store lands under `<home>/.config/inkentry`

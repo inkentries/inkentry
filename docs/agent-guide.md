@@ -50,7 +50,7 @@ If your config does not have a `server_url`, `inkentry` auto-discovers a local
 daemon with the `inkentry server` subcommand. This auto-discovered daemon is an **inference backend only** — it serves embeddings and LLM calls. It is **not** a memory store: your project's memory stays in `memory.db` regardless of whether this server is running. (Memory moves to a server only when you *explicitly* set `server_url` to a team instance in your config.)
 
 ```bash
-# Start inkentry-server on port 7777 (idempotent — no-op if already running)
+# Start inkentry-server on port 4655 (idempotent — no-op if already running)
 inkentry server start
 
 # Check whether the daemon is running and get its PID/port/version
@@ -75,8 +75,11 @@ immediately.  If the PID is stale (process dead), it starts a fresh instance.
 version, and reachability) — it is the human-readable probe you want during
 debugging, so you rarely need to poll `/v1/health` directly.
 
-**Port walk:** `start` tries ports 7777–7787 in order.  If all are taken it
-exits with a clear error.  Use `--port <n>` to override the starting port.
+**Port selection:** `inkentry server start` binds `--port` (default 4655)
+exactly, and fails loudly if an unrelated process holds it. The auto-start path
+(`inkentry init` on a fresh machine) is the forgiving one: it takes 4655 when
+free and otherwise lets the OS assign an ephemeral port. Either way the bound
+port lands in `server.port`, which is what auto-discovery reads.
 
 ## Starting a session
 

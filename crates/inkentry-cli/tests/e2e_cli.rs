@@ -1038,7 +1038,7 @@ fn test_search_index_but_no_embedder_falls_back_to_full_text() {
 
     // Build the index (offline — no embedder needed for parse phase).
     // INKENTRY_NO_SERVER=1 keeps the embed phase from auto-discovering a
-    // loopback inkentry-server on 127.0.0.1:7777.
+    // loopback inkentry-server on 127.0.0.1:4655.
     inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -1274,7 +1274,7 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // `inkentry server start` writes; see `capability/probe.rs` step 3a). We redirect
 // `HOME` to an isolated temp dir and pre-write that port file so the probe
 // finds our `wiremock` instance deterministically, without depending on the
-// real default port 7777 (which may be occupied — or unoccupied — on the test
+// real default port 4655 (which may be occupied — or unoccupied — on the test
 // host) and without touching the developer's real `~/.local/state`.
 //
 // Coverage note: `memory harvest` routes through the same `effective_config`

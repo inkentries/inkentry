@@ -1,6 +1,7 @@
 //! Server probing: loopback auto-discovery, explicit `server_url` health
 //! checks, and the per-process cached `Tier` this crate reads everywhere.
 
+use inkentry_core::config::DEFAULT_SERVER_PORT;
 use tokio::sync::OnceCell;
 
 use crate::config::Config;
@@ -71,7 +72,7 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 ///    (`auto_discovered = false`).
 /// 3. If `cfg.server_url` is `None` → loopback auto-discovery:
 ///    a. Read `~/.local/state/inkentry/server.port`; probe `127.0.0.1:<port>`.
-///    b. Fallback: probe `127.0.0.1:7777`.
+///    b. Fallback: probe `127.0.0.1:<DEFAULT_SERVER_PORT>`.
 ///    Both loopback probes use a **250 ms** timeout.
 ///    On success: `auto_discovered = true`. On failure: `Tier::Offline`.
 ///
@@ -134,9 +135,6 @@ const REMOTE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// Loopback probe timeout (auto-discovery of a locally-running server).
 const LOOPBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Default loopback port for `inkentry-server`.
-const DEFAULT_LOOPBACK_PORT: u16 = 7777;
-
 async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     // ── 1. INKENTRY_NO_SERVER short-circuit ───────────────────────────────────
     if matches!(
@@ -162,10 +160,44 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     probe_loopback().await
 }
 
+/// The port step 3b falls back to, or `None` when the fallback is disabled.
+///
+/// `INKENTRY_TEST_DISCOVERY_PORT` overrides [`DEFAULT_SERVER_PORT`]; `0`, or
+/// any value that is not a port number, disables step 3b outright. A no-op for
+/// every real user: the var is never set outside the test harness.
+///
+/// The integration suite needs this because step 3b is the one step it cannot
+/// isolate. Pointing `INKENTRY_STATE_DIR` at an empty dir only defeats step
+/// 3a — 3b then probes a fixed port on the developer's own machine, so a test
+/// run sends real embedding work to whatever daemon is listening there
+/// (inkentry-oss^5). Disabling the fallback is the isolation; giving it a
+/// live mock to find is the alternative, and costs a server per test.
+fn discovery_fallback_port() -> Option<u16> {
+    let Ok(raw) = std::env::var("INKENTRY_TEST_DISCOVERY_PORT") else {
+        return Some(DEFAULT_SERVER_PORT);
+    };
+    match raw.trim().parse::<u16>() {
+        Ok(0) => None,
+        Ok(port) => Some(port),
+        // Fail closed. Restoring the fallback here would let `=o` instead of
+        // `=0` silently reach the developer's daemon again — the exact failure
+        // this variable exists to prevent, reintroduced by the mechanism meant
+        // to prevent it. Offline is loud and obviously wrong in a test; the
+        // variable is test-only, so no user is affected either way.
+        Err(_) => {
+            tracing::warn!(
+                "INKENTRY_TEST_DISCOVERY_PORT={raw:?} is not a port number; \
+                 disabling loopback discovery's fallback rather than restoring it"
+            );
+            None
+        }
+    }
+}
+
 /// Loopback auto-discovery only: never consults `cfg.server_url`.
 ///
 /// Step 3a: port file written by `inkentry server start`. Step 3b: fall back to
-/// the default port 7777. Both steps use the 250 ms loopback timeout and treat
+/// [`DEFAULT_SERVER_PORT`]. Both steps use the 250 ms loopback timeout and treat
 /// any probe failure as `Tier::Offline` (never a hard error: loopback
 /// auto-discovery finding nothing is the normal "no local server" case, not a
 /// misconfiguration).
@@ -191,8 +223,12 @@ async fn probe_loopback() -> Tier {
         tracing::debug!("loopback probe on port {port} failed: falling back to default port");
     }
 
-    // Step 3b: default port 7777
-    let default_url = format!("http://127.0.0.1:{DEFAULT_LOOPBACK_PORT}");
+    // Step 3b: the default port
+    let Some(port) = discovery_fallback_port() else {
+        tracing::debug!("loopback auto-discovery: fallback disabled: offline mode");
+        return Tier::Offline;
+    };
+    let default_url = format!("http://127.0.0.1:{port}");
     tracing::debug!("loopback auto-discovery: probing default {default_url}");
     let tier = probe_url(&default_url, LOOPBACK_PROBE_TIMEOUT, true, None)
         .await
@@ -767,8 +803,55 @@ mod tests {
     }
 
     #[test]
-    fn default_loopback_port_is_7777() {
-        assert_eq!(DEFAULT_LOOPBACK_PORT, 7777);
+    fn default_loopback_port_is_4655() {
+        assert_eq!(DEFAULT_SERVER_PORT, 4655);
+    }
+
+    // ── discovery_fallback_port ──────────────────────────────────────────────
+    //
+    // Mutates the process-global override, so serialised against itself.
+
+    #[test]
+    #[serial_test::serial(inkentry_test_discovery_port_env)]
+    fn discovery_fallback_port_defaults_to_the_server_port() {
+        // SAFETY: serialised via #[serial]; restored before the test ends.
+        unsafe { std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT") };
+        assert_eq!(discovery_fallback_port(), Some(DEFAULT_SERVER_PORT));
+    }
+
+    #[test]
+    #[serial_test::serial(inkentry_test_discovery_port_env)]
+    fn discovery_fallback_port_zero_disables_the_fallback() {
+        // What the integration suite sets: step 3b must not reach the
+        // developer's own daemon on the default port.
+        unsafe { std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", "0") };
+        assert_eq!(discovery_fallback_port(), None);
+        unsafe { std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT") };
+    }
+
+    #[test]
+    #[serial_test::serial(inkentry_test_discovery_port_env)]
+    fn discovery_fallback_port_honours_an_explicit_port() {
+        unsafe { std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", " 49999 ") };
+        assert_eq!(discovery_fallback_port(), Some(49999));
+        unsafe { std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT") };
+    }
+
+    #[test]
+    #[serial_test::serial(inkentry_test_discovery_port_env)]
+    fn discovery_fallback_port_fails_closed_on_an_unparseable_value() {
+        // `=o` for `=0` must not quietly restore the fallback and let the run
+        // reach the developer's daemon. The variable is test-only, so the
+        // safe direction is off.
+        for typo in ["o", "not-a-port", "-1", "99999", ""] {
+            unsafe { std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", typo) };
+            assert_eq!(
+                discovery_fallback_port(),
+                None,
+                "a malformed override ({typo:?}) must disable the fallback, not restore it"
+            );
+        }
+        unsafe { std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT") };
     }
 
     // ── INKENTRY_NO_SERVER short-circuit behaviour ─────────────────────────────
@@ -1217,7 +1300,7 @@ mod tests {
         // Deliberately no MockServer / no listener on this address: if
         // `probe_url` tried to send a request it would get a connection error,
         // not this validation message.
-        let result = probe_url("http://team-server:7777", REMOTE_PROBE_TIMEOUT, false, None).await;
+        let result = probe_url("http://team-server:4655", REMOTE_PROBE_TIMEOUT, false, None).await;
         let err = result.expect_err("non-loopback http:// must be a hard error");
         assert!(err.contains("loopback"), "got: {err}");
         assert!(err.contains("https"), "got: {err}");
@@ -1228,7 +1311,7 @@ mod tests {
     #[tokio::test]
     async fn probe_url_rejects_non_loopback_http_even_when_auto_discovered() {
         let result = probe_url(
-            "http://team-server:7777",
+            "http://team-server:4655",
             LOOPBACK_PROBE_TIMEOUT,
             true,
             None,

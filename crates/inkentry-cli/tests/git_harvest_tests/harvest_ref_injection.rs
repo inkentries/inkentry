@@ -38,7 +38,10 @@ fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
         db_path
     );
     fs::write(&config_path, content).expect("write config.toml");
-    plumbing_helpers::write_project_server_config(dir, "http://127.0.0.1:7777", "test/proj");
+    // Port 0 can never have a listener: ref rejection happens before any
+    // network use, so an unreachable server_url exercises the same path
+    // without probing the developer's own daemon (inkentry-oss^5).
+    plumbing_helpers::write_project_server_config(dir, "http://127.0.0.1:0", "test/proj");
     config_path
 }
 

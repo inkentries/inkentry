@@ -339,7 +339,7 @@ run sync "$CLI_BIN" memory sync
 # only, and inference resolves through loopback auto-discovery, which reads
 # this file (`capability/probe.rs` step 3a). Without it the search step below
 # fails outright in CI, and on a developer box fails worse: auto-discovery
-# falls through to the default port 7777, embeds against whatever
+# falls through to the default port 4655, embeds against whatever
 # current-version server is listening there, and reports success having
 # crossed no skew boundary at all.
 printf '%s\n' "$PORT" >"$INKENTRY_STATE_DIR/server.port"

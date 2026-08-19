@@ -211,7 +211,7 @@ async fn cloud_first_foreground_still_embeds_via_explicit_server_url() {
         // fallback to `local_first`'s loopback probe fails loudly (nothing
         // listens on the default port from this dir), instead of silently
         // hitting a real inkentry-server daemon that happens to be running on
-        // this machine's default port 7777.
+        // this machine's default port 4655.
         .env("INKENTRY_STATE_DIR", &state_dir)
         .assert()
         .success();

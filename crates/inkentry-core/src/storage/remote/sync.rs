@@ -1031,7 +1031,7 @@ mod tests {
     #[test]
     fn new_with_key_rejects_non_loopback_http() {
         let err =
-            match CloudSyncClient::new("http://team-server:7777", "proj", Some("secret"), None) {
+            match CloudSyncClient::new("http://team-server:4655", "proj", Some("secret"), None) {
                 Err(e) => e.to_string(),
                 Ok(_) => panic!("expected non-loopback plaintext http to be rejected"),
             };
@@ -1041,13 +1041,13 @@ mod tests {
     #[test]
     fn new_with_key_accepts_https_and_loopback_http() {
         assert!(
-            CloudSyncClient::new("https://team-server:7777", "proj", Some("secret"), None).is_ok()
+            CloudSyncClient::new("https://team-server:4655", "proj", Some("secret"), None).is_ok()
         );
         assert!(
-            CloudSyncClient::new("http://127.0.0.1:7777", "proj", Some("secret"), None).is_ok()
+            CloudSyncClient::new("http://127.0.0.1:4655", "proj", Some("secret"), None).is_ok()
         );
         assert!(
-            CloudSyncClient::new("http://localhost:7777", "proj", Some("secret"), None).is_ok()
+            CloudSyncClient::new("http://localhost:4655", "proj", Some("secret"), None).is_ok()
         );
     }
 
@@ -1072,13 +1072,13 @@ mod tests {
     // straight from a request body). The guard no longer keys on the bearer.
     #[test]
     fn keyless_construction_is_guarded_too() {
-        let err = match CloudSyncClient::new("http://team-server:7777", "proj", None, None) {
+        let err = match CloudSyncClient::new("http://team-server:4655", "proj", None, None) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("keyless non-loopback plaintext must be rejected as well"),
         };
         assert!(err.contains("plaintext http"), "err: {err}");
-        assert!(CloudSyncClient::new("https://team-server:7777", "proj", None, None).is_ok());
-        assert!(CloudSyncClient::new("http://127.0.0.1:7777", "proj", None, None).is_ok());
+        assert!(CloudSyncClient::new("https://team-server:4655", "proj", None, None).is_ok());
+        assert!(CloudSyncClient::new("http://127.0.0.1:4655", "proj", None, None).is_ok());
     }
 
     #[test]

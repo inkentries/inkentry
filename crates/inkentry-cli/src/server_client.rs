@@ -979,7 +979,7 @@ mod tests {
 
         let store = inkentry_core::config::secret_store::MemoryStore::default();
         let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
-        cfg.inference_url = Some("http://127.0.0.1:7777".into());
+        cfg.inference_url = Some("http://127.0.0.1:4655".into());
         let client =
             ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
 
@@ -1235,7 +1235,7 @@ mod tests {
 
     #[test]
     fn transport_validator_rejects_non_loopback_http() {
-        let err = inkentry_core::config::validate_transport_url("http://team-server:7777")
+        let err = inkentry_core::config::validate_transport_url("http://team-server:4655")
             .expect_err("non-loopback http:// must be rejected");
         assert!(err.contains("loopback"));
         assert!(err.contains("https"));
@@ -1266,7 +1266,7 @@ mod tests {
         let path = tmp.path().join("config.toml");
         let store = inkentry_core::config::secret_store::MemoryStore::default();
         let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
-        cfg.inference_url = Some("http://127.0.0.1:7777".into());
+        cfg.inference_url = Some("http://127.0.0.1:4655".into());
         assert!(
             ServerInferenceClient::from_config_with_store(&cfg, &store).is_some(),
             "loopback http:// inference URL must be accepted"
@@ -1283,7 +1283,7 @@ mod tests {
         let path = tmp.path().join("config.toml");
         let store = inkentry_core::config::secret_store::MemoryStore::default();
         let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
-        cfg.inference_url = Some("https://team-server:7777".into());
+        cfg.inference_url = Some("https://team-server:4655".into());
         assert!(
             ServerInferenceClient::from_config_with_store(&cfg, &store).is_some(),
             "https:// inference URL (any host) must be accepted"
@@ -1304,8 +1304,8 @@ mod tests {
             std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let cfg = crate::config::Config {
-            inference_url: Some("https://team.example:7777".to_string()),
-            server_url: Some("https://team.example:7777".to_string()),
+            inference_url: Some("https://team.example:4655".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("proj".to_string()),
             ..Default::default()
         };
@@ -1443,10 +1443,10 @@ mod tests {
             "/index/embed",
             reqwest::StatusCode::SERVICE_UNAVAILABLE,
             &body,
-            Some("https://team.example:7777"),
+            Some("https://team.example:4655"),
         );
         assert!(msg.contains("OOM loading GGUF"), "got: {msg}");
-        assert!(msg.contains("https://team.example:7777"), "got: {msg}");
+        assert!(msg.contains("https://team.example:4655"), "got: {msg}");
         assert!(
             !msg.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {msg}"

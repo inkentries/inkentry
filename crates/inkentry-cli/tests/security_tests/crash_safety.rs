@@ -37,6 +37,7 @@ const MARKER_TIMEOUT: Duration = Duration::from_secs(30);
 fn inkentry_command(home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("inkentry"));
     cmd.env("INKENTRY_SECRET_STORE", "file")
+        .env("INKENTRY_TEST_DISCOVERY_PORT", "0")
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
         .env("INKENTRY_CONFIG_DIR", home.join(".config").join("inkentry"))

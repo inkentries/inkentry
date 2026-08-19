@@ -34,7 +34,7 @@ use server_llm::{ServerLlm, check_llm_transport, resolve_llm_key};
 )]
 struct Args {
     /// Port to listen on
-    #[arg(long, default_value = "7777")]
+    #[arg(long, default_value_t = inkentry_core::config::DEFAULT_SERVER_PORT)]
     port: u16,
 
     /// Host/address to bind. Defaults to loopback (`127.0.0.1`): a local
@@ -1127,7 +1127,7 @@ mod arg_tests {
             for tls in [false, true] {
                 for key in [false, true] {
                     assert!(
-                        super::check_bind_safety(h, 7777, key, tls).is_ok(),
+                        super::check_bind_safety(h, 4655, key, tls).is_ok(),
                         "loopback {h} (tls={tls}, key={key}) should be allowed"
                     );
                 }
@@ -1141,12 +1141,12 @@ mod arg_tests {
     fn non_loopback_without_tls_is_refused() {
         for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
             for key in [false, true] {
-                let err = super::check_bind_safety(h, 7777, key, false)
+                let err = super::check_bind_safety(h, 4655, key, false)
                     .expect_err(&format!("{h} (tls=false, key={key}) must be refused"));
                 let msg = format!("{err}");
                 assert!(
-                    msg.contains(h) && msg.contains("7777"),
-                    "error must name the interface and port '{h}:7777': {msg}"
+                    msg.contains(h) && msg.contains("4655"),
+                    "error must name the interface and port '{h}:4655': {msg}"
                 );
                 assert!(
                     msg.contains("--tls-cert") && msg.contains("--tls-key"),
@@ -1161,12 +1161,12 @@ mod arg_tests {
     #[test]
     fn non_loopback_tls_without_key_is_refused() {
         for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
-            let err = super::check_bind_safety(h, 7777, false, true)
+            let err = super::check_bind_safety(h, 4655, false, true)
                 .expect_err(&format!("{h} (tls=true, key=false) must be refused"));
             let msg = format!("{err}");
             assert!(
-                msg.contains(h) && msg.contains("7777"),
-                "error must name the interface and port '{h}:7777': {msg}"
+                msg.contains(h) && msg.contains("4655"),
+                "error must name the interface and port '{h}:4655': {msg}"
             );
             assert!(
                 msg.contains("API key"),
@@ -1181,7 +1181,7 @@ mod arg_tests {
     fn non_loopback_tls_with_key_is_allowed() {
         for h in ["0.0.0.0", "::", "192.168.1.10", "example.com"] {
             assert!(
-                super::check_bind_safety(h, 7777, true, true).is_ok(),
+                super::check_bind_safety(h, 4655, true, true).is_ok(),
                 "{h} (tls=true, key=true) is the remote HTTPS path and must be allowed"
             );
         }
@@ -1563,7 +1563,7 @@ mod arg_tests {
             super::resolve_api_key(None, None, None, None).unwrap(),
             None
         );
-        assert!(super::check_bind_safety("127.0.0.1", 7777, false, false).is_ok());
+        assert!(super::check_bind_safety("127.0.0.1", 4655, false, false).is_ok());
     }
 
     // A BOM-only file is empty, so resolution falls through to the next source
@@ -1688,16 +1688,16 @@ mod arg_tests {
     #[test]
     fn health_probe_url_maps_wildcard_and_brackets_ipv6() {
         assert_eq!(
-            super::health_probe_url("127.0.0.1", 7777),
-            "http://127.0.0.1:7777/v1/health"
+            super::health_probe_url("127.0.0.1", 4655),
+            "http://127.0.0.1:4655/v1/health"
         );
         assert_eq!(
-            super::health_probe_url("0.0.0.0", 7777),
-            "http://127.0.0.1:7777/v1/health"
+            super::health_probe_url("0.0.0.0", 4655),
+            "http://127.0.0.1:4655/v1/health"
         );
         assert_eq!(
-            super::health_probe_url("", 7777),
-            "http://127.0.0.1:7777/v1/health"
+            super::health_probe_url("", 4655),
+            "http://127.0.0.1:4655/v1/health"
         );
         assert_eq!(
             super::health_probe_url("::", 9000),

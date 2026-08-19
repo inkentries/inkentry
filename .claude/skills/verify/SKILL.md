@@ -117,7 +117,7 @@ Summary [  30.359s] 21 tests run: 20 passed, 1 failed, 0 skipped      <- complet
 That `0 skipped` on the cancelled run is not reassurance; it is the count of nextest's own skips,
 and it reads identically either way.
 
-This is not hypothetical. A machine with something already listening on `127.0.0.1:7777` makes
+This is not hypothetical. A machine with something already listening on `127.0.0.1:4655` makes
 `inference_url` resolve to `Local(...)`, which fails
 `capability::llm_route::tests::nothing_configured_anywhere_reports_no_llm_not_offline`. Measured on
 this suite: the default run cancelled at `597/2286`, leaving 1689 tests unexecuted; the same run

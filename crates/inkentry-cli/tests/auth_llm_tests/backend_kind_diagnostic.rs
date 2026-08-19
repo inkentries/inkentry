@@ -35,7 +35,7 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
 
     // Build index. `INKENTRY_NO_SERVER=1` forces offline so the index skips the
     // embed phase entirely (no embedding server needed); without it, loopback
-    // auto-discovery can pick up a `inkentry-server` running on 127.0.0.1:7777
+    // auto-discovery can pick up a `inkentry-server` running on 127.0.0.1:4655
     // and route the embed call there, which fails the build with a dimension
     // mismatch. We only care about the SQLite memory-backend path here.
     inkentry_bin()

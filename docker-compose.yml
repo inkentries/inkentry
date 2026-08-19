@@ -50,10 +50,10 @@ services:
     pull_policy: build
     profiles: ["team-server"]
     restart: unless-stopped
-    command: ["--host", "0.0.0.0", "--port", "7777"]
+    command: ["--host", "0.0.0.0", "--port", "4658"]
     ports:
       # Publish the container's routable TLS port on the host's 443.
-      - "443:7777"
+      - "443:4658"
     volumes:
       - inkentry-data:/data
       # Operator-provided PEM. The cert chain is public; the key is a secret,

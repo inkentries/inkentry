@@ -47,7 +47,7 @@ StateDirectory=inkentry
 LoadCredential=server-key:/etc/inkentry/server-key
 LoadCredential=tls-key:/etc/inkentry/tls-key
 ExecStart=/usr/local/bin/inkentry-server \
-  --host 0.0.0.0 --port 7777 \
+  --host 0.0.0.0 --port 4658 \
   --db /var/lib/inkentry/inkentry.db \
   --tls-cert /etc/inkentry/tls-cert \
   --tls-key %d/tls-key

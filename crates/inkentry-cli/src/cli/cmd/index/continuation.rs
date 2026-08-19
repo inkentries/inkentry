@@ -250,7 +250,7 @@ mod tests {
         let mut caps = capability::Capabilities::all();
         caps.index_embed = embed_ready;
         capability::Tier::Server {
-            url: "http://127.0.0.1:7777".to_string(),
+            url: "http://127.0.0.1:4655".to_string(),
             caps,
             auto_discovered: true,
             embedder_state: state,

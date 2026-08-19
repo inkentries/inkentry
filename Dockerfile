@@ -23,7 +23,7 @@
 # the server's network namespace instead, then reach it at 127.0.0.1:
 #   docker run -d --name inkentry-server -v inkentry-data:/data inkentry-server
 #   docker run --rm --network container:inkentry-server curlimages/curl \
-#     curl http://127.0.0.1:7777/v1/health
+#     curl http://127.0.0.1:4655/v1/health
 #
 # Run (local scaffold, with API key): see docker-compose.yml. It runs this
 # image with a persistent volume, wired up with the same
@@ -111,7 +111,7 @@ ENV XDG_DATA_HOME=/data
 
 USER inkentry
 
-EXPOSE 7777
+EXPOSE 4655
 
 ENTRYPOINT ["/usr/local/bin/inkentry-server"]
 # Bind loopback — the binary's own default, and the right default here: this

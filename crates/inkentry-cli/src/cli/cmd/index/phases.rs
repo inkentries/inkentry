@@ -377,13 +377,13 @@ mod tests {
         let lines = embed_skipped_lines(
             Some(capability::EmbedderState::Unavailable),
             None,
-            Some("https://team.example:7777"),
+            Some("https://team.example:4655"),
             false,
         );
         let joined = lines.join("\n");
         assert!(joined.contains("failed to load"));
         assert!(
-            joined.contains("https://team.example:7777"),
+            joined.contains("https://team.example:4655"),
             "got: {joined}"
         );
         assert!(
@@ -400,9 +400,9 @@ mod tests {
         // daemon). Without this, a user with a healthy loopback daemon running
         // has no path from the message to the real cause: the daemon was
         // never being used because server_url overrides it.
-        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None, false);
+        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:4655"), None, false);
         let joined = lines.join("\n");
-        assert!(joined.contains("http://127.0.0.1:7777"), "got: {joined}");
+        assert!(joined.contains("http://127.0.0.1:4655"), "got: {joined}");
         assert!(joined.contains("unreachable"), "got: {joined}");
         assert!(joined.contains("server_url"), "got: {joined}");
         assert!(
@@ -423,14 +423,14 @@ mod tests {
         // The Windows Defender Firewall hint is a real cause ONLY on Windows;
         // printing it unconditionally (the field bug, hit on macOS) actively
         // misdirects a user on any other platform.
-        let windows_lines = embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None, true);
+        let windows_lines = embed_skipped_lines(None, Some("http://127.0.0.1:4655"), None, true);
         assert!(
             windows_lines.join("\n").contains("Firewall"),
             "the Windows hint must still show when the host platform is Windows"
         );
 
         let non_windows_lines =
-            embed_skipped_lines(None, Some("http://127.0.0.1:7777"), None, false);
+            embed_skipped_lines(None, Some("http://127.0.0.1:4655"), None, false);
         assert!(
             !non_windows_lines.join("\n").contains("Firewall"),
             "the Windows-only hint must not print on a non-Windows host: got: {:?}",
@@ -761,7 +761,7 @@ mod tests {
             None,
         ] {
             for url in [Some("http://x:1"), None] {
-                for remote_url in [None, Some("https://team.example:7777")] {
+                for remote_url in [None, Some("https://team.example:4655")] {
                     for is_windows in [false, true] {
                         assert!(
                             !embed_skipped_lines(state, url, remote_url, is_windows).is_empty(),

@@ -525,7 +525,7 @@ cargo run -p inkentry-cli -- sync              # two-way: push local memory to s
 cargo run -p inkentry-cli -- plumbing push     # one-way: seed the server from local memory only
 
 # Run the server
-cargo run -p inkentry-server -- --port 7777
+cargo run -p inkentry-server -- --port 4655
 
 # Verbose logging
 RUST_LOG=debug cargo run -p inkentry-cli -- index .

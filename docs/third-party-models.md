@@ -309,7 +309,7 @@ Pass the same two flags when you start the deployed `inkentry-server` (see
 [Server setup](server-setup.md)):
 
 ```bash
-inkentry-server --host 0.0.0.0 --port 7777 \
+inkentry-server --host 0.0.0.0 --port 4658 \
   --tls-cert /etc/inkentry/tls-cert --tls-key /etc/inkentry/tls-key \
   --llm-url https://llm-host:1234 --llm-model your-chat-model-id \
   --llm-key-file /etc/inkentry/llm-key

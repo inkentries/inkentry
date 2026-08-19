@@ -283,7 +283,7 @@ mod tests {
         let server = MockServer::start().await;
         // A non-loopback team server_url with NO project_id — a genuine first run.
         let cfg = Config {
-            server_url: Some("http://inkentry.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: None,
             ..Default::default()
         };

@@ -121,11 +121,7 @@ fn harvest_check_passes_when_server_url_is_set() {
     // "an explicit server_url IS used for inference", which is the
     // `cloud_first` case.
     let config_path = write_harvest_config(temp.path(), "mode = \"cloud_first\"\n");
-    plumbing_helpers::write_project_server_config(
-        temp.path(),
-        "http://127.0.0.1:7777",
-        "test/proj",
-    );
+    plumbing_helpers::write_project_server_config(temp.path(), "http://127.0.0.1:0", "test/proj");
 
     // `INKENTRY_NO_SERVER=1` (set by `harvest_cmd` for the other two tests in
     // this file) is a hard offline kill-switch: `resolve_mode()` forces
@@ -136,7 +132,7 @@ fn harvest_check_passes_when_server_url_is_set() {
     // this test specifically. This is safe: unlike loopback auto-discovery,
     // `cloud_first`'s `server_url` fallback in `resolve_inference_url` does
     // not depend on the URL actually being reachable, so a real local server
-    // happening to run on 7777 cannot change whether the Tier-0 gate fires.
+    // happening to run on 4655 cannot change whether the Tier-0 gate fires.
     //
     // The command will fail (no live server, no git repo) but NOT with the
     // Tier-0 "requires inkentry-server" message.

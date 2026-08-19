@@ -18,7 +18,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/inkentry-server --port 7777
+ExecStart=/usr/bin/inkentry-server --port 4655
 Restart=on-failure
 RestartSec=5s
 Environment=RUST_LOG=info

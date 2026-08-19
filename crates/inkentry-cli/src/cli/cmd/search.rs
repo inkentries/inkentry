@@ -971,10 +971,10 @@ mod tests {
         let msg = semantic_unavailable_message(
             Some(EmbedderState::Unavailable),
             Some("http://x:1"),
-            Some("https://team.example:7777"),
+            Some("https://team.example:4655"),
             false,
         );
-        assert!(msg.contains("https://team.example:7777"), "got: {msg}");
+        assert!(msg.contains("https://team.example:4655"), "got: {msg}");
         assert!(
             !msg.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {msg}"
@@ -983,13 +983,13 @@ mod tests {
 
     #[test]
     fn no_server_with_configured_url_names_it_and_windows_hint_only_on_windows() {
-        let win = semantic_unavailable_message(None, Some("https://team.example:7777"), None, true);
-        assert!(win.contains("https://team.example:7777"));
+        let win = semantic_unavailable_message(None, Some("https://team.example:4655"), None, true);
+        assert!(win.contains("https://team.example:4655"));
         assert!(win.contains("no server reachable"));
         assert!(win.contains("Firewall"));
         assert!(win.contains("overriding"));
         let unix =
-            semantic_unavailable_message(None, Some("https://team.example:7777"), None, false);
+            semantic_unavailable_message(None, Some("https://team.example:4655"), None, false);
         assert!(!unix.contains("Firewall"));
     }
 

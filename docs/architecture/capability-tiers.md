@@ -118,14 +118,14 @@ fn discover_local_server() -> Option<ServerHandle> {
     if env::var("INKENTRY_NO_SERVER").is_ok() { return None; }   // hard opt-out
 
     // 1. Probe the well-known loopback endpoint.
-    match GET http://127.0.0.1:7777/v1/health within 250ms {
+    match GET http://127.0.0.1:4655/v1/health within 250ms {
         Ok(200, body) => {
             // 2. Only reuse a server this user owns.
             if body["started_by"] == current_uid() {
                 return Some(ServerHandle::existing(body["instance_id"]));
             }
             // Owned by another UID — do not reuse; fall through to no-server.
-            warn!("server on 127.0.0.1:7777 started by another user — not reusing");
+            warn!("server on 127.0.0.1:4655 started by another user — not reusing");
             return None;
         }
         _ => {}
@@ -138,7 +138,7 @@ fn discover_local_server() -> Option<ServerHandle> {
 
 Key points:
 
-- **Address.** Discovery is fixed to `127.0.0.1:7777` — loopback only, never a
+- **Address.** Discovery is fixed to `127.0.0.1:4655` — loopback only, never a
   routable interface. A team/remote server is reached through explicit
   `server_url` config, not discovery.
 - **`instance_id`.** Each running server reports a unique UUID v7 in its

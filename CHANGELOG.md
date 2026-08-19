@@ -136,6 +136,22 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING: the default server port moved from 7777 to 4655**, and the team
+  deployment convention from 7777 to 4658. 7777/7778 are registered ports.
+  **Loopback users need do nothing**: the port was never in `config.toml`,
+  `inkentry server start` records whatever it bound in `server.port`, and
+  auto-discovery reads that file before falling back to the default — an
+  already-running daemon on 7777 keeps being found until it is restarted.
+  **Team operators need do nothing either**: their `server_url` and their
+  unit's `--port` are explicit and unchanged; only the shipped defaults moved.
+  Adopting the new unit files (`packaging/inkentry-server-team*.service`, the
+  MDM examples, the `team-server` compose profile) means moving the server and
+  its clients' `server_url` together.
+
+- **An auto-started daemon whose port is taken now takes an ephemeral port**
+  instead of walking the ten ports above it. Explicit `inkentry server start` is
+  unchanged: it binds `--port` exactly and fails loudly if that port is held.
+
 - **BREAKING: the memory write routes take `vector` / `vector_model` /
   `vector_precision` in place of a bare `embedding`.** `POST
   /v1/projects/{id}/memory` and `POST /v1/projects/{id}/memory/batch` now use

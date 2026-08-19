@@ -31,7 +31,7 @@ fn set_key_then_list_servers_shows_the_origin_not_the_secret() {
     let home = TempDir::new().unwrap();
     set_key(
         home.path(),
-        "https://team.example:7777/ignored/path",
+        "https://team.example:4655/ignored/path",
         "sk-team-secret",
     );
 
@@ -40,7 +40,7 @@ fn set_key_then_list_servers_shows_the_origin_not_the_secret() {
         .arg("list-servers")
         .assert()
         .success()
-        .stdout(predicate::str::contains("https://team.example:7777"))
+        .stdout(predicate::str::contains("https://team.example:4655"))
         .stdout(predicate::str::contains("sk-team-secret").not());
 }
 
@@ -62,7 +62,7 @@ fn set_key_rejects_empty_stdin() {
         .arg("auth")
         .arg("set-key")
         .arg("--server")
-        .arg("https://team.example:7777")
+        .arg("https://team.example:4655")
         .write_stdin("")
         .assert()
         .failure();
@@ -71,8 +71,8 @@ fn set_key_rejects_empty_stdin() {
 #[test]
 fn set_key_normalizes_origin_so_a_second_call_overwrites_not_duplicates() {
     let home = TempDir::new().unwrap();
-    set_key(home.path(), "https://team.example:7777/a/b?x=1", "sk-1");
-    set_key(home.path(), "https://team.example:7777/", "sk-2");
+    set_key(home.path(), "https://team.example:4655/a/b?x=1", "sk-1");
+    set_key(home.path(), "https://team.example:4655/", "sk-2");
 
     let out = inkentry_bin_in(home.path())
         .arg("auth")
@@ -96,7 +96,7 @@ fn set_key_normalizes_origin_so_a_second_call_overwrites_not_duplicates() {
 #[test]
 fn bare_logout_does_not_clear_stored_server_keys() {
     let home = TempDir::new().unwrap();
-    set_key(home.path(), "https://team.example:7777", "sk-team-secret");
+    set_key(home.path(), "https://team.example:4655", "sk-team-secret");
 
     inkentry_bin_in(home.path())
         .arg("logout")
@@ -110,14 +110,14 @@ fn bare_logout_does_not_clear_stored_server_keys() {
         .arg("list-servers")
         .assert()
         .success()
-        .stdout(predicate::str::contains("https://team.example:7777"));
+        .stdout(predicate::str::contains("https://team.example:4655"));
 }
 
 #[test]
 fn logout_servers_flag_clears_all_stored_server_keys() {
     let home = TempDir::new().unwrap();
-    set_key(home.path(), "https://a.example:7777", "sk-a");
-    set_key(home.path(), "https://b.example:7777", "sk-b");
+    set_key(home.path(), "https://a.example:4655", "sk-a");
+    set_key(home.path(), "https://b.example:4655", "sk-b");
 
     inkentry_bin_in(home.path())
         .arg("logout")
@@ -136,13 +136,13 @@ fn logout_servers_flag_clears_all_stored_server_keys() {
 #[test]
 fn logout_server_flag_clears_only_that_one_origin() {
     let home = TempDir::new().unwrap();
-    set_key(home.path(), "https://a.example:7777", "sk-a");
-    set_key(home.path(), "https://b.example:7777", "sk-b");
+    set_key(home.path(), "https://a.example:4655", "sk-a");
+    set_key(home.path(), "https://b.example:4655", "sk-b");
 
     inkentry_bin_in(home.path())
         .arg("logout")
         .arg("--server")
-        .arg("https://a.example:7777")
+        .arg("https://a.example:4655")
         .assert()
         .success();
 

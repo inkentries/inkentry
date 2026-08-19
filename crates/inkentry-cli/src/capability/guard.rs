@@ -139,11 +139,11 @@ mod tests {
         // server_url is already configured; the message must name the failing
         // server, never tell the operator to set what is already set.
         let tier = Tier::Offline;
-        let err = require_tier1("plan", &tier, Some("https://bad:7777")).unwrap_err();
+        let err = require_tier1("plan", &tier, Some("https://bad:4655")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'inkentry plan'"));
         assert!(msg.contains("requires inkentry-server"));
-        assert!(msg.contains("https://bad:7777"));
+        assert!(msg.contains("https://bad:4655"));
         assert!(
             !msg.contains("Set server_url"),
             "must not suggest setting an already-set server_url: {msg}"

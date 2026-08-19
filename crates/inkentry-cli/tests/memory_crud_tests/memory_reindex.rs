@@ -14,7 +14,7 @@
 // only the local loopback embedder. Using the real discovery mechanism (a
 // per-fixture, isolated state dir) rather than `mode = "cloud_first"` also
 // sidesteps a real hazard: a `cloud_first` fixture would still fall back to
-// hard-coded port 7777 if the state dir ever went unset, which could hit a
+// hard-coded port 4655 if the state dir ever went unset, which could hit a
 // developer's own long-running `inkentry-server` instead of this fixture's
 // mock.
 
@@ -162,7 +162,7 @@ struct Fixture {
     mem_path: PathBuf,
     global_config: PathBuf,
     // Isolated `INKENTRY_STATE_DIR` for this fixture's loopback auto-discovery
-    // (`server.port`, step 3a). Never the hard-coded default port 7777.
+    // (`server.port`, step 3a). Never the hard-coded default port 4655.
     state_dir: PathBuf,
 }
 
