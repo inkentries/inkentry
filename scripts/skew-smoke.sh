@@ -289,17 +289,20 @@ grep -q "Skew smoke note" "$WORK/list.out" || fail "memory list lost the note en
 # complete), so both are read here rather than grepped out of prose. `run`
 # cannot carry these: it folds stderr into the same file, which would put a
 # warning line inside the JSON, and it treats every non-zero exit as failure.
+# `--db` is passed to every plumbing memory command below, and it is not a
+# workaround for a live defect. Current builds resolve the memory store from the
+# `.inkentry/` directory and find these projects without help. **The previous
+# release does not**: it keys project identity on a present `index.db`, which
+# these projects deliberately do not have, so it walks past them to the global
+# store and reports an empty delta. Since one side of a skew run is always a
+# shipped binary whose behaviour can no longer change, this stays for as long as
+# the compared release predates that fix.
 #
-# `--db` is not optional here even though nothing indexes these projects. The
-# memory store plumbing acts on is index.db's sibling, and plumbing's own
-# auto-detect recognises a project by a *present* index.db, which a project that
-# was never indexed does not have. Left to auto-detect it walks past the scratch
-# project to the global store, finds it empty, and reports an empty delta rather
-# than an error, so both ends would agree on nothing at all. The `memory`
-# commands above resolve the same store from the `.inkentry/` directory instead,
-# so this flag is what keeps every step in this script on one store.
+# It is inert for the current build: `--db <path>` resolves the store as that
+# path's sibling, which is the same answer the directory walk already gives.
 STORE_A="$WORK/a/.inkentry/index.db"
 STORE_B="$WORK/b/.inkentry/index.db"
+
 plumb() {
   local label="$1" want_status="$2"; shift 2
   echo "-- $label"

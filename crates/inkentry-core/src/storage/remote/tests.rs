@@ -384,3 +384,33 @@ async fn add_retries_a_shed_429_instead_of_failing_the_write() {
     assert_eq!(id.as_str(), "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e01");
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
+
+// ADR-088 D3: nothing is migrated into the per-origin map on the way out, so a
+// user upgrading from the flat entry meets an auth failure. It must name the
+// one command that restores service rather than a bare 401.
+#[tokio::test]
+async fn a_rejected_credential_names_the_set_key_command() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/stats"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+
+    // `{:#}` is how the CLI renders an error (main.rs), so it is what the user
+    // actually reads.
+    let err = format!(
+        "{:#}",
+        backend_at(server.uri())
+            .count()
+            .await
+            .expect_err("a 401 must fail the call")
+    );
+    assert!(
+        err.contains(&format!("inkentry auth set-key --server {}", server.uri())),
+        "must name the fix, got: {err}"
+    );
+}

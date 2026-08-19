@@ -2396,6 +2396,69 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
 
 // A key the project config is not read for is named on stderr rather
 // than dropped in silence, and the rest of the file still loads.
+// The personal config's `server_key` is the one credential key named on
+// stderr, and the naming is the whole of ADR-088 D1's user-facing contract:
+// the key is about to stop working and only the tool knows it is in there.
+// Gated to unix because the helper redirects HOME, which `dirs::home_dir()`
+// ignores on Windows.
+#[cfg(unix)]
+#[test]
+fn unread_personal_config_server_key_is_named_on_stderr() {
+    let home = tempdir().unwrap();
+    let config_dir = home.path().join(".config").join("inkentry");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "server_key = \"sk-should-not-be-read\"\nllm_model = \"gpt-oss\"\n",
+    )
+    .unwrap();
+
+    let project_dir = home.path().join("proj");
+    fs::create_dir_all(project_dir.join(".inkentry")).unwrap();
+    fs::write(
+        project_dir.join(".inkentry").join("config.toml"),
+        "project_id = \"team/proj\"\n",
+    )
+    .unwrap();
+
+    let output = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .args(["status", "--format", "json"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("server_key"),
+        "the unread credential key must be named, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("no longer read"),
+        "the warning must say the field is not read, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("auth set-key"),
+        "the warning must name the replacement command, got stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("sk-should-not-be-read"),
+        "the warning must never echo the key it names, got stderr: {stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "an unread key must not fail a command"
+    );
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .expect("stdout must stay machine-clean JSON with the warning on stderr");
+
+    let on_disk = fs::read_to_string(config_dir.join("config.toml")).unwrap();
+    assert_eq!(
+        on_disk, "server_key = \"sk-should-not-be-read\"\nllm_model = \"gpt-oss\"\n",
+        "the file must be left exactly as it was, byte for byte"
+    );
+}
+
 #[test]
 fn unread_project_config_key_is_named_on_stderr() {
     let home = tempdir().unwrap();

@@ -78,19 +78,13 @@ fn set_llm_key() -> Result<()> {
 
 fn list_servers() -> Result<()> {
     let store = inkentry_core::config::default_secret_store()?;
-    let (origins, legacy) = server_keys::list_origins(store.as_ref())?;
-    if origins.is_empty() && !legacy {
+    let origins = server_keys::list_origins(store.as_ref())?;
+    if origins.is_empty() {
         println!("No server keys stored.");
         return Ok(());
     }
     for origin in &origins {
         println!("{origin}");
-    }
-    if legacy {
-        println!(
-            "(a legacy server key is also stored; it migrates automatically the next \
-             time it resolves for a server)"
-        );
     }
     Ok(())
 }
@@ -126,8 +120,9 @@ mod tests {
                 .unwrap();
         assert_eq!(origin, "https://team.example:4655");
 
-        let (origins, legacy) = server_keys::list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://team.example:4655".to_string()]);
-        assert!(!legacy);
+        assert_eq!(
+            server_keys::list_origins(&store).unwrap(),
+            vec!["https://team.example:4655".to_string()]
+        );
     }
 }

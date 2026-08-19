@@ -627,13 +627,16 @@ and takes precedence over the stored key:
 export INKENTRY_SERVER_KEY="your-shared-api-key"
 ```
 
-If you have an old personal `~/.config/inkentry/config.toml` with a bare
-`server_key = "..."`, it is picked up and migrated into the per-server store
-automatically the first time it's needed; no action required. A `server_key`
-line in a project's checked-in `.inkentry/config.toml` is not read: a key belongs
-to a developer, not to a committed file. On a host with no keychain, inkentry falls
-back to an owner-only `~/.config/inkentry/secrets.toml`. For the full
-credential-storage rules and the `INKENTRY_SECRET_STORE` override, see the
+A `server_key` line in a config file is not read, in either the personal
+`~/.config/inkentry/config.toml` or a project's checked-in
+`.inkentry/config.toml`. It is not migrated into the per-server store either:
+inkentry names the file on stderr and tells you to rotate the key it holds,
+because a credential that sat in a plaintext file should be treated as exposed.
+Run the `set-key` command above with the replacement, and delete the line
+yourself. A key belongs to a developer, not to a committed file. On a host with
+no keychain, inkentry falls back to an owner-only
+`~/.config/inkentry/secrets.toml`. For the full credential-storage rules and the
+`INKENTRY_SECRET_STORE` override, see the
 [Commands reference](commands.md#inkentry-auth).
 
 `project_id` stays a human-readable slug, and it is sent to the server exactly

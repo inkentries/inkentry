@@ -161,6 +161,56 @@ mod pull;
 mod push;
 mod read_memory;
 
+/// Resolve the memory store a memory-targeting plumbing subcommand acts on.
+///
+/// Keys on the `.inkentry/` **directory** ([`find_project_dir`]), never on a
+/// present `index.db`: a project can be configured and never indexed, and the
+/// index walk would then step over it to the machine-global store while
+/// `memory add`, `memory list` and `sync` in that same directory stay on the
+/// project store. Memory needs no index, so the index is not what says a
+/// project is here.
+///
+/// Outside any project the global store is still the honest answer, but a
+/// silent one is indistinguishable from an empty project store, so it is named
+/// on stderr. stdout stays the JSONL report alone.
+///
+/// [`find_project_dir`]: inkentry_core::config::find_project_dir
+fn resolve_memory_path(explicit_db: Option<&std::path::Path>, cfg: &Config) -> std::path::PathBuf {
+    if let Some(p) = explicit_db {
+        return p.with_file_name("memory.db");
+    }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(dir) = crate::config::find_project_dir(&cwd)
+    {
+        return dir.join("memory.db");
+    }
+    let global = cfg.db_path.with_file_name("memory.db");
+    eprintln!(
+        "note: no inkentry project here (no .inkentry/ directory found); \
+         acting on the global memory store at {}",
+        global.display()
+    );
+    global
+}
+
+/// Refuse to read a memory store that is not there.
+///
+/// Exit 1 means "no entries", and an absent store is not that. Skipped when
+/// `cloud_first` routes memory to a team server, which owns the store and
+/// leaves the local path a placeholder nothing opens.
+fn require_memory_store(mem_path: &std::path::Path, cfg: &Config) -> Result<()> {
+    let routes_remote =
+        cfg.resolve_mode() == crate::config::SyncMode::CloudFirst && cfg.server_url.is_some();
+    if routes_remote || mem_path.exists() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "No memory store found at {}.\n\
+         Run `inkentry init` in your project first, or pass an explicit --db.",
+        mem_path.display()
+    )
+}
+
 pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
     // Most plumbing commands need the project DB; open it once here.
     // `embed` and `parse-file` do not need it but it's cheap to open.
@@ -176,18 +226,23 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
         // Notes are the pre-`init` store (ADR-068), so publishing must not
         // require an index.
         PlumbingCommand::PublishNotes(a) => return publish_notes::publish_notes(a).await,
-        // Memory transfer targets memory.db (sibling of the index db), not the
-        // index, so it must not require an index either.
+        // The memory commands target memory.db and never read a chunk, so they
+        // neither require an index nor take the project's identity from one.
         PlumbingCommand::Push(a) => {
             let mem_path = a
                 .source
                 .clone()
-                .unwrap_or_else(|| db_path.with_file_name("memory.db"));
+                .unwrap_or_else(|| resolve_memory_path(args.db.as_deref(), &cfg));
             return push::push(a, &mem_path, &cfg).await;
         }
         PlumbingCommand::Pull(_) => {
-            let mem_path = db_path.with_file_name("memory.db");
+            let mem_path = resolve_memory_path(args.db.as_deref(), &cfg);
             return pull::pull(&mem_path, &cfg).await;
+        }
+        PlumbingCommand::ReadMemory(a) => {
+            let mem_path = resolve_memory_path(args.db.as_deref(), &cfg);
+            require_memory_store(&mem_path, &cfg)?;
+            return read_memory::read_memory(a, &mem_path, &cfg).await;
         }
         _ => {}
     }
@@ -207,15 +262,12 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
         PlumbingCommand::HashFile(a) => hash_file::hash_file(a, &db),
         PlumbingCommand::Knn(a) => knn::knn(a, &db).await,
         PlumbingCommand::GraphEdges(a) => graph_edges::graph_edges(a, &db),
-        PlumbingCommand::ReadMemory(a) => {
-            let mem_path = db_path.with_file_name("memory.db");
-            read_memory::read_memory(a, &mem_path, &cfg).await
-        }
         // Already handled above but Rust requires exhaustive match.
         PlumbingCommand::ParseFile(_)
         | PlumbingCommand::Embed(_)
         | PlumbingCommand::PublishNotes(_)
         | PlumbingCommand::Push(_)
-        | PlumbingCommand::Pull(_) => unreachable!(),
+        | PlumbingCommand::Pull(_)
+        | PlumbingCommand::ReadMemory(_) => unreachable!(),
     }
 }

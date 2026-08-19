@@ -265,6 +265,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- **BREAKING: a `server_key` in your personal `~/.config/inkentry/config.toml`
+  is no longer read, and a key stored by a client older than the per-origin
+  scheme is no longer migrated forward** (ADR-088). Run
+  `inkentry auth set-key --server <url>` once per server. A config file that
+  still carries the line is named on stderr; rotate that key rather than moving
+  it, since it has been sitting in plaintext.
 - **The `--mode` flag on `search`** (`auto`/`text`/`semantic`/`hybrid`/
   `ast-grep`), **the top-level `graph` command**, and **`memory search`**. All
   three exit `2` with a message naming the replacement rather than a bare clap
@@ -323,6 +329,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `server_url`, which could not help under `INKENTRY_NO_SERVER` or
   `mode = "offline"` and is the wrong advice for a solo user anyway. It names
   whichever setting is in force, or points at `inkentry server start`.
+- **`plumbing push`, `plumbing pull` and `plumbing read-memory` now act on the
+  same memory store the `memory` commands do.** In a project that was
+  configured but never indexed they acted on the machine-global store instead,
+  silently. A linked git worktree now shares the main worktree's store too.
+- **Outside any project, the plumbing memory commands name the global store
+  they act on** on stderr. stdout stays the JSONL report alone.
+- **`plumbing read-memory` exits 2 when no memory store exists**, rather than
+  reporting no entries.
 - **Docs: the memory-sharing claim is corrected in the remaining four places.**
   `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
   said memory travels with the repository. `git push` does not push
@@ -416,6 +430,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   The supported-language lists in the README and CLAUDE.md now state that
   `inkentry languages` is build-dependent (`rich-formats` adds DOCX, spreadsheets
   and PDF, and is on for every release binary).
+- **Docs: Jupyter notebooks were parsed but never listed as supported.**
+  `notebook` has been in `SUPPORTED_LANGUAGES` and printed by `inkentry
+  languages` all along, with its own per-cell chunker and no feature gate, yet
+  neither the README nor CLAUDE.md named it, so a reader with a `.ipynb`-heavy
+  repo checking the list first would conclude the tool had nothing for them.
+  Both lists now include it, and the README regained `text`, which it had also
+  dropped. The README further claimed tree-sitter chunking for Markdown, which
+  uses a heading splitter, and claimed every other file type is indexed as
+  sliding-window text, when an undetected type is skipped entirely; both are
+  corrected.
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's
