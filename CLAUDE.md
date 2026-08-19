@@ -194,7 +194,8 @@ cli/
   cmd/
     mod.rs       — re-exports one pub fn per subcommand
     auth.rs      — `inkentry auth set-key/list-servers` handlers (ADR-071); `--llm` stores
-                   the LLM endpoint credential
+                   the LLM endpoint credential. `remove-key` removes any stored
+                   credential: one origin, all of them, or the LLM key (ADR-090)
     context.rs   — `inkentry context` handler (agent session entry point)
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all

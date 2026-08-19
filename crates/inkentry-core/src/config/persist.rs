@@ -34,11 +34,12 @@ pub fn save_auth_tokens_to(tokens: &AuthTokens, config_path: &Path) -> Result<()
 
 /// Remove the `[auth]` table from `~/.config/inkentry/config.toml`.
 ///
-/// What bare `inkentry logout` clears (ADR-071 D3): only the `[auth]` cloud
-/// token pair. It no longer touches self-hosted server keys as a side
-/// effect; clearing those requires the explicit `--servers` or
-/// `--server <url>` flag (see [`super::server_keys::clear_all`]). No-op if
-/// the file or the table is absent. Other keys are preserved.
+/// What `inkentry logout` clears (ADR-071 D3): only the `[auth]` cloud token
+/// pair. It does not touch self-hosted server keys as a side effect; removing
+/// those is the explicit `inkentry auth remove-key` (see
+/// [`super::server_keys::clear_origin`] and
+/// [`super::server_keys::clear_all`]). No-op if the file or the table is
+/// absent. Other keys are preserved.
 pub fn remove_auth_tokens() -> Result<()> {
     remove_auth_tokens_from(&inkentry_config_dir().join("config.toml"))
 }

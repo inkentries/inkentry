@@ -1,13 +1,14 @@
-// `inkentry logout` credential-store scoping: each of the three forms must
-// touch exactly one credential store and leave the other intact.
+// Credential-store scoping across `inkentry logout` and `inkentry auth
+// remove-key`: each form must touch exactly one credential store and leave the
+// other intact.
 //
 // The cloud token pair lives in the `[auth]` table of
 // `~/.config/inkentry/config.toml`; per-origin self-hosted server keys live in
 // the secret store (here the file store, pinned via `INKENTRY_SECRET_STORE=file`
-// by `inkentry_bin_in`). These tests seed BOTH stores, run one `logout` form,
-// and assert which store changed and which survived — the assertion the older
-// server-key-only logout tests never made, which let `--server`/`--servers`
-// silently wipe the cloud pair.
+// by `inkentry_bin_in`). These tests seed BOTH stores, run one form, and assert
+// which store changed and which survived: the assertion the older
+// server-key-only tests never made, which let a server-key removal silently
+// wipe the cloud pair.
 //
 // Each assertion spawns the real binary against an isolated `HOME` /
 // `INKENTRY_CONFIG_DIR`, so nothing here reaches the developer's real config or
@@ -32,7 +33,7 @@ fn set_key(home: &std::path::Path, server: &str, key: &str) {
         .success();
 }
 
-// Seed a complete cloud `[auth]` token pair into `config.toml` directly — the
+// Seed a complete cloud `[auth]` token pair into `config.toml` directly: the
 // same on-disk shape `inkentry login` writes. `INKENTRY_CONFIG_DIR` (set by
 // `inkentry_bin_in`) resolves to `<home>/.config/inkentry`, so this is exactly
 // where the CLI reads and (on bare logout) rewrites it.
@@ -55,49 +56,6 @@ fn seed_cloud_auth(home: &std::path::Path) {
 fn config_toml(home: &std::path::Path) -> String {
     std::fs::read_to_string(home.join(".config").join("inkentry").join("config.toml"))
         .unwrap_or_default()
-}
-
-// `logout --server <url>`: clears only that origin's server key. The cloud
-// `[auth]` pair and every other origin's key must survive.
-#[test]
-fn logout_server_flag_clears_that_origin_only_and_keeps_cloud_pair() {
-    let home = TempDir::new().unwrap();
-    seed_cloud_auth(home.path());
-    set_key(home.path(), "https://a.example:4655", "sk-a");
-    set_key(home.path(), "https://b.example:4655", "sk-b");
-
-    inkentry_bin_in(home.path())
-        .arg("logout")
-        .arg("--server")
-        .arg("https://a.example:4655")
-        .assert()
-        .success();
-
-    // Cloud pair untouched.
-    let cfg = config_toml(home.path());
-    assert!(
-        cfg.contains("access_token") && cfg.contains("refresh_token"),
-        "cloud [auth] pair must survive `logout --server`, config.toml was:\n{cfg}"
-    );
-
-    // Only the named origin cleared; the other survives.
-    let out = inkentry_bin_in(home.path())
-        .arg("auth")
-        .arg("list-servers")
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let text = String::from_utf8(out).unwrap();
-    assert!(
-        !text.contains("a.example"),
-        "cleared origin still listed:\n{text}"
-    );
-    assert!(
-        text.contains("b.example"),
-        "untouched origin missing:\n{text}"
-    );
 }
 
 // Bare `logout` (no flags): clears only the cloud `[auth]` pair. Every stored
@@ -131,33 +89,74 @@ fn bare_logout_clears_cloud_pair_only_and_keeps_server_keys() {
         .stdout(predicate::str::contains("b.example"));
 }
 
-// `logout --servers`: clears every stored server key. The cloud `[auth]` pair
-// must survive.
+// ADR-090 D6: `auth remove-key --all-servers` replaces `logout --servers`,
+// and inherits the scoping obligation: it clears every server key and leaves
+// the cloud `[auth]` pair intact.
 #[test]
-fn logout_servers_flag_clears_all_server_keys_and_keeps_cloud_pair() {
+fn remove_key_all_servers_clears_every_server_key_and_keeps_cloud_pair() {
     let home = TempDir::new().unwrap();
     seed_cloud_auth(home.path());
     set_key(home.path(), "https://a.example:4655", "sk-a");
     set_key(home.path(), "https://b.example:4655", "sk-b");
 
     inkentry_bin_in(home.path())
-        .arg("logout")
-        .arg("--servers")
+        .arg("auth")
+        .arg("remove-key")
+        .arg("--all-servers")
         .assert()
         .success();
 
-    // Cloud pair untouched.
     let cfg = config_toml(home.path());
     assert!(
         cfg.contains("access_token") && cfg.contains("refresh_token"),
-        "cloud [auth] pair must survive `logout --servers`, config.toml was:\n{cfg}"
+        "cloud [auth] pair must survive `auth remove-key --all-servers`, config.toml was:\n{cfg}"
     );
 
-    // No server keys remain.
     inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
         .assert()
         .success()
         .stdout(predicate::str::contains("No server keys stored"));
+}
+
+// The same obligation for the single-origin form.
+#[test]
+fn remove_key_server_clears_that_origin_only_and_keeps_cloud_pair() {
+    let home = TempDir::new().unwrap();
+    seed_cloud_auth(home.path());
+    set_key(home.path(), "https://a.example:4655", "sk-a");
+    set_key(home.path(), "https://b.example:4655", "sk-b");
+
+    inkentry_bin_in(home.path())
+        .arg("auth")
+        .arg("remove-key")
+        .arg("--server")
+        .arg("https://a.example:4655")
+        .assert()
+        .success();
+
+    let cfg = config_toml(home.path());
+    assert!(
+        cfg.contains("access_token") && cfg.contains("refresh_token"),
+        "cloud [auth] pair must survive `auth remove-key --server`, config.toml was:\n{cfg}"
+    );
+
+    let out = inkentry_bin_in(home.path())
+        .arg("auth")
+        .arg("list-servers")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        !text.contains("a.example"),
+        "removed origin still listed:\n{text}"
+    );
+    assert!(
+        text.contains("b.example"),
+        "untouched origin missing:\n{text}"
+    );
 }

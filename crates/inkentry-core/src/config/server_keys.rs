@@ -67,7 +67,17 @@ fn read_map(store: &dyn SecretStore) -> Result<HashMap<String, String>> {
     }
 }
 
+/// Persist `map`, or delete the entry outright when `map` is empty (ADR-090
+/// D5).
+///
+/// The empty case is handled here rather than in each caller so no stored
+/// key can ever leave an entry holding `{}` behind: in a keychain UI, which
+/// shows names and not values, that reads as a credential that was never
+/// removed.
 fn write_map(store: &dyn SecretStore, map: &HashMap<String, String>) -> Result<()> {
+    if map.is_empty() {
+        return store.delete(KEY_SERVER_KEYS_MAP);
+    }
     let raw = serde_json::to_string(map).context("serialising the server_keys map")?;
     store.set(KEY_SERVER_KEYS_MAP, &raw)
 }
@@ -127,27 +137,49 @@ pub fn list_origins(store: &dyn SecretStore) -> Result<Vec<String>> {
 }
 
 /// Count of stored server-key credentials (used by bare `inkentry logout` to
-/// report what it left untouched, D3).
+/// report what it left untouched, ADR-071 D3).
 pub fn count(store: &dyn SecretStore) -> Result<usize> {
     Ok(list_origins(store)?.len())
 }
 
-/// `inkentry logout --servers`: clear the per-origin map.
-pub fn clear_all(store: &dyn SecretStore) -> Result<()> {
+/// `inkentry auth remove-key --all-servers`: clear the per-origin map.
+/// Returns how many origins had a stored key.
+pub fn clear_all(store: &dyn SecretStore) -> Result<usize> {
+    let removed = list_origins(store)?.len();
     store
         .delete(KEY_SERVER_KEYS_MAP)
-        .context("clearing the server_keys map")
+        .context("clearing the server_keys map")?;
+    Ok(removed)
 }
 
-/// `inkentry logout --server <url>`: clear only that origin's credential.
-/// Returns the normalized origin that was cleared.
-pub fn clear_origin(server_url: &str, store: &dyn SecretStore) -> Result<String> {
+/// What a single-origin removal did (ADR-090 D4).
+///
+/// `removed` is the difference between a real revocation and a mistyped URL,
+/// which look identical from the caller's side otherwise: both leave the
+/// origin unmapped. Reporting only `origin` is what let a typo print the same
+/// success sentence as a removal, so the caller stopped looking while the
+/// credential stayed live.
+pub struct OriginRemoval {
+    /// The origin `server_url` normalized to, whether or not it was mapped.
+    pub origin: String,
+    /// Whether the map actually held a key for `origin`.
+    pub removed: bool,
+}
+
+/// `inkentry auth remove-key --server <url>`: clear only that origin's
+/// credential.
+///
+/// Normalizes through [`normalize_origin`], the same function
+/// [`set_key_for_origin`] stores under, so the two cannot drift on what counts
+/// as the same server (ADR-090 D3).
+pub fn clear_origin(server_url: &str, store: &dyn SecretStore) -> Result<OriginRemoval> {
     let origin = normalize_origin(server_url)?;
     let mut map = read_map(store)?;
-    if map.remove(&origin).is_some() {
+    let removed = map.remove(&origin).is_some();
+    if removed {
         write_map(store, &map)?;
     }
-    Ok(origin)
+    Ok(OriginRemoval { origin, removed })
 }
 
 #[cfg(test)]
@@ -387,14 +419,15 @@ mod tests {
     // ── clear_all / clear_origin / count ─────────────────────────────────────
 
     #[test]
-    fn clear_all_removes_every_origin() {
+    fn clear_all_removes_every_origin_and_counts_what_it_removed() {
         let store = MemoryStore::default();
         set_key_for_origin("https://a.example", "sk-a", &store).unwrap();
         set_key_for_origin("https://b.example", "sk-b", &store).unwrap();
 
-        clear_all(&store).unwrap();
+        assert_eq!(clear_all(&store).unwrap(), 2);
 
         assert!(list_origins(&store).unwrap().is_empty());
+        assert_eq!(clear_all(&store).unwrap(), 0);
     }
 
     #[test]
@@ -403,19 +436,113 @@ mod tests {
         set_key_for_origin("https://a.example", "sk-a", &store).unwrap();
         set_key_for_origin("https://b.example", "sk-b", &store).unwrap();
 
-        clear_origin("https://a.example", &store).unwrap();
+        let outcome = clear_origin("https://a.example", &store).unwrap();
+        assert_eq!(outcome.origin, "https://a.example");
+        assert!(outcome.removed);
 
         assert_eq!(
             list_origins(&store).unwrap(),
             vec!["https://b.example".to_string()]
         );
+        assert_eq!(
+            bearer_for(None, "https://b.example", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-b")
+        );
     }
 
+    // ADR-090 D4: absence exits normally, and says so rather than reporting a
+    // removal that did not happen.
     #[test]
     fn clear_origin_is_a_no_op_when_nothing_is_stored() {
         let store = MemoryStore::default();
-        clear_origin("https://nothing.example", &store).unwrap();
+        let outcome = clear_origin("https://nothing.example", &store).unwrap();
+        assert_eq!(outcome.origin, "https://nothing.example");
+        assert!(!outcome.removed);
         assert!(list_origins(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_origin_reports_no_removal_for_an_origin_the_map_does_not_hold() {
+        let store = MemoryStore::default();
+        set_key_for_origin("https://a.example", "sk-a", &store).unwrap();
+
+        let outcome = clear_origin("https://typo.example", &store).unwrap();
+        assert!(!outcome.removed);
+        assert_eq!(
+            list_origins(&store).unwrap(),
+            vec!["https://a.example".to_string()]
+        );
+    }
+
+    // ADR-090 D3: a URL form that `set_key_for_origin` accepted must match on
+    // the way back out. A remove that misses the entry reports the honest
+    // "nothing stored" while the credential stays live, so this asserts the
+    // pairing directly rather than trusting two call sites to agree.
+    #[test]
+    fn every_url_form_set_key_accepts_is_matched_by_clear_origin() {
+        let forms = [
+            "https://team.example:4655",
+            "https://team.example:4655/",
+            "https://team.example:4655/a/b?x=1",
+            "https://TEAM.Example:4655",
+        ];
+        for set_form in forms {
+            for remove_form in forms {
+                let store = MemoryStore::default();
+                set_key_for_origin(set_form, "sk-team", &store).unwrap();
+
+                let outcome = clear_origin(remove_form, &store).unwrap();
+                assert!(
+                    outcome.removed,
+                    "set as {set_form:?} then removed as {remove_form:?} matched nothing"
+                );
+                assert!(list_origins(&store).unwrap().is_empty());
+            }
+        }
+    }
+
+    // The default port is part of the same pairing: `https://x.example` and
+    // `https://x.example:443` are one origin, and `:8443` is a different one.
+    #[test]
+    fn default_port_forms_pair_up_and_a_different_port_is_a_different_origin() {
+        let store = MemoryStore::default();
+        set_key_for_origin("https://x.example:443", "sk-x", &store).unwrap();
+
+        assert!(
+            !clear_origin("https://x.example:8443", &store)
+                .unwrap()
+                .removed
+        );
+        assert!(clear_origin("https://x.example", &store).unwrap().removed);
+    }
+
+    // ADR-090 D5: emptying the map deletes the entry rather than storing "{}".
+    // A user auditing their keychain after removing their last key must not
+    // find an inkentry credential still sitting in it.
+    #[test]
+    fn removing_the_last_origin_deletes_the_map_entry_rather_than_storing_an_empty_object() {
+        let store = MemoryStore::default();
+        set_key_for_origin("https://only.example", "sk-only", &store).unwrap();
+
+        clear_origin("https://only.example", &store).unwrap();
+
+        assert_eq!(store.get(KEY_SERVER_KEYS_MAP).unwrap(), None);
+    }
+
+    #[test]
+    fn clear_all_and_clear_origin_converge_on_the_same_empty_end_state() {
+        let via_origin = MemoryStore::default();
+        set_key_for_origin("https://only.example", "sk-only", &via_origin).unwrap();
+        clear_origin("https://only.example", &via_origin).unwrap();
+
+        let via_all = MemoryStore::default();
+        set_key_for_origin("https://only.example", "sk-only", &via_all).unwrap();
+        clear_all(&via_all).unwrap();
+
+        assert_eq!(via_origin.get(KEY_SERVER_KEYS_MAP).unwrap(), None);
+        assert_eq!(via_all.get(KEY_SERVER_KEYS_MAP).unwrap(), None);
     }
 
     #[test]

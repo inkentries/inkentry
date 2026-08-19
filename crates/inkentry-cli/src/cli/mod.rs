@@ -89,11 +89,11 @@ pub enum Command {
     Server(ServerArgs),
     /// Authenticate with inkentry cloud (WorkOS device authorization)
     Login(LoginArgs),
-    /// Remove stored inkentry cloud credentials (see `--servers`/`--server` for self-hosted keys)
+    /// Remove stored inkentry cloud credentials (see `inkentry auth remove-key` for self-hosted keys)
     Logout(LogoutArgs),
     /// Manage the active organization (e.g. `inkentry org switch <org>`)
     Org(OrgArgs),
-    /// Manage per-server bearer credentials (`set-key`, `list-servers`)
+    /// Manage per-server bearer credentials (`set-key`, `remove-key`, `list-servers`)
     Auth(AuthArgs),
 }
 
