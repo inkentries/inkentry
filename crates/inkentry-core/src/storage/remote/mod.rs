@@ -94,24 +94,33 @@ impl RemoteMemoryBackend {
     }
 }
 
-/// Status check that names the fix when the server rejected the credential.
+/// The command that fixes a rejected credential, or nothing for a status that
+/// is not about credentials.
 ///
 /// A 401/403 from a self-hosted server is a missing per-origin key more often
 /// than anything else, and nothing migrates one into place on the user's
 /// behalf any more (ADR-088 D3), so the error is where they learn the command.
-trait CheckedResponse: Sized {
+pub(super) fn credential_hint(status: reqwest::StatusCode, base_url: &str) -> String {
+    if status != reqwest::StatusCode::UNAUTHORIZED && status != reqwest::StatusCode::FORBIDDEN {
+        return String::new();
+    }
+    format!(
+        " Store a key for this server with `inkentry auth set-key --server {base_url}`, or run \
+         `inkentry login` if it is inkentry cloud."
+    )
+}
+
+/// [`reqwest::Response::error_for_status`] plus [`credential_hint`].
+pub(super) trait CheckedResponse: Sized {
     fn checked(self, base_url: &str) -> Result<Self>;
 }
 
 impl CheckedResponse for reqwest::Response {
     fn checked(self, base_url: &str) -> Result<Self> {
         let status = self.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            anyhow::bail!(
-                "{base_url} rejected the credential ({status}). Store a key for this server \
-                 with `inkentry auth set-key --server {base_url}`, or run `inkentry login` if \
-                 it is inkentry cloud."
-            );
+        let hint = credential_hint(status, base_url);
+        if !hint.is_empty() {
+            anyhow::bail!("{base_url} rejected the credential ({status}).{hint}");
         }
         Ok(self.error_for_status()?)
     }
