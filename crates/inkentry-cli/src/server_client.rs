@@ -1000,7 +1000,7 @@ mod tests {
 
         let store = inkentry_core::config::secret_store::MemoryStore::default();
         inkentry_core::config::server_keys::set_key_for_origin(
-            "http://127.0.0.1:7777",
+            "http://127.0.0.1:4655",
             "sk-team",
             &store,
         )
