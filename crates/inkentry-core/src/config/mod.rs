@@ -15,15 +15,14 @@ pub mod secret_store;
 pub mod server_keys;
 
 use paths::{find_project_config, inkentry_config_dir};
-use secret_store::{KEY_SERVER_KEY, SecretStore};
+use secret_store::SecretStore;
 
 pub use paths::{
     find_project_db, find_project_dir, require_project_db, require_project_db_at, resolve_db,
 };
 pub use persist::{
-    remove_auth_tokens, remove_auth_tokens_from, remove_server_key, remove_server_key_from,
-    remove_server_key_with, save_auth_tokens, save_auth_tokens_to, save_server_key,
-    save_server_key_with, write_project_slug,
+    remove_auth_tokens, remove_auth_tokens_from, save_auth_tokens, save_auth_tokens_to,
+    write_project_slug,
 };
 pub use predicates::{
     is_loopback_url, is_loopback_url_missing_port, no_server_env_set, validate_transport_url,
@@ -96,6 +95,8 @@ struct ProjectIndexConfig {
 /// with repo access. A file that still has a `server_key` line keeps working
 /// for its other fields, and is named on stderr so its owner knows there is
 /// something to rotate. Use `inkentry auth set-key --server <url>` instead.
+/// The personal config is read the same way (ADR-088 D1), via
+/// [`personal_config_credential_warning`].
 ///
 /// Every *other* key the file is not read for is named on stderr instead of
 /// dropped in silence. The keys this struct declares are mirrored in
@@ -160,17 +161,6 @@ pub struct Config {
     /// per-developer one.
     #[serde(default)]
     pub server_url: Option<String>,
-
-    /// The **cloud-kind** bearer only (ADR-071 D2): `INKENTRY_SERVER_KEY` env
-    /// override, else the `[auth].access_token` written by `inkentry login`.
-    /// Resolved once at load time because both tiers are origin-independent.
-    ///
-    /// This is NOT the effective bearer for a self-hosted `server_url`:
-    /// that credential is scoped per server origin and resolved lazily via
-    /// [`Config::bearer_for`], which also branches to this same field for the
-    /// cloud origin. Do NOT commit any bearer to `.inkentry/config.toml`.
-    #[serde(default)]
-    pub server_key: Option<String>,
 
     /// Project slug for the inkentry-server (e.g. `acme/my-app`).
     /// Required when `server_url` is set.
@@ -239,12 +229,10 @@ pub struct Config {
     /// `[auth]` table in the global config.
     ///
     /// When present and the access token is unexpired, it is the source of the
-    /// `Authorization: Bearer` token every cloud-origin request sends.
-    /// [`Config::load`] copies the access token into [`Config::server_key`]
-    /// (the cloud-kind bearer). A self-hosted `server_url` never consults
-    /// this field (ADR-071 D2); use [`Config::bearer_for`] there. The
-    /// `refresh_token` is used to rotate an expired access token and to
-    /// silently switch organisations.
+    /// `Authorization: Bearer` token every cloud-origin request sends, via
+    /// [`Config::bearer_for`]. A self-hosted `server_url` never consults this
+    /// field (ADR-071 D2). The `refresh_token` is used to rotate an expired
+    /// access token and to silently switch organisations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthTokens>,
 
@@ -267,7 +255,7 @@ pub struct Config {
 /// credentials. An absent field is read as its "unset" form, which the
 /// consumers already treat sensibly:
 /// * missing `access_token` ⇒ empty ⇒ not logged in (no bearer resolved, see
-///   [`Config::load_with_store_from`] and [`server_keys::bearer_for`]);
+///   [`server_keys::bearer_for`]);
 /// * missing `expires_at` ⇒ `0` ⇒ [`AuthTokens::is_expired_at`] reports
 ///   expired, so an unknown expiry can never read as "still valid";
 /// * missing `org_id` ⇒ empty ⇒ no organisation scoping (the same empty-string
@@ -332,7 +320,6 @@ impl Default for Config {
             llm_model: None,
             llm_url: None,
             server_url: None,
-            server_key: None,
             project_id: None,
             server_ca: None,
             mode: None,
@@ -387,9 +374,9 @@ impl Config {
 
     /// Same as [`Config::load`] but with an injected [`SecretStore`].
     ///
-    /// Tests pass an in-memory store so the credential resolution + migration
-    /// paths can be exercised without a real keychain or daemon. Production code
-    /// calls [`Config::load`], which resolves the host's default store.
+    /// The load itself reads no secret at all: the store is threaded through so
+    /// a test can assert exactly that against an instrumented double, and so a
+    /// test never risks reaching the host keychain if that ever stops holding.
     pub fn load_with_store(path: Option<&Path>, store: &dyn SecretStore) -> Result<Self> {
         let project_root = std::env::current_dir().ok();
         Self::load_with_store_from(path, store, project_root.as_deref())
@@ -402,7 +389,7 @@ impl Config {
     /// always passes the CWD via [`load_with_store`].
     pub(crate) fn load_with_store_from(
         path: Option<&Path>,
-        store: &dyn SecretStore,
+        _store: &dyn SecretStore,
         project_root: Option<&Path>,
     ) -> Result<Self> {
         // ── 1. Load global personal config ───────────────────────────────────
@@ -413,7 +400,11 @@ impl Config {
         let mut cfg: Config = if global_path.exists() {
             let raw = std::fs::read_to_string(&global_path)
                 .with_context(|| format!("reading config at {}", global_path.display()))?;
-            parse_global_config(&raw, &global_path)?
+            let parsed = parse_global_config(&raw, &global_path)?;
+            if let Some(warning) = personal_config_credential_warning(&raw, &global_path) {
+                eprintln!("{warning}");
+            }
+            parsed
         } else {
             Config::default()
         };
@@ -423,12 +414,6 @@ impl Config {
         // can guarantee. Discard whatever the global file set here; step 2
         // below is the only file-based source allowed to populate it.
         cfg.server_url = None;
-
-        // A bare `server_key` in the *personal* global config is the legacy
-        // plaintext credential we migrate into the secret store.
-        // Captured before the project-level merge so we never migrate a shared
-        // team key from a checked-in `.inkentry/config.toml`.
-        let global_bare_server_key = cfg.server_key.clone();
 
         // ── 2. Merge project-level config (.inkentry/config.toml) ─────────────
         // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
@@ -475,34 +460,10 @@ impl Config {
             }
         }
 
-        // ── 2b. One-time migration of the legacy plaintext bare key ──────────
-        // If the personal config still carries a bare `server_key`, move it into
-        // the secret store and strip it from the file (transparent, one-time).
-        // Skip when the store already has one (already migrated / freshly logged
-        // in) to avoid clobbering a rotated credential with a stale file value.
-        if let Some(bare) = &global_bare_server_key {
-            let already_in_store = store.get(KEY_SERVER_KEY)?.is_some();
-            if !already_in_store {
-                save_server_key_with(bare, store)
-                    .context("migrating plaintext server_key into the secret store")?;
-            }
-            // Strip the plaintext key from the personal config regardless: it is
-            // now in the store (or was already there), so it must not linger in
-            // the file. `remove_server_key_from` preserves all other keys.
-            remove_server_key_from(&global_path)
-                .context("stripping migrated server_key from config.toml")?;
-            tracing::info!(
-                "migrated plaintext server_key out of {} into the {} secret store",
-                global_path.display(),
-                store.kind()
-            );
-        }
-
         // ── 3. Environment variable overrides ────────────────────────────────
         if let Ok(v) = std::env::var("INKENTRY_SERVER_URL") {
             cfg.server_url = Some(v);
         }
-        let env_server_key = std::env::var("INKENTRY_SERVER_KEY").ok();
         if let Ok(v) = std::env::var("INKENTRY_PROJECT_ID") {
             cfg.project_id = Some(v);
         }
@@ -529,27 +490,6 @@ impl Config {
             })?;
             cfg.mode = Some(parsed);
         }
-
-        // ── 4. Resolve the cloud-kind bearer (ADR-071 D2) ────────────────────
-        // `cfg.server_key` is now the **cloud-kind** bearer only:
-        //   1. `INKENTRY_SERVER_KEY` env var (CI / headless escape hatch) — wins.
-        //   2. `[auth].access_token` from `inkentry login` (WorkOS device flow).
-        // Both tiers are origin-independent, so resolving them once here (with
-        // no secret-store read at all) is correct and cheap. A self-hosted
-        // `server_url`'s bearer is a *different* credential, scoped to that
-        // server's origin, resolved lazily via [`Config::bearer_for`]. It is
-        // never derived from this field, so a cloud login can never leak to a
-        // self-hosted server (the bug this ADR fixes).
-        cfg.server_key = if let Some(v) = env_server_key {
-            Some(v)
-        } else {
-            // An empty (or absent) `[auth].access_token` means "not logged in":
-            // it must resolve to no bearer, never an empty-string `Some("")`.
-            cfg.auth
-                .as_ref()
-                .map(|auth| auth.access_token.clone())
-                .filter(|token| !token.is_empty())
-        };
 
         Ok(cfg)
     }
@@ -716,6 +656,26 @@ fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Warning for a `server_key` still present in the personal
+/// `~/.config/inkentry/config.toml` (ADR-088 D1). The field is not read, and
+/// the value it names has been sitting in a plaintext file, so rotation is the
+/// remedy and `inkentry auth set-key` is where the replacement goes. Pure so
+/// the wording is unit-testable without capturing stderr;
+/// [`Config::load_with_store_from`] prints the result.
+///
+/// The line is not a parse: nothing reads the value.
+fn personal_config_credential_warning(raw: &str, path: &Path) -> Option<String> {
+    let table = raw.parse::<toml::Table>().ok()?;
+    table.contains_key("server_key").then(|| {
+        format!(
+            "Warning: `server_key` in {path} is no longer read. Rotate the key it holds \
+             (a plaintext file is not a credential store), then set the replacement with \
+             `inkentry auth set-key --server <url>` or INKENTRY_SERVER_KEY.",
+            path = path.display(),
+        )
+    })
+}
+
 /// If `raw` sets `mode` to a string that is not a valid [`SyncMode`], return
 /// that offending value. Runs only on the error path, so the extra parse is
 /// off the happy path.
@@ -857,7 +817,14 @@ mod tests {
             std::env::remove_var("INKENTRY_NO_SERVER");
             std::env::remove_var("INKENTRY_LLM_URL");
             std::env::remove_var("INKENTRY_LLM_MODEL");
+            std::env::remove_var("INKENTRY_CLOUD_URL");
         }
+    }
+
+    // The cloud-kind bearer, resolved the way every caller resolves it.
+    fn cloud_bearer(cfg: &Config, store: &dyn SecretStore) -> Option<String> {
+        cfg.bearer_for_with_store(server_keys::DEFAULT_CLOUD_URL, store)
+            .unwrap()
     }
 
     // ── resolve_mode defaults ─────────────────────────────────────────────────
@@ -1002,48 +969,45 @@ project_id = "my-proj"
         )
         .unwrap();
 
-        let cfg = load_hermetic(&config_path).unwrap();
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&config_path, &store).unwrap();
         assert_eq!(cfg.server_url, None);
-        assert_eq!(cfg.server_key, None);
+        assert_eq!(cloud_bearer(&cfg, &store), None);
         assert_eq!(cfg.project_id, Some("my-proj".to_string()));
     }
 
     #[test]
     #[serial_test::serial]
-    fn global_config_server_key_live_wins_over_deprecated() {
-        // Both the live key and its removed alias present: the live server_key
-        // resolves and the deprecated alias is silently dropped (no error, no
-        // override). `server_key` is the legacy personal bearer (a bare
-        // `server_key` in the *global* config, not a `.inkentry/config.toml`
-        // credential; D4 is about the latter): it no longer feeds
-        // `cfg.server_key` (cloud-kind only, ADR-071 D2), but the migration
-        // into the secret store still runs and the value is still reachable
-        // through `bearer_for_with_store` for a self-hosted origin.
-        //
-        // `server_url` is deliberately absent here: it cannot be set from the
-        // global config at all (see `project_level_config_live_key_wins_over_deprecated`
-        // for that guarantee's project-level equivalent).
+    fn a_personal_config_server_key_is_read_for_nothing_and_left_where_it_is() {
+        // ADR-088 D1: the plaintext key is not a tier any more. It resolves
+        // nowhere, it is not lifted into the secret store, and the file is not
+        // rewritten behind the user's back (the stderr line, covered by
+        // `a_server_key_in_the_personal_config_is_named_so_it_can_be_rotated`,
+        // is the whole of what happens).
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
             &config_path,
-            r#"
-server_key = "new-token"
-memory_server_key = "old-token"
-"#,
+            "server_key = \"sk-legacy\"\nllm_model = \"gpt-oss\"\n",
         )
         .unwrap();
 
         let store = MemoryStore::default();
         let cfg = load_hermetic_with(&config_path, &store).unwrap();
-        assert_eq!(cfg.server_url, None);
-        assert_eq!(cfg.server_key, None);
+        assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
+        assert_eq!(cloud_bearer(&cfg, &store), None);
         assert_eq!(
-            cfg.bearer_for_with_store("http://new.example.com:4655", &store)
-                .unwrap()
-                .as_deref(),
-            Some("new-token")
+            cfg.bearer_for_with_store("http://team.example:4655", &store)
+                .unwrap(),
+            None
+        );
+        assert_eq!(store.get(server_keys::KEY_SERVER_KEYS_MAP).unwrap(), None);
+
+        let on_disk = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            on_disk.contains("server_key"),
+            "the file must be left exactly as the user wrote it, got:\n{on_disk}"
         );
     }
 
@@ -1055,9 +1019,10 @@ memory_server_key = "old-token"
         let config_path = tmp.path().join("config.toml");
         std::fs::write(&config_path, "").unwrap();
 
-        let cfg = load_hermetic(&config_path).unwrap();
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&config_path, &store).unwrap();
         assert_eq!(cfg.server_url, None);
-        assert_eq!(cfg.server_key, None);
+        assert_eq!(cloud_bearer(&cfg, &store), None);
         assert_eq!(cfg.project_id, None);
     }
 
@@ -1381,7 +1346,7 @@ memory_server_key = "old-token"
 
     #[test]
     #[serial_test::serial]
-    fn env_inkentry_server_key_overrides_config() {
+    fn env_inkentry_server_key_resolves_as_the_bearer_over_an_unread_file_key() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -1395,8 +1360,12 @@ memory_server_key = "old-token"
         unsafe {
             std::env::set_var("INKENTRY_SERVER_KEY", "env-token");
         }
-        let cfg = load_hermetic(&config_path).unwrap();
-        assert_eq!(cfg.server_key, Some("env-token".to_string()));
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&config_path, &store).unwrap();
+        assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("env-token"));
+        unsafe {
+            std::env::remove_var("INKENTRY_SERVER_KEY");
+        }
     }
 
     #[test]
@@ -1647,6 +1616,39 @@ mode = "cloud_first"
         );
     }
 
+    // ── keys the personal config does not read ───────────────────────────────
+
+    fn personal_warning(raw: &str) -> Option<String> {
+        personal_config_credential_warning(raw, Path::new("/home/dev/.config/inkentry/config.toml"))
+    }
+
+    #[test]
+    fn a_server_key_in_the_personal_config_is_named_so_it_can_be_rotated() {
+        let warning = personal_warning("server_key = \"sk-legacy\"\nllm_model = \"gpt-oss\"\n")
+            .expect("a `server_key` line must be named");
+        assert!(
+            warning.contains("server_key"),
+            "must name the key: {warning}"
+        );
+        assert!(
+            warning.contains("/home/dev/.config/inkentry/config.toml"),
+            "must name the file: {warning}"
+        );
+        assert!(
+            warning.to_lowercase().contains("rotate"),
+            "must say to rotate: {warning}"
+        );
+        assert!(
+            warning.contains("inkentry auth set-key"),
+            "must name the replacement command: {warning}"
+        );
+    }
+
+    #[test]
+    fn a_personal_config_without_a_server_key_warns_about_nothing() {
+        assert!(personal_warning("llm_model = \"gpt-oss\"\n").is_none());
+    }
+
     #[test]
     #[serial_test::serial]
     fn an_unread_project_key_does_not_fail_the_load() {
@@ -1685,17 +1687,18 @@ mode = "cloud_first"
     }
 
     /// Persisted `[auth]` tokens round-trip and the access token becomes the
-    /// effective `server_key` bearer.
+    /// effective cloud-origin bearer.
     #[test]
     #[serial_test::serial]
-    fn auth_tokens_resolve_to_server_key_bearer() {
+    fn auth_tokens_resolve_to_the_cloud_bearer() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
-        let cfg = load_hermetic(&path).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&path, &store).unwrap();
+        assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at-sample"));
         let auth = cfg.auth.expect("auth table should load");
         assert_eq!(auth.refresh_token, "rt-sample");
         assert_eq!(auth.org_id, "org_sample");
@@ -1725,8 +1728,10 @@ mode = "cloud_first"
         )
         .unwrap();
 
-        let cfg = load_hermetic(&path).expect("a [auth] table without org_id must still parse");
-        assert_eq!(cfg.server_key.as_deref(), Some("at"));
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&path, &store)
+            .expect("a [auth] table without org_id must still parse");
+        assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at"));
         let auth = cfg.auth.expect("auth table should load");
         assert_eq!(auth.org_id, "", "missing org_id is treated as no scoping");
     }
@@ -1772,9 +1777,12 @@ mode = "cloud_first"
         )
         .unwrap();
 
-        let cfg = load_hermetic(&path).expect("a [auth] table without access_token must parse");
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&path, &store)
+            .expect("a [auth] table without access_token must parse");
         assert_eq!(
-            cfg.server_key, None,
+            cloud_bearer(&cfg, &store),
+            None,
             "a missing/empty access token must resolve to no bearer"
         );
     }
@@ -1789,9 +1797,11 @@ mode = "cloud_first"
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "llm_model = \"gpt-oss\"\n[auth]\n").unwrap();
 
-        let cfg = load_hermetic(&path).expect("a bare [auth] header must not brick the load");
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&path, &store)
+            .expect("a bare [auth] header must not brick the load");
         assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
-        assert_eq!(cfg.server_key, None);
+        assert_eq!(cloud_bearer(&cfg, &store), None);
     }
 
     // ── actionable parse-error messages ────────────────────────────────────────
@@ -1849,60 +1859,35 @@ mode = "cloud_first"
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
         unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "ci-token") };
-        let cfg = load_hermetic(&path).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("ci-token"));
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&path, &store).unwrap();
+        assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("ci-token"));
         // The refresh token is still available for the refresh path.
         assert_eq!(cfg.auth.unwrap().refresh_token, "rt-sample");
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
-    /// A legacy bare `server_key` no longer feeds `cfg.server_key` (cloud-kind
-    /// only, ADR-071 D2) when no `[auth]` table exists, but it is still
-    /// migrated into the store and resolves via `bearer_for` for a
-    /// self-hosted origin.
-    #[test]
-    #[serial_test::serial]
-    fn legacy_server_key_migrates_but_no_longer_feeds_server_key_field() {
-        clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
-
-        let store = MemoryStore::default();
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key, None);
-        assert!(cfg.auth.is_none());
-        assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:4655", &store)
-                .unwrap()
-                .as_deref(),
-            Some("sk-legacy")
-        );
-    }
-
-    /// The `[auth]` access token (cloud kind) and a legacy bare `server_key`
+    /// The `[auth]` access token (cloud kind) and a stored per-origin key
     /// (self-hosted kind) resolve independently by target origin (ADR-071
-    /// D2): they no longer compete in a single flat precedence chain.
+    /// D2): they do not compete in a single flat precedence chain.
     #[test]
     #[serial_test::serial]
-    fn auth_token_and_legacy_server_key_resolve_by_kind_not_precedence() {
+    fn auth_token_and_per_origin_key_resolve_by_kind_not_precedence() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
         let store = MemoryStore::default();
+        server_keys::set_key_for_origin("https://team.example:4655", "sk-team", &store).unwrap();
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        // Cloud-kind field resolves from [auth], unaffected by the legacy key.
-        assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
-        // The legacy key is still migrated and reachable for a self-hosted
-        // origin; the cloud token never leaks to it.
+
+        assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at-sample"));
         assert_eq!(
             cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
-            Some("sk-legacy")
+            Some("sk-team")
         );
     }
 
@@ -1923,28 +1908,30 @@ mode = "cloud_first"
         assert_eq!(cfg.auth.unwrap().access_token, "at-sample");
     }
 
-    /// `remove_auth_tokens_from` clears the `[auth]` table but leaves the legacy
-    /// `server_key` (logout clears that separately).
+    /// `remove_auth_tokens_from` clears the `[auth]` table and nothing else:
+    /// the per-origin server keys are a separate store with its own command.
     #[test]
     #[serial_test::serial]
     fn remove_auth_tokens_clears_only_auth_table() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
+        std::fs::write(&path, "llm_model = \"gpt-oss\"\n").unwrap();
         save_auth_tokens_to(&sample_tokens(), &path).unwrap();
 
-        remove_auth_tokens_from(&path).unwrap();
         let store = MemoryStore::default();
+        server_keys::set_key_for_origin("https://team.example:4655", "sk-team", &store).unwrap();
+
+        remove_auth_tokens_from(&path).unwrap();
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
         assert!(cfg.auth.is_none());
-        assert_eq!(cfg.server_key, None);
-        // Legacy key still present in the store, reachable via bearer_for.
+        assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
+        assert_eq!(cloud_bearer(&cfg, &store), None);
         assert_eq!(
             cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
-            Some("sk-legacy")
+            Some("sk-team")
         );
     }
 
@@ -2041,112 +2028,11 @@ project_id = "team/new"
     // These exercise the credential paths through an injected `MemoryStore`, so
     // no real keychain or Secret Service daemon is required (CI-safe).
 
-    /// Migration: a bare `server_key` in the personal global config is moved
-    /// into the secret store and stripped from the file on next load. It no
-    /// longer feeds `cfg.server_key` (cloud-kind only, ADR-071 D2); it
-    /// resolves via `bearer_for` for a self-hosted origin instead.
+    /// A credential stored via `auth set-key` lands ONLY in the secret store
+    /// and never in `config.toml` — the core acceptance criterion.
     #[test]
     #[serial_test::serial]
-    fn migration_moves_bare_server_key_into_store_and_strips_file() {
-        clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "server_url = \"http://team:4655\"\nserver_key = \"sk-sp-legacy\"\nproject_id = \"p\"\n",
-        )
-        .unwrap();
-
-        let store = MemoryStore::default();
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-
-        assert_eq!(cfg.server_key, None);
-        // Moved into the store.
-        assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
-            Some("sk-sp-legacy")
-        );
-        // Resolves transparently through bearer_for for the configured server.
-        assert_eq!(
-            cfg.bearer_for_with_store("http://team:4655", &store)
-                .unwrap()
-                .as_deref(),
-            Some("sk-sp-legacy")
-        );
-        // Stripped from the file, but other keys preserved.
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !on_disk.contains("server_key"),
-            "server_key must be stripped from config.toml after migration, got:\n{on_disk}"
-        );
-        assert!(on_disk.contains("server_url"), "other keys must survive");
-        assert!(on_disk.contains("project_id"), "other keys must survive");
-    }
-
-    /// Migration is idempotent: a second load (file already stripped, store
-    /// populated) keeps resolving the same bearer with no further changes.
-    #[test]
-    #[serial_test::serial]
-    fn migration_is_idempotent_across_two_loads() {
-        clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_key = \"sk-sp-legacy\"\n").unwrap();
-
-        let store = MemoryStore::default();
-        let first = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(first.server_key, None);
-
-        let second = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(second.server_key, None);
-        assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
-            Some("sk-sp-legacy")
-        );
-        assert_eq!(
-            second
-                .bearer_for_with_store("https://team.example:4655", &store)
-                .unwrap()
-                .as_deref(),
-            Some("sk-sp-legacy")
-        );
-    }
-
-    /// Migration must NOT clobber a credential already in the store (e.g. a
-    /// freshly-saved key) with a stale value from the file — the store wins, the
-    /// stale file value is still stripped.
-    #[test]
-    #[serial_test::serial]
-    fn migration_does_not_clobber_existing_store_credential() {
-        clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_key = \"sk-stale-file\"\n").unwrap();
-
-        let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-fresh-store").unwrap();
-
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key, None);
-        assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
-            Some("sk-fresh-store")
-        );
-        assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:4655", &store)
-                .unwrap()
-                .as_deref(),
-            Some("sk-fresh-store")
-        );
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(!on_disk.contains("server_key"), "stale file key stripped");
-    }
-
-    /// A credential saved via `save_server_key_with` lands ONLY in the store and
-    /// never in `config.toml` — the core acceptance criterion.
-    #[test]
-    #[serial_test::serial]
-    fn saved_credential_is_in_store_not_in_config_file() {
+    fn stored_credential_is_in_store_not_in_config_file() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -2157,49 +2043,19 @@ project_id = "team/new"
         .unwrap();
 
         let store = MemoryStore::default();
-        save_server_key_with("sk-sp-new", &store).unwrap();
+        server_keys::set_key_for_origin("http://team:4655", "sk-sp-new", &store).unwrap();
 
-        // Config file untouched (no secret written there).
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(!on_disk.contains("sk-sp-new"));
         assert!(!on_disk.contains("server_key"));
 
-        // Resolves from the store via bearer_for, not the eager server_key field.
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key, None);
         assert_eq!(
             cfg.bearer_for_with_store("http://team:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-sp-new")
         );
-    }
-
-    /// `logout` (remove_server_key_with) clears the store entry AND any legacy
-    /// plaintext key still in config.toml.
-    #[test]
-    #[serial_test::serial]
-    fn logout_clears_store_and_legacy_file_key() {
-        clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
-
-        let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-in-store").unwrap();
-
-        remove_server_key_with(&store, &path).unwrap();
-
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None, "store cleared");
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !on_disk.contains("server_key"),
-            "legacy file key also cleared"
-        );
-
-        // After logout, nothing resolves as the bearer.
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key, None);
     }
 
     /// Env-var precedence: `INKENTRY_SERVER_KEY` wins over a stored credential.
@@ -2212,37 +2068,26 @@ project_id = "team/new"
         std::fs::write(&path, "").unwrap();
 
         let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-in-store").unwrap();
+        server_keys::set_key_for_origin("https://team.example:4655", "sk-in-store", &store)
+            .unwrap();
 
         unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "sk-from-env") };
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-from-env"));
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:4655", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-from-env")
+        );
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
-    /// Precedence: `[auth]` access token wins over a stored `server_key`.
-    #[test]
-    #[serial_test::serial]
-    fn auth_token_wins_over_store() {
-        clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
-
-        let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-in-store").unwrap();
-
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
-    }
-
     /// ADR-071 D4: a `server_key` line in the project-level, checked-in
-    /// `.inkentry/config.toml` is dropped entirely: no read, no warning, no
-    /// effect on the resolved bearer at any tier. Mirrors the
-    /// `memory_server_*` silent-drop precedent.
+    /// `.inkentry/config.toml` is read for nothing at any tier, and the
+    /// committed file is left exactly as it is.
     #[test]
     #[serial_test::serial]
-    fn project_config_server_key_field_is_silently_dropped() {
+    fn project_config_server_key_field_is_read_for_nothing() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
@@ -2273,15 +2118,15 @@ project_id = "team/new"
             Some("https://team.example:4655".to_string())
         );
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
-        // No credential resolves anywhere: not eagerly, not per-origin.
-        assert_eq!(cfg.server_key, None);
+        // No credential resolves anywhere: not for the cloud, not per-origin.
+        assert_eq!(cloud_bearer(&cfg, &store), None);
         assert_eq!(
             cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap(),
             None
         );
         // Never touches the personal secret store.
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
+        assert_eq!(store.get(server_keys::KEY_SERVER_KEYS_MAP).unwrap(), None);
         // The checked-in file itself is left untouched (D4 does not rewrite it).
         assert!(
             std::fs::read_to_string(&proj_cfg)
@@ -2302,7 +2147,8 @@ project_id = "team/new"
         std::fs::write(&path, "").unwrap();
 
         let file_store = secret_store::FileStore::new(tmp.path().join("secrets.toml"));
-        save_server_key_with("sk-headless", &file_store).unwrap();
+        server_keys::set_key_for_origin("https://team.example:4655", "sk-headless", &file_store)
+            .unwrap();
 
         let cfg = Config::load_with_store(Some(&path), &file_store).unwrap();
         assert_eq!(
@@ -2324,7 +2170,12 @@ project_id = "team/new"
         std::fs::write(&path, "").unwrap();
         let store = MemoryStore::default();
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert_eq!(cfg.server_key, None);
+        assert_eq!(cloud_bearer(&cfg, &store), None);
+        assert_eq!(
+            cfg.bearer_for_with_store("https://team.example:4655", &store)
+                .unwrap(),
+            None
+        );
     }
 
     /// A `SecretStore` test double that counts `get` calls per key, wrapping a
@@ -2372,9 +2223,12 @@ project_id = "team/new"
         let store = CountingStore::default();
         unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "sk-from-env") };
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        let bearer = cfg
+            .bearer_for_with_store(server_keys::DEFAULT_CLOUD_URL, &store)
+            .unwrap();
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
 
-        assert_eq!(cfg.server_key.as_deref(), Some("sk-from-env"));
+        assert_eq!(bearer.as_deref(), Some("sk-from-env"));
         assert_eq!(
             store.get_calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
@@ -2397,7 +2251,12 @@ project_id = "team/new"
         let store = CountingStore::default();
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
 
-        assert_eq!(cfg.server_key.as_deref(), Some("at-sample"));
+        assert_eq!(
+            cfg.bearer_for_with_store(server_keys::DEFAULT_CLOUD_URL, &store)
+                .unwrap()
+                .as_deref(),
+            Some("at-sample")
+        );
         assert_eq!(
             store.get_calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
@@ -2683,7 +2542,12 @@ project_id = "team/new"
         store
             .set(secret_store::KEY_LLM_KEY, "sk-llm-secret")
             .unwrap();
-        store.set(KEY_SERVER_KEY, "sk-sp-server").unwrap();
+        store
+            .set(
+                server_keys::KEY_SERVER_KEYS_MAP,
+                "{\"https://a.example\":\"sk-a\"}",
+            )
+            .unwrap();
         store.reads.lock().unwrap().clear();
 
         Config::load_with_store_from(Some(&global), &store, None).unwrap();
@@ -2691,7 +2555,7 @@ project_id = "team/new"
         let reads = store.reads.lock().unwrap().clone();
         assert!(
             reads.is_empty(),
-            "a config load with no legacy plaintext key to migrate must read no secret: {reads:?}"
+            "a config load must read no secret at all: {reads:?}"
         );
     }
 

@@ -15,8 +15,8 @@ use inkentry_core::config::{self, server_keys};
 
 #[derive(Args, Debug)]
 pub struct LogoutArgs {
-    /// Clear every stored self-hosted server key (the per-origin map and any
-    /// legacy entry) and nothing else; the cloud token pair is left intact.
+    /// Clear every stored self-hosted server key and nothing else; the cloud
+    /// token pair is left intact.
     #[arg(long, conflicts_with = "server")]
     pub servers: bool,
 
@@ -34,9 +34,6 @@ pub async fn logout(args: LogoutArgs) -> Result<()> {
     // cloud `[auth]` pair; `--server`/`--servers` are server-key-only.
     if args.servers {
         server_keys::clear_all(store.as_ref()).context("clearing the server_keys map")?;
-        // Belt-and-braces: also clear the legacy flat entry and any plaintext
-        // remnant still in config.toml (config::remove_server_key's job).
-        config::remove_server_key().context("clearing the legacy server_key entry")?;
         println!("Cleared all stored server keys.");
     } else if let Some(url) = &args.server {
         let origin = server_keys::clear_origin(url, store.as_ref())
