@@ -29,7 +29,8 @@ first command:
   ```
 
 Both read the value from a prompt or from stdin, never from argv, so it stays
-out of shell history and out of `ps` output.
+out of shell history and out of `ps` output. In CI or a container, set
+`INKENTRY_SERVER_KEY` or `INKENTRY_LLM_KEY` instead of storing anything.
 
 Purely local use needs neither. If you skip this and you did need one, the
 symptom is an authentication failure on your first command against the server,

@@ -186,8 +186,15 @@ git fetch <old-remote> 'refs/notes/spelunk:refs/notes/inkentry'
 `index.db` needs no migration at all: run `inkentry init` and it is rebuilt from
 your source tree.
 
-That is the whole of it for one machine. **If you share a repository with
-anyone, it is not a personal upgrade**: `.inkentry/config.toml` is tracked, and
+One thing does not come across: **credentials**. Secrets live under inkentry's
+own name, so a team server's bearer key and any LLM key have to be set again
+with `inkentry auth set-key --server <url>` and `inkentry auth set-key --llm`
+(or `inkentry login` for inkentry cloud, or the `INKENTRY_SERVER_KEY` and
+`INKENTRY_LLM_KEY` variables in CI). Purely local use needs none of them. See
+[Upgrading](upgrading.md#credentials-do-not-migrate) for the detail.
+
+That aside, that is the whole of it for one machine. **If you share a
+repository with anyone, it is not a personal upgrade**: `.inkentry/config.toml` is tracked, and
 so is every committed script, CI step and agent instruction that calls the CLI,
 so one person's commit reaches colleagues still on the old binary. See
 [Upgrading](upgrading.md) for the team sequence, the symptoms, and what to do if
