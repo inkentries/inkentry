@@ -128,7 +128,7 @@ struct BearerState {
     bearer: Option<String>,
     /// WorkOS refresh state, present only when `inkentry login` wrote `[auth]`
     /// tokens. Enables the refresh-on-expiry / refresh-on-401 path; absent for
-    /// a bare `server_key` (which cannot be refreshed — the user must re-login).
+    /// a per-origin server key (which cannot be refreshed).
     refresh: Option<RefreshState>,
 }
 
@@ -337,7 +337,7 @@ impl ServerInferenceClient {
     /// in-memory bearer.
     ///
     /// Returns `Ok(true)` when a refresh was performed, `Ok(false)` when there
-    /// is no refresh state (a bare `server_key` — nothing to refresh). Errors
+    /// is no refresh state (a per-origin server key, nothing to refresh). Errors
     /// carry a clear "re-run `inkentry login`" message.
     async fn refresh_access_token(&self) -> Result<bool> {
         let (refresh_token, org_id, workos_url, client_id, config_path) = {
@@ -416,7 +416,16 @@ impl ServerInferenceClient {
         if self.refresh_access_token().await? {
             return Ok(self.authed(make_req()).send().await?);
         }
-        Ok(resp)
+        // Nothing to refresh: the bearer is a per-origin server key, or there
+        // is none. Nothing migrates one into place any more (ADR-088 D3), so
+        // this error is where the user learns the command that stores one.
+        anyhow::bail!(
+            "{base} rejected the credential ({status}). Store a key for this server with \
+             `inkentry auth set-key --server {base}`, or run `inkentry login` if it is \
+             inkentry cloud.",
+            base = self.base_url,
+            status = resp.status(),
+        );
     }
 
     fn llm_url(&self) -> String {
@@ -795,8 +804,9 @@ mod tests {
             &inkentry_core::config::secret_store::MemoryStore::default(),
         )
         .unwrap();
-        assert_eq!(cfg.server_key.as_deref(), Some(at_new.as_str()));
-        assert_eq!(cfg.auth.unwrap().refresh_token, "rt-new");
+        let auth = cfg.auth.expect("rotated [auth] tokens were persisted");
+        assert_eq!(auth.access_token, at_new);
+        assert_eq!(auth.refresh_token, "rt-new");
     }
 
     /// A locally-expired access token is refreshed proactively before the first
@@ -852,10 +862,12 @@ mod tests {
         assert_eq!(vec, Some(vec![1.0_f32]));
     }
 
-    /// With no refresh state (bare `server_key`), a 401 is surfaced as-is — no
-    /// refresh attempt, no retry.
+    // With no refresh state (a per-origin server key), a 401 is surfaced
+    // without a refresh attempt or a retry, and it names the one command that
+    // stores a key for this origin (ADR-088 D3). `{:#}` is how the CLI renders
+    // an error (main.rs), so it is what the user actually reads.
     #[tokio::test]
-    async fn no_refresh_state_surfaces_401() {
+    async fn no_refresh_state_surfaces_401_naming_the_set_key_command() {
         let inference = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/search"))
@@ -867,11 +879,20 @@ mod tests {
         let client = ServerInferenceClient::for_test(
             &inference.uri(),
             "proj",
-            Some("sk-legacy".to_string()),
+            Some("sk-team".to_string()),
             None,
         );
-        let err = client.search_query("q", "semantic", 1).await.unwrap_err();
-        assert!(err.to_string().contains("/search") || err.to_string().contains("401"));
+        let err = format!(
+            "{:#}",
+            client.search_query("q", "semantic", 1).await.unwrap_err()
+        );
+        assert!(
+            err.contains(&format!(
+                "inkentry auth set-key --server {}",
+                inference.uri()
+            )),
+            "must name the fix, got: {err}"
+        );
     }
 
     /// Loop-safety guard: when the retry *after* a successful refresh also 401s,
@@ -963,21 +984,27 @@ mod tests {
         assert_eq!(guard.bearer.as_deref(), Some("at-login"));
     }
 
-    /// A bare legacy `server_key` (no `[auth]` table) must NOT carry refresh
-    /// state — there is nothing to refresh, so a 401 surfaces immediately and we
-    /// never call `/v1/auth/token` with a non-existent refresh token. Guards the
-    /// "legacy bearer does not attempt refresh" contract at the config boundary.
+    // A per-origin server key (no `[auth]` table) must NOT carry refresh
+    // state: there is nothing to refresh, so a 401 surfaces immediately and we
+    // never call `/v1/auth/token` with a non-existent refresh token. Guards the
+    // "server key does not attempt refresh" contract at the config boundary.
     #[test]
     #[serial_test::serial]
-    fn from_config_no_refresh_state_for_legacy_server_key() {
+    fn from_config_no_refresh_state_for_a_per_origin_server_key() {
         unsafe {
             std::env::remove_var("INKENTRY_SERVER_KEY");
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "server_key = \"sk-legacy\"\n").unwrap();
+        std::fs::write(&path, "").unwrap();
 
         let store = inkentry_core::config::secret_store::MemoryStore::default();
+        inkentry_core::config::server_keys::set_key_for_origin(
+            "http://127.0.0.1:7777",
+            "sk-team",
+            &store,
+        )
+        .unwrap();
         let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
         cfg.inference_url = Some("http://127.0.0.1:4655".into());
         let client =
@@ -986,9 +1013,9 @@ mod tests {
         let guard = client.auth.lock().unwrap();
         assert!(
             guard.refresh.is_none(),
-            "a bare legacy server_key must not be treated as refreshable"
+            "a per-origin server key must not be treated as refreshable"
         );
-        assert_eq!(guard.bearer.as_deref(), Some("sk-legacy"));
+        assert_eq!(guard.bearer.as_deref(), Some("sk-team"));
     }
 
     // `is_explicit_remote` keys off whether `base_url` resolved from

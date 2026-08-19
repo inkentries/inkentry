@@ -2028,8 +2028,8 @@ project_id = "team/new"
     // These exercise the credential paths through an injected `MemoryStore`, so
     // no real keychain or Secret Service daemon is required (CI-safe).
 
-    /// A credential stored via `auth set-key` lands ONLY in the secret store
-    /// and never in `config.toml` — the core acceptance criterion.
+    // A credential stored via `auth set-key` lands ONLY in the secret store
+    // and never in `config.toml`: the core acceptance criterion.
     #[test]
     #[serial_test::serial]
     fn stored_credential_is_in_store_not_in_config_file() {
