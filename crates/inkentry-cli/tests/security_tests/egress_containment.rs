@@ -91,6 +91,25 @@ async fn mount_search(server: &MockServer) {
 
 // Build a `inkentry` command isolated from ambient `INKENTRY_*` env, wired
 // against `project` as CWD and `state_dir` for loopback auto-discovery.
+// A command that never parsed cannot have leaked, so a clean trap over one
+// proves nothing. Argument-parsing failures are the way these invocations go
+// stale: a renamed or removed subcommand still exits, still touches no socket,
+// and still passes every egress assertion.
+fn assert_ran(out: &std::process::Output, label: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for marker in [
+        "unrecognized subcommand",
+        "unexpected argument",
+        "invalid value",
+    ] {
+        assert!(
+            !stderr.contains(marker),
+            "`plumbing {label}` did not parse ({marker}), so its clean trap says \
+             nothing about egress: {stderr}"
+        );
+    }
+}
+
 fn local_tier_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
@@ -484,8 +503,11 @@ async fn plumbing_local_reads_zero_egress() {
             cmd.arg(a);
         }
         // Exit code varies by subcommand semantics (e.g. `ls-files` exits 1
-        // on an empty result); only egress cleanliness is asserted here.
-        let _ = cmd.assert();
+        // on an empty result), so the outcome is not asserted. What is
+        // asserted is that the subcommand still parses: renaming one would
+        // otherwise leave this green having run nothing at all.
+        let out = cmd.output().expect("run plumbing subcommand");
+        assert_ran(&out, &args.join(" "));
     }
 
     // `knn` takes its query vector pre-embedded on stdin (unlike `embed`, it
@@ -505,7 +527,8 @@ async fn plumbing_local_reads_zero_egress() {
         .arg("knn")
         .write_stdin(serde_json::json!({"vector": vec![0.1f32; 896]}).to_string());
     // Exits 1 on an empty result set, same caveat as the loop above.
-    let _ = knn_cmd.assert();
+    let knn_out = knn_cmd.output().expect("run plumbing knn");
+    assert_ran(&knn_out, "knn");
 
     // A discoverable loopback server was available to every one of those
     // commands and none of them used it: that is the claim, and it is not the

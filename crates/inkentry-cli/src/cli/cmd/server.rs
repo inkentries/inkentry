@@ -1225,6 +1225,32 @@ mod tests {
         );
     }
 
+    // ── cleanup_state_files ──────────────────────────────────────────────────
+
+    // A leaked instance-id file outlives the daemon it names, and the next
+    // probe then compares a live server against a dead one's id and refuses
+    // it. Stop is the only thing that clears it, so nothing else would catch
+    // the file being forgotten here.
+    #[test]
+    fn cleanup_removes_every_recorded_state_file() {
+        let dir = TempDir::new().expect("state dir");
+        let files = [
+            pid_path(dir.path()),
+            port_path(dir.path()),
+            db_path_file(dir.path()),
+            instance_id_path(dir.path()),
+        ];
+        for f in &files {
+            std::fs::write(f, "stale").expect("seed state file");
+        }
+
+        cleanup_state_files(dir.path());
+
+        for f in &files {
+            assert!(!f.exists(), "{} survived cleanup", f.display());
+        }
+    }
+
     // ── find_available_port ──────────────────────────────────────────────────
 
     #[test]
