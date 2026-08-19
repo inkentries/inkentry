@@ -83,17 +83,28 @@ fn content_axis(text: &str) -> usize {
 // entry per `COMMIT <sha>` line. A commit that never reaches the LLM therefore
 // yields no entry, so "stored" in these tests tracks "was sent for extraction"
 // exactly.
+//
+// The prompt carries each commit's subject on the line after its sha, and the
+// reply echoes it as the title. Naming the sha instead would make every entry
+// the same sentence bar a hex string, which embeds close enough that harvest's
+// dedup pass drops one as a duplicate of another, on nothing but which shas a
+// run happened to generate. Real subjects keep the entries apart.
 fn extraction_reply(prompt: &str) -> String {
-    let entries: Vec<serde_json::Value> = prompt
-        .lines()
-        .filter_map(|line| line.strip_prefix("COMMIT "))
-        .map(|sha| sha.trim().to_string())
-        .map(|sha| {
+    let lines: Vec<&str> = prompt.lines().collect();
+    let entries: Vec<serde_json::Value> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let sha = line.strip_prefix("COMMIT ")?.trim();
+            let subject = lines.get(i + 1)?.trim();
+            Some((sha, subject))
+        })
+        .map(|(sha, subject)| {
             serde_json::json!({
                 "sha": sha[..sha.len().min(8)].to_string(),
                 "kind": "decision",
-                "title": format!("Decision recorded in {}", &sha[..sha.len().min(8)]),
-                "body": format!("Extracted from commit {sha} by the mock extractor."),
+                "title": subject,
+                "body": format!("{subject}. Extracted from commit {sha} by the mock extractor."),
                 "tags": ["fixture"],
             })
         })
@@ -353,6 +364,14 @@ async fn harvest_skips_a_commit_whose_message_matches_a_secret_pattern() {
     assert!(
         output.status.success(),
         "one matching commit must not fail the harvest:\n{text}"
+    );
+
+    assert!(
+        !text.contains("[dedup]"),
+        "no commit here is a restatement of another, so a dedup drop means the \
+         fixture built entries that read alike rather than the walk losing a \
+         commit; the missing-sha assertion below would report that as the \
+         wrong defect:\n{text}"
     );
 
     let refs = stored_source_refs(&h.mem_db);
