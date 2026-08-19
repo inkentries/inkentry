@@ -167,14 +167,16 @@ inkentry ships with a [Claude Code skill](SKILL.md) and [agent guide](docs/agent
 
 ## Supported languages
 
-Tree-sitter AST-aware chunking for: **Rust**, **Go**, **Python**, **TypeScript**, **JavaScript**, **JSX**, **TSX**, **Java**, **C**, **C++**, **PHP**, **Ruby**, **C#**, **Swift**, **Kotlin**, **JSON**, **HTML**, **CSS**, **HCL**, **Proto**, **SQL**, **Markdown**.
+Tree-sitter AST-aware chunking for: **Rust**, **Go**, **Python**, **TypeScript**, **JavaScript**, **JSX**, **TSX**, **Java**, **C**, **C++**, **PHP**, **Ruby**, **C#**, **Swift**, **Kotlin**, **JSON**, **HTML**, **CSS**, **HCL**, **Proto**, **SQL**.
 
-All other file types are indexed as plain text with a sliding-window chunker.
+Purpose-built chunkers, without tree-sitter, for **Markdown** (split on headings), **Jupyter notebooks** (`.ipynb`: one chunk per cell, code cells tagged with the notebook's kernel language) and **plain text** (`.txt`, `.rst`, `.adoc`, and extensionless `README`, `CHANGELOG` and siblings).
+
+A file whose type is in neither group is skipped, not indexed as text.
 
 **`inkentry languages` prints a build-dependent list.** The languages above are
-the ones every build parses. The optional `rich-formats` feature adds **DOCX**,
-**spreadsheets** and **PDF** on top, and `languages` lists those three as well
-when it is on. Every published release binary is built with it, so if you
+the ones every build parses, notebooks included. The optional `rich-formats`
+feature adds **DOCX**, **spreadsheets** and **PDF** on top, and `languages`
+lists those three as well when it is on. Every published release binary is built with it, so if you
 installed from a release you have them. A plain `cargo build` from source does
 not: pass `--features rich-formats` to match a release. See [building from
 source](docs/building.md).
