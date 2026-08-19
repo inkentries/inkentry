@@ -160,7 +160,7 @@ pub async fn memory_sync(
 
     if pushed.attempted == 0 {
         println!(
-            "Nothing to push — {} entries already synced. Applied {} new remote entries.{}",
+            "Nothing to push: {} entries already synced. Applied {} new remote entries.{}",
             pushed.already_synced,
             pulled.applied,
             pull_embed_summary(&pulled)

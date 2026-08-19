@@ -7,8 +7,8 @@
 // synced ones (`already_synced_rows_are_left_unembedded`), which is why no
 // later sync repaired them.
 //
-// These tests assert on identity — titles, retrieved content, the vector bytes
-// on disk — never on how many rows moved: a count can pass while the write went
+// These tests assert on identity (titles, retrieved content, the vector bytes
+// on disk) and never on how many rows moved: a count can pass while the write went
 // to a different store.
 
 use super::local_embed::{LocalEmbedPolicy, pending_embedding_warning, pull_embed_summary};
@@ -230,8 +230,8 @@ async fn pulled_entries_come_back_from_a_local_knn_search_on_their_own_words() {
 
 // ── 3. no embedder now: text-only, then caught up by the next pull ──────────
 
-// "Later" is the next pull of any kind — `inkentry sync`'s pull passes or
-// `inkentry plumbing pull` — and it does not depend on that pull returning the
+// "Later" is the next pull of any kind (`inkentry sync`'s pull passes or
+// `inkentry plumbing pull`) and it does not depend on that pull returning the
 // entry again, or returning anything at all. The second pull below answers with
 // an EMPTY page and still embeds the row the first pull had to leave behind.
 #[tokio::test]
