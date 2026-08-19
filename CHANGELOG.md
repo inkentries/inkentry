@@ -412,6 +412,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   The supported-language lists in the README and CLAUDE.md now state that
   `inkentry languages` is build-dependent (`rich-formats` adds DOCX, spreadsheets
   and PDF, and is on for every release binary).
+- **Docs: Jupyter notebooks were parsed but never listed as supported.**
+  `notebook` has been in `SUPPORTED_LANGUAGES` and printed by `inkentry
+  languages` all along, with its own per-cell chunker and no feature gate, yet
+  neither the README nor CLAUDE.md named it, so a reader with a `.ipynb`-heavy
+  repo checking the list first would conclude the tool had nothing for them.
+  Both lists now include it, and the README regained `text`, which it had also
+  dropped. The README further claimed tree-sitter chunking for Markdown, which
+  uses a heading splitter, and claimed every other file type is indexed as
+  sliding-window text, when an undetected type is skipped entirely; both are
+  corrected.
 - **`status` no longer misreads a foreign pid as a live embed worker when the
   project path itself contains "inkentry" and "index".** The liveness check
   matched those two words as a substring anywhere in the recorded pid's

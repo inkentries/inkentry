@@ -618,6 +618,15 @@ source is ignored and falls through to the next. Under systemd the credential
 path is preferred: it keeps the key out of the world-readable process
 environment.
 
+> **A `401` does not always mean the key was rejected.** Authentication runs
+> before route matching, so a request with a missing or wrong bearer token is
+> answered `401 unauthorized` even when the path it names does not exist. A
+> typo'd URL and an unusable key look identical on the wire. Re-run the same
+> request with a key you are sure of: if the answer turns into `404`, the path
+> was wrong, not the credential. Get the real route list from
+> `inkentry-server --print-openapi`. See [Auth
+> architecture](architecture/server-api.md#auth-architecture).
+
 ### Embedding CPU thread budget
 
 On a CPU-only host the bundled native embedder (candle) would otherwise fan a
