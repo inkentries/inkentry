@@ -14,16 +14,24 @@ use serde::Serialize;
 use crate::{
     capability,
     cli::cmd::auth_api,
-    cli::cmd::memory::sync::pull_and_apply,
+    cli::cmd::memory::sync::{LocalEmbedPolicy, pull_and_apply},
     config::Config,
     storage::{CloudSyncClient, MemoryStore},
 };
 
 /// The one report object emitted on a completed run (exit 0 or 1). `applied` is
 /// the number of new remote entries written to the local store this run.
+///
+/// The two embed counts mirror `push`'s: `embedded_locally` is the missing
+/// local vectors this run minted for synced rows, `without_local_vector` the
+/// synced rows still waiting on one (no local embedder was reachable, or that
+/// row's embed call failed). A non-zero `without_local_vector` is what tells a
+/// scripted caller that entries landed text-only rather than searchable.
 #[derive(Serialize)]
 struct PullReport {
     applied: usize,
+    embedded_locally: usize,
+    without_local_vector: usize,
 }
 
 pub(super) async fn pull(mem_path: &std::path::Path, cfg: &Config) -> Result<()> {
@@ -48,21 +56,26 @@ pub(super) async fn pull(mem_path: &std::path::Path, cfg: &Config) -> Result<()>
     )?;
 
     // A network/auth/setup failure returns Err and reaches exit 2 via main; an
-    // empty page (nothing new, including a 404) returns Ok(0) and is an empty
-    // delta, not an error.
-    let applied = pull_and_apply(&local, &client).await?;
+    // empty page (nothing new, including a 404) returns an `applied` of 0 and is
+    // an empty delta, not an error.
+    let local_embed = LocalEmbedPolicy::resolve(cfg, mem_path);
+    let summary = pull_and_apply(&local, &client, &local_embed).await?;
 
     let mut stdout = std::io::stdout();
     writeln!(
         stdout,
         "{}",
-        serde_json::to_string(&PullReport { applied })?
+        serde_json::to_string(&PullReport {
+            applied: summary.applied,
+            embedded_locally: summary.embedded_locally,
+            without_local_vector: summary.without_local_vector,
+        })?
     )?;
     stdout.flush()?;
 
     // Exit 1 is an empty delta (nothing new to apply); exit 0 means at least
     // one entry was applied. The report is emitted in both cases.
-    if applied == 0 {
+    if summary.applied == 0 {
         std::process::exit(1);
     }
     Ok(())

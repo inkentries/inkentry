@@ -13,6 +13,7 @@
 
 use anyhow::Result;
 
+use super::pull::PullSummary;
 use super::push::PushSummary;
 use crate::{
     capability,
@@ -74,6 +75,38 @@ pub(in crate::cli::cmd::memory) fn unembedded_warning(count: usize) -> String {
          `inkentry memory reindex` is run.",
         if count == 1 { "it" } else { "them" }
     )
+}
+
+/// The one user-facing warning for pulled entries that are still waiting on a
+/// local embedding. Emitted once per run by the command layer, which owns all
+/// user-facing output; the shared pull pass only counts.
+///
+/// Unlike the push's warning this does not send the user to `memory reindex` as
+/// the only way out: the pull pass re-scans every synced row still missing a
+/// vector, so the next `inkentry sync` or `inkentry plumbing pull` picks these
+/// up on its own once an embedder is reachable again.
+pub(in crate::cli::cmd::memory) fn pending_embedding_warning(count: usize) -> String {
+    let entries = if count == 1 { "entry" } else { "entries" };
+    format!(
+        "warning: {count} pulled {entries} could not be embedded locally, so \
+         `inkentry memory search` cannot surface {} semantically yet. The next \
+         sync or pull retries automatically; `inkentry memory reindex` does it now.",
+        if count == 1 { "it" } else { "them" }
+    )
+}
+
+/// Local-embedding clause for the pull half of a sync summary line. Empty when
+/// the pull pass neither minted nor missed a vector, so an unaffected sync
+/// reads exactly as it did before.
+pub(in crate::cli::cmd::memory) fn pull_embed_summary(summary: &PullSummary) -> String {
+    match (summary.embedded_locally, summary.without_local_vector) {
+        (0, 0) => String::new(),
+        (embedded, 0) => format!(" Embedded {embedded} pulled entries locally."),
+        (0, pending) => format!(" {pending} pulled entries pending embedding."),
+        (embedded, pending) => {
+            format!(" Embedded {embedded} pulled entries locally, {pending} pending embedding.")
+        }
+    }
 }
 
 /// Local-embedding clause for a push/sync summary line. Empty when the repair

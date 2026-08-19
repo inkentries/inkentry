@@ -52,7 +52,9 @@ mod round;
 mod test_support;
 
 pub(in crate::cli::cmd) use local_embed::LocalEmbedPolicy;
-pub(super) use local_embed::{local_embed_summary, unembedded_warning};
+pub(super) use local_embed::{
+    local_embed_summary, pending_embedding_warning, pull_embed_summary, unembedded_warning,
+};
 pub(super) use pull::parse_iso_to_secs;
 pub(in crate::cli::cmd) use pull::pull_and_apply;
 pub(in crate::cli::cmd) use push::push_local_oneway;
@@ -143,6 +145,9 @@ pub async fn memory_sync(
     if pushed.without_local_vector > 0 {
         eprintln!("{}", unembedded_warning(pushed.without_local_vector));
     }
+    if pulled.without_local_vector > 0 {
+        eprintln!("{}", pending_embedding_warning(pulled.without_local_vector));
+    }
     // Appended to the success summaries so relates_to propagation is visible
     // without cluttering the (unchanged) failure/interrupted framing.
     let edges_note = if pushed.edges_pushed > 0 {
@@ -153,8 +158,10 @@ pub async fn memory_sync(
 
     if pushed.attempted == 0 {
         println!(
-            "Nothing to push — {} entries already synced. Applied {} new remote entries.",
-            pushed.already_synced, pulled
+            "Nothing to push — {} entries already synced. Applied {} new remote entries.{}",
+            pushed.already_synced,
+            pulled.applied,
+            pull_embed_summary(&pulled)
         );
     } else if let Some(reason) = pushed.interrupted.as_deref() {
         // A chunk failed mid-push. The pull half already ran (it is independently
@@ -168,7 +175,7 @@ pub async fn memory_sync(
              Pull applied {} new remote entries.",
             pushed.created + pushed.skipped,
             pushed.attempted,
-            pulled
+            pulled.applied
         );
     } else if pushed.created == 0 && pushed.skipped == 0 {
         // Total push failure: nothing durably landed cloud-side. The pull
@@ -182,27 +189,29 @@ pub async fn memory_sync(
              pull still applied {} new remote entries.",
             pushed.attempted,
             pushed.failed,
-            pulled
+            pulled.applied
         );
     } else if pushed.failed > 0 {
         println!(
-            "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.{}{}",
+            "Sync complete. Pushed {} entries (created {}, skipped {}, {} failed), applied {} new remote entries.{}{}{}",
             pushed.attempted,
             pushed.created,
             pushed.skipped,
             pushed.failed,
-            pulled,
+            pulled.applied,
             local_embed_summary(&pushed),
+            pull_embed_summary(&pulled),
             edges_note
         );
     } else {
         println!(
-            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.{}{}",
+            "Sync complete. Pushed {} entries (created {}, skipped {}), applied {} new remote entries.{}{}{}",
             pushed.attempted,
             pushed.created,
             pushed.skipped,
-            pulled,
+            pulled.applied,
             local_embed_summary(&pushed),
+            pull_embed_summary(&pulled),
             edges_note
         );
     }
