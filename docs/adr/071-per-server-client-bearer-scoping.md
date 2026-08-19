@@ -4,7 +4,15 @@
 > The legacy flat `server_key` tier and its transient migration, kept alive below
 > D1's map, are removed. Credential resolution is two tiers, not three. Wherever
 > this record describes a third tier, a migrate-on-read, or a "pending migration"
-> notice, ADR-088 governs. The identifiers below are the pre-rename ones:
+> notice, ADR-088 governs.
+>
+> **Also partially superseded by
+> [ADR-090](090-credential-removal-surface.md) (2026-08-19).** D3's
+> `logout --servers` and `logout --server <url>` flags are removed and their
+> capability moves to `inkentry auth remove-key`. D3's reasoning is unchanged:
+> the flags moved, the scoping argument did not.
+>
+> The identifiers below are the pre-rename ones:
 > `SPELUNK_SERVER_KEY` is today's `INKENTRY_SERVER_KEY`, and `spelunk auth` is
 > today's `inkentry auth`.
 
@@ -216,19 +224,26 @@ Three commands, of which two are new:
   behavior the founder review rejected: a developer recovering from a broken
   cloud login should not silently lose the server key(s) they use on other
   projects. Clearing a server-key credential is now its own explicit action:
-  - **`spelunk logout --servers`** clears the whole map and the legacy flat
+  - ~~**`spelunk logout --servers`** clears the whole map and the legacy flat
     entry (the "remove everything" behavior the previous draft made
-    automatic, now opt-in).
-  - **`spelunk logout --server <url>`** clears only that one origin's
+    automatic, now opt-in).~~
+  - ~~**`spelunk logout --server <url>`** clears only that one origin's
     credential (map entry, or the legacy entry if that origin is still
-    served by it).
+    served by it).~~
   Bare `logout`, when server keys are present, prints how many are stored and
   names the flag that removes them; it takes no destructive action on them
   itself.
 
-  As of [ADR-088](088-retire-legacy-server-key-tiers.md) there is no legacy flat
-  entry to stop clearing. `logout --servers` clears the per-origin map and
-  nothing else.
+  Two later records change this. As of
+  [ADR-088](088-retire-legacy-server-key-tiers.md) there is no legacy flat entry
+  left to clear, so the map is all either flag ever reached. As of
+  [ADR-090](090-credential-removal-surface.md) D6 **both flags are removed
+  outright**, with no alias and no shim, and their capability moves to
+  `inkentry auth remove-key --server <url>` and `--all-servers`. D3's reasoning
+  is unchanged and is what ADR-090 carries to its conclusion: clearing a
+  server-key credential is its own explicit action rather than a side effect of
+  a cloud logout. Bare `logout` is unchanged, and its residual-key notice now
+  names `auth remove-key`.
 
 This is the first production caller of the `save_server_key`-shaped
 persistence path, which until now existed only for its tests, and it retires
