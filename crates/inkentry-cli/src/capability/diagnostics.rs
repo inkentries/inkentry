@@ -154,8 +154,14 @@ pub enum OfflineReason {
     /// `INKENTRY_NO_SERVER=1`. Outranks every other setting: the probe stops
     /// before `mode` or `server_url` is consulted.
     KillSwitch,
-    /// `mode = "offline"` in config, or `INKENTRY_MODE=offline`.
-    ModeOffline,
+    /// `INKENTRY_MODE=offline`. Split from the config source because the env
+    /// var overrides it: telling a reader to edit a config line they may not
+    /// have, and which would not take effect if they did, is the same inert
+    /// advice this whole enum exists to stop.
+    ModeOfflineEnv,
+    /// `mode = "offline"` in a config file, with no `INKENTRY_MODE` overriding
+    /// it.
+    ModeOfflineConfig,
     /// Loopback auto-discovery found no local daemon to use.
     NoLocalServer,
     /// A local daemon answered, but its embeddings are a different dimension
@@ -181,7 +187,10 @@ pub fn offline_search_hint(reason: OfflineReason, failure: Option<ConnFailure>) 
         OfflineReason::KillSwitch => {
             "  [INKENTRY_NO_SERVER is set: unset it to enable semantic search]".to_string()
         }
-        OfflineReason::ModeOffline => {
+        OfflineReason::ModeOfflineEnv => {
+            "  [INKENTRY_MODE=offline is set: unset it to enable semantic search]".to_string()
+        }
+        OfflineReason::ModeOfflineConfig => {
             "  [offline mode is on: remove mode = \"offline\" to enable semantic search]"
                 .to_string()
         }
@@ -217,9 +226,10 @@ mod tests {
 
     // ── offline_search_hint: one suggestion per reason ───────────────────────
 
-    const REASONS: [OfflineReason; 5] = [
+    const REASONS: [OfflineReason; 6] = [
         OfflineReason::KillSwitch,
-        OfflineReason::ModeOffline,
+        OfflineReason::ModeOfflineEnv,
+        OfflineReason::ModeOfflineConfig,
         OfflineReason::NoLocalServer,
         OfflineReason::LocalServerUnusable,
         OfflineReason::ExplicitServerUnavailable,
@@ -244,6 +254,21 @@ mod tests {
     // While the kill-switch is set the probe returns before any URL is read,
     // so `server_url` cannot change the outcome. Naming it is advice that
     // provably does nothing.
+    // The env var overwrites `cfg.mode` at load, so both sources look identical
+    // by the time a hint is chosen. Telling an env-var user to delete a config
+    // line is advice that does nothing even if they find the line to delete,
+    // which is the defect this module exists to prevent.
+    #[test]
+    fn the_two_offline_mode_sources_do_not_share_a_suggestion() {
+        let env = offline_search_hint(OfflineReason::ModeOfflineEnv, None);
+        let cfg = offline_search_hint(OfflineReason::ModeOfflineConfig, None);
+        assert!(env.contains("INKENTRY_MODE"), "{env}");
+        assert!(env.contains("unset"), "{env}");
+        assert!(!env.contains("remove"), "{env}");
+        assert!(cfg.contains("remove"), "{cfg}");
+        assert!(!cfg.contains("INKENTRY_MODE"), "{cfg}");
+    }
+
     #[test]
     fn kill_switch_names_the_variable_and_never_server_url() {
         let hint = offline_search_hint(OfflineReason::KillSwitch, None);
@@ -252,13 +277,17 @@ mod tests {
         assert!(!hint.contains("server_url"), "{hint}");
     }
 
-    // `mode = "offline"` is the other explicit opt-out, and it is equally
-    // unmoved by a `server_url`.
+    // Offline mode is the other explicit opt-out, and it is equally unmoved by
+    // a `server_url`, whichever of its two sources is in force.
     #[test]
     fn mode_offline_names_the_setting_and_never_server_url() {
-        let hint = offline_search_hint(OfflineReason::ModeOffline, None);
-        assert!(hint.contains("mode = \"offline\""), "{hint}");
-        assert!(!hint.contains("server_url"), "{hint}");
+        let cfg = offline_search_hint(OfflineReason::ModeOfflineConfig, None);
+        assert!(cfg.contains("mode = \"offline\""), "{cfg}");
+        assert!(!cfg.contains("server_url"), "{cfg}");
+
+        let env = offline_search_hint(OfflineReason::ModeOfflineEnv, None);
+        assert!(env.contains("INKENTRY_MODE"), "{env}");
+        assert!(!env.contains("server_url"), "{env}");
     }
 
     // The ordinary case. Semantic search for a solo user comes from the local

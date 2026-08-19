@@ -83,8 +83,17 @@ fn explicit_offline_reason(cfg: &Config) -> Option<OfflineReason> {
     if inkentry_core::config::no_server_env_set() {
         return Some(OfflineReason::KillSwitch);
     }
-    (cfg.mode == Some(inkentry_core::config::SyncMode::Offline))
-        .then_some(OfflineReason::ModeOffline)
+    if cfg.mode != Some(inkentry_core::config::SyncMode::Offline) {
+        return None;
+    }
+    // `INKENTRY_MODE` overwrites `cfg.mode` during load, so by here the two
+    // sources are indistinguishable on the value alone. Ask the environment
+    // which one is in force: while the variable is set, editing the config
+    // line changes nothing.
+    Some(match std::env::var("INKENTRY_MODE") {
+        Ok(_) => OfflineReason::ModeOfflineEnv,
+        Err(_) => OfflineReason::ModeOfflineConfig,
+    })
 }
 
 /// Return the cached capability tier for this process.
@@ -1765,7 +1774,7 @@ mod tests {
         };
         let tier = get_inference_tier(&cfg).await;
         assert!(
-            matches!(tier, Tier::Offline(OfflineReason::ModeOffline)),
+            matches!(tier, Tier::Offline(OfflineReason::ModeOfflineConfig)),
             "got {tier:?}"
         );
     }
