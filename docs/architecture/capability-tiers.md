@@ -45,7 +45,9 @@ features.
 ```toml
 # ~/.config/inkentry/config.toml  (personal — never commit)
 server_url = "https://inkentry.internal.example.com"
-server_key = "sk-..."
+# No credential here: neither config file has a `server_key` field. Store the
+# bearer with `inkentry auth set-key --server <url>`, or set
+# INKENTRY_SERVER_KEY (ADR-088).
 
 # .inkentry/config.toml  (project-level — safe to commit if key is in env)
 project_id = "acme/my-app"
@@ -63,8 +65,10 @@ Environment variable overrides:
 | Field | Env var |
 |---|---|
 | `server_url` | `INKENTRY_SERVER_URL` |
-| `server_key` | `INKENTRY_SERVER_KEY` |
 | `project_id` | `INKENTRY_PROJECT_ID` |
+
+`INKENTRY_SERVER_KEY` carries the bearer credential, but it overrides no field:
+there is no `server_key` field in either file for it to override (ADR-088).
 
 ### Validation
 
