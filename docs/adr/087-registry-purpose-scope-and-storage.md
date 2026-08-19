@@ -37,6 +37,35 @@ returns 0 of 30. So the worktree pollution was the predecessor's, and the
 founder's own hypothesis when filing this ("this may have been historic, before
 the worktree change") is the correct one.
 
+### What inkentry's 30 rows actually are
+
+Bucketed, 2026-08-19:
+
+| | |
+| --- | ---: |
+| agent-session scratchpad fixtures | **22** |
+| real projects | 7 |
+| a macOS `$TMPDIR` directory | 1 |
+| **`project_deps` rows** | **0** |
+
+The 22 are throwaway test projects created inside per-session scratchpad
+directories by agents running `init` or `index` while testing: `sandbox/projA`,
+`sandbox2/projB`, `sandbox3/notgit`, `sb5/proj`, `sb7`, `projB-target`, across
+four distinct session ids. They are not worktrees and never were repositories
+anyone worked in.
+
+Two facts follow, and both matter more than the dead-row count this task was
+filed about.
+
+**Registration is a side effect of `init` and `index`, and of nothing else.**
+Three call sites, `init.rs:91`, `index/mod.rs:153` and `index/phases.rs:323`.
+`inkentry link` does not register; it writes `project_deps`. So a user who has
+never run `link` still accumulates rows, and every agent that indexes a fixture
+writes into the developer's real global registry.
+
+**`project_deps` is empty.** The link graph this registry exists to hold has
+never had an entry on the machine that has been running the product longest.
+
 ### The observation that reframes the question
 
 The registry records projects that were **indexed**. A repository whose memory
@@ -78,6 +107,15 @@ in SQLite.**
 The registry exists to answer one question: **which other projects should a
 cross-project read reach into.** That is what ADR-003 needs and what `links`
 and `status --all` display.
+
+It is worth being honest that it is not currently doing that job for anyone:
+`project_deps` is empty, so no cross-project read reaches anywhere extra today.
+The `projects` table still earns its place, because `find_project_for_path`
+resolves a directory to its project and `link` needs that to work at all. But
+the link graph is a capability the product offers rather than one in use, and
+a decision about ADR-003's future should be taken on that evidence rather than
+on the assumption that the table is populated. That question is out of scope
+here and belongs to whoever owns cross-project visibility.
 
 It is explicitly **not** an inventory of the user's projects, and nothing may
 treat it as one. Presence is a side effect of having run `index`, so a corpus
