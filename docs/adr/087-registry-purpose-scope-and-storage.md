@@ -9,7 +9,18 @@ registry claims to be.
 
 ## Context
 
-Measured on the founder's machine, 2026-08-12:
+> **Correction (2026-08-19): the figures below were measured against the
+> predecessor's registry, not inkentry's.** Both files exist side by side on
+> macOS. `~/Library/Application Support/spelunk/registry.db` holds **319**
+> projects and has not been written since 2026-08-07;
+> `~/Library/Application Support/inkentry/registry.db` holds **30**, and 0 of
+> them are worktree-shaped. `inkentry autoclean` found 3 stale rows on first
+> run and reports all remaining paths valid. The original figures are kept
+> because they are what prompted the review, but they describe a store
+> inkentry never reads, and the decisions below are revised accordingly.
+
+Measured on the founder's machine, 2026-08-12, **against the predecessor's
+registry**:
 
 | | |
 | --- | --- |
@@ -18,20 +29,27 @@ Measured on the founder's machine, 2026-08-12:
 | roots that are gone | **265** |
 | have any authored memory | **3** |
 
-Most registered roots were git worktrees, several of them
-`.claude/worktrees/agent-*/...` fixture directories. The product resolves a
-worktree to its main checkout elsewhere (`find_project_root` in
-`config/paths.rs:50` is worktree-aware and says so), but registration at
-`init.rs:91` and `index/phases.rs:323` registers a canonicalised path, and
-canonicalisation resolves symlinks, not worktrees.
+Most of those registered roots were git worktrees, several of them
+`.claude/worktrees/agent-*/...` fixture directories.
+
+**In inkentry's own registry, none are.** A query for worktree-shaped roots
+returns 0 of 30. So the worktree pollution was the predecessor's, and the
+founder's own hypothesis when filing this ("this may have been historic, before
+the worktree change") is the correct one.
 
 ### The observation that reframes the question
 
 The registry records projects that were **indexed**. A repository whose memory
-was only ever added and never indexed is absent from it. The founder's
-`handbook`, 343 authored entries and the largest corpus on the machine, is not
-in the registry at all. The migration script was built to scan the filesystem
-for stores rather than read the registry, deliberately, for that reason.
+was only ever added and never indexed is absent from it, because presence is a
+side effect of running `index` rather than of having anything worth recording.
+
+The example originally given for this does not hold: the founder's `handbook`
+was cited as absent, and it **is** registered in inkentry's registry. That
+citation was against the predecessor's file. The structural point survives the
+example, and it is the part that matters: nothing registers a project on the
+strength of its memory, so a memory-only project is still invisible here by
+construction. The migration script was built to scan the filesystem for stores
+rather than read the registry, deliberately, for that reason.
 
 So the registry cannot answer "what projects does this user have", and it fails
 at it silently. That is the finding that decides the rest: the problem is not
@@ -62,41 +80,65 @@ cross-project read reach into.** That is what ADR-003 needs and what `links`
 and `status --all` display.
 
 It is explicitly **not** an inventory of the user's projects, and nothing may
-treat it as one. The `handbook` case is the proof that it cannot be: a corpus
-can be arbitrarily large and entirely absent, because presence is a side effect
-of having run `index`.
+treat it as one. Presence is a side effect of having run `index`, so a corpus
+can be arbitrarily large and entirely absent. Nothing puts a project here on
+the strength of its memory.
 
 The docs say so plainly, and anything wanting a real inventory scans the
 filesystem, as the migration script already does. That is not a workaround to
 be tidied away later; it is the correct approach given what the registry is.
 
-### D2 - registration resolves a worktree to its main checkout
+### D2 - registration resolves a worktree to its main checkout, and the evidence says it already does
 
-Registration goes through the same worktree resolution the rest of the product
-uses. A worktree and its main checkout are one project, which is already the
-product's position everywhere else; the registry is the one place that
-disagrees.
+A worktree and its main checkout are one project. That is the product's
+position everywhere else, and registration must not be the exception.
 
-Whether today's 265 dead rows are historic or still being produced needs
-establishing during implementation, and the answer decides nothing here: both
-answers lead to the same fix, and the eviction in D3 clears the backlog either
-way.
+**The observed pollution was the predecessor's, not inkentry's.** 0 of
+inkentry's 30 registered roots are worktree-shaped, against a majority of the
+predecessor's 319. So this is very likely already correct and the requirement
+here is to **confirm it with a test rather than change behaviour**: register
+from inside a linked worktree and assert the row names the main checkout.
 
-### D3 - a row whose root is gone is pruned lazily, on read
+If that test passes as written, this decision is satisfied by what is already
+in the tree and nothing more is owed. If it fails, the fix is to route
+registration through the same resolution `find_project_dir` uses. Both outcomes
+are cheap; what is not acceptable is leaving it unasserted, because the
+predecessor's registry shows exactly what this looks like when it regresses.
 
-A read that encounters a registered root which no longer exists skips it and
-removes the row. No maintenance command, no startup scan.
+### D3 - eviction stays in `autoclean`, and is not moved into the read path
 
-This suits a store already declared best-effort and re-derivable: the cost of a
-wrong eviction is one re-registration on next `index`, and the alternative,
-carrying 265 dead rows indefinitely because nothing is allowed to forget, is
-what produced the current state. Lazy pruning also keeps the cost proportional,
-paid only over rows a read actually touches.
+**`inkentry autoclean` already exists** (`cli/cmd/link.rs:108`,
+`registry.rs:302`) and already does this: it drops any project whose root no
+longer exists, and additionally removes a leftover `.inkentry` directory when a
+worktree was cleaned but its ignored directory survived. On the founder's
+machine it removed 3 rows and now reports all 30 remaining paths valid.
 
-**A root that is merely unreachable is not gone.** An unmounted volume, a
-network share, or a detached external disk must not be read as deletion. The
-check is existence of the project root, and any error that is not a clean
-"absent" leaves the row alone.
+So the question is not whether to add eviction. It is whether eviction should
+**also** happen automatically on read. The answer is no, for now:
+
+- The measured backlog in inkentry's registry is **3 rows, not 265**. The
+  problem lazy pruning was proposed to solve is not present at this scale.
+- An automatic prune on read makes every cross-project read a potential
+  **write**, on a store shared by concurrent `inkentry` processes. That is a
+  real cost to pay for tidiness nobody has asked for.
+- Eviction on read is also where the unreachable-versus-deleted distinction
+  below becomes dangerous, because it fires without the user having asked for
+  anything.
+
+Revisit if a real registry accumulates dead rows faster than users run
+`autoclean`. Nothing measured so far suggests it does.
+
+**A root that is merely unreachable is not gone**, and this applies to
+`autoclean` as it stands today. An unmounted volume, a network share, or a
+detached external disk must not be read as deletion. `autoclean` currently
+tests `!p.root_path.exists()`, and `Path::exists` returns `false` for **any**
+error, including a permission denial or an unmounted mount point, so it cannot
+today distinguish "absent" from "cannot tell". Removing a row for a project
+sitting on an external disk is silent data loss of a link the user has to
+rebuild by hand.
+
+That is the one change this decision does require: the check must treat a clean
+"absent" as absent and leave the row alone on anything else.
 
 ### D4 - it stays SQLite, and the readability need is met by a command
 
@@ -142,9 +184,13 @@ task.
 - **`CLAUDE.md`'s "Multi-project registry" section** describes it as tracking
   "all indexed projects", which is accurate but reads as an inventory. It needs
   the same narrowing.
-- **The 265 dead rows clear themselves** through D3 over ordinary use. No
-  migration, no one-off cleanup command, consistent with a store nothing
-  guarantees.
+- **`autoclean` gains an unreachable-versus-absent guard**, per D3. That is the
+  only code change this record asks for, and it is a correctness fix rather
+  than tidying: today an unmounted volume reads as a deleted project.
+- **The predecessor's 319-row registry is not inkentry's problem to clean.** It
+  is a separate file that inkentry never opens, and it will sit at
+  `~/Library/Application Support/spelunk/registry.db` until the user deletes
+  it. Worth a line in the upgrade docs, not a code path.
 - **A `links` inspection and removal surface** is the follow-up this raises. It
   is deliberately not folded into this record.
 
@@ -155,9 +201,18 @@ surface and because reading the registry as an inventory is how a wrong design
 choice gets made downstream. It cost one already, and the migration script only
 avoided it because someone checked.
 
-**D2 and D3 are behaviour changes and can follow v1.** They do not alter a
-stored format, a wire contract or a documented guarantee, so nothing about
-shipping them later is more expensive than shipping them now. That is the test
-this store's best-effort classification exists to make easy, and it is why the
-"last cheap moment" argument does not apply here the way it does to a format or
-a protocol.
+**D2 is a test, not a change**, on the evidence that registration already
+resolves worktrees. Cheap either way, and worth having before v1 only because
+the predecessor's registry is a picture of what a regression here looks like.
+
+**D3's guard is a correctness fix and should not wait long.** `autoclean`
+removing a project because its external disk is unmounted is a small, silent
+loss of something the user has to rebuild by hand. It is rare rather than
+severe, so it is not release-gating, but it is the one item here that is a
+defect rather than tidying.
+
+Neither alters a stored format, a wire contract or a documented guarantee, so
+the "last cheap moment" argument does not apply the way it does to a format or
+a protocol. That is what this store's best-effort classification is for, and it
+is why the original review question, whether this had to be settled before v1,
+resolves to no for everything except the scope narrowing.
