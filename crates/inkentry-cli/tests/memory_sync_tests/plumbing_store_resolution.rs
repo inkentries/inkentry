@@ -83,7 +83,7 @@ fn make_unindexed_project(proj: &Path, server_url: &str) {
 fn report(stdout: &[u8]) -> serde_json::Value {
     serde_json::from_slice(stdout).unwrap_or_else(|e| {
         panic!(
-            "push must emit one JSON report object on stdout: {e}; stdout={:?}",
+            "a plumbing report must be one JSON object on stdout: {e}; stdout={:?}",
             String::from_utf8_lossy(stdout)
         )
     })
@@ -109,6 +109,36 @@ async fn pushed_titles(server: &MockServer) -> Vec<String> {
             }
         }
     }
+    titles
+}
+
+async fn mount_since_one_entry(server: &MockServer, title: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/projects/{PROJECT_SLUG}/memory/since")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "entries": [{
+                "id": "01890000-0000-7000-8000-0000000000aa",
+                "kind": "decision",
+                "title": title,
+                "body": "written by a teammate",
+                "created_at": "2026-06-19T01:00:00Z",
+            }]
+        })))
+        .mount(server)
+        .await;
+}
+
+// Sorted so the assertion does not depend on the order rows come back in.
+fn titles_in(mem_path: &Path) -> Vec<String> {
+    register_sqlite_vec();
+    let store = MemoryStore::open(mem_path).expect("open memory.db");
+    let mut titles: Vec<String> = store
+        .list(None, 100, true)
+        .expect("list notes")
+        .into_iter()
+        .map(|n| n.title)
+        .collect();
+    titles.sort();
     titles
 }
 
@@ -338,5 +368,52 @@ async fn read_memory_uses_the_project_store_of_a_configured_but_unindexed_projec
         stdout.contains("project store entry") && !stdout.contains("global store entry"),
         "read-memory must read the project store; stdout={stdout}, stderr={}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// Pull is the write direction for other people's entries, so a wrong store
+// here deposits team memory where this project's own commands never look.
+#[tokio::test]
+async fn pull_writes_into_the_project_store_of_a_configured_but_unindexed_project() {
+    let server = MockServer::start().await;
+    mount_health(&server).await;
+    mount_since_one_entry(&server, "teammate entry").await;
+
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let (config_path, global_mem) = write_global_config(home.path());
+    make_unindexed_project(proj.path(), &server.uri());
+    let project_mem = proj.path().join(".inkentry").join("memory.db");
+    seed_store(&project_mem, "project store entry");
+    seed_store(&global_mem, "global store entry");
+
+    let out = inkentry_bin_in(home.path())
+        .current_dir(proj.path())
+        .arg("--config")
+        .arg(&config_path)
+        .args(["plumbing", "pull"])
+        .output()
+        .expect("run plumbing pull");
+
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let report = report(&out.stdout);
+    assert_eq!(
+        titles_in(&project_mem),
+        vec![
+            "project store entry".to_string(),
+            "teammate entry".to_string(),
+        ],
+        "the pulled entry belongs in the project store; report={report}, stderr={stderr}"
+    );
+    assert_eq!(
+        titles_in(&global_mem),
+        vec!["global store entry".to_string()],
+        "the global store must not receive team memory; report={report}, stderr={stderr}"
+    );
+    assert_eq!(report["applied"], 1, "report={report}; stderr={stderr}");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an entry was applied, so this is not an empty delta; stderr={stderr}"
     );
 }
