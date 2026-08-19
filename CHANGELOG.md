@@ -319,6 +319,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`plumbing push`, `plumbing pull` and `plumbing read-memory` now act on the
+  same memory store the `memory` commands do.** In a project that was
+  configured but never indexed they acted on the machine-global store instead,
+  silently. A linked git worktree now shares the main worktree's store too.
+- **Outside any project, the plumbing memory commands name the global store
+  they act on** on stderr. stdout stays the JSONL report alone.
+- **`plumbing read-memory` exits 2 when no memory store exists**, rather than
+  reporting no entries.
 - **Docs: the memory-sharing claim is corrected in the remaining four places.**
   `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
   said memory travels with the repository. `git push` does not push

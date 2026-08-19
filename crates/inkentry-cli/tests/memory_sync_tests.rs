@@ -12,6 +12,8 @@ mod memory_read_mode_notice;
 mod memory_relates_to_edge;
 #[path = "memory_sync_tests/memory_relates_to_edge_sync.rs"]
 mod memory_relates_to_edge_sync;
+#[path = "memory_sync_tests/plumbing_store_resolution.rs"]
+mod plumbing_store_resolution;
 #[path = "memory_sync_tests/team_memory_read_path.rs"]
 mod team_memory_read_path;
 #[path = "memory_sync_tests/team_memory_real_server_e2e.rs"]

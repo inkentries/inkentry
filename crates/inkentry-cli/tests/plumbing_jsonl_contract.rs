@@ -367,9 +367,8 @@ async fn embed_output_matches_the_contract() {
 
 #[test]
 fn read_memory_output_matches_the_contract() {
-    // `read-memory` derives the memory path from `--db`, and the index-exists
-    // check in the plumbing dispatcher runs first, so a real index has to sit
-    // next to the memory store even though this command never reads it.
+    // The shared fixture is reused only for its project dir and config; the
+    // memory path is `--db`'s sibling and this command never reads the index.
     let (tmp, db_path, config_path) = index_fixture_project();
     let mem_path = db_path.with_file_name("memory.db");
 
