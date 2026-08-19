@@ -450,9 +450,12 @@ traps every outbound connection across local-tier CLI flows (`init`, `index`, `s
 ## Supported Languages
 
 Rust, Go, Python, TypeScript, JavaScript, JSX, TSX, Java, C, C++, PHP, Ruby,
-C#, Swift, Kotlin, JSON, HTML, CSS, HCL, Proto, SQL, Markdown, plain text.
+C#, Swift, Kotlin, JSON, HTML, CSS, HCL, Proto, SQL, Markdown, plain text,
+Jupyter notebooks (`notebook`, `.ipynb`).
 
-That is the set a default `cargo build` parses. `SUPPORTED_LANGUAGES`
+That is the set a default `cargo build` parses; `notebook` is in it and not
+behind a feature, being a custom JSON parser rather than a tree-sitter grammar
+or a binary-document reader. `SUPPORTED_LANGUAGES`
 (`crates/inkentry-core/src/indexer/parser/mod.rs`) is `cfg`-gated, so the
 optional `rich-formats` feature adds `docx`, `spreadsheet` and `pdf` to it, and
 `inkentry languages` prints whichever set the running binary was built with.

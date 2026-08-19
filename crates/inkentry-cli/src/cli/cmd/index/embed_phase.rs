@@ -8,7 +8,7 @@ use super::super::ui::is_tty;
 use crate::{
     capability::{ServerLimits, Tier},
     config::Config,
-    storage::Database,
+    storage::{Database, credential_hint},
 };
 
 /// Hard ceiling on chunks per request; the server returns 413 above this.
@@ -389,7 +389,7 @@ async fn run_embed_phase_with_backoff(
 ) -> Result<u64> {
     let (server_url, server_key) = match tier {
         Tier::Server { url, .. } => (url.clone(), cfg.bearer_for(url)?),
-        Tier::Offline => return Ok(0),
+        Tier::Offline(_) => return Ok(0),
     };
     // Refuse to append vectors from a different model into an existing index;
     // stamps provenance on a fresh/legacy DB.
@@ -809,12 +809,25 @@ async fn embed_one_batch(
         return Err(EmbedBatchError::Saturated(parse_retry_after(&resp)));
     }
 
+    // This path carries the same per-origin bearer the memory and sync paths
+    // do, so a rejection here has to name the same fix (ADR-088 D3). Without
+    // it an upgrading user whose stored key is no longer migrated sees only a
+    // bare 401 from the one command they are most likely to run first.
+    //
+    // The hint names the origin rather than this endpoint, because that is
+    // what `auth set-key` stores: it normalises whatever it is given down to
+    // an origin, so suggesting the full `/v1/projects/.../index/embed` path
+    // would print a command that works but reads as though the path mattered.
+    let hint = url
+        .parse::<reqwest::Url>()
+        .map(|u| credential_hint(resp.status(), &u.origin().ascii_serialization()))
+        .unwrap_or_default();
     let resp = match resp.error_for_status() {
         Ok(resp) => resp,
         Err(e) => {
-            return Err(EmbedBatchError::Other(
-                anyhow::Error::new(e).context("server returned an error for index/embed"),
-            ));
+            return Err(EmbedBatchError::Other(anyhow::Error::new(e).context(
+                format!("server returned an error for index/embed.{hint}"),
+            )));
         }
     };
 
@@ -1601,6 +1614,57 @@ mod tests {
             }
             Ok(_) => panic!("192.0.2.1 must never actually accept a connection"),
         }
+    }
+
+    // ── embed_one_batch: 401 (the credential the index path carries) ───────
+
+    #[tokio::test]
+    async fn embed_one_batch_names_the_fix_when_the_server_rejects_the_credential() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/projects/x/index/embed", mock.uri());
+
+        let result = embed_one_batch(
+            &client,
+            &url,
+            Some("stale-key"),
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let e = match result {
+            Err(EmbedBatchError::Other(e)) => e,
+            Err(EmbedBatchError::ConnectFailure(e)) | Err(EmbedBatchError::BudgetExceeded(e)) => {
+                panic!("a 401 must surface as Other: {e:#}")
+            }
+            Err(EmbedBatchError::Saturated(_)) => panic!("a 401 must not classify as Saturated"),
+            Ok(_) => panic!("a 401 must not succeed"),
+        };
+        let rendered = format!("{e:#}");
+        assert!(
+            rendered.contains("auth set-key"),
+            "a rejected credential must name the command that fixes it, got: {rendered}"
+        );
+        assert!(
+            rendered.contains(&mock.uri()),
+            "the hint must name the server origin, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("index/embed`"),
+            "the hint must name the origin, not this endpoint's path, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("stale-key"),
+            "no error path may echo the credential, got: {rendered}"
+        );
     }
 
     // ── embed_one_batch: 429 (embed admission queue saturated) ──────────────

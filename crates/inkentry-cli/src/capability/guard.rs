@@ -77,6 +77,7 @@ pub fn require_explicit_server_url(
 
 #[cfg(test)]
 mod tests {
+    use super::super::diagnostics::OfflineReason;
     use super::super::state::{Capabilities, EmbedderState};
     use super::*;
     use crate::config::Config;
@@ -126,7 +127,7 @@ mod tests {
 
     #[test]
     fn require_tier1_err_for_offline_no_url() {
-        let tier = Tier::Offline;
+        let tier = Tier::Offline(OfflineReason::NoLocalServer);
         let err = require_tier1("memory search", &tier, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'inkentry memory search'"));
@@ -138,7 +139,7 @@ mod tests {
     fn require_tier1_err_for_offline_with_url_names_that_server() {
         // server_url is already configured; the message must name the failing
         // server, never tell the operator to set what is already set.
-        let tier = Tier::Offline;
+        let tier = Tier::Offline(OfflineReason::NoLocalServer);
         let err = require_tier1("plan", &tier, Some("https://bad:4655")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'inkentry plan'"));
@@ -156,7 +157,7 @@ mod tests {
 
     #[test]
     fn require_tier1_uses_feature_name_in_message() {
-        let tier = Tier::Offline;
+        let tier = Tier::Offline(OfflineReason::NoLocalServer);
         let err = require_tier1("plumbing push", &tier, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("'inkentry plumbing push'"));

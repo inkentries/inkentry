@@ -184,7 +184,7 @@ async fn push_completes_text_only_when_no_local_embedder_is_available() {
 fn a_failed_loopback_probe_leaves_no_embedder_rather_than_the_team_server() {
     // The one case a live mock cannot pin without owning port 4655: loopback
     // auto-discovery finding nothing while a team `server_url` IS configured.
-    // `probe_loopback` yields `Tier::Offline` there, whose `effective_config`
+    // `probe_loopback` yields `Tier::Offline(capability::OfflineReason::NoLocalServer)` there, whose `effective_config`
     // is a no-op, and outside `cloud_first` `resolve_inference_url` reads
     // `inference_url` alone. So the config the embedder is resolved from
     // produces no client at all rather than falling back to `server_url`:
@@ -195,8 +195,8 @@ fn a_failed_loopback_probe_leaves_no_embedder_rather_than_the_team_server() {
         mode: None,
         ..Default::default()
     };
-    let eff =
-        crate::capability::Tier::Offline.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
+    let eff = crate::capability::Tier::Offline(crate::capability::OfflineReason::NoLocalServer)
+        .effective_config(&cfg, std::path::Path::new("/tmp/proj"));
     assert_eq!(
         eff.server_url.as_deref(),
         Some("https://cloud.invalid.example:1"),

@@ -293,7 +293,9 @@ mod tests {
 
     #[test]
     fn detach_not_eligible_offline() {
-        assert!(!detach_embed_eligible(&capability::Tier::Offline));
+        assert!(!detach_embed_eligible(&capability::Tier::Offline(
+            capability::OfflineReason::NoLocalServer
+        )));
     }
 
     #[test]

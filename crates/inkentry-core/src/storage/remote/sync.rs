@@ -32,8 +32,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::encode_project_id;
 use super::retry::{RetryPolicy, send_retrying_while_shed};
+use super::{CheckedResponse, credential_hint, encode_project_id};
 use crate::embeddings::{PUSHED_VECTOR_PRECISION, pushed_vector_model_tag};
 
 /// Per-request timeout for the sync HTTP client. `POST /memory/batch` performs
@@ -347,7 +347,10 @@ impl CloudSyncClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("POST /memory/batch failed ({status}): {text}");
+            anyhow::bail!(
+                "POST /memory/batch failed ({status}): {text}{hint}",
+                hint = credential_hint(status, &self.base_url)
+            );
         }
         resp.json::<BatchPushResult>()
             .await
@@ -383,7 +386,10 @@ impl CloudSyncClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("POST /memory/batch edges failed ({status}): {text}");
+            anyhow::bail!(
+                "POST /memory/batch edges failed ({status}): {text}{hint}",
+                hint = credential_hint(status, &self.base_url)
+            );
         }
         resp.json::<EdgePushResult>()
             .await
@@ -406,7 +412,10 @@ impl CloudSyncClient {
             return Ok(());
         }
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("DELETE /memory/{remote_id} failed ({status}): {text}")
+        anyhow::bail!(
+            "DELETE /memory/{remote_id} failed ({status}): {text}{hint}",
+            hint = credential_hint(status, &self.base_url)
+        )
     }
 
     /// Maximum `limit` the server accepts on `GET /memory/since`
@@ -469,7 +478,7 @@ impl CloudSyncClient {
             return Ok(vec![]);
         }
         let body = resp
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for GET /memory/since")?
             .json::<SinceBody>()
             .await

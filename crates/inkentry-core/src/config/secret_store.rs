@@ -3,8 +3,9 @@
 //! The CLI's bearer credential used to live as plaintext in
 //! `~/.config/inkentry/config.toml` (`server_key = "sk-sp-…"`). Any process
 //! running as the user could read it, and the common real-world leak is users
-//! syncing `~/.config` into a dotfiles git repo or a backup. This module moves
-//! the secret into the OS secret store:
+//! syncing `~/.config` into a dotfiles git repo or a backup. That file is read
+//! for no credential at all any more (ADR-088 D1); secrets live in the OS
+//! secret store:
 //!
 //! * macOS  — Keychain
 //! * Linux  — Secret Service (libsecret / `org.freedesktop.secrets`)
@@ -49,12 +50,6 @@ use std::sync::{Mutex, OnceLock};
 /// Shared by every entry so a user can find/audit inkentry credentials in their
 /// OS keychain UI under a single service.
 pub const KEYRING_SERVICE: &str = "inkentry";
-
-/// Key name for the CLI bearer credential (today's `server_key`).
-///
-/// A stable, format-agnostic name: whether the value is an `sk-sp-…` key or a
-/// future WorkOS token, it is the single `Authorization: Bearer` credential.
-pub const KEY_SERVER_KEY: &str = "server_key";
 
 /// Key name for the credential sent to the configured LLM endpoint.
 ///
@@ -364,6 +359,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // An arbitrary entry name: these tests exercise a backend, which holds
+    // opaque values under whatever name a caller picks.
+    const TEST_KEY: &str = "a_credential";
+
     // ── FileStore round-trip ────────────────────────────────────────────────
 
     #[test]
@@ -371,22 +370,22 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path().join("secrets.toml"));
 
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
-        store.set(KEY_SERVER_KEY, "sk-sp-secret").unwrap();
+        assert_eq!(store.get(TEST_KEY).unwrap(), None);
+        store.set(TEST_KEY, "sk-sp-secret").unwrap();
         assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            store.get(TEST_KEY).unwrap().as_deref(),
             Some("sk-sp-secret")
         );
 
         // Overwrite.
-        store.set(KEY_SERVER_KEY, "sk-sp-rotated").unwrap();
+        store.set(TEST_KEY, "sk-sp-rotated").unwrap();
         assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
+            store.get(TEST_KEY).unwrap().as_deref(),
             Some("sk-sp-rotated")
         );
 
-        store.delete(KEY_SERVER_KEY).unwrap();
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
+        store.delete(TEST_KEY).unwrap();
+        assert_eq!(store.get(TEST_KEY).unwrap(), None);
     }
 
     #[test]
@@ -394,7 +393,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path().join("secrets.toml"));
         // Idempotent delete: no error even when nothing is stored.
-        store.delete(KEY_SERVER_KEY).unwrap();
+        store.delete(TEST_KEY).unwrap();
     }
 
     #[test]
@@ -427,9 +426,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("secrets.toml");
         let store = FileStore::new(path.clone());
-        store.set(KEY_SERVER_KEY, "x").unwrap();
+        store.set(TEST_KEY, "x").unwrap();
         assert!(path.exists());
-        store.delete(KEY_SERVER_KEY).unwrap();
+        store.delete(TEST_KEY).unwrap();
         assert!(!path.exists(), "empty secrets.toml should be removed");
     }
 
@@ -440,7 +439,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("secrets.toml");
         let store = FileStore::new(path.clone());
-        store.set(KEY_SERVER_KEY, "x").unwrap();
+        store.set(TEST_KEY, "x").unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "secret file must be owner-only");
     }
@@ -450,13 +449,13 @@ mod tests {
     #[test]
     fn memory_store_round_trip() {
         let store = MemoryStore::default();
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
-        store.set(KEY_SERVER_KEY, "tok").unwrap();
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap().as_deref(), Some("tok"));
-        store.delete(KEY_SERVER_KEY).unwrap();
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
+        assert_eq!(store.get(TEST_KEY).unwrap(), None);
+        store.set(TEST_KEY, "tok").unwrap();
+        assert_eq!(store.get(TEST_KEY).unwrap().as_deref(), Some("tok"));
+        store.delete(TEST_KEY).unwrap();
+        assert_eq!(store.get(TEST_KEY).unwrap(), None);
         // Idempotent delete.
-        store.delete(KEY_SERVER_KEY).unwrap();
+        store.delete(TEST_KEY).unwrap();
     }
 
     // ── default_store backend selection ──────────────────────────────────────

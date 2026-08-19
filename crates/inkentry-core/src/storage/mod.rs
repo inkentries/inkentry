@@ -35,6 +35,7 @@ pub use memory::{
 };
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{NoteRecord, carrier_token, now_millis, now_secs};
+pub use remote::credential_hint;
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
     RemoteMemoryBackend, SyncEdgePush,
@@ -178,8 +179,8 @@ async fn open_remote_memory_backend(
 ) -> Result<Box<dyn MemoryBackend + Send>> {
     // Bearer resolved per-origin (ADR-071 D2): `url` may be a self-hosted team
     // server (`cloud_first` mode routes any configured `server_url`, not only
-    // the cloud one), so `cfg.server_key` (cloud-kind only) is not the right
-    // credential here: a cloud login must never leak to a self-hosted server.
+    // the cloud one), and a cloud login must never leak to a self-hosted
+    // server, so the origin decides which credential kind is consulted.
     let bearer = cfg.bearer_for(url)?;
     open_remote_memory_backend_with_bearer(cfg, url, bearer).await
 }

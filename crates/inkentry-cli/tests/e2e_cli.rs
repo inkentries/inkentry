@@ -510,7 +510,66 @@ async fn test_status_shows_offline_tier() {
         // ADR-067 D3: the memory line reflects the resolved backend (sqlite by
         // default), not a tier-derived git-notes label.
         .stdout(predicate::str::contains("sqlite (local)"))
-        .stdout(predicate::str::contains("set server_url to enable"));
+        // The kill-switch is why this run is offline, so the hint has to name
+        // it. Recommending `server_url` here recommends an action that cannot
+        // work: the variable short-circuits the probe before any URL is read.
+        .stdout(predicate::str::contains("INKENTRY_NO_SERVER"))
+        .stdout(predicate::str::contains("server_url").not());
+}
+
+// The ordinary offline case: no kill-switch, no explicit mode, simply no
+// daemon running. Semantic search comes from the local daemon here, so the
+// hint must lead with `inkentry server start`; `server_url` is the team-server
+// feature and solves a different problem.
+#[tokio::test]
+async fn test_status_offline_without_the_kill_switch_points_at_the_local_daemon() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    fs::write(&config_path, format!("db_path = {:?}\n", db_path)).unwrap();
+
+    let mut cmd = inkentry_bin();
+    cmd.env("INKENTRY_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    // `inkentry_bin` isolates HOME and disables the fixed-port discovery
+    // fallback, so loopback auto-discovery finds nothing and the tier is
+    // offline without the kill-switch being set.
+    let stdout = inkentry_bin()
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Offline"))
+        .stdout(predicate::str::contains("inkentry server start"))
+        .stdout(predicate::str::contains("INKENTRY_NO_SERVER").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    let out = String::from_utf8_lossy(&stdout);
+    let hint = out
+        .lines()
+        .find(|l| l.contains("inkentry server start"))
+        .expect("the offline search line carries the hint");
+    let daemon_at = hint.find("inkentry server start").unwrap();
+    if let Some(url_at) = hint.find("server_url") {
+        assert!(
+            daemon_at < url_at,
+            "the local daemon must be suggested before server_url: {hint}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2337,6 +2396,69 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
 
 // A key the project config is not read for is named on stderr rather
 // than dropped in silence, and the rest of the file still loads.
+// The personal config's `server_key` is the one credential key named on
+// stderr, and the naming is the whole of ADR-088 D1's user-facing contract:
+// the key is about to stop working and only the tool knows it is in there.
+// Gated to unix because the helper redirects HOME, which `dirs::home_dir()`
+// ignores on Windows.
+#[cfg(unix)]
+#[test]
+fn unread_personal_config_server_key_is_named_on_stderr() {
+    let home = tempdir().unwrap();
+    let config_dir = home.path().join(".config").join("inkentry");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "server_key = \"sk-should-not-be-read\"\nllm_model = \"gpt-oss\"\n",
+    )
+    .unwrap();
+
+    let project_dir = home.path().join("proj");
+    fs::create_dir_all(project_dir.join(".inkentry")).unwrap();
+    fs::write(
+        project_dir.join(".inkentry").join("config.toml"),
+        "project_id = \"team/proj\"\n",
+    )
+    .unwrap();
+
+    let output = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .args(["status", "--format", "json"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("server_key"),
+        "the unread credential key must be named, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("no longer read"),
+        "the warning must say the field is not read, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("auth set-key"),
+        "the warning must name the replacement command, got stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("sk-should-not-be-read"),
+        "the warning must never echo the key it names, got stderr: {stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "an unread key must not fail a command"
+    );
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .expect("stdout must stay machine-clean JSON with the warning on stderr");
+
+    let on_disk = fs::read_to_string(config_dir.join("config.toml")).unwrap();
+    assert_eq!(
+        on_disk, "server_key = \"sk-should-not-be-read\"\nllm_model = \"gpt-oss\"\n",
+        "the file must be left exactly as it was, byte for byte"
+    );
+}
+
 #[test]
 fn unread_project_config_key_is_named_on_stderr() {
     let home = tempdir().unwrap();

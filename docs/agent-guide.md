@@ -42,6 +42,77 @@ and memory attachments are appended after the ranked members with `fused_rank`,
 
 You can also use `--format json` on individual commands.
 
+### The `search` envelope, and how a consumer gets it wrong silently
+
+This is the one shape worth getting right before you write a parser around it,
+because both ways of getting it wrong report **zero results** instead of an
+error:
+
+- **Reading the old flat shape.** Before 1.0.0 each result was a bare
+  `SearchResult`, so `.name` and `.file_path` sat at the top level. They are now
+  under `.code`. A selector written against the old shape matches nothing on
+  every result, at full query latency, and looks exactly like a codebase with no
+  match in it.
+- **Passing a flag that no longer exists.** `--mode` was removed (see below), so
+  the process exits `2` in a few milliseconds having printed nothing to stdout.
+  A harness that does not check the exit code records an empty result set.
+
+The minimum a consumer needs:
+
+```bash
+# Ranked members only, with the payload pulled up per type.
+inkentry search "auth flow" --format json \
+  | jq -r '.[] | select(.fused_rank != null)
+           | if .type == "code" then "\(.code.file_path):\(.code.start_line)"
+             else "memory \(.memory.id) \(.memory.title)" end'
+```
+
+- Branch on `.type`; exactly one of `.code` / `.memory` is present, and the
+  other key is **absent**, not `null`.
+- Keep the emitted order, or sort by `.fused_rank`. Never re-sort by `distance`:
+  a code distance and a memory distance come from different embedding
+  instructions on different scales, and comparing them across corpora is
+  meaningless. This is why fusion ranks on position alone.
+- Filter out `fused_rank == null` if you want ranked results only. Those are
+  `--graph` and `--expand-graph` attachments, appended after the ranked members.
+- Tolerate unknown fields, and tolerate the absence of the conditional memory
+  fields (`score`, `valid_at`, `source_project` and the rest are omitted, not
+  `null`, when unset).
+- No matches emits `[]` (or nothing, under `jsonl`) and exits `0`. `search` is
+  porcelain: it does not use the plumbing convention where `1` means empty.
+- `--budget` replaces the top-level array with an object under `--format json`:
+  `{token_budget, tokens_used, tokens_remaining, results}`. `jsonl` is
+  unaffected. Iterating the top level of a budgeted `json` run reads zero
+  results.
+
+Field by field, including every guaranteed and conditional field of both
+payloads, see
+[JSON output: the envelope contract](commands.md#json-output-the-envelope-contract).
+Its stability level is in the
+[Stability contract](stability.md#structured-output-from-porcelain-commands).
+
+### Flags an older agent may still be carrying
+
+These were removed in 1.0.0. Each exits `2` with a migration hint on stderr and
+nothing on stdout, so check exit codes rather than reading an empty result as an
+empty codebase.
+
+| Removed | Use instead |
+|---|---|
+| `inkentry search --mode text` | `inkentry search --only-text` |
+| `inkentry search --mode semantic\|hybrid\|auto` | no flag; that is the default |
+| `inkentry search --mode ast-grep` | no replacement; structural search was removed |
+| `inkentry memory search "<q>"` | `inkentry search "<q>" --only-memory` |
+| `inkentry graph <symbol>` | `inkentry search "<symbol>" --graph`, or `inkentry plumbing graph-edges --symbol <symbol>` |
+
+`inkentry memory graph <id>` is a different, live command and is unaffected.
+
+Corpus selection is part of reading the output correctly, since it decides which
+payload keys appear: plain `search` interleaves both corpora, `--only-code` and
+`--only-memory` (mutually exclusive) restrict to one, and `--only-text` drops
+the embedding step entirely, so it needs no server and the memory payload then
+carries no `score`.
+
 ## Managing the local server daemon
 
 If your config does not have a `server_url`, `inkentry` auto-discovers a local
@@ -568,7 +639,7 @@ inkentry plumbing graph-edges --symbol validate_token
 ### read-memory
 
 ```
-inkentry plumbing read-memory [--kind <kind>] [--id <n>] [--limit N]
+inkentry plumbing read-memory [--kind <kind>] [--id <uuid>] [--limit N]
 ```
 
 Emit memory entries as JSONL. Use `--kind` to filter by entry type or `--id` to fetch a single entry.
@@ -588,8 +659,8 @@ inkentry plumbing read-memory --kind decision --limit 5 | jq '{id, title}'
 ```
 
 ```json
-{"id":17,"title":"Chose sqlite-vec over hnswlib for vector search"}
-{"id":22,"title":"Incremental index skips unchanged files via blake3 hash"}
+{"id":"01a01a9a-4140-7cbb-8047-c624a5ecb8e4","title":"Chose sqlite-vec over hnswlib for vector search"}
+{"id":"01a01a9a-51b7-7d02-9f3e-8ac41d60b95f","title":"Incremental index skips unchanged files via blake3 hash"}
 ```
 
 ---

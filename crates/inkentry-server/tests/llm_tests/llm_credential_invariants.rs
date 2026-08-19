@@ -22,7 +22,7 @@ const FORBIDDEN: &[&str] = &[
     "KeyringStore",
     "keyring::",
     "KEY_LLM_KEY",
-    "KEY_SERVER_KEY",
+    "KEY_SERVER_KEYS_MAP",
 ];
 
 fn rust_sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {

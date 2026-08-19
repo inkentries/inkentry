@@ -18,6 +18,10 @@
 //!
 //! `INKENTRY_NO_SERVER=1` short-circuits all loopback probing and forces `Tier::Offline`.
 //!
+//! Every path to `Tier::Offline` names its [`OfflineReason`], so a command
+//! rendering the offline state can key its advice to the branch that fired
+//! instead of guessing one that fits every branch and fits none.
+//!
 //! The probe runs lazily on the first call that needs Tier 1 and its result
 //! is cached for the process lifetime.
 //!
@@ -28,7 +32,8 @@
 //! - [`tier`]: the resolved [`Tier`] enum itself.
 //! - [`probe`]: loopback auto-discovery + explicit `server_url` health probing,
 //!   and the per-process `Tier` cache (`get_tier`).
-//! - [`diagnostics`]: probe-failure classification and TLS error rendering.
+//! - [`diagnostics`]: the [`OfflineReason`] classification and the advice it
+//!   yields, plus probe-failure classification and TLS error rendering.
 //! - [`guard`]: the `require_*` functions commands call to gate a feature on
 //!   a `Tier`.
 
@@ -40,7 +45,12 @@ mod probe;
 mod state;
 mod tier;
 
-pub use diagnostics::{ConnFailure, explicit_probe_failure};
+pub use diagnostics::{explicit_probe_failure, offline_search_hint};
+// Both are named only inside `capability` and its tests: a caller pattern-matches
+// the `Tier::Offline` payload and hands it straight back to `offline_search_hint`
+// alongside `explicit_probe_failure()`, never spelling either type out.
+#[allow(unused_imports)]
+pub use diagnostics::{ConnFailure, OfflineReason};
 pub use guard::{inference_server_required_message, require_explicit_server_url, require_tier1};
 pub use llm_message::{NoLlmReason, no_llm_message};
 // `LlmRoute` is named only inside `llm_route` and its tests; callers work
