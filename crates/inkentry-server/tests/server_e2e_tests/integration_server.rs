@@ -428,3 +428,73 @@ async fn project_stats_returns_correct_counts() {
     assert_eq!(stats["total"], 1);
     assert_eq!(stats["embedding_dim"], 4);
 }
+
+// ── auth precedes route matching ──────────────────────────────────────────────
+//
+// `docs/architecture/server-api.md` documents that authentication runs ahead of
+// route matching and covers paths matching no route. The claim pinned here is
+// narrow and deliberately not stronger: status codes alone do not let an
+// unauthenticated caller tell a registered route from a missing one. It is not
+// a secrecy control, and nothing below asserts one: `GET /api-docs/openapi.json`
+// serves the whole route table with no token.
+//
+// The property holds only because `router_with_limits` attaches
+// `auth_middleware` with `.layer` rather than `.route_layer`, which would leave
+// the catch-all fallback unwrapped and answer an unknown path `404` before auth
+// ever ran. That swap is what these tests exist to catch.
+
+fn keyed_state() -> AppState {
+    common::make_test_state(4, Some("test-key".into()))
+}
+
+async fn get_status(state: AppState, uri: &str, token: Option<&str>) -> StatusCode {
+    let mut builder = Request::builder().method("GET").uri(uri);
+    if let Some(token) = token {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let req = builder.body(Body::empty()).unwrap();
+    router(state).oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+#[serial]
+async fn unmatched_path_is_401_until_the_token_is_accepted() {
+    let state = keyed_state();
+    let missing = "/v1/projects/p/no-such-route";
+
+    assert_eq!(
+        get_status(state.clone(), missing, None).await,
+        StatusCode::UNAUTHORIZED,
+        "no token: an unknown path must not answer 404"
+    );
+    assert_eq!(
+        get_status(state.clone(), missing, Some("wrong-key")).await,
+        StatusCode::UNAUTHORIZED,
+        "wrong token: an unknown path must not answer 404"
+    );
+    assert_eq!(
+        get_status(state.clone(), missing, Some("test-key")).await,
+        StatusCode::NOT_FOUND,
+        "valid token: the router's own 404 must reappear once auth succeeds"
+    );
+    assert_eq!(
+        get_status(state, "/v1/projects", Some("test-key")).await,
+        StatusCode::OK,
+        "a real protected route must still serve, or the 401s above prove nothing"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn health_and_openapi_serve_without_a_token() {
+    let state = keyed_state();
+    for token in [None, Some("wrong-key"), Some("test-key")] {
+        for uri in ["/v1/health", "/api-docs/openapi.json"] {
+            assert_eq!(
+                get_status(state.clone(), uri, token).await,
+                StatusCode::OK,
+                "{uri} must stay open (token: {token:?})"
+            );
+        }
+    }
+}
