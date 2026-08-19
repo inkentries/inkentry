@@ -27,6 +27,12 @@ pub(in crate::cli::cmd) struct PullSummary {
 
 impl PullSummary {
     /// Fold a second pass's counts in, for `sync_round`'s two pulls.
+    ///
+    /// `applied` and `embedded_locally` are work each pass did, so they add.
+    /// `without_local_vector` is a standing state, not work: the second pass
+    /// re-scans the same rows, so its own count is what is still pending when
+    /// the round ends and summing would double-report a row neither pass could
+    /// embed.
     pub(super) fn merge(self, other: Self) -> Self {
         Self {
             applied: self.applied + other.applied,

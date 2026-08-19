@@ -319,6 +319,20 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A pulled memory entry is now embedded locally instead of landing
+  unsearchable.** Every entry `inkentry sync` or `inkentry plumbing pull`
+  applied was written with no vector, so semantic `inkentry memory search`
+  could not surface a teammate's entry on your own machine, and nothing said
+  so. The push already repaired the entries it sends and deliberately left the
+  synced ones alone, so no later sync fixed them either. A pull now mints the
+  missing vectors for the rows it owns, through the same local loopback
+  embedder and the same document text `inkentry memory reindex` uses. With no
+  embedder reachable the pull still succeeds, text-only, and reports how many
+  entries are pending embedding; the next sync or pull picks them up on its
+  own. Skipped in `cloud_first` mode with a `server_url` set, the same
+  condition `memory reindex` declines under. `inkentry plumbing pull`'s report
+  gained `embedded_locally` and `without_local_vector`, matching `push`'s.
+
 - **Docs: the memory-sharing claim is corrected in the remaining four places.**
   `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
   said memory travels with the repository. `git push` does not push
