@@ -366,6 +366,22 @@ fn read_memory_exit_codes() {
         .output()
         .unwrap();
     assert_hard_error("read-memory no store", &err);
+
+    // The same refusal when an index *is* present. This is the input the
+    // helper above cannot reach, and the only one whose exit code this change
+    // moves: resolution used to key off the index, so a present index carried
+    // the command through to a store it then created empty, and an absent
+    // store reported itself as an empty one. Pinned separately because a
+    // regression here is invisible to every other case.
+    let t3 = TempDir::new().expect("create temp dir");
+    let indexed_db = t3.path().join("index.db");
+    std::fs::write(&indexed_db, b"").expect("create index db");
+    let cfg3 = write_config(t3.path(), &indexed_db, "http://127.0.0.1:1");
+    let err = inkentry_cmd(&indexed_db, &cfg3)
+        .arg("read-memory")
+        .output()
+        .unwrap();
+    assert_hard_error("read-memory no store beside a present index", &err);
 }
 
 // ── embed ────────────────────────────────────────────────────────────────────
