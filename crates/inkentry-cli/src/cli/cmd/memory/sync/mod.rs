@@ -46,6 +46,8 @@ use crate::{
 
 mod local_embed;
 mod pull;
+#[cfg(test)]
+mod pull_embed_tests;
 mod push;
 mod round;
 #[cfg(test)]

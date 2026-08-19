@@ -116,18 +116,7 @@ pub(super) async fn spawn_loopback_embedder(
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/health"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": "ok",
-            "version": "0.9.5",
-            "capabilities": ["memory", "index.embed", "search.semantic"],
-            "instance_id": "00000000-0000-0000-0000-000000000001",
-            "started_by": null,
-            "embedding_dim": inkentry_core::embeddings::EMBEDDING_DIM,
-        })))
-        .mount(&server)
-        .await;
+    mount_health(&server).await;
     let embed_path = format!("/v1/projects/{project_id}/index/embed");
     if let Some(marker) = failing_title_marker {
         Mock::given(method("POST"))
@@ -146,6 +135,103 @@ pub(super) async fn spawn_loopback_embedder(
         .mount(&server)
         .await;
 
+    point_discovery_at(server)
+}
+
+// The same loopback embedder, but answering with a vector derived from the
+// document it was handed rather than one constant vector. Two texts sharing
+// words come back close together and unrelated ones do not, which is what lets
+// a test assert a real KNN round trip instead of "some blob was written".
+//
+// Carries the same `#[serial]` requirement as `spawn_loopback_embedder`.
+pub(super) async fn spawn_content_embedder(
+    project_id: &str,
+    failing_title_marker: Option<&str>,
+) -> LoopbackEmbedder {
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    struct ByContent;
+    impl wiremock::Respond for ByContent {
+        fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let content = body["chunks"][0]["content"].as_str().unwrap_or_default();
+            ResponseTemplate::new(200).set_body_bytes(inkentry_core::embeddings::vec_to_blob(
+                &content_vector(content),
+            ))
+        }
+    }
+
+    let server = MockServer::start().await;
+    mount_health(&server).await;
+    let embed_path = format!("/v1/projects/{project_id}/index/embed");
+    if let Some(marker) = failing_title_marker {
+        Mock::given(method("POST"))
+            .and(path(embed_path.clone()))
+            .and(body_string_contains(marker))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path(embed_path))
+        .respond_with(ByContent)
+        .mount(&server)
+        .await;
+
+    point_discovery_at(server)
+}
+
+// A unit vector whose direction is the bag of words of `text`: every token is
+// hashed to one dimension. Shared tokens are shared direction, so cosine
+// distance behaves the way a real embedder's does for the purposes of "does the
+// right entry come back first".
+pub(super) fn content_vector(text: &str) -> Vec<f32> {
+    let dim = inkentry_core::embeddings::EMBEDDING_DIM;
+    let mut v = vec![0f32; dim];
+    for token in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if token.is_empty() {
+            continue;
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in token.to_ascii_lowercase().as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        v[(h % dim as u64) as usize] += 1.0;
+    }
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in &mut v {
+            *x /= norm;
+        }
+    } else {
+        // A zero vector has no direction for a distance metric to compare, so a
+        // token-less document still gets a unit one.
+        v[0] = 1.0;
+    }
+    v
+}
+
+async fn mount_health(server: &wiremock::MockServer) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    Mock::given(method("GET"))
+        .and(path("/v1/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "version": "0.9.5",
+            "capabilities": ["memory", "index.embed", "search.semantic"],
+            "instance_id": "00000000-0000-0000-0000-000000000001",
+            "started_by": null,
+            "embedding_dim": inkentry_core::embeddings::EMBEDDING_DIM,
+        })))
+        .mount(server)
+        .await;
+}
+
+fn point_discovery_at(server: wiremock::MockServer) -> LoopbackEmbedder {
     let port = server.address().port();
     let state_dir = tempfile::TempDir::new().unwrap();
     std::fs::write(state_dir.path().join("server.port"), format!("{port}\n")).unwrap();

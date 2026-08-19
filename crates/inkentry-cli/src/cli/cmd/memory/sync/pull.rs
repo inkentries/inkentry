@@ -133,12 +133,9 @@ async fn embed_synced_rows(
     local: &MemoryStore,
     local_embed: &LocalEmbedPolicy<'_>,
 ) -> Result<RepairCounts> {
-    // RED-STUB
-    let _ = (local, local_embed);
-    Ok(RepairCounts {
-        embedded: 0,
-        without_vector: 0,
-    })
+    let rows = local.rows_for_sync(false)?;
+    let synced: Vec<&SyncRow> = rows.iter().filter(|r| r.remote_id.is_some()).collect();
+    repair_local_embeddings(local, &synced, local_embed).await
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp to Unix epoch seconds.
