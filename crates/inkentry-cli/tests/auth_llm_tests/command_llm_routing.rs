@@ -76,16 +76,21 @@ async fn count_path(server: &MockServer, needle: &str) -> usize {
 
 // ── project fixtures ──────────────────────────────────────────────────────
 
-pub(crate) fn write_loopback_state(state_dir: &Path, url: &str) {
+// Point loopback auto-discovery at `url` and return the port to hand its
+// fixed-port fallback (step 3b) through `INKENTRY_TEST_DISCOVERY_PORT`.
+//
+// Not the `server.port` file (step 3a): that step now uses a responder only
+// when the pid recorded beside the port is a live `inkentry-server` process and
+// the instance id it reports is the recorded one, neither of which a wiremock
+// stand-in can be. The state dir is still created and still redirected, so
+// nothing here reaches the developer's own daemon or state.
+pub(crate) fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).expect("create state dir");
-    let port: u16 = url
-        .rsplit(':')
+    url.rsplit(':')
         .next()
         .expect("uri has a port")
         .trim_end_matches('/')
-        .parse()
-        .expect("uri port is numeric");
-    std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+        .to_string()
 }
 
 fn write_server_config(project_dir: &Path, server_url: &str) {
@@ -202,9 +207,16 @@ pub(crate) fn harvest_payload() -> String {
 
 // ── inkentry memory harvest ────────────────────────────────────────────────
 
-fn harvest_cmd(home: &Path, project: &Path, db: &Path, state_dir: &Path) -> assert_cmd::Command {
+fn harvest_cmd(
+    home: &Path,
+    project: &Path,
+    db: &Path,
+    state_dir: &Path,
+    discovery_port: &str,
+) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
     cmd.env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -226,12 +238,18 @@ async fn harvest_uses_the_loopback_for_both_extraction_and_dedup_embedding() {
     seed_index(home.path(), project.path(), &db);
     write_server_config(project.path(), &remote.uri());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
-    let output = harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .output()
-        .expect("run harvest");
+    let output = harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &discovery_port,
+    )
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(
@@ -259,12 +277,18 @@ async fn harvest_splits_extraction_to_the_remote_and_embedding_to_the_loopback()
     seed_index(home.path(), project.path(), &db);
     write_server_config(project.path(), &remote.uri());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
-    let output = harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .output()
-        .expect("run harvest");
+    let output = harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &discovery_port,
+    )
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(
@@ -294,13 +318,19 @@ async fn harvest_stops_with_the_restart_message_when_the_local_llm_is_not_served
     seed_index(home.path(), project.path(), &db);
     write_server_config(project.path(), &remote.uri());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
-    let output = harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
-        .output()
-        .expect("run harvest");
+    let output = harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &discovery_port,
+    )
+    .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(!output.status.success(), "{text}");
@@ -332,12 +362,18 @@ async fn harvest_stops_with_the_no_llm_message_when_none_is_available() {
     let db = project.path().join("index.db");
     seed_index(home.path(), project.path(), &db);
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
-    let output = harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .output()
-        .expect("run harvest");
+    let output = harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &discovery_port,
+    )
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(!output.status.success(), "{text}");
@@ -369,11 +405,12 @@ async fn harvest_clamps_the_default_range_on_a_shallow_repo() {
     let db = project.path().join("index.db");
     seed_index(home.path(), project.path(), &db);
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
     let output = base_cmd(home.path(), project.path())
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -410,11 +447,12 @@ async fn harvest_reports_no_llm_before_the_git_range_on_a_shallow_repo() {
     let db = project.path().join("index.db");
     seed_index(home.path(), project.path(), &db);
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
     let output = base_cmd(home.path(), project.path())
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -448,9 +486,11 @@ fn toplevel_harvest_cmd(
     project: &Path,
     db: &Path,
     state_dir: &Path,
+    discovery_port: &str,
 ) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
     cmd.env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
         .arg("harvest")
         .arg("--db")
         .arg(db)
@@ -485,19 +525,31 @@ async fn toplevel_harvest_matches_the_alias_and_only_the_alias_warns() {
     let db = project.path().join("index.db");
     seed_index(home.path(), project.path(), &db);
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     // Two fresh memory stores so neither run sees the other's entries; both
     // start empty and harvest the same single commit, so stdout must match.
     let mem_top = project.path().join("memory_top.db");
-    let top = toplevel_harvest_cmd(home.path(), project.path(), &mem_top, &state_dir)
-        .output()
-        .expect("run top-level harvest");
+    let top = toplevel_harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem_top,
+        &state_dir,
+        &discovery_port,
+    )
+    .output()
+    .expect("run top-level harvest");
 
     let mem_alias = project.path().join("memory_alias.db");
-    let alias = harvest_cmd(home.path(), project.path(), &mem_alias, &state_dir)
-        .output()
-        .expect("run memory harvest alias");
+    let alias = harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem_alias,
+        &state_dir,
+        &discovery_port,
+    )
+    .output()
+    .expect("run memory harvest alias");
 
     let top_out = String::from_utf8_lossy(&top.stdout).to_string();
     let alias_out = String::from_utf8_lossy(&alias.stdout).to_string();
@@ -597,9 +649,11 @@ fn failures_harvest_cmd(
     project: &Path,
     mem: &Path,
     state_dir: &Path,
+    discovery_port: &str,
 ) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
     cmd.env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -624,12 +678,18 @@ async fn failures_harvest_splits_extraction_to_the_remote_and_embedding_to_the_l
     seed_index(home.path(), project.path(), &db);
     write_server_config(project.path(), &remote.uri());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
-    let output = failures_harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .output()
-        .expect("run harvest");
+    let output = failures_harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &discovery_port,
+    )
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(
@@ -660,13 +720,19 @@ async fn failures_harvest_stops_with_the_restart_message_when_the_local_llm_is_n
     seed_index(home.path(), project.path(), &db);
     write_server_config(project.path(), &remote.uri());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
     let mem = project.path().join("memory.db");
-    let output = failures_harvest_cmd(home.path(), project.path(), &mem, &state_dir)
-        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
-        .output()
-        .expect("run harvest");
+    let output = failures_harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &discovery_port,
+    )
+    .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(!output.status.success(), "{text}");
@@ -727,9 +793,11 @@ fn claude_harvest_cmd(
     mem: &Path,
     state_dir: &Path,
     history: &Path,
+    discovery_port: &str,
 ) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
     cmd.env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
         .arg("memory")
         .arg("harvest")
         .arg("--db")
@@ -755,14 +823,21 @@ async fn claude_code_harvest_splits_extraction_to_the_remote_and_embedding_to_th
     seed_index(home.path(), project.path(), &db);
     write_server_config(project.path(), &remote.uri());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
     let history = home.path().join("history.jsonl");
     write_claude_history(&history, project.path(), SESSION);
 
     let mem = project.path().join("memory.db");
-    let output = claude_harvest_cmd(home.path(), project.path(), &mem, &state_dir, &history)
-        .output()
-        .expect("run harvest");
+    let output = claude_harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &history,
+        &discovery_port,
+    )
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(
@@ -793,15 +868,22 @@ async fn claude_code_harvest_stops_with_the_restart_message_when_the_local_llm_i
     seed_index(home.path(), project.path(), &db);
     write_server_config(project.path(), &remote.uri());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
     let history = home.path().join("history.jsonl");
     write_claude_history(&history, project.path(), SESSION);
 
     let mem = project.path().join("memory.db");
-    let output = claude_harvest_cmd(home.path(), project.path(), &mem, &state_dir, &history)
-        .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
-        .output()
-        .expect("run harvest");
+    let output = claude_harvest_cmd(
+        home.path(),
+        project.path(),
+        &mem,
+        &state_dir,
+        &history,
+        &discovery_port,
+    )
+    .env("INKENTRY_LLM_URL", "http://127.0.0.1:1234")
+    .output()
+    .expect("run harvest");
     let text = combined(&output);
 
     assert!(!output.status.success(), "{text}");

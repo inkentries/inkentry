@@ -1343,19 +1343,20 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // uncovered here; flagged honestly rather than thrashing on heavyweight SSE
 // mocks.
 
-/// Write `<home>/.local/state/inkentry/server.port` so `capability::get_tier`'s
-/// loopback auto-discovery (step 3a) finds our mock server deterministically.
-/// Mirrors the file `inkentry server start` writes (see `cli/cmd/server.rs`).
-///
-/// Returns the state dir path so callers can pass it as `INKENTRY_STATE_DIR`
-/// to child processes. `dirs::home_dir()` 6.x on Windows calls the Win32
-/// `SHGetKnownFolderPath` API (a Registry lookup) instead of reading
-/// `USERPROFILE`, so setting `HOME`/`USERPROFILE` in the child env is not
-/// enough — `INKENTRY_STATE_DIR` bypasses that entirely.
-fn write_server_port_file(home: &std::path::Path, port: u16) -> std::path::PathBuf {
+// Create the isolated state dir these tests hand child processes as
+// `INKENTRY_STATE_DIR`. `dirs::home_dir()` 6.x on Windows calls the Win32
+// `SHGetKnownFolderPath` API (a Registry lookup) instead of reading
+// `USERPROFILE`, so setting `HOME`/`USERPROFILE` in the child env is not
+// enough; `INKENTRY_STATE_DIR` bypasses that entirely.
+//
+// The dir is left empty: discovery reaches the mock through the fixed-port
+// fallback's test override instead. Step 3a's `server.port` file is not usable
+// from a test, since it now honours a responder only when the pid recorded
+// beside it is a live `inkentry-server` process reporting the recorded
+// instance id.
+fn isolated_state_dir(home: &std::path::Path) -> std::path::PathBuf {
     let state_dir = home.join(".local").join("state").join("inkentry");
     fs::create_dir_all(&state_dir).expect("create state dir");
-    fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
     state_dir
 }
 
@@ -1429,7 +1430,8 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
-    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+    let state_dir = isolated_state_dir(&home);
+    let discovery_port = port_from_uri(&mock_server.uri()).to_string();
 
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1467,6 +1469,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1492,6 +1495,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1509,6 +1513,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1538,7 +1543,8 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
-    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+    let state_dir = isolated_state_dir(&home);
+    let discovery_port = port_from_uri(&mock_server.uri()).to_string();
 
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1572,6 +1578,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1593,6 +1600,7 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1618,7 +1626,8 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
     fs::create_dir(&home).unwrap();
-    let state_dir = write_server_port_file(&home, port_from_uri(&mock_server.uri()));
+    let state_dir = isolated_state_dir(&home);
+    let discovery_port = port_from_uri(&mock_server.uri()).to_string();
 
     let project_dir = temp.path().join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1648,6 +1657,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")
@@ -1668,6 +1678,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .env_remove("INKENTRY_NO_SERVER")
         .current_dir(&project_dir)
         .arg("--config")

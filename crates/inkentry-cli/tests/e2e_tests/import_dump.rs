@@ -52,6 +52,7 @@ struct Project {
     // fixture so step 3b's default port 4655 is never reached: a developer's
     // own long-running server must not become the embedder under test.
     state_dir: std::path::PathBuf,
+    discovery_port: std::cell::RefCell<String>,
 }
 
 fn project() -> Project {
@@ -85,6 +86,7 @@ fn project_that_may_find_an_embedder() -> Project {
         config_path,
         root,
         state_dir,
+        discovery_port: std::cell::RefCell::new("0".to_string()),
     }
 }
 
@@ -92,15 +94,21 @@ impl Project {
     fn bin(&self) -> assert_cmd::Command {
         let mut cmd = inkentry_bin_in(self.home.path());
         cmd.env("INKENTRY_REGISTRY_DIR", self.home.path())
-            .env("INKENTRY_STATE_DIR", &self.state_dir);
+            .env("INKENTRY_STATE_DIR", &self.state_dir)
+            .env(
+                "INKENTRY_TEST_DISCOVERY_PORT",
+                self.discovery_port.borrow().as_str(),
+            );
         cmd
     }
 
-    // Write the port file `inkentry server start` would write, which is how
-    // loopback auto-discovery finds an embedder (step 3a).
+    // Point loopback auto-discovery's fixed-port fallback (step 3b) at a mock
+    // embedder. Step 3a's `server.port` file is no longer usable from a test:
+    // it now honours a responder only when the pid recorded beside it is a live
+    // `inkentry-server` process reporting the recorded instance id.
     fn set_embedder(&self, uri: &str) {
         let port = uri.rsplit(':').next().unwrap().trim_end_matches('/');
-        std::fs::write(self.state_dir.join("server.port"), format!("{port}\n")).unwrap();
+        *self.discovery_port.borrow_mut() = port.to_string();
     }
 
     fn import(&self, contents: &str) -> assert_cmd::Command {

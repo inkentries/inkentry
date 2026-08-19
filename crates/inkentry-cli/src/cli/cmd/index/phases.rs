@@ -715,12 +715,20 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
-        std::fs::write(state_dir.join("server.port"), format!("{loopback_port}\n")).unwrap();
 
         let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+        let prev_discovery_port = std::env::var_os("INKENTRY_TEST_DISCOVERY_PORT");
         // SAFETY: serialised via #[serial(server_state_dir_env)] against
-        // every other test touching this var.
-        unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
+        // every other test touching these vars.
+        //
+        // The mock is reached through discovery's fixed-port fallback: its
+        // `server.port` step now uses a responder only when the pid recorded
+        // beside the port is a live `inkentry-server` process reporting the
+        // recorded instance id, and a wiremock stand-in is neither.
+        unsafe {
+            std::env::set_var("INKENTRY_STATE_DIR", &state_dir);
+            std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", loopback_port.to_string());
+        }
 
         let cfg = Config {
             server_url: Some("https://cloud.invalid.example:1".to_string()),
@@ -736,6 +744,10 @@ mod tests {
             match prev_state_dir {
                 Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                 None => std::env::remove_var("INKENTRY_STATE_DIR"),
+            }
+            match prev_discovery_port {
+                Some(v) => std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", v),
+                None => std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT"),
             }
         }
 

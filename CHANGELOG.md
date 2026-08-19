@@ -550,6 +550,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Loopback auto-discovery no longer trusts whatever answers the recorded
+  port.** A local process that bound it first and served a plausible
+  `/v1/health` became the embedding backend and received every indexed source
+  chunk; discovery now also checks the pid and instance id recorded at start,
+  and reports a server started by another UID on stderr instead of only in a
+  log line. **Restart your daemon after upgrading** (`inkentry server stop`,
+  then `inkentry server start`): one started by an earlier build recorded no
+  instance id, so it is not auto-discovered until it does.
 - **`inkentry harvest`'s git-commit walk now secret-scans each commit message**,
   skipping a matching commit (warning with its SHA only) and continuing the walk,
   instead of promoting it into memory and on to `refs/notes/inkentry` unchecked.

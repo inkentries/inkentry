@@ -117,7 +117,10 @@ carries no `score`.
 
 If your config does not have a `server_url`, `inkentry` auto-discovers a local
 `inkentry-server` running on loopback by reading
-`~/.local/state/inkentry/server.port`.  You can start, stop, and inspect that
+`~/.local/state/inkentry/server.port`, and uses whatever answers there only
+when the recorded `server.pid` still names an `inkentry-server` process and the
+server reports the `instance_id` recorded at start. A daemon started before
+these files existed is not auto-discovered until you restart it.  You can start, stop, and inspect that
 daemon with the `inkentry server` subcommand. This auto-discovered daemon is an **inference backend only** — it serves embeddings and LLM calls. It is **not** a memory store: your project's memory stays in `memory.db` regardless of whether this server is running. (Memory moves to a server only when you *explicitly* set `server_url` to a team instance in your config.)
 
 ```bash
@@ -135,7 +138,7 @@ inkentry server stop
 ```
 
 **State directory:** all runtime files (`server.pid`, `server.port`,
-`server.log`) live under `~/.local/state/inkentry/`.
+`server.instance_id`, `server.log`) live under `~/.local/state/inkentry/`.
 
 **Idempotency:** `inkentry server start` is safe to call at the beginning of
 every session.  If the daemon is already running and healthy it exits 0
@@ -150,7 +153,8 @@ debugging, so you rarely need to poll `/v1/health` directly.
 exactly, and fails loudly if an unrelated process holds it. The auto-start path
 (`inkentry init` on a fresh machine) is the forgiving one: it takes 4655 when
 free and otherwise lets the OS assign an ephemeral port. Either way the bound
-port lands in `server.port`, which is what auto-discovery reads.
+port lands in `server.port`, which is what auto-discovery reads, alongside the
+`server.pid` and `server.instance_id` it checks that port's responder against.
 
 ## Starting a session
 

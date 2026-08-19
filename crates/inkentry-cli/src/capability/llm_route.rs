@@ -224,9 +224,16 @@ mod tests {
 
     // Point loopback auto-discovery at `uri` for the duration of the returned
     // guard, then restore whatever was there.
+    //
+    // Through the fixed-port fallback (step 3b), not the `server.port` file:
+    // step 3a now uses a responder only when the pid recorded beside the port
+    // is a live `inkentry-server` process reporting the recorded instance id,
+    // and a wiremock stand-in is neither. The state dir is still redirected at
+    // an empty temp dir, so nothing here reads the developer's own state.
     struct StateDirGuard {
         _tmp: tempfile::TempDir,
-        previous: Option<std::ffi::OsString>,
+        previous_state_dir: Option<std::ffi::OsString>,
+        previous_discovery_port: Option<std::ffi::OsString>,
     }
 
     impl StateDirGuard {
@@ -234,13 +241,16 @@ mod tests {
             let tmp = tempfile::TempDir::new().expect("temp state dir");
             let state_dir = tmp.path().join("state");
             std::fs::create_dir_all(&state_dir).expect("create state dir");
-            std::fs::write(state_dir.join("server.port"), format!("{}\n", port_of(uri)))
-                .expect("write server.port");
-            let previous = std::env::var_os("INKENTRY_STATE_DIR");
-            unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
+            let previous_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+            let previous_discovery_port = std::env::var_os("INKENTRY_TEST_DISCOVERY_PORT");
+            unsafe {
+                std::env::set_var("INKENTRY_STATE_DIR", &state_dir);
+                std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", port_of(uri).to_string());
+            }
             Self {
                 _tmp: tmp,
-                previous,
+                previous_state_dir,
+                previous_discovery_port,
             }
         }
     }
@@ -248,9 +258,13 @@ mod tests {
     impl Drop for StateDirGuard {
         fn drop(&mut self) {
             unsafe {
-                match self.previous.take() {
+                match self.previous_state_dir.take() {
                     Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                     None => std::env::remove_var("INKENTRY_STATE_DIR"),
+                }
+                match self.previous_discovery_port.take() {
+                    Some(v) => std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", v),
+                    None => std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT"),
                 }
             }
         }

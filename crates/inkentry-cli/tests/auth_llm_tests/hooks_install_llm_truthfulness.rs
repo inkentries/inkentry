@@ -3,16 +3,22 @@
 // has to be qualified at the moment the user opts in.
 
 use crate::command_llm_routing::{
-    base_cmd, combined, harvest_payload, seed_index, server_mock, write_git_project,
-    write_loopback_state,
+    base_cmd, combined, harvest_payload, loopback_discovery_port, seed_index, server_mock,
+    write_git_project,
 };
 use crate::plumbing_helpers::init_local_project;
 use std::path::Path;
 use tempfile::TempDir;
 
-fn install_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::Command {
+fn install_cmd(
+    home: &Path,
+    project: &Path,
+    state_dir: &Path,
+    discovery_port: &str,
+) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
     cmd.env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
         .arg("hooks")
         .arg("install");
     cmd
@@ -24,9 +30,15 @@ fn post_commit_hook(project: &Path) -> std::path::PathBuf {
 
 // The top-level harvest the installed hook runs, detached exactly as it is
 // there.
-fn detached_harvest_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::Command {
+fn detached_harvest_cmd(
+    home: &Path,
+    project: &Path,
+    state_dir: &Path,
+    discovery_port: &str,
+) -> assert_cmd::Command {
     let mut cmd = base_cmd(home, project);
     cmd.env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
         .arg("harvest")
         .arg("--git-range")
         .arg("HEAD~1..HEAD")
@@ -58,9 +70,9 @@ async fn a_detached_harvest_failure_lands_in_the_background_log() {
     write_git_project(project.path());
     init_local_project(project.path());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
-    let output = detached_harvest_cmd(home.path(), project.path(), &state_dir)
+    let output = detached_harvest_cmd(home.path(), project.path(), &state_dir, &discovery_port)
         .output()
         .expect("run harvest --detach");
     let text = combined(&output);
@@ -96,19 +108,20 @@ async fn configuring_an_llm_after_install_needs_no_reinstall() {
     let db = project.path().join("index.db");
     seed_index(home.path(), project.path(), &db);
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &dark.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &dark.uri());
 
-    install_cmd(home.path(), project.path(), &state_dir)
+    install_cmd(home.path(), project.path(), &state_dir, &discovery_port)
         .assert()
         .success();
     let installed = std::fs::read(post_commit_hook(project.path())).expect("hook installed");
 
     let lit = server_mock(Some(harvest_payload())).await;
-    write_loopback_state(&state_dir, &lit.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &lit.uri());
 
     let mut cmd = base_cmd(home.path(), project.path());
     let output = cmd
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         .arg("harvest")
         .arg("--db")
         .arg(project.path().join("memory.db"))
@@ -137,9 +150,9 @@ async fn install_without_an_llm_says_harvesting_is_inactive_and_still_installs()
     let project = TempDir::new().unwrap();
     write_git_project(project.path());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
-    let output = install_cmd(home.path(), project.path(), &state_dir)
+    let output = install_cmd(home.path(), project.path(), &state_dir, &discovery_port)
         .output()
         .expect("run hooks install");
     let text = combined(&output);
@@ -170,9 +183,9 @@ async fn install_with_an_llm_prints_no_caveat() {
     let project = TempDir::new().unwrap();
     write_git_project(project.path());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &loopback.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
-    let output = install_cmd(home.path(), project.path(), &state_dir)
+    let output = install_cmd(home.path(), project.path(), &state_dir, &discovery_port)
         .output()
         .expect("run hooks install");
     let text = combined(&output);

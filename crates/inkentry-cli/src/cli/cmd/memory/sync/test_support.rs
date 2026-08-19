@@ -70,6 +70,7 @@ pub(super) struct LoopbackEmbedder {
     pub(super) server: wiremock::MockServer,
     _state_dir: tempfile::TempDir,
     prev_state_dir: Option<std::ffi::OsString>,
+    prev_discovery_port: Option<std::ffi::OsString>,
     prev_no_server: Option<std::ffi::OsString>,
 }
 
@@ -79,6 +80,10 @@ impl Drop for LoopbackEmbedder {
             match self.prev_state_dir.take() {
                 Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                 None => std::env::remove_var("INKENTRY_STATE_DIR"),
+            }
+            match self.prev_discovery_port.take() {
+                Some(v) => std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", v),
+                None => std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT"),
             }
             match self.prev_no_server.take() {
                 Some(v) => std::env::set_var("INKENTRY_NO_SERVER", v),
@@ -231,20 +236,27 @@ async fn mount_health(server: &wiremock::MockServer) {
         .await;
 }
 
+// Through the fixed-port fallback (step 3b), not the `server.port` file: step
+// 3a now uses a responder only when the pid recorded beside the port is a live
+// `inkentry-server` process reporting the recorded instance id, and a wiremock
+// stand-in is neither. The state dir is still redirected at an empty temp dir,
+// so nothing here reads the developer's own state.
 fn point_discovery_at(server: wiremock::MockServer) -> LoopbackEmbedder {
     let port = server.address().port();
     let state_dir = tempfile::TempDir::new().unwrap();
-    std::fs::write(state_dir.path().join("server.port"), format!("{port}\n")).unwrap();
     let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+    let prev_discovery_port = std::env::var_os("INKENTRY_TEST_DISCOVERY_PORT");
     let prev_no_server = std::env::var_os("INKENTRY_NO_SERVER");
     unsafe {
         std::env::set_var("INKENTRY_STATE_DIR", state_dir.path());
+        std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", port.to_string());
         std::env::remove_var("INKENTRY_NO_SERVER");
     }
     LoopbackEmbedder {
         server,
         _state_dir: state_dir,
         prev_state_dir,
+        prev_discovery_port,
         prev_no_server,
     }
 }
