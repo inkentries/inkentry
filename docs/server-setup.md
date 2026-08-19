@@ -428,15 +428,17 @@ whatever is in `project_id` is what the server sees. (See
 replaced.)
 
 > **A key that reached a config file in plaintext is compromised.** Keys live in
-> the secret store: the personal `~/.config/inkentry/config.toml` never holds one
-> in plaintext, and a committed project `.inkentry/config.toml` ignores a
-> `server_key` line entirely. If a key was written to either file, especially if
-> it reached git history, treat it as compromised: issue a new key on the server (e.g.
-> `openssl rand -hex 32` for a self-managed instance) and run `inkentry auth
-> set-key --server <url>` with the new value on every machine that had the old
-> Nothing migrates a key out of a config file for you: the line is named on
-> stderr and left where it is, so rotating and re-running `set-key` is the whole
-> recovery. A key stored by a client older than the per-origin scheme is not
+> the secret store, and neither config file is read for one: a `server_key` line
+> is ignored in the committed project `.inkentry/config.toml` and in the personal
+> `~/.config/inkentry/config.toml` alike. Being ignored is not the same as being
+> safe, though, because the line stays on disk. If a key was written to either
+> file, especially if it reached git history, treat it as compromised: issue a
+> new key on the server (e.g. `openssl rand -hex 32` for a self-managed
+> instance) and run `inkentry auth set-key --server <url>` with the new value on
+> every machine that had the old one. Nothing migrates a key out of a config
+> file for you and nothing deletes the line: it is named on stderr and left
+> where it is, so rotating, re-running `set-key` and deleting the line yourself
+> is the whole recovery. A key stored by a client older than the per-origin scheme is not
 > picked up either; `auth list-servers` shows exactly which origins have a key,
 > and an origin missing from that list gets no bearer.
 

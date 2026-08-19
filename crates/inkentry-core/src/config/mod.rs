@@ -512,8 +512,7 @@ impl Config {
     ///
     /// Branches on credential kind by `server_url`'s origin before touching
     /// any store (cloud vs. self-hosted server-key: see
-    /// [`server_keys::bearer_for`] for the full precedence and the legacy
-    /// migration it performs).
+    /// [`server_keys::bearer_for`] for the full precedence).
     pub fn bearer_for_with_store(
         &self,
         server_url: &str,

@@ -100,7 +100,7 @@ impl RemoteMemoryBackend {
 /// A 401/403 from a self-hosted server is a missing per-origin key more often
 /// than anything else, and nothing migrates one into place on the user's
 /// behalf any more (ADR-088 D3), so the error is where they learn the command.
-pub(super) fn credential_hint(status: reqwest::StatusCode, base_url: &str) -> String {
+pub fn credential_hint(status: reqwest::StatusCode, base_url: &str) -> String {
     if status != reqwest::StatusCode::UNAUTHORIZED && status != reqwest::StatusCode::FORBIDDEN {
         return String::new();
     }
