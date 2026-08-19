@@ -104,6 +104,15 @@ impl std::fmt::Display for Untrusted {
     }
 }
 
+/// The state directory to name when telling the user which recording is in
+/// force. Falls back to the documented default path, which is what the reader
+/// would go looking for anyway, rather than saying nothing.
+fn state_dir_for_message() -> String {
+    inkentry_state_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "~/.local/state/inkentry".to_string())
+}
+
 /// Check a loopback responder against what `inkentry server start` recorded.
 ///
 /// `reported` is the `instance_id` from the health body just received.
@@ -313,24 +322,34 @@ async fn probe_loopback() -> Tier {
                 .await
                 .unwrap_or((Tier::Offline(OfflineReason::NoLocalServer), None));
 
-        let Tier::Server { .. } = tier else {
-            tracing::debug!("loopback probe on port {port} found no usable server");
-            return tier;
+        // Both refusals below are announced, and for the same reason: the user
+        // started a local server, this run is not using it, and a `tracing`
+        // line the default log level drops tells them neither fact. They share
+        // one remedy, so the arms carry what happened and the tail carries what
+        // to do.
+        let refused = match tier {
+            // A dimension mismatch keeps its own reason and its own advice:
+            // that daemon answered and said what is wrong with it.
+            Tier::Offline(OfflineReason::LocalServerUnusable) => return tier,
+            Tier::Offline(_) => format!(
+                "the local server recorded in {} did not answer on 127.0.0.1:{port}",
+                state_dir_for_message()
+            ),
+            Tier::Server { .. } => match untrusted_responder(reported_instance_id.as_deref()) {
+                Some(why) => format!(
+                    "the process answering 127.0.0.1:{port} is not the server recorded in \
+                     {}: {why}. Nothing was sent to it",
+                    state_dir_for_message()
+                ),
+                None => return tier,
+            },
         };
 
-        if let Some(why) = untrusted_responder(reported_instance_id.as_deref()) {
-            // Everything indexed from here on would be sent to this responder,
-            // so a `tracing` line the default log level drops is not enough:
-            // the user has to be able to see why the local server they started
-            // is not being used.
-            eprintln!(
-                "warning: ignoring the server answering on 127.0.0.1:{port}: {why}. \
-                 Nothing will be sent to it. Run `inkentry server stop`, then \
-                 `inkentry server start`, to record a server this CLI can identify."
-            );
-            return Tier::Offline(OfflineReason::NoLocalServer);
-        }
-        return tier;
+        eprintln!(
+            "warning: {refused}. Embeddings are offline for this run: run \
+             `inkentry server stop`, then `inkentry server start`."
+        );
+        return Tier::Offline(OfflineReason::RecordedServerUnreachable);
     }
 
     // Step 3b: the default port, for a machine that never started a server.

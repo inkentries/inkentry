@@ -48,7 +48,7 @@ struct Project {
     mem_path: std::path::PathBuf,
     config_path: std::path::PathBuf,
     root: std::path::PathBuf,
-    // Loopback auto-discovery reads `server.port` from here. Isolated per
+    // The isolated state dir loopback auto-discovery reads. Isolated per
     // fixture so step 3b's default port 4655 is never reached: a developer's
     // own long-running server must not become the embedder under test.
     state_dir: std::path::PathBuf,

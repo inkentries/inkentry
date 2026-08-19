@@ -6,8 +6,8 @@
 // none of them depend on the in-process native embedder (the `--no-default-
 // features` gate stays valid). The no-embedder case uses `INKENTRY_NO_SERVER=1`.
 //
-// The mock embedder is wired in via **loopback auto-discovery**
-// (`INKENTRY_STATE_DIR`/`server.port`), not `server_url`, since the
+// The mock embedder is wired in via **loopback auto-discovery**, not
+// `server_url`, since the
 // 2026-07-23 ADR-004 revision: `reindex` runs in the
 // default `local_first` mode here (no explicit `mode` is set), and
 // `local_first` never routes inference through an explicit `server_url` —

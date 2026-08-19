@@ -10,9 +10,13 @@
 //! `Tier::Offline`:
 //!
 //! 1. Read `~/.local/state/inkentry/server.port` (written by `inkentry server start`);
-//!    use `http://127.0.0.1:<port>` if the file exists.
-//! 2. Otherwise probe `http://127.0.0.1:<DEFAULT_SERVER_PORT>` with a **250 ms** timeout
-//!    (distinct from the 2 s timeout used for explicitly-configured remote URLs).
+//!    use `http://127.0.0.1:<port>` if the file exists and the responder there is
+//!    the daemon recorded beside it (`server.pid` still an `inkentry-server`,
+//!    reported `instance_id` the recorded one). A responder failing either check
+//!    is not used, and step 2 is not tried.
+//! 2. When nothing was recorded, probe `http://127.0.0.1:<DEFAULT_SERVER_PORT>`
+//!    with a **250 ms** timeout (distinct from the 2 s timeout used for
+//!    explicitly-configured remote URLs).
 //! 3. On success, treat as `Tier::Server` with `auto_discovered = true`.
 //! 4. On failure, return `Tier::Offline`.
 //!

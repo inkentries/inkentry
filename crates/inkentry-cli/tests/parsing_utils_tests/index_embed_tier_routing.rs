@@ -10,7 +10,7 @@
 // explicit `server_url` legitimately serves inference too (test 2 is a
 // regression guard for that path).
 //
-// The mock loopback server is wired in via `INKENTRY_STATE_DIR`/`server.port`
+// The mock loopback server is wired in via loopback auto-discovery
 // (real auto-discovery), not `server_url`, so a routing regression surfaces
 // as a genuine connection/DNS failure against the deliberately-unroutable
 // `server_url` rather than a silently-passing test.

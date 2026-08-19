@@ -1328,12 +1328,11 @@ fn test_init_leaves_existing_claude_md_untouched() {
 // auto-discovered servers, so `open_memory_backend` keeps memory local.
 //
 // These tests reproduce the auto-discovery path end-to-end: NO `server_url` in
-// config, `INKENTRY_NO_SERVER` unset, and a mock server reachable on loopback —
-// discovered via `~/.local/state/inkentry/server.port` (the same file
-// `inkentry server start` writes; see `capability/probe.rs` step 3a). We redirect
-// `HOME` to an isolated temp dir and pre-write that port file so the probe
-// finds our `wiremock` instance deterministically, without depending on the
-// real default port 4655 (which may be occupied — or unoccupied — on the test
+// config, `INKENTRY_NO_SERVER` unset, and a mock server reachable on loopback,
+// found through the fixed-port fallback pointed at it (`capability/probe.rs`
+// step 3b). We redirect `HOME` and the state dir to isolated temp dirs so the
+// probe finds our `wiremock` instance deterministically, without depending on
+// the real default port (which may be occupied, or unoccupied, on the test
 // host) and without touching the developer's real `~/.local/state`.
 //
 // Coverage note: `memory harvest` routes through the same `effective_config`

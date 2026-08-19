@@ -1,13 +1,14 @@
-// A loopback responder started by another user must say so on stderr.
+// What loopback auto-discovery declines to use, it has to say out loud.
 //
-// `/v1/health`'s `started_by` is the only thing that separates "my daemon"
-// from "another account's daemon on this host", and it reached the user
-// through `tracing::warn!` alone, which is off at the default log level: the
-// CLI picked that server up silently. The warning has to arrive on stderr,
-// where a default `inkentry` run shows it.
+// Every refusal here used to reach the user through `tracing::warn!` alone,
+// which is off at the default log level, so a run that quietly stopped using
+// the local server looked identical to one that never had one. These pin the
+// two refusals a user is most likely to meet, on stderr, where a default
+// `inkentry` run shows them.
 //
-// Unix only: the check compares against this process's effective UID, and the
-// CLI reports no UID at all on Windows.
+// Unix only: the UID check compares against this process's effective UID, and
+// the CLI reports no UID at all on Windows. The second test would work
+// anywhere, but the file is gated as a whole.
 
 #![cfg(unix)]
 
@@ -94,5 +95,44 @@ async fn a_foreign_uid_on_the_discovered_port_reaches_stderr() {
         stderr.contains(&format!("UID {theirs}")) && stderr.contains(&format!("UID {mine}")),
         "the UID mismatch never reached stderr, so a default run cannot see that \
          the discovered server belongs to another account. stderr was:\n{stderr}"
+    );
+}
+
+// A recorded port that answers nothing is not the same situation as a machine
+// with no server, and the advice differs: this user already ran `server start`.
+// Discovery stops at the recording rather than falling back to the fixed port,
+// so without a word on stderr the run just goes quietly offline.
+#[tokio::test]
+async fn a_recorded_server_that_does_not_answer_reaches_stderr() {
+    // Bound and dropped, so the port is one nothing is listening on.
+    let dead_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+        listener.local_addr().expect("the bound address").port()
+    };
+
+    let home = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    std::fs::write(state.path().join("server.port"), format!("{dead_port}\n"))
+        .expect("record a server port");
+
+    let stderr = tokio::task::spawn_blocking({
+        let home = home.path().to_path_buf();
+        let state = state.path().to_path_buf();
+        let project = project.path().to_path_buf();
+        move || {
+            init_git_repo(&project);
+            run(&home, &state, &project, "0", "init");
+            run(&home, &state, &project, "0", "status")
+        }
+    })
+    .await
+    .expect("join the spawned commands");
+
+    let stderr = String::from_utf8_lossy(&stderr);
+    assert!(
+        stderr.contains(&dead_port.to_string()) && stderr.contains("inkentry server start"),
+        "a recorded server that did not answer left the run offline without \
+         naming the port it gave up on or what to do about it. stderr was:\n{stderr}"
     );
 }

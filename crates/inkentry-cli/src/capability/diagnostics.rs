@@ -167,6 +167,12 @@ pub enum OfflineReason {
     /// A local daemon answered, but its embeddings are a different dimension
     /// than this build reads, so it was ignored.
     LocalServerUnusable,
+    /// A local daemon was recorded by `inkentry server start`, and discovery
+    /// declined to use it: the recorded port answered nothing, or the responder
+    /// on it could not be identified as that daemon. Distinct from
+    /// [`OfflineReason::NoLocalServer`], whose advice is to start a server the
+    /// user has, in this case, already started.
+    RecordedServerUnreachable,
     /// An explicitly configured `server_url` did not serve the health probe.
     /// `ConnFailure` carries how, when the failure was at transport level.
     ExplicitServerUnavailable,
@@ -202,6 +208,12 @@ pub fn offline_search_hint(reason: OfflineReason, failure: Option<ConnFailure>) 
              run `inkentry server stop`, then `inkentry server start`]"
                 .to_string()
         }
+        OfflineReason::RecordedServerUnreachable => {
+            "  [the recorded local server did not answer, or could not be identified as \
+             the one that was started: run `inkentry server stop`, then \
+             `inkentry server start`]"
+                .to_string()
+        }
         OfflineReason::ExplicitServerUnavailable => match failure {
             Some(ConnFailure::Tls(cause)) => format!("  [tls: {cause}]"),
             _ => "  [unreachable]".to_string(),
@@ -226,12 +238,13 @@ mod tests {
 
     // ── offline_search_hint: one suggestion per reason ───────────────────────
 
-    const REASONS: [OfflineReason; 6] = [
+    const REASONS: [OfflineReason; 7] = [
         OfflineReason::KillSwitch,
         OfflineReason::ModeOfflineEnv,
         OfflineReason::ModeOfflineConfig,
         OfflineReason::NoLocalServer,
         OfflineReason::LocalServerUnusable,
+        OfflineReason::RecordedServerUnreachable,
         OfflineReason::ExplicitServerUnavailable,
     ];
 

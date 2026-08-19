@@ -117,18 +117,20 @@ impl EgressTrap {
     }
 }
 
-// Point loopback auto-discovery (`INKENTRY_STATE_DIR`/`server.port`, the
-// same mechanism `capability::probe::probe_loopback` reads) at `url`. This
-// is the "auto-discovered inference server" path, deliberately distinct
-// from an explicit `server_url` (a team-server opt-in, out of scope here).
-pub fn write_loopback_state(state_dir: &std::path::Path, url: &str) {
-    std::fs::create_dir_all(state_dir).expect("create state dir");
-    let port: u16 = url
-        .rsplit(':')
+// The port to hand loopback auto-discovery's fixed-port fallback (step 3b)
+// through `INKENTRY_TEST_DISCOVERY_PORT`, so a mock on `url` stands in for the
+// auto-discovered inference server. Deliberately distinct from an explicit
+// `server_url` (a team-server opt-in, out of scope here).
+//
+// Not step 3a's `server.port` file: that step uses a responder only when the
+// pid recorded beside the port is a live `inkentry-server` process reporting
+// the recorded instance id, and a wiremock stand-in is neither. Fabricating
+// the file here would leave the command with no server at all, which for a
+// test that only asserts an absence is a pass that proves nothing.
+pub fn loopback_discovery_port(url: &str) -> String {
+    url.rsplit(':')
         .next()
         .expect("uri has a port")
         .trim_end_matches('/')
-        .parse()
-        .expect("uri port is numeric");
-    std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+        .to_string()
 }

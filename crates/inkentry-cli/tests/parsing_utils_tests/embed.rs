@@ -263,7 +263,7 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
 // ── happy path: auto-discovered loopback server (no server_url configured) ────
 
 // The reported bug: a healthy local `inkentry-server` discovered via loopback
-// auto-discovery (`INKENTRY_STATE_DIR`/`server.port`) — with NO explicit
+// auto-discovery, with NO explicit
 // `server_url` and the default `local_first` mode — must be found by `plumbing
 // embed`, exactly as `search --mode semantic` / `memory search` already find
 // it. Before the fix, `embed` skipped the capability-tier / `effective_config`

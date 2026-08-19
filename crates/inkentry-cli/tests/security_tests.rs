@@ -14,9 +14,9 @@ mod egress_trap;
 mod fail_closed_no_project;
 #[path = "security_tests/hooks_path_resolution.rs"]
 mod hooks_path_resolution;
+#[path = "security_tests/loopback_discovery_warnings.rs"]
+mod loopback_discovery_warnings;
 #[path = "security_tests/loopback_isolation.rs"]
 mod loopback_isolation;
-#[path = "security_tests/loopback_uid_warning.rs"]
-mod loopback_uid_warning;
 #[path = "security_tests/secret_scanner.rs"]
 mod secret_scanner;
