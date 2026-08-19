@@ -265,34 +265,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
-- **BREAKING: the plaintext `server_key` lift and the legacy flat key tier are
-  gone.** Two compatibility paths ADR-071 left standing are retired together
-  (ADR-088):
-
-  - A `server_key` in the personal `~/.config/inkentry/config.toml` is no longer
-    read, no longer copied into the secret store, and no longer stripped from
-    the file. The value is never parsed and the file is never rewritten. A file
-    that still carries the line is named on stderr, telling you to rotate the
-    key it holds and set the replacement with
-    `inkentry auth set-key --server <url>` or `INKENTRY_SERVER_KEY`. The
-    committed project config already behaved this way; both files now read
-    alike.
-  - The flat, unkeyed secret-store entry below the per-origin map is gone, along
-    with the migrate-on-read that consumed it. A key stored by a client older
-    than the per-origin scheme is **not** migrated forward. Credential
-    resolution is two tiers now: `INKENTRY_SERVER_KEY`, then the per-origin map
-    (an inkentry cloud origin still resolving through `[auth]`, unchanged).
-    `INKENTRY_SERVER_KEY` is therefore a standalone variable rather than the
-    override of a config field, since no such field exists.
-
-  **Recovery is one command:** `inkentry auth set-key --server <url>`, run once
-  per server. Nothing is destroyed by the removal, both stores are your own, and
-  a server that rejects a request for a missing credential now names that
-  command in the error. `inkentry auth list-servers` no longer reports a legacy
-  flat key, because one cannot exist, and `inkentry logout --servers` clears the
-  per-origin map only. A key that lived in a plaintext file should be rotated
-  rather than moved: treat it as exposed.
-
+- **BREAKING: a `server_key` in your personal `~/.config/inkentry/config.toml`
+  is no longer read, and a key stored by a client older than the per-origin
+  scheme is no longer migrated forward** (ADR-088). Run
+  `inkentry auth set-key --server <url>` once per server. A config file that
+  still carries the line is named on stderr; rotate that key rather than moving
+  it, since it has been sitting in plaintext.
 - **The `--mode` flag on `search`** (`auto`/`text`/`semantic`/`hybrid`/
   `ast-grep`), **the top-level `graph` command**, and **`memory search`**. All
   three exit `2` with a message naming the replacement rather than a bare clap
