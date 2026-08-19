@@ -289,6 +289,20 @@ grep -q "Skew smoke note" "$WORK/list.out" || fail "memory list lost the note en
 # complete), so both are read here rather than grepped out of prose. `run`
 # cannot carry these: it folds stderr into the same file, which would put a
 # warning line inside the JSON, and it treats every non-zero exit as failure.
+# `--db` is passed to every plumbing memory command below, and it is not a
+# workaround for a live defect. Current builds resolve the memory store from the
+# `.inkentry/` directory and find these projects without help. **The previous
+# release does not**: it keys project identity on a present `index.db`, which
+# these projects deliberately do not have, so it walks past them to the global
+# store and reports an empty delta. Since one side of a skew run is always a
+# shipped binary whose behaviour can no longer change, this stays for as long as
+# the compared release predates that fix.
+#
+# It is inert for the current build: `--db <path>` resolves the store as that
+# path's sibling, which is the same answer the directory walk already gives.
+STORE_A="$WORK/a/.inkentry/index.db"
+STORE_B="$WORK/b/.inkentry/index.db"
+
 plumb() {
   local label="$1" want_status="$2"; shift 2
   echo "-- $label"
@@ -306,7 +320,7 @@ report_field() {
     || fail "the $1 report was not a readable JSON object with a $2 field"
 }
 
-plumb push 0 "$CLI_BIN" plumbing push
+plumb push 0 "$CLI_BIN" plumbing push --db "$STORE_A"
 created="$(report_field "$WORK/push.out" created)"
 [ "$created" = "2" ] \
   || { cat "$WORK/push.out" >&2; fail "push created $created entries across the skew boundary, expected 2"; }
@@ -315,7 +329,7 @@ created="$(report_field "$WORK/push.out" created)"
 # would look identical to a working one on the first push alone: it would
 # create the two entries a second time, which is exit 0 here rather than the
 # empty-delta 1.
-plumb repush 1 "$CLI_BIN" plumbing push
+plumb repush 1 "$CLI_BIN" plumbing push --db "$STORE_A"
 already="$(report_field "$WORK/repush.out" already_synced)"
 [ "$already" = "2" ] \
   || { cat "$WORK/repush.out" >&2; fail "re-push was not idempotent: already_synced=$already, expected 2"; }
@@ -427,7 +441,7 @@ echo "-- pull-into-fresh-checkout"
 # Exit 0 is load-bearing rather than incidental: `plumbing pull` answers 1 on an
 # empty delta, so a pull that reached the server and came back with nothing is
 # not the same outcome as one that applied the two entries.
-if ! ( cd "$WORK/b" && "$CLI_BIN" plumbing pull ) >"$WORK/pull.out" 2>"$WORK/pull.err"; then
+if ! ( cd "$WORK/b" && "$CLI_BIN" plumbing pull --db "$STORE_B" ) >"$WORK/pull.out" 2>"$WORK/pull.err"; then
   cat "$WORK/pull.err" "$WORK/pull.out" >&2
   fail "pull into a fresh checkout did not apply the pushed entries"
 fi
