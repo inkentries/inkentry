@@ -662,8 +662,6 @@ fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
 /// remedy and `inkentry auth set-key` is where the replacement goes. Pure so
 /// the wording is unit-testable without capturing stderr;
 /// [`Config::load_with_store_from`] prints the result.
-///
-/// The line is not a parse: nothing reads the value.
 fn personal_config_credential_warning(raw: &str, path: &Path) -> Option<String> {
     let table = raw.parse::<toml::Table>().ok()?;
     table.contains_key("server_key").then(|| {
@@ -1686,8 +1684,8 @@ mode = "cloud_first"
         }
     }
 
-    /// Persisted `[auth]` tokens round-trip and the access token becomes the
-    /// effective cloud-origin bearer.
+    // Persisted `[auth]` tokens round-trip and the access token becomes the
+    // effective cloud-origin bearer.
     #[test]
     #[serial_test::serial]
     fn auth_tokens_resolve_to_the_cloud_bearer() {
@@ -1867,9 +1865,9 @@ mode = "cloud_first"
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
-    /// The `[auth]` access token (cloud kind) and a stored per-origin key
-    /// (self-hosted kind) resolve independently by target origin (ADR-071
-    /// D2): they do not compete in a single flat precedence chain.
+    // The `[auth]` access token (cloud kind) and a stored per-origin key
+    // (self-hosted kind) resolve independently by target origin (ADR-071 D2):
+    // they do not compete in a single flat precedence chain.
     #[test]
     #[serial_test::serial]
     fn auth_token_and_per_origin_key_resolve_by_kind_not_precedence() {
@@ -1908,8 +1906,8 @@ mode = "cloud_first"
         assert_eq!(cfg.auth.unwrap().access_token, "at-sample");
     }
 
-    /// `remove_auth_tokens_from` clears the `[auth]` table and nothing else:
-    /// the per-origin server keys are a separate store with its own command.
+    // `remove_auth_tokens_from` clears the `[auth]` table and nothing else:
+    // the per-origin server keys are a separate store with its own command.
     #[test]
     #[serial_test::serial]
     fn remove_auth_tokens_clears_only_auth_table() {
@@ -2082,9 +2080,9 @@ project_id = "team/new"
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
-    /// ADR-071 D4: a `server_key` line in the project-level, checked-in
-    /// `.inkentry/config.toml` is read for nothing at any tier, and the
-    /// committed file is left exactly as it is.
+    // ADR-071 D4: a `server_key` line in the project-level, checked-in
+    // `.inkentry/config.toml` is read for nothing at any tier, and the
+    // committed file is left exactly as it is.
     #[test]
     #[serial_test::serial]
     fn project_config_server_key_field_is_read_for_nothing() {
