@@ -635,8 +635,8 @@ because a credential that sat in a plaintext file should be treated as exposed.
 Run the `set-key` command above with the replacement, and delete the line
 yourself. A key belongs to a developer, not to a committed file. On a host with
 no keychain, inkentry falls back to an owner-only
-`~/.config/inkentry/secrets.toml`. For the full
-credential-storage rules and the `INKENTRY_SECRET_STORE` override, see the
+`~/.config/inkentry/secrets.toml`. For the full credential-storage rules and the
+`INKENTRY_SECRET_STORE` override, see the
 [Commands reference](commands.md#inkentry-auth).
 
 `project_id` stays a human-readable slug, and it is sent to the server exactly

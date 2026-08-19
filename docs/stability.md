@@ -225,7 +225,6 @@ Beyond those three:
   the config is loaded, and it outranks both the per-origin secret store and
   `inkentry login` tokens. What a variable set to an **empty** value does is
   documented in [Config reference](config-reference.md) but is not frozen here.
-
 - **Credential resolution is two tiers, and the order is part of the
   contract.** For a request to `server_url`: `INKENTRY_SERVER_KEY`, then the
   per-origin key store written by `inkentry auth set-key --server <url>` (for
