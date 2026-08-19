@@ -55,6 +55,20 @@ which is safe only when the server is bound to loopback (see [Trust
 model](../server-setup.md#trust-model)). No handler currently reads the
 authenticated principal.
 
+**Authentication runs ahead of route matching, and covers paths that match no
+route.** A request whose bearer token is missing or wrong is answered `401
+unauthorized` whether or not the path it names exists, so no unauthenticated
+response reveals the shape of the router. The diagnostic consequence is that a
+`401` is not evidence that the URL is right: a typo'd path and a rejected key
+are indistinguishable on the wire. Once the token is accepted, an unmatched path
+returns the ordinary `404 not_found`, so a `401` that becomes a `404` after
+fixing the credential means the path was wrong all along.
+
+To get the true route list rather than guessing at it, print the spec the
+running binary generates: `inkentry-server --print-openapi`. A live server also
+serves it at `GET /api-docs/openapi.json`, which, like `GET /v1/health`, needs
+no token.
+
 ---
 
 ## Error response format
