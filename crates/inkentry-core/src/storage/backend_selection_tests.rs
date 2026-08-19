@@ -163,9 +163,11 @@ async fn cloud_first_mode_routes_remote() {
         std::env::set_var("INKENTRY_SECRET_STORE", "file");
     }
 
-    // The backend is built without contacting the server at all, so nothing
-    // needs to listen on this port for the routing decision to be observable.
-    let cfg = cloud_first_cfg("http://127.0.0.1:4655", "team/proj");
+    // Port 0 can never have a listener, which is the point: the open path
+    // *does* health-probe, so a real port here sends the developer's own
+    // daemon a burst of requests on every test run (inkentry-oss^5). Only the
+    // routing decision is under test, and it is reached either way.
+    let cfg = cloud_first_cfg("http://127.0.0.1:0", "team/proj");
     let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
         .await
         .unwrap();

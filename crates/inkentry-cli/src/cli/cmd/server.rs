@@ -721,7 +721,6 @@ async fn ensure_port_available_for_start(port: u16) -> Result<()> {
     );
 }
 
-/// Walk ports `start..start+range` to find the first unbound one.
 /// Pick the port for an auto-started daemon: `preferred` when it is free,
 /// otherwise whatever the OS hands out from the ephemeral range.
 ///

@@ -121,11 +121,7 @@ fn harvest_check_passes_when_server_url_is_set() {
     // "an explicit server_url IS used for inference", which is the
     // `cloud_first` case.
     let config_path = write_harvest_config(temp.path(), "mode = \"cloud_first\"\n");
-    plumbing_helpers::write_project_server_config(
-        temp.path(),
-        "http://127.0.0.1:4655",
-        "test/proj",
-    );
+    plumbing_helpers::write_project_server_config(temp.path(), "http://127.0.0.1:0", "test/proj");
 
     // `INKENTRY_NO_SERVER=1` (set by `harvest_cmd` for the other two tests in
     // this file) is a hard offline kill-switch: `resolve_mode()` forces
