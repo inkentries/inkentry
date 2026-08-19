@@ -319,14 +319,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **`inkentry status` explains why it is offline instead of always recommending
-  `server_url`.** The offline search line now derives its advice from the branch
-  of the probe that fired: with `INKENTRY_NO_SERVER` set it names that variable,
-  because the probe returns before any URL is read and no `server_url` could
-  have changed the outcome; with `mode = "offline"` it names that setting; and
-  in the ordinary case it points at `inkentry server start`, since a solo user's
-  semantic search comes from the local daemon rather than from configuring a
-  team server. A local daemon this build cannot read from asks for a restart.
+- **`inkentry status` now says why it is offline** instead of always suggesting
+  `server_url`, which could not help under `INKENTRY_NO_SERVER` or
+  `mode = "offline"` and is the wrong advice for a solo user anyway. It names
+  whichever setting is in force, or points at `inkentry server start`.
 - **Docs: the memory-sharing claim is corrected in the remaining four places.**
   `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
   said memory travels with the repository. `git push` does not push
