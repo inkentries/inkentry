@@ -1,4 +1,4 @@
-# ADR-085: Retire the plaintext `server_key` lift and the legacy flat key tier
+# ADR-088: Retire the plaintext `server_key` lift and the legacy flat key tier
 
 **Date:** 2026-08-19
 **Deciders:** founder (Johan), ruling of 2026-08-17; architect (this record)
