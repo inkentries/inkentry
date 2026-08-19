@@ -347,31 +347,6 @@ chunk and its 1-hop callers/callees after the ranked results. For exact edges as
 JSONL (for scripts and agents), use `inkentry plumbing graph-edges --symbol
 <name>` (or `--file <path>`).
 
-**JSON output shape.** With `--format json`/`jsonl`, each result is a nested
-envelope naming the corpus it came from — exactly one of `code`/`memory`,
-matching `type`.
-
-**The two formats differ in framing, not in the envelope.** `--format json`
-emits a single pretty-printed JSON **array** of these envelopes; `--format
-jsonl` emits one compact envelope per line, with no enclosing array and no
-commas. Parse accordingly: a reader written for one will not read the other.
-The examples below are `jsonl`.
-
-```json
-{"type":"code","fused_rank":1,"fused_score":0.0163,"corpus_rank":1,"code":{"chunk_id":42,"file_path":"src/auth/middleware.rs","language":"rust","node_type":"function","name":"validate_token","start_line":18,"end_line":54,"content":"...","distance":0.41,"from_graph":false,"governing_specs":[],"token_count":0,"project_name":null,"project_path":null,"summary":null}}
-{"type":"memory","fused_rank":2,"fused_score":0.0163,"corpus_rank":1,"memory":{"id":17,"kind":"decision","title":"Chose sqlite-vec over hnswlib","body":"...","tags":["storage"],"linked_files":[],"created_at":1786441691,"status":"active","distance":0.38}}
-```
-
-Relevance is reported as `distance` (lower is better), not a score. `fused_score`
-is `1 / (RRF_K + corpus_rank)`, so it is a function of rank position only and its
-magnitude is not comparable to `distance`.
-
-`--graph` neighbours are appended **after** the ranked members with
-`fused_rank`, `fused_score` and `corpus_rank` all `null` and `code.from_graph`
-`true`; the same is true of the memory attachments `--expand-graph` and the
-cross-project pass bring in. A consumer that assumes every element carries a
-`fused_rank` will read `null` on those.
-
 **Example:**
 
 ```bash
@@ -382,6 +357,189 @@ inkentry search "TODO fix me" --only-text           # full-text only, no server 
 inkentry search "authentication" --only-code        # code corpus only, no interleaved memory
 inkentry search "why did we choose sqlite" --only-memory --as-of 2026-01-01
 ```
+
+### JSON output: the envelope contract
+
+`search --format json` / `--format jsonl` is the surface agents, hooks, scripts
+and retrieval harnesses consume, so it is specified here field by field. The
+shape is the one [ADR-081](adr/081-unified-search-rank-fusion.md) fixed when it
+made `search` one ranked list over two corpora, and it is **best-effort** on the
+terms in
+[Stability contract](stability.md#structured-output-from-porcelain-commands):
+new fields may be added, the documented ones are not renamed or retyped without
+a changelog entry, and **a consumer must ignore fields it does not recognise.**
+
+Read it rather than guessing, because a consumer that reads the wrong shape does
+not fail. Reaching for a top-level `name` or `file_path`, as a pre-1.0 consumer
+of the flat result array did, matches nothing on every result and returns an
+empty set at full query latency. Nothing errors, nothing exits non-zero, and the
+run reports that inkentry found no matches for anything you asked it. That
+failure mode is the reason this section exists.
+
+**The two formats differ in framing, not in the envelope.** `--format json`
+emits a single pretty-printed JSON **array** of envelopes; `--format jsonl`
+emits one compact envelope per line, with no enclosing array and no commas.
+Parse accordingly: a reader written for one will not read the other. The
+examples below are `jsonl`.
+
+```json
+{"type":"code","fused_rank":1,"fused_score":0.01639344262295082,"corpus_rank":1,"code":{"chunk_id":1,"file_path":"src/auth.rs","language":"rust","node_type":"function","name":"validate_token","start_line":1,"end_line":4,"content":"pub fn validate_token(token: &str) -> bool {\n    !token.is_empty()\n}","distance":0.0000026024113,"from_graph":false,"governing_specs":[],"token_count":0,"project_name":null,"project_path":null,"summary":null}}
+{"type":"memory","fused_rank":2,"fused_score":0.01639344262295082,"corpus_rank":1,"memory":{"id":"01a01a9a-4140-7cbb-8047-c624a5ecb8e4","kind":"decision","title":"Chose sqlite-vec over hnswlib","body":"No C++ dependency, single file.","tags":["storage"],"linked_files":[],"created_at":1787152712,"status":"active","distance":1e-6}}
+```
+
+#### Envelope fields
+
+| Field | Type | Presence |
+|---|---|---|
+| `type` | `"code"` or `"memory"` | Always. The discriminator; it names which payload key is present. |
+| `fused_rank` | integer or `null` | Always **present**, `null` on unranked appendix members (see below). 1-based position in the emitted list. |
+| `fused_score` | number or `null` | Always present, `null` on appendix members. `1 / (60 + corpus_rank)`. |
+| `corpus_rank` | integer or `null` | Always present, `null` on appendix members. 1-based rank within the result's own corpus. |
+| `code` | object | Present **only** when `type` is `"code"`. The key is **absent**, not `null`, otherwise. |
+| `memory` | object | Present **only** when `type` is `"memory"`. The key is **absent**, not `null`, otherwise. |
+
+Exactly one of `code` / `memory` is present on every envelope, and it always
+matches `type`. Branch on `.type` and read `.code` or `.memory`; do not test for
+the presence of a key you expect to be `null`.
+
+#### The `code` payload
+
+An indexed chunk. Every field is always present; the nullable ones are emitted
+as `null` rather than omitted.
+
+| Field | Type |
+|---|---|
+| `chunk_id` | integer, unique within the index that produced it |
+| `file_path` | string, project-relative |
+| `language` | string |
+| `node_type` | string, for example `function`, `struct`, `impl` |
+| `name` | string or `null` (`null` for an anonymous node) |
+| `start_line`, `end_line` | integer, 1-based inclusive |
+| `content` | string, the chunk source |
+| `distance` | number, lower is more similar. **Within-corpus only** (see ordering below). `0.0` on a `--graph` neighbour, where it is not meaningful |
+| `from_graph` | boolean, `true` only for a `--graph` neighbour |
+| `governing_specs` | array of strings, empty when no spec is linked to the file |
+| `token_count` | integer, `0` when not yet computed |
+| `project_name`, `project_path` | string or `null` (`null` for the primary project, set for a linked one) |
+| `summary` | string or `null` |
+
+#### The `memory` payload
+
+A memory entry. These fields are always present:
+
+| Field | Type |
+|---|---|
+| `id` | string. A **UUID**, not an integer: the numeric ids used before 1.0.0 are gone and do not map onto these |
+| `kind` | string, for example `decision`, `requirement`, `handoff` |
+| `title`, `body` | string |
+| `tags`, `linked_files` | array of strings, possibly empty |
+| `created_at` | integer, unix seconds |
+| `status` | string, for example `active` |
+
+These are **conditional**: the key is omitted entirely when the value is unset,
+so a consumer must tolerate its absence rather than expect `null`.
+
+| Field | Type | Present when |
+|---|---|---|
+| `distance` | number | The entry was ranked by the query. Absent on appendix members |
+| `score` | number | The hybrid (embedded) memory path ran. Absent under `--only-text` and whenever the embedder was unavailable |
+| `superseded_by` | string (UUID) | The entry was superseded |
+| `source_ref` | string | The entry was harvested from a commit |
+| `valid_at`, `invalid_at` | integer, unix seconds | A temporal bound was recorded |
+| `source_project`, `source_project_path` | string | The entry came from a linked project |
+| `remote_id` | string | The entry has been synced to a server |
+
+#### Ordering is the contract, not `distance`
+
+Results are emitted in fused order. **Treat the emitted order, or `fused_rank`,
+as authoritative, and do not re-sort by `distance` or `score`.** A code distance
+and a memory distance are produced by two different embedding instructions on
+two different scales, so comparing them across corpora is meaningless. That is
+precisely why fusion discards the magnitudes and ranks on position alone;
+`fused_score` is a function of `corpus_rank` and nothing else, and is comparable
+only within one response.
+
+#### Appendix members are unranked
+
+`--graph` call-graph neighbours, `--expand-graph` relates-to neighbours, and
+cross-project memory entries are appended **after** the ranked members with
+`fused_rank`, `fused_score` and `corpus_rank` all `null`. None of them was
+ranked against the query, so none of them may take a ranked position. Code
+neighbours additionally carry `code.from_graph` `true`.
+
+```json
+{"type":"code","fused_rank":null,"fused_score":null,"corpus_rank":null,"code":{"chunk_id":2,"file_path":"src/auth.rs","language":"rust","node_type":"function","name":"handle_request","start_line":6,"end_line":8,"content":"...","distance":0.0,"from_graph":true,"governing_specs":[],"token_count":18,"project_name":null,"project_path":null,"summary":null}}
+```
+
+A consumer that assumes every element carries a numeric `fused_rank` will read
+`null` on these.
+
+#### Empty results, and exit codes
+
+No matches prints `[]` under `--format json` and nothing at all under
+`--format jsonl`, and **exits `0` either way**. `search` is porcelain: it does
+not follow the plumbing convention where `1` means an empty set. Coverage,
+freshness and degradation notices always go to **stderr**, so stdout stays
+machine-clean in every format.
+
+#### `--budget` changes the top-level framing
+
+`--budget` (mutually exclusive with `--limit`) packs the fused list into a token
+budget. Under `--format json` the array is replaced by an **object**, with the
+envelopes under `results`:
+
+```json
+{
+  "token_budget": 400,
+  "tokens_used": 68,
+  "tokens_remaining": 332,
+  "results": [ /* envelopes, exactly as above */ ]
+}
+```
+
+`--format jsonl` is unchanged by `--budget`: still one envelope per line, no
+wrapper. A consumer that iterates the top level of `--format json` output must
+account for this, or it reads zero results whenever a budget is passed.
+
+#### `AGENT=true`
+
+Setting `AGENT=true` in the environment makes `json` the default format for
+every command that has one, so `AGENT=true inkentry search "..."` emits the
+array of envelopes without an explicit `--format`. It changes the default only:
+an explicit `--format` always wins.
+
+#### Choosing a corpus, and where `--mode` went
+
+Which corpus you search is part of consuming the output correctly, because it
+determines which payload keys you will see:
+
+| Invocation | Envelopes emitted |
+|---|---|
+| `search "<q>"` | both corpora, interleaved: `type` is `"code"` on some, `"memory"` on others |
+| `search "<q>" --only-code` | `type` is `"code"` on every envelope |
+| `search "<q>" --only-memory` | `type` is `"memory"` on every envelope |
+| `search "<q>" --only-text` | either corpus, full-text ranked; no embedding and no server, and the memory payload carries no `score` |
+
+`--only-code` and `--only-memory` are mutually exclusive; either one composes
+with `--only-text`.
+
+**`--mode` was removed in 1.0.0.** There is no ranking mode to choose any more:
+`search` always uses the best ranking available. Passing it exits `2` with a
+migration hint rather than being ignored.
+
+| Removed | Use instead |
+|---|---|
+| `--mode text` | `--only-text` |
+| `--mode semantic`, `--mode hybrid`, `--mode auto` | no flag; that is the default |
+| `--mode ast-grep` | no replacement; structural search was removed |
+
+Two sibling surfaces went the same way and exit `2` with their own hints:
+`inkentry memory search "<q>"` is now `inkentry search "<q>" --only-memory`, and
+the top-level `inkentry graph <symbol>` is now `inkentry search "<symbol>"
+--graph` or `inkentry plumbing graph-edges --symbol <symbol>`. Because a removed
+flag exits non-zero in milliseconds, a harness that swallows the exit code
+records zero results and reads it as "no matches" rather than as a broken
+invocation.
 
 ---
 
