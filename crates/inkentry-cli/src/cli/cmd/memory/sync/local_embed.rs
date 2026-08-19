@@ -1,14 +1,20 @@
-//! The pre-batch local-embedding repair shared by `inkentry sync` and
-//! `inkentry plumbing push`.
+//! The local-embedding repair shared by `inkentry sync`,
+//! `inkentry plumbing push` and `inkentry plumbing pull`.
 //!
-//! A push used to leave `memory.db` exactly as it found it, so an entry that
-//! had never been embedded stayed invisible to semantic `memory search` after a
-//! successful push, with nothing telling the user. This module embeds the push
-//! set locally first and commits each vector as it completes.
+//! A transfer used to leave `memory.db`'s vectors exactly as it found them, so
+//! an entry that had never been embedded stayed invisible to semantic
+//! `memory search` after a successful run, with nothing telling the user. This
+//! module embeds a caller-chosen set of rows and commits each vector as it
+//! completes.
+//!
+//! The two callers partition the store between them and never overlap: the push
+//! repairs its push set (`remote_id IS NULL`), the pull repairs the rows that
+//! carry a `remote_id`.
 
 use anyhow::Result;
 
-use super::PushSummary;
+use super::pull::PullSummary;
+use super::push::PushSummary;
 use crate::{
     capability,
     config::{Config, SyncMode},
@@ -17,14 +23,15 @@ use crate::{
     storage::{MemoryStore, SyncRow},
 };
 
-/// Whether a push repairs the local store's missing embeddings before building
-/// the batch, and the config the local embedder is resolved from.
+/// Whether a transfer repairs the local store's missing embeddings, and the
+/// config the local embedder is resolved from.
 ///
-/// Constructed by the command layer via [`LocalEmbedPolicy::for_push`] so
-/// `inkentry sync` and `inkentry plumbing push` decide it identically.
+/// Constructed by the command layer via [`LocalEmbedPolicy::resolve`] so
+/// `inkentry sync`, `inkentry plumbing push` and `inkentry plumbing pull`
+/// decide it identically.
 pub(in crate::cli::cmd) enum LocalEmbedPolicy<'a> {
-    /// Embed every push-set row that lacks a usable local vector, through the
-    /// loopback embedder, and commit the result to `memory.db`.
+    /// Embed every row in the pass's scope that lacks a usable local vector,
+    /// through the loopback embedder, and commit the result to `memory.db`.
     Repair {
         cfg: &'a Config,
         project_root: std::path::PathBuf,
@@ -34,13 +41,13 @@ pub(in crate::cli::cmd) enum LocalEmbedPolicy<'a> {
 }
 
 impl<'a> LocalEmbedPolicy<'a> {
-    /// Decide the policy for a push against `mem_path`.
+    /// Decide the policy for a transfer against `mem_path`.
     ///
     /// `cloud_first` with a team `server_url` relocates the store of record off
     /// `memory.db`, so there is nothing local to repair. This is the exact
-    /// condition `memory reindex` refuses under, and the two commands must not
+    /// condition `memory reindex` refuses under, and the commands must not
     /// disagree about when local embeddings are meaningful.
-    pub(in crate::cli::cmd) fn for_push(cfg: &'a Config, mem_path: &std::path::Path) -> Self {
+    pub(in crate::cli::cmd) fn resolve(cfg: &'a Config, mem_path: &std::path::Path) -> Self {
         if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
             return Self::Skip;
         }
@@ -51,23 +58,42 @@ impl<'a> LocalEmbedPolicy<'a> {
     }
 }
 
-/// Counted outcome of the pre-batch local-embedding repair.
+/// Counted outcome of a local-embedding repair pass.
 pub(super) struct RepairCounts {
     pub(super) embedded: usize,
     pub(super) without_vector: usize,
 }
 
-/// The one user-facing warning for entries that were pushed with no local
-/// embedding. Emitted once per run by the command layer, which owns all
-/// user-facing output; the shared push pass only counts.
-pub(in crate::cli::cmd::memory) fn unembedded_warning(count: usize) -> String {
+/// The one user-facing warning for synced entries that are still waiting on a
+/// local embedding. Emitted once per run by the command layer, which owns all
+/// user-facing output; the shared pull pass only counts.
+///
+/// Unlike the push's warning this does not send the user to `memory reindex` as
+/// the only way out: the pull pass re-scans every synced row still missing a
+/// vector, so the next `inkentry sync` or `inkentry plumbing pull` picks these
+/// up on its own once an embedder is reachable again.
+pub(in crate::cli::cmd::memory) fn pending_embedding_warning(count: usize) -> String {
     let entries = if count == 1 { "entry" } else { "entries" };
     format!(
-        "warning: {count} {entries} pushed without a local embedding, so \
-         `inkentry memory search` cannot surface {} in this project until \
-         `inkentry memory reindex` is run.",
+        "warning: {count} synced {entries} could not be embedded locally, so \
+         `inkentry memory search` cannot surface {} semantically yet. The next \
+         sync or pull retries automatically; `inkentry memory reindex` does it now.",
         if count == 1 { "it" } else { "them" }
     )
+}
+
+/// Local-embedding clause for the pull half of a sync summary line. Empty when
+/// the pull pass neither minted nor missed a vector, so an unaffected sync
+/// reads exactly as it did before.
+pub(in crate::cli::cmd::memory) fn pull_embed_summary(summary: &PullSummary) -> String {
+    match (summary.embedded_locally, summary.without_local_vector) {
+        (0, 0) => String::new(),
+        (embedded, 0) => format!(" Embedded {embedded} synced entries locally."),
+        (0, pending) => format!(" {pending} synced entries pending embedding."),
+        (embedded, pending) => {
+            format!(" Embedded {embedded} synced entries locally, {pending} pending embedding.")
+        }
+    }
 }
 
 /// Local-embedding clause for a push/sync summary line. Empty when the repair

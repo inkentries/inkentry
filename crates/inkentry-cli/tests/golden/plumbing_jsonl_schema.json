@@ -146,8 +146,11 @@
       }
     },
     "pull": {
+      "$comment": "One report object per completed run (exit 0 or 1). The two embed counts mirror `push`'s: `embedded_locally` is the missing local vectors this run minted for synced rows, `without_local_vector` the synced rows still waiting on one.",
       "required": {
-        "applied": "integer"
+        "applied": "integer",
+        "embedded_locally": "integer",
+        "without_local_vector": "integer"
       }
     }
   }

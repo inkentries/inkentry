@@ -4,15 +4,16 @@ use anyhow::{Context, Result};
 
 use crate::storage::{CloudSyncClient, MemoryStore};
 
-use super::pull::pull_and_apply_since;
-use super::push::{LocalEmbedPolicy, PushSummary, push_local};
+use super::local_embed::LocalEmbedPolicy;
+use super::pull::{PullSummary, pull_and_apply_since};
+use super::push::{PushSummary, push_local};
 
-/// Outcome of one [`sync_round`]: the push summary plus the total newly
-/// applied entries across both pull passes.
+/// Outcome of one [`sync_round`]: the push summary plus both pull passes'
+/// summaries folded together.
 #[derive(Debug)]
 pub(super) struct SyncRoundOutcome {
     pub(super) pushed: PushSummary,
-    pub(super) pulled: usize,
+    pub(super) pulled: PullSummary,
 }
 
 /// Run one full two-way sync round: pull, then push, then pull again off the
@@ -73,7 +74,8 @@ pub(super) async fn sync_round(
         .await;
     }
 
-    let pulled_first = pull_and_apply_since(local, client, pre_round_cursor.as_deref()).await?;
+    let pulled_first =
+        pull_and_apply_since(local, client, pre_round_cursor.as_deref(), local_embed).await?;
 
     let pushed = push_local(
         local,
@@ -97,21 +99,22 @@ pub(super) async fn sync_round(
     // but pointless: already-stamped rows are excluded from `live` and
     // skipped) instead of simply re-running sync, which retries the pull with
     // an unaffected, freshly-derived cursor.
-    let pulled_second = pull_and_apply_since(local, client, pre_round_cursor.as_deref())
-        .await
-        .with_context(|| {
-            format!(
-                "confirmation pull failed after this round's push already reached \
+    let pulled_second =
+        pull_and_apply_since(local, client, pre_round_cursor.as_deref(), local_embed)
+            .await
+            .with_context(|| {
+                format!(
+                    "confirmation pull failed after this round's push already reached \
                  the server ({} attempted: {} created, {} skipped, {} failed) - \
                  the push is not affected by this error; re-running sync will retry \
                  the pull without re-pushing already-landed entries",
-                pushed.attempted, pushed.created, pushed.skipped, pushed.failed
-            )
-        })?;
+                    pushed.attempted, pushed.created, pushed.skipped, pushed.failed
+                )
+            })?;
 
     Ok(SyncRoundOutcome {
         pushed,
-        pulled: pulled_first + pulled_second,
+        pulled: pulled_first.merge(pulled_second),
     })
 }
 
@@ -144,7 +147,7 @@ async fn sync_round_first(
     // Mirrors the established-client confirmation pull's error handling: a
     // pull failure here must not read as "nothing happened" when the push
     // already durably landed.
-    let pulled = pull_and_apply_since(local, client, None)
+    let pulled = pull_and_apply_since(local, client, None, local_embed)
         .await
         .with_context(|| {
             format!(
@@ -229,7 +232,7 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.pushed.created, 1, "C's own entry must land");
         assert_eq!(
-            outcome.pulled, 1,
+            outcome.pulled.applied, 1,
             "C must pull A's prior entry within this same round, not 0"
         );
         let titles: Vec<String> = store_c
@@ -261,7 +264,7 @@ mod tests {
             .unwrap();
         assert_eq!(r1.pushed.created, 1);
         assert_eq!(
-            r1.pulled, 0,
+            r1.pulled.applied, 0,
             "the second pull re-fetches this round's own just-pushed row via \
              the pre-round cursor, but it must not be double-counted"
         );
@@ -271,7 +274,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            (r2.pushed.attempted, r2.pushed.already_synced, r2.pulled),
+            (
+                r2.pushed.attempted,
+                r2.pushed.already_synced,
+                r2.pulled.applied
+            ),
             (0, 1, 0),
             "a second round with nothing new must be a full no-op"
         );
@@ -304,9 +311,15 @@ mod tests {
         // Step 1 of sync_round: capture the cursor, then pull. Nothing on the
         // server yet.
         let pre_round_cursor = store.max_remote_id().unwrap();
-        let pulled_first = pull_and_apply_since(&store, &client, pre_round_cursor.as_deref())
-            .await
-            .unwrap();
+        let pulled_first = pull_and_apply_since(
+            &store,
+            &client,
+            pre_round_cursor.as_deref(),
+            &LocalEmbedPolicy::Skip,
+        )
+        .await
+        .unwrap()
+        .applied;
         assert_eq!(pulled_first, 0);
 
         // The race window: a teammate pushes here, strictly between this
@@ -341,9 +354,15 @@ mod tests {
         // Step 3 of sync_round: the second pull, reusing pre_round_cursor
         // (NOT a freshly re-derived max_remote_id(), which would now include
         // this round's own push and shadow B1 forever).
-        let pulled_second = pull_and_apply_since(&store, &client, pre_round_cursor.as_deref())
-            .await
-            .unwrap();
+        let pulled_second = pull_and_apply_since(
+            &store,
+            &client,
+            pre_round_cursor.as_deref(),
+            &LocalEmbedPolicy::Skip,
+        )
+        .await
+        .unwrap()
+        .applied;
         assert_eq!(
             pulled_second, 1,
             "the race-window teammate push must be caught by the second pull, \
@@ -394,12 +413,18 @@ mod tests {
         // A pull-only client with nothing local picks up both in one call.
         let (_tmp_c, store_c) = fresh_store();
         let client_c = CloudSyncClient::new(&base_url, "proj-pull", None, None).unwrap();
-        let pulled = pull_and_apply(&store_c, &client_c).await.unwrap();
+        let pulled = pull_and_apply(&store_c, &client_c, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(pulled, 2);
 
         // A second, immediate pull is a no-op (cursor re-derived from what
         // was just applied).
-        let pulled_again = pull_and_apply(&store_c, &client_c).await.unwrap();
+        let pulled_again = pull_and_apply(&store_c, &client_c, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(pulled_again, 0);
     }
 

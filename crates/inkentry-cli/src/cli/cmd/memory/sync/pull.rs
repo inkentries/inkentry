@@ -3,10 +3,46 @@
 
 use anyhow::Result;
 
-use crate::storage::{CloudSyncClient, MemoryStore};
+use super::local_embed::{LocalEmbedPolicy, RepairCounts, repair_local_embeddings};
+use crate::storage::{CloudSyncClient, MemoryStore, SyncRow};
+
+/// Outcome of a pull pass.
+///
+/// `applied` is the count `plumbing pull` and the `sync` summary have always
+/// reported. The two embed counts are the pull's half of the local-embedding
+/// repair, reported the same way [`PushSummary`](super::push::PushSummary)
+/// reports the push's half.
+#[derive(Debug, Default)]
+pub(in crate::cli::cmd) struct PullSummary {
+    /// Newly-inserted local rows.
+    pub applied: usize,
+    /// Synced rows whose missing local vector this pull minted and committed.
+    pub embedded_locally: usize,
+    /// Synced rows that still have no usable local vector afterwards: no local
+    /// embedder was reachable, or that row's embed call failed. They are pulled
+    /// text-only and picked up by the next pull, never left silently
+    /// unsearchable without a count.
+    pub without_local_vector: usize,
+}
+
+impl PullSummary {
+    /// Fold a second pass's counts in, for `sync_round`'s two pulls.
+    ///
+    /// `applied` and `embedded_locally` are work each pass did, so they add.
+    /// `without_local_vector` is a standing state, not work: the second pass
+    /// re-scans the same rows, so its own count is what is still pending when
+    /// the round ends and summing would double-report a row neither pass could
+    /// embed.
+    pub(super) fn merge(self, other: Self) -> Self {
+        Self {
+            applied: self.applied + other.applied,
+            embedded_locally: self.embedded_locally + other.embedded_locally,
+            without_local_vector: other.without_local_vector,
+        }
+    }
+}
 
 /// Pull remote entries after the UUID cursor and apply them idempotently.
-/// Returns the number of newly-inserted local rows.
 ///
 /// The cursor is derived from the store itself — `MAX(remote_id)` over local
 /// notes (decision #183) — so there is no persisted watermark to advance: the
@@ -18,13 +54,14 @@ use crate::storage::{CloudSyncClient, MemoryStore};
 pub(in crate::cli::cmd) async fn pull_and_apply(
     local: &MemoryStore,
     client: &CloudSyncClient,
-) -> Result<usize> {
+    local_embed: &LocalEmbedPolicy<'_>,
+) -> Result<PullSummary> {
     let cursor = local.max_remote_id()?;
-    pull_and_apply_since(local, client, cursor.as_deref()).await
+    pull_and_apply_since(local, client, cursor.as_deref(), local_embed).await
 }
 
 /// Pull remote entries after an explicit `since_id` cursor and apply them
-/// idempotently. Returns the number of newly-inserted local rows.
+/// idempotently.
 ///
 /// `pull_since` returns at most `CloudSyncClient::MEMORY_SINCE_PULL_LIMIT`
 /// entries per call, so a backlog larger than one page requires more than
@@ -40,11 +77,16 @@ pub(in crate::cli::cmd) async fn pull_and_apply(
 /// [`MemoryStore::apply_remote_note`] dedupes on `remote_id` (or reuses a
 /// matching row by `entity_id`), so re-fetching a row already known locally
 /// is a harmless no-op, not a duplicate insert or a double count.
+///
+/// The local-embedding pass runs once, after the last page has landed, so a
+/// multi-page pull pays for one embedder probe rather than one per page and a
+/// single failing embed can never unwind a page that was already applied.
 pub(super) async fn pull_and_apply_since(
     local: &MemoryStore,
     client: &CloudSyncClient,
     cursor: Option<&str>,
-) -> Result<usize> {
+    local_embed: &LocalEmbedPolicy<'_>,
+) -> Result<PullSummary> {
     let mut cursor = cursor.map(str::to_string);
     let mut applied = 0usize;
     loop {
@@ -76,7 +118,37 @@ pub(super) async fn pull_and_apply_since(
         // is > 0), so `last()` is always `Some`.
         cursor = entries.last().map(|e| e.id.clone());
     }
-    Ok(applied)
+
+    let repair = embed_synced_rows(local, local_embed).await?;
+    Ok(PullSummary {
+        applied,
+        embedded_locally: repair.embedded,
+        without_local_vector: repair.without_vector,
+    })
+}
+
+/// Mint the missing local vectors for every synced row.
+///
+/// The scope is `remote_id IS NOT NULL`, the complement of the push's
+/// `remote_id IS NULL`, so no row is claimed by both. It is not a partition of
+/// the whole store: both scopes are also status-gated, so an **archived** row
+/// that was never synced is in neither, and `memory reindex --include-archived`
+/// remains its only repair. That gap predates this pass and only shows up under
+/// `--as-of`, which is the one query that reads archived rows.
+///
+/// Keying off "still has no usable vector" rather than "this pull returned it"
+/// is what makes the pass idempotent across `sync_round`'s two pulls, and what
+/// makes it the catch-up for a row an earlier pull had to leave text-only
+/// because no embedder was reachable then. It also means the second pull sees
+/// rows the push stamped moments earlier, which is why the command layer emits
+/// one pending-embedding warning rather than one per half.
+async fn embed_synced_rows(
+    local: &MemoryStore,
+    local_embed: &LocalEmbedPolicy<'_>,
+) -> Result<RepairCounts> {
+    let rows = local.rows_for_sync(false)?;
+    let synced: Vec<&SyncRow> = rows.iter().filter(|r| r.remote_id.is_some()).collect();
+    repair_local_embeddings(local, &synced, local_embed).await
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp to Unix epoch seconds.
@@ -91,7 +163,8 @@ pub(in crate::cli::cmd::memory) fn parse_iso_to_secs(s: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::push::{LocalEmbedPolicy, push_local};
+    use super::super::local_embed::LocalEmbedPolicy;
+    use super::super::push::push_local;
     use super::super::round::sync_round;
     use super::super::test_support::{fresh_store, register_sqlite_vec, spawn_inkentry_server};
     use super::*;
@@ -166,7 +239,10 @@ mod tests {
             push1.created, 1,
             "client A's own entry must land on the server"
         );
-        let pull1 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        let pull1 = pull_and_apply(&store_a, &client_a, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(pull1, 0, "nothing new on the server yet for the first pull");
 
         // Teammate B: a second, independent client pushes a new entry to the
@@ -188,7 +264,10 @@ mod tests {
         // Client A syncs again: it is now an established client (already has a
         // remote_id-stamped row), exactly the steady-state "sync to get
         // teammates' latest" case the bug report describes.
-        let pull2 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        let pull2 = pull_and_apply(&store_a, &client_a, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(
             pull2, 1,
             "an established client must still pull entries a teammate pushed afterward"
@@ -240,7 +319,13 @@ mod tests {
                 .created,
             1
         );
-        assert_eq!(pull_and_apply(&store_a, &client_a).await.unwrap(), 0);
+        assert_eq!(
+            pull_and_apply(&store_a, &client_a, &LocalEmbedPolicy::Skip)
+                .await
+                .unwrap()
+                .applied,
+            0
+        );
 
         // Client C joins with no local content yet, so its first sync is a
         // pull only (matching the walk-the-store "fresh client" case, which
@@ -255,7 +340,10 @@ mod tests {
         let tmp_c = tempfile::TempDir::new().unwrap();
         let store_c = MemoryStore::open(&tmp_c.path().join("memory.db")).unwrap();
         let client_c = CloudSyncClient::new(&base_url, "proj3", None, None).unwrap();
-        let pull_c1 = pull_and_apply(&store_c, &client_c).await.unwrap();
+        let pull_c1 = pull_and_apply(&store_c, &client_c, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(pull_c1, 1, "client C must pull client A's A1 on establish");
 
         // Now that C is caught up (nothing outstanding to miss), it can
@@ -271,7 +359,10 @@ mod tests {
             1
         );
         assert_eq!(
-            pull_and_apply(&store_c, &client_c).await.unwrap(),
+            pull_and_apply(&store_c, &client_c, &LocalEmbedPolicy::Skip)
+                .await
+                .unwrap()
+                .applied,
             0,
             "nothing further for C to pull immediately after its own push"
         );
@@ -301,12 +392,18 @@ mod tests {
 
         // Round 2: both established clients must pick up exactly the new
         // delta each is missing (A is missing C1 and B1; C is missing B1).
-        let pull_a_round2 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        let pull_a_round2 = pull_and_apply(&store_a, &client_a, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(
             pull_a_round2, 2,
             "client A must pull both C1 and B1 on its second sync"
         );
-        let pull_c_round2 = pull_and_apply(&store_c, &client_c).await.unwrap();
+        let pull_c_round2 = pull_and_apply(&store_c, &client_c, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(
             pull_c_round2, 1,
             "client C must pull only B1 (it already has A1 and its own C1)"
@@ -335,12 +432,18 @@ mod tests {
             1
         );
 
-        let pull_a_round3 = pull_and_apply(&store_a, &client_a).await.unwrap();
+        let pull_a_round3 = pull_and_apply(&store_a, &client_a, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(
             pull_a_round3, 1,
             "client A's cursor must advance correctly again on a third round"
         );
-        let pull_c_round3 = pull_and_apply(&store_c, &client_c).await.unwrap();
+        let pull_c_round3 = pull_and_apply(&store_c, &client_c, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(
             pull_c_round3, 1,
             "client C's cursor must advance correctly again on a third round"
@@ -445,7 +548,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 40);
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
@@ -463,7 +569,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 140);
         assert_eq!(store.count().unwrap(), 140, "no duplicates applied");
@@ -482,7 +591,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 245);
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
@@ -501,7 +613,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 100);
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
@@ -516,7 +631,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 0);
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
@@ -564,7 +682,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            outcome.pulled, 160,
+            outcome.pulled.applied, 160,
             "both pull passes re-fetch the same 160-entry backlog off the \
              unchanged pre-round cursor; apply_remote_note's dedupe means the \
              SECOND pass applies 0 new rows, so pulled must be exactly the \
@@ -587,7 +705,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply(&store, &client).await.unwrap();
+        let applied = pull_and_apply(&store, &client, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 145);
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
@@ -627,7 +748,7 @@ mod tests {
 
         assert_eq!(outcome.pushed.attempted, 0);
         assert_eq!(
-            outcome.pulled, 130,
+            outcome.pulled.applied, 130,
             "the post-push pull on a first sync must exhaust its own pagination too"
         );
         assert_eq!(store.count().unwrap(), 130);
@@ -649,13 +770,19 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let first_run = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let first_run = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(first_run, 140);
 
         // Re-running from the same (still `None`, un-advanced) cursor
         // re-fetches the identical two pages; every entry is already known
         // by `remote_id`, so nothing should be counted or inserted twice.
-        let rerun = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let rerun = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
         assert_eq!(rerun, 0, "already-applied entries must not be re-counted");
         assert_eq!(store.count().unwrap(), 140, "and never re-inserted");
     }
@@ -677,7 +804,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 0);
     }
@@ -692,7 +822,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 5);
     }
@@ -804,7 +937,7 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client1 = CloudSyncClient::new(&server1.uri(), "proj", None, None).unwrap();
-        pull_and_apply_since(&store, &client1, None)
+        pull_and_apply_since(&store, &client1, None, &LocalEmbedPolicy::Skip)
             .await
             .expect_err("a later-page failure must surface as Err, not a silent partial success");
 
@@ -834,9 +967,11 @@ mod tests {
         let client2 = CloudSyncClient::new(&server2.uri(), "proj", None, None).unwrap();
 
         let cursor = store.max_remote_id().unwrap();
-        let applied = pull_and_apply_since(&store, &client2, cursor.as_deref())
-            .await
-            .unwrap();
+        let applied =
+            pull_and_apply_since(&store, &client2, cursor.as_deref(), &LocalEmbedPolicy::Skip)
+                .await
+                .unwrap()
+                .applied;
         assert_eq!(applied, 5, "the retry applies exactly the remainder");
         assert_eq!(
             store.count().unwrap(),
@@ -879,7 +1014,7 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        pull_and_apply_since(&store, &client, None)
+        pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
             .await
             .expect_err("a page that fails to parse must surface as Err");
 
@@ -918,7 +1053,10 @@ mod tests {
 
         let (_tmp, store) = fresh_store();
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let applied = pull_and_apply_since(&store, &client, None).await.unwrap();
+        let applied = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
 
         assert_eq!(applied, 50);
         assert_eq!(

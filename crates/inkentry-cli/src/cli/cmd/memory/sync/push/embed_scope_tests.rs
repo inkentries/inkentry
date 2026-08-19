@@ -49,7 +49,7 @@ async fn an_empty_push_set_makes_no_embed_calls() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -92,8 +92,9 @@ async fn already_synced_rows_are_left_unembedded() {
         .unwrap();
     let rows = store.rows_for_sync(false).unwrap();
     let id = rows[0].id.clone();
-    // Outside the push set: the cloud already has it. Repairing these rows is
-    // the pull-side follow-up, deliberately not this change.
+    // Outside the push set: the cloud already has it. Repairing these rows
+    // belongs to the pull pass, which claims `remote_id IS NOT NULL`, so no row
+    // is claimed by both (`pull_embed_tests`).
     store.set_remote_id(&id, "cloud-1").unwrap();
 
     let team = MockServer::start().await;
@@ -106,7 +107,7 @@ async fn already_synced_rows_are_left_unembedded() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -149,7 +150,7 @@ async fn archived_rows_are_not_embedded_but_still_tombstone() {
         &client,
         true,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -203,7 +204,7 @@ async fn vectors_land_in_the_store_that_was_pushed_not_the_project_default() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &source_tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &source_tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -241,7 +242,7 @@ async fn the_repair_does_not_alter_or_re_screen_entry_content() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();

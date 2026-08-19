@@ -7,11 +7,7 @@ use anyhow::Result;
 
 use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore, NoteId, SyncEdgePush};
 
-mod local_embed;
-
-pub(in crate::cli::cmd) use local_embed::LocalEmbedPolicy;
-pub(in crate::cli::cmd::memory) use local_embed::{local_embed_summary, unembedded_warning};
-use local_embed::{repair_local_embeddings, usable_vector};
+use super::local_embed::{LocalEmbedPolicy, repair_local_embeddings, usable_vector};
 
 /// How many entries go in each `POST /memory/batch` request. Kept small so even
 /// the worst case (text-only, the server re-embedding a full chunk on a cold

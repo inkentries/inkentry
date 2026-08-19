@@ -5,6 +5,7 @@
 // and never the configured team `server_url`. Routing it there would re-create
 // the exact server-side re-embedding the repair exists to remove.
 
+use super::super::local_embed::{local_embed_summary, pending_embedding_warning};
 use super::super::test_support::{fresh_store, spawn_loopback_embedder};
 use super::*;
 use crate::config::{Config, SyncMode};
@@ -65,7 +66,7 @@ async fn embed_traffic_goes_to_loopback_and_never_to_the_team_server_url() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -110,7 +111,7 @@ async fn a_push_speaks_only_to_loopback_and_the_configured_team_server() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -160,7 +161,7 @@ async fn push_completes_text_only_when_no_local_embedder_is_available() {
         &client,
         false,
         true,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -227,7 +228,7 @@ async fn no_local_embedder_sends_no_embed_request_to_the_team_server() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -272,7 +273,7 @@ async fn one_row_embed_failure_leaves_the_rest_of_the_push_intact() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -321,7 +322,7 @@ async fn cloud_first_with_server_url_skips_the_repair_entirely() {
     let mem_path = tmp.path().join("memory.db");
     assert!(
         matches!(
-            LocalEmbedPolicy::for_push(&cfg, &mem_path),
+            LocalEmbedPolicy::resolve(&cfg, &mem_path),
             LocalEmbedPolicy::Skip
         ),
         "memory.db is not the store of record here, so there is nothing to repair"
@@ -332,7 +333,7 @@ async fn cloud_first_with_server_url_skips_the_repair_entirely() {
         &client,
         false,
         true,
-        &LocalEmbedPolicy::for_push(&cfg, &mem_path),
+        &LocalEmbedPolicy::resolve(&cfg, &mem_path),
     )
     .await
     .unwrap();
@@ -400,7 +401,7 @@ async fn the_repair_applies_exactly_where_reindex_does() {
         };
 
         let repair_skipped = matches!(
-            LocalEmbedPolicy::for_push(&cfg, &mem_path),
+            LocalEmbedPolicy::resolve(&cfg, &mem_path),
             LocalEmbedPolicy::Skip
         );
         // `--dry-run` returns before any embedder is resolved, so this observes
@@ -445,7 +446,7 @@ fn cloud_first_without_server_url_still_repairs() {
         ..Default::default()
     };
     assert!(matches!(
-        LocalEmbedPolicy::for_push(&cfg, std::path::Path::new("/tmp/p/memory.db")),
+        LocalEmbedPolicy::resolve(&cfg, std::path::Path::new("/tmp/p/memory.db")),
         LocalEmbedPolicy::Repair { .. }
     ));
 }
@@ -475,9 +476,12 @@ fn wrong_dimension_stored_vector_counts_as_missing() {
     );
 }
 
+// One warning now covers both halves of a sync: the push stamps `remote_id`,
+// which moves its rows into the pull's repair scope, so a push-specific second
+// message would double-count the same entries.
 #[test]
-fn the_unembedded_warning_names_the_count_and_the_remedy() {
-    let msg = unembedded_warning(3);
+fn the_pending_embedding_warning_names_the_count_and_the_remedy() {
+    let msg = pending_embedding_warning(3);
     assert!(msg.contains('3'), "must name the count: {msg}");
     assert!(
         msg.contains("inkentry memory reindex"),
@@ -488,7 +492,7 @@ fn the_unembedded_warning_names_the_count_and_the_remedy() {
         "must say what is actually broken: {msg}"
     );
     assert!(
-        unembedded_warning(1).contains("1 entry"),
+        pending_embedding_warning(1).contains("1 synced entry"),
         "singular must not read as '1 entries'"
     );
 }

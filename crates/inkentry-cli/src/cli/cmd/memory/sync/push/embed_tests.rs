@@ -76,7 +76,7 @@ async fn push_embeds_and_durably_stores_a_row_with_no_local_vector() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -117,7 +117,7 @@ async fn push_embeds_the_same_document_string_reindex_does() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -155,7 +155,7 @@ async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -195,7 +195,7 @@ async fn locally_embedded_row_ships_its_vector_when_the_server_accepts_vectors()
         &client,
         false,
         true,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -231,7 +231,7 @@ async fn local_vector_is_persisted_even_when_the_server_declines_vectors() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -267,7 +267,7 @@ async fn a_row_with_an_empty_body_still_embeds_and_pushes() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -306,7 +306,7 @@ async fn a_second_push_run_issues_no_embed_calls() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &mem_path),
+        &LocalEmbedPolicy::resolve(&cfg, &mem_path),
     )
     .await
     .unwrap();
@@ -317,7 +317,7 @@ async fn a_second_push_run_issues_no_embed_calls() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &mem_path),
+        &LocalEmbedPolicy::resolve(&cfg, &mem_path),
     )
     .await
     .unwrap();
@@ -350,7 +350,7 @@ async fn reindex_has_nothing_pending_for_rows_a_push_just_repaired() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
@@ -381,7 +381,7 @@ async fn vectors_minted_before_an_interrupted_chunk_stay_durable() {
         &client,
         false,
         false,
-        &LocalEmbedPolicy::for_push(&cfg, &tmp.path().join("memory.db")),
+        &LocalEmbedPolicy::resolve(&cfg, &tmp.path().join("memory.db")),
     )
     .await
     .unwrap();
