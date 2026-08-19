@@ -65,8 +65,17 @@ writes into the developer's real global registry.
 
 **`project_deps` is empty in both registries.** Not a rename artifact:
 inkentry's registry is only weeks old, but the predecessor's carries the same
-two-table schema, 319 projects, and **0 links**. Across the whole life of the
-product on this machine, `link` has never been run.
+two-table schema, 319 projects, and **0 links**.
+
+Scope that claim carefully. **The registry is machine-local and travels through
+no sync mechanism**, so both files describe one machine, and the founder changed
+machines around the rename. Links created on an earlier machine would be
+invisible here. What the evidence supports is that `link` has not been used on
+this machine across 349 registered projects; it does not support "never, by
+anyone, anywhere".
+
+That the registry does not travel is itself the more useful finding, and it is
+independent of any count. See D1.
 
 ### The observation that reframes the question
 
@@ -110,9 +119,20 @@ The registry exists to answer one question: **which other projects should a
 cross-project read reach into.** That is what ADR-003 needs and what `links`
 and `status --all` display.
 
-It is worth being honest that it has never done that job for anyone here:
-`project_deps` is empty in this registry and in the predecessor's 319-project
-one, so no cross-project read has ever reached anywhere extra.
+**The decisive property is that the registry never travels.** It is written only
+by `init` and `index` on the machine they run on, and no sync mechanism carries
+it: not the git-notes carrier, not a team server, not a portable dump. A new
+machine, or a machine change, starts empty and re-accumulates only what it
+happens to index.
+
+So it cannot be an inventory of the user's projects even in principle, whatever
+it happens to contain. That argument holds without appealing to any count, and
+it is the one to keep: the counts were measured wrong once already.
+
+It is also worth being honest that it is not currently doing its actual job
+either. `project_deps` is empty in this registry and in the predecessor's
+319-project one, so no cross-project read on this machine has reached anywhere
+extra.
 The `projects` table still earns its place, because `find_project_for_path`
 resolves a directory to its project and `link` needs that to work at all. But
 the link graph is a capability the product offers rather than one in use, and
@@ -234,6 +254,13 @@ task.
   it. Worth a line in the upgrade docs, not a code path.
 - **A `links` inspection and removal surface** is the follow-up this raises. It
   is deliberately not folded into this record.
+- **Whether the registry should travel between a user's machines is a post-v1
+  question**, ruled so by the founder on 2026-08-19. It is raised by D1 rather
+  than answered by it: a machine-local store is why this cannot be an inventory
+  today, and making it portable would change that premise. Anyone taking it on
+  should note that the two candidate carriers are per-repository (git notes) and
+  per-team (a server), while the registry is per-user and spans repositories, so
+  neither is an obvious fit.
 
 ## Whether this is v1
 
