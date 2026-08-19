@@ -177,25 +177,7 @@ record.
   today, and making it portable would change that premise. Note that the two
   candidate carriers are per-repository (git notes) and per-team (a server),
   while the registry is per-user and spans repositories, so neither fits.
-
-## Whether this is v1
-
-**The scope decision (D1) is v1.** It is documentation of an existing surface,
-and reading the registry as an inventory is how a wrong design choice gets made
-downstream. It has cost one already.
-
-**D2 is a test rather than a change**, on the evidence that registration
-already resolves worktrees. Worth having before v1 only because the
-predecessor's registry shows what a regression here looks like.
-
-**D3's guard is a correctness fix and should not wait long.** Removing a
-project because its external disk is unmounted is a small, silent loss of
-something the user rebuilds by hand. Rare rather than severe, so not
-release-gating, but it is the one item here that is a defect rather than
-tidying.
-
-None of these alters a stored format, a wire contract or a documented
-guarantee, so the "last cheap moment" argument does not apply the way it does
-to a format or a protocol. That is what the best-effort classification is for,
-and it is why the question this review opened with, whether the registry had to
-be settled before v1, resolves to no for everything except the scope narrowing.
+- **None of these decisions alters a stored format, a wire contract or a
+  documented guarantee.** They are free to land in any order and at any time,
+  which is what the best-effort classification exists to buy. Sequencing is a
+  scheduling question and does not belong in this record.
