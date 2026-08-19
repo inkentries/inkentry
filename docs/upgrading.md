@@ -3,6 +3,42 @@
 1.0.0 is the first release that will not open a memory store an earlier build
 wrote.
 
+## Credentials do not migrate
+
+The migration brings memory across. It does not bring secrets across: inkentry
+stores credentials under its own name, in the OS keychain service `inkentry`
+and in `~/.config/inkentry/secrets.toml` when the file store is in use.
+Whatever the predecessor stored is still where it was, and inkentry does not
+read it.
+
+Nothing is lost, but if you use either of these, set it again before your
+first command:
+
+- **A team server's bearer key.** Once per server:
+
+  ```bash
+  inkentry auth set-key --server <url>
+  ```
+
+  On inkentry cloud, run `inkentry login` instead.
+
+- **An LLM endpoint key**, if you had one:
+
+  ```bash
+  inkentry auth set-key --llm
+  ```
+
+Both read the value from a prompt or from stdin, never from argv, so it stays
+out of shell history and out of `ps` output.
+
+Purely local use needs neither. If you skip this and you did need one, the
+symptom is an authentication failure on your first command against the server,
+not a migration error.
+
+Writing the key into `~/.config/inkentry/config.toml` as a bare `server_key`
+is not a way around this. 1.0.0 no longer reads that field, and a key sitting
+in a plaintext file should be rotated rather than moved.
+
 ## Run the migration script
 
 Check where memory lives first: `inkentry status`. If it shows a server, skip
