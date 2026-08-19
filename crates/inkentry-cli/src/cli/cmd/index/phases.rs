@@ -75,7 +75,7 @@ async fn wait_for_embedder(
                     announced = true;
                 }
             }
-            capability::Tier::Offline => {
+            capability::Tier::Offline(_) => {
                 offline_probes += 1;
                 if offline_probes >= EMBED_WAIT_MAX_OFFLINE_PROBES {
                     return tier;
@@ -639,7 +639,7 @@ mod tests {
 
         let started = std::time::Instant::now();
         let tier = wait_for_embedder(&cfg_for(dead_url), TEST_BACKOFF, TEST_BACKOFF).await;
-        assert!(matches!(tier, capability::Tier::Offline));
+        assert!(matches!(tier, capability::Tier::Offline(_)));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
             "the offline give-up must be bounded"

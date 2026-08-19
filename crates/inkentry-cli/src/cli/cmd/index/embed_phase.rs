@@ -389,7 +389,7 @@ async fn run_embed_phase_with_backoff(
 ) -> Result<u64> {
     let (server_url, server_key) = match tier {
         Tier::Server { url, .. } => (url.clone(), cfg.bearer_for(url)?),
-        Tier::Offline => return Ok(0),
+        Tier::Offline(_) => return Ok(0),
     };
     // Refuse to append vectors from a different model into an existing index;
     // stamps provenance on a fresh/legacy DB.

@@ -136,7 +136,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             let tier = capability::get_tier(&cfg).await;
             match tier {
                 capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
-                capability::Tier::Offline => {
+                capability::Tier::Offline(_) => {
                     Some("[server not running - semantic search skipped]".to_string())
                 }
             }

@@ -7,7 +7,8 @@ use tokio::sync::OnceCell;
 use crate::config::Config;
 
 use super::diagnostics::{
-    ConnFailure, cert_trust_hint, error_chain, find_rustls_cause, record_explicit_probe_failure,
+    ConnFailure, OfflineReason, cert_trust_hint, error_chain, find_rustls_cause,
+    record_explicit_probe_failure,
 };
 use super::state::{Capabilities, EmbedderState, ServerLimits};
 use super::tier::Tier;
@@ -63,6 +64,29 @@ fn read_server_port_file() -> Option<u16> {
 
 static TIER: OnceCell<Tier> = OnceCell::const_new();
 
+/// The reason an *explicit* offline mode is in force, or `None` when the tier
+/// must be established by probing.
+///
+/// An explicit offline mode (config `mode = "offline"`, `INKENTRY_MODE=offline`,
+/// or the `INKENTRY_NO_SERVER=1` kill-switch) skips all server probes: the user
+/// has asked for a provable no-cloud run.
+///
+/// The *defaulted* offline (no `server_url` and no explicit `mode`) must NOT
+/// skip probing: loopback auto-discovery is inference-only (it never owns
+/// memory, ADR-004) and is what gives a local-only project semantic search.
+/// Conflating the two would silently disable the loopback embedder.
+///
+/// The kill-switch is checked first because it wins: while it is set, `mode`
+/// and `server_url` are inert, and advice that names either of them is advice
+/// the reader cannot act on.
+fn explicit_offline_reason(cfg: &Config) -> Option<OfflineReason> {
+    if inkentry_core::config::no_server_env_set() {
+        return Some(OfflineReason::KillSwitch);
+    }
+    (cfg.mode == Some(inkentry_core::config::SyncMode::Offline))
+        .then_some(OfflineReason::ModeOffline)
+}
+
 /// Return the cached capability tier for this process.
 ///
 /// On the first call, probes the server according to the following priority:
@@ -83,22 +107,13 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 /// = one config), but unsuitable for long-running daemons that may use multiple
 /// configs: they would always see the tier determined by the first call.
 pub async fn get_tier(cfg: &Config) -> &'static Tier {
-    // An *explicit* offline mode (config `mode = "offline"`,
-    // `INKENTRY_MODE=offline`, or the `INKENTRY_NO_SERVER=1` kill-switch) skips all
-    // server probes: the user has asked for a provable no-cloud run.
-    //
-    // The *defaulted* offline (no `server_url` and no explicit `mode`) must NOT
-    // skip probing: loopback auto-discovery is inference-only (it never owns
-    // memory, ADR-004) and is what gives a local-only project semantic search.
-    // Conflating the two would silently disable the loopback embedder.
-    let explicit_offline = inkentry_core::config::no_server_env_set()
-        || cfg.mode == Some(inkentry_core::config::SyncMode::Offline);
+    let explicit_offline = explicit_offline_reason(cfg);
     let url = cfg.server_url.clone();
     let server_ca = cfg.server_ca.clone();
     TIER.get_or_init(|| async move {
-        if explicit_offline {
+        if let Some(reason) = explicit_offline {
             tracing::debug!("sync mode is explicitly offline: skipping all server probes");
-            return Tier::Offline;
+            return Tier::Offline(reason);
         }
         probe(
             url.as_deref(),
@@ -117,10 +132,8 @@ pub async fn get_tier(cfg: &Config) -> &'static Tier {
 /// detached embed worker waiting for the embedder to finish loading) has to
 /// re-probe. Everything else should keep using [`get_tier`].
 pub async fn probe_tier_fresh(cfg: &Config) -> Tier {
-    let explicit_offline = inkentry_core::config::no_server_env_set()
-        || cfg.mode == Some(inkentry_core::config::SyncMode::Offline);
-    if explicit_offline {
-        return Tier::Offline;
+    if let Some(reason) = explicit_offline_reason(cfg) {
+        return Tier::Offline(reason);
     }
     probe(
         cfg.server_url.as_deref(),
@@ -137,12 +150,9 @@ const LOOPBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 
 async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     // ── 1. INKENTRY_NO_SERVER short-circuit ───────────────────────────────────
-    if matches!(
-        std::env::var("INKENTRY_NO_SERVER").as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
-    ) {
+    if inkentry_core::config::no_server_env_set() {
         tracing::debug!("INKENTRY_NO_SERVER set: skipping all server probes");
-        return Tier::Offline;
+        return Tier::Offline(OfflineReason::KillSwitch);
     }
 
     // ── 2. Explicit server_url from config / env ─────────────────────────────
@@ -206,6 +216,11 @@ fn discovery_fallback_port() -> Option<u16> {
 /// discovery independent of an explicit `server_url`: `local_first` always
 /// prefers the local embedder, even when `server_url` targets a remote.
 async fn probe_loopback() -> Tier {
+    // A daemon that answered but cannot be used (`LocalServerUnusable`) is a
+    // restart, not a missing install, so it must survive the fall-through to
+    // step 3b rather than be flattened into "no local server".
+    let mut reason = OfflineReason::NoLocalServer;
+
     // Step 3a: port file written by `inkentry server start`
     if let Some(port) = read_server_port_file() {
         let loopback_url = format!("http://127.0.0.1:{port}");
@@ -216,8 +231,8 @@ async fn probe_loopback() -> Tier {
         // Loopback is plaintext http: a custom CA is irrelevant here.
         let tier = probe_url(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true, None)
             .await
-            .unwrap_or(Tier::Offline);
-        if tier.is_server() {
+            .unwrap_or(Tier::Offline(OfflineReason::NoLocalServer));
+        if let Some(tier) = keep_offline_reason(tier, &mut reason) {
             return tier;
         }
         tracing::debug!("loopback probe on port {port} failed: falling back to default port");
@@ -226,19 +241,38 @@ async fn probe_loopback() -> Tier {
     // Step 3b: the default port
     let Some(port) = discovery_fallback_port() else {
         tracing::debug!("loopback auto-discovery: fallback disabled: offline mode");
-        return Tier::Offline;
+        return Tier::Offline(reason);
     };
     let default_url = format!("http://127.0.0.1:{port}");
     tracing::debug!("loopback auto-discovery: probing default {default_url}");
     let tier = probe_url(&default_url, LOOPBACK_PROBE_TIMEOUT, true, None)
         .await
-        .unwrap_or(Tier::Offline);
-    if tier.is_server() {
+        .unwrap_or(Tier::Offline(OfflineReason::NoLocalServer));
+    if let Some(tier) = keep_offline_reason(tier, &mut reason) {
         return tier;
     }
 
     tracing::debug!("loopback auto-discovery: no local server found: offline mode");
-    Tier::Offline
+    Tier::Offline(reason)
+}
+
+/// Pass a `Server` tier through; otherwise fold its offline reason into
+/// `reason` and report that discovery must continue.
+///
+/// Only [`OfflineReason::LocalServerUnusable`] is kept: it says a daemon
+/// answered and needs restarting, which no later step can rediscover once the
+/// probe has moved on. Every other loopback miss is the ordinary "nothing
+/// listening", already the starting value.
+fn keep_offline_reason(tier: Tier, reason: &mut OfflineReason) -> Option<Tier> {
+    match tier {
+        Tier::Server { .. } => Some(tier),
+        Tier::Offline(r) => {
+            if r == OfflineReason::LocalServerUnusable {
+                *reason = r;
+            }
+            None
+        }
+    }
 }
 
 /// Resolve the tier used specifically to route **inference** (embeddings +
@@ -292,10 +326,8 @@ enum CloudBranchProbe {
 /// [`get_inference_tier_fresh`]; see their docs for the routing rules. The two
 /// differ only in which probe serves the `cloud_first` branch.
 async fn inference_tier(cfg: &Config, cloud_branch: CloudBranchProbe) -> Tier {
-    let explicit_offline = inkentry_core::config::no_server_env_set()
-        || cfg.mode == Some(inkentry_core::config::SyncMode::Offline);
-    if explicit_offline {
-        return Tier::Offline;
+    if let Some(reason) = explicit_offline_reason(cfg) {
+        return Tier::Offline(reason);
     }
     if cfg.resolve_mode() == inkentry_core::config::SyncMode::CloudFirst {
         return match cloud_branch {
@@ -322,19 +354,27 @@ async fn probe_url(
     // anything. No opt-out: the fix is always "use https, or loopback".
     inkentry_core::config::validate_transport_url(url)?;
 
+    // Which server this probe was aimed at is what the offline advice turns
+    // on, and `auto_discovered` is the only thing that answers it here.
+    let unreached = if auto_discovered {
+        OfflineReason::NoLocalServer
+    } else {
+        OfflineReason::ExplicitServerUnavailable
+    };
+
     let builder =
         match inkentry_core::config::apply_server_ca(reqwest::Client::builder(), server_ca) {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!("could not load custom CA for server probe: {e}");
-                return Ok(Tier::Offline);
+                return Ok(Tier::Offline(unreached));
             }
         };
     let client = match builder.timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("could not build HTTP client for server probe: {e}");
-            return Ok(Tier::Offline);
+            return Ok(Tier::Offline(unreached));
         }
     };
 
@@ -358,7 +398,7 @@ async fn probe_url(
                              Restart the server (`inkentry server start`) or set \
                              INKENTRY_NO_SERVER=1 to suppress this probe."
                         );
-                        return Ok(Tier::Offline);
+                        return Ok(Tier::Offline(OfflineReason::LocalServerUnusable));
                     } else {
                         // Explicit server_url: surface as a hard error so the user
                         // gets actionable guidance before any command runs.
@@ -387,7 +427,7 @@ async fn probe_url(
                     resp.status()
                 );
             }
-            Ok(Tier::Offline)
+            Ok(Tier::Offline(unreached))
         }
         Err(e) => {
             if !auto_discovered {
@@ -413,7 +453,7 @@ async fn probe_url(
                     }
                 }
             }
-            Ok(Tier::Offline)
+            Ok(Tier::Offline(unreached))
         }
     }
 }
@@ -870,8 +910,8 @@ mod tests {
             // attempt loopback auto-discovery; the short-circuit must win.
             let tier = probe(None, None).await;
             assert!(
-                matches!(tier, Tier::Offline),
-                "INKENTRY_NO_SERVER={val} should force Tier::Offline, got {tier:?}"
+                matches!(tier, Tier::Offline(OfflineReason::KillSwitch)),
+                "INKENTRY_NO_SERVER={val} should force the kill-switch reason, got {tier:?}"
             );
         }
         unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
@@ -910,8 +950,12 @@ mod tests {
 
         let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, true, None).await;
         assert!(
-            matches!(result, Ok(Tier::Offline)),
-            "auto-discovered loopback with wrong dim must downgrade to Offline; got {result:?}"
+            matches!(
+                result,
+                Ok(Tier::Offline(OfflineReason::LocalServerUnusable))
+            ),
+            "a loopback server with the wrong dim is a daemon to restart, not a missing \
+             one; got {result:?}"
         );
     }
 
@@ -1465,7 +1509,13 @@ mod tests {
         };
 
         let first = get_tier(&cfg).await;
-        assert!(matches!(first, Tier::Offline), "got {first:?}");
+        assert!(
+            matches!(
+                first,
+                Tier::Offline(OfflineReason::ExplicitServerUnavailable)
+            ),
+            "got {first:?}"
+        );
         assert_eq!(
             explicit_probe_failure(),
             Some(ConnFailure::Unreachable),
@@ -1499,7 +1549,13 @@ mod tests {
 
         let url = format!("http://127.0.0.1:{port}");
         let result = probe_url(&url, REMOTE_PROBE_TIMEOUT, false, None).await;
-        assert!(matches!(result, Ok(Tier::Offline)), "got {result:?}");
+        assert!(
+            matches!(
+                result,
+                Ok(Tier::Offline(OfflineReason::ExplicitServerUnavailable))
+            ),
+            "got {result:?}"
+        );
         assert_eq!(
             explicit_probe_failure(),
             Some(ConnFailure::Unreachable),
@@ -1527,7 +1583,13 @@ mod tests {
 
         let url = format!("http://127.0.0.1:{port}");
         let result = probe_url(&url, std::time::Duration::from_millis(100), false, None).await;
-        assert!(matches!(result, Ok(Tier::Offline)), "got {result:?}");
+        assert!(
+            matches!(
+                result,
+                Ok(Tier::Offline(OfflineReason::ExplicitServerUnavailable))
+            ),
+            "got {result:?}"
+        );
         assert_eq!(
             explicit_probe_failure(),
             Some(ConnFailure::Unreachable),
@@ -1558,7 +1620,13 @@ mod tests {
             .await;
 
         let result = probe_url(&server.uri(), REMOTE_PROBE_TIMEOUT, false, None).await;
-        assert!(matches!(result, Ok(Tier::Offline)), "got {result:?}");
+        assert!(
+            matches!(
+                result,
+                Ok(Tier::Offline(OfflineReason::ExplicitServerUnavailable))
+            ),
+            "got {result:?}"
+        );
         assert_eq!(
             explicit_probe_failure(),
             None,
@@ -1586,7 +1654,10 @@ mod tests {
 
         let url = format!("http://127.0.0.1:{port}");
         let result = probe_url(&url, LOOPBACK_PROBE_TIMEOUT, true, None).await;
-        assert!(matches!(result, Ok(Tier::Offline)), "got {result:?}");
+        assert!(
+            matches!(result, Ok(Tier::Offline(OfflineReason::NoLocalServer))),
+            "got {result:?}"
+        );
         assert_eq!(
             explicit_probe_failure(),
             None,
@@ -1693,7 +1764,10 @@ mod tests {
             ..Default::default()
         };
         let tier = get_inference_tier(&cfg).await;
-        assert!(matches!(tier, Tier::Offline), "got {tier:?}");
+        assert!(
+            matches!(tier, Tier::Offline(OfflineReason::ModeOffline)),
+            "got {tier:?}"
+        );
     }
 
     // `get_inference_tier_fresh`'s `cloud_first` branch must re-probe the
