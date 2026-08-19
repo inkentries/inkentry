@@ -28,7 +28,7 @@ Use porcelain commands for:
 |-----------|---------|
 | `0` | Command succeeded; one or more results were emitted. |
 | `1` | No results found (not an error — treat as empty set). |
-| `2` | Hard error: a flag was missing, the DB was not found, or an I/O failure occurred. Diagnostics are written to stderr. `pull` is the one exception to "the DB was not found": see [Missing stores](#missing-stores). |
+| `2` | Hard error: a flag was missing, the DB was not found, or an I/O failure occurred. Diagnostics are written to stderr. `pull` receives rather than reads, so it creates a store instead: see [Missing stores](#missing-stores). |
 
 Scripts should distinguish `1` (empty) from `2` (broken) rather than treating any non-zero exit as fatal.
 
@@ -45,7 +45,8 @@ complete) leaves stdout empty. Everything else about the codes is unchanged.
 
 ### Missing stores
 
-`inkentry init` is the normal precondition for every memory command: it creates
+`inkentry init` is the normal precondition for the memory commands that use
+the store on disk: it creates
 the `.inkentry/` project directory the memory store lives in. A command that
 reads the store (`read-memory`) or only sends from it (`push`) exits `2` when
 that store is absent. An absent store is not an empty one: reporting it as exit

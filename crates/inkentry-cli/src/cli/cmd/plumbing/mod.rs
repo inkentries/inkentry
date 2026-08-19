@@ -200,7 +200,10 @@ fn resolve_memory_path(explicit_db: Option<&std::path::Path>, cfg: &Config) -> s
 /// entries" or "empty delta", and an absent store is neither. Skipped when
 /// `cloud_first` routes memory to a team server, which owns the store and
 /// leaves the local path a placeholder nothing opens.
-fn require_memory_store(mem_path: &std::path::Path, cfg: &Config) -> Result<()> {
+/// `path_flag` is the flag that command uses to name a store itself, so the
+/// remedy points at one the caller can actually reach: `push` resolves
+/// `--source` ahead of `--db`, which makes `--db` inert advice there.
+fn require_memory_store(mem_path: &std::path::Path, cfg: &Config, path_flag: &str) -> Result<()> {
     let routes_remote =
         cfg.resolve_mode() == crate::config::SyncMode::CloudFirst && cfg.server_url.is_some();
     if routes_remote || mem_path.exists() {
@@ -208,7 +211,7 @@ fn require_memory_store(mem_path: &std::path::Path, cfg: &Config) -> Result<()> 
     }
     anyhow::bail!(
         "No memory store found at {}.\n\
-         Run `inkentry init` in your project first, or pass an explicit --db.",
+         Run `inkentry init` in your project first, or point {path_flag} at a store that exists.",
         mem_path.display()
     )
 }
@@ -230,14 +233,14 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
         PlumbingCommand::PublishNotes(a) => return publish_notes::publish_notes(a).await,
         // The memory commands target memory.db and never read a chunk, so they
         // neither require an index nor take the project's identity from one.
-        // Checked here rather than inside `push` so the refusal cannot reach
-        // `sync`, which shares push's core but bootstraps a fresh checkout.
+        // Checked here rather than in `push_local_oneway`, which `sync` also
+        // travels: sync bootstraps a fresh checkout and must keep creating.
         PlumbingCommand::Push(a) => {
             let mem_path = a
                 .source
                 .clone()
                 .unwrap_or_else(|| resolve_memory_path(args.db.as_deref(), &cfg));
-            require_memory_store(&mem_path, &cfg)?;
+            require_memory_store(&mem_path, &cfg, "--source")?;
             return push::push(a, &mem_path, &cfg).await;
         }
         // Pull receives, so it may create: that is how a fresh checkout first
@@ -248,7 +251,7 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
         }
         PlumbingCommand::ReadMemory(a) => {
             let mem_path = resolve_memory_path(args.db.as_deref(), &cfg);
-            require_memory_store(&mem_path, &cfg)?;
+            require_memory_store(&mem_path, &cfg, "--db")?;
             return read_memory::read_memory(a, &mem_path, &cfg).await;
         }
         _ => {}

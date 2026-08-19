@@ -273,7 +273,7 @@ async fn cloud_first_push_does_not_refuse_an_absent_store() {
     assert_ne!(
         out.status.code(),
         Some(2),
-        "the cloud_first carve-out must hold; stderr={stderr}"
+        "pull creates in every mode, cloud_first included; stderr={stderr}"
     );
     let report = report(&out.stdout);
     assert_eq!(report["attempted"], 0, "report={report}; stderr={stderr}");
@@ -284,8 +284,11 @@ async fn cloud_first_push_does_not_refuse_an_absent_store() {
     );
 }
 
+// Pull has no carve-out to hold, since it never consults one: it creates in
+// every mode. This pins that `cloud_first` does not change that, so a later
+// refusal added to pull would have to break this deliberately.
 #[tokio::test]
-async fn cloud_first_pull_does_not_refuse_an_absent_store() {
+async fn cloud_first_pull_still_applies_without_a_local_store() {
     let server = MockServer::start().await;
     mount_team_health(&server).await;
     mount_since_one(&server, "teammate entry").await;
