@@ -13,49 +13,38 @@ registry claims to be.
 `projects`, a path-to-database mapping, and `project_deps`, the links between
 them that cross-project reads follow.
 
-### What it contains, and what puts things there
-
-Measured 2026-08-19, on the machine that has run the product longest:
-
-| | |
-| --- | ---: |
-| registered projects | 30 |
-| of those, throwaway fixtures under agent session scratchpads | 22 |
-| real projects | 7 |
-| `project_deps` rows | **0** |
+### What puts things in it
 
 **Registration is a side effect of `init` and `index`, and of nothing else**
-(`init.rs:91`, `index/mod.rs:153`, `index/phases.rs:323`). `inkentry link`
-does not register; it writes `project_deps`. So a user who has never run `link`
-still accumulates rows, and any agent that indexes a fixture writes into the
-developer's real global registry.
+(`init.rs:91`, `index/mod.rs:153`, `index/phases.rs:323`). `init` registers
+unconditionally, including under `--no-index` and before the database exists.
+`inkentry link` does not register at all; it writes `project_deps`.
 
-The predecessor's registry still exists beside it at
-`~/Library/Application Support/spelunk/registry.db`, with the same two-table
-schema, 319 projects and also 0 links. inkentry never opens it.
+Two consequences follow. A user who has never run `link` still accumulates
+rows, so the `projects` table fills up on its own while the link graph stays
+empty. And any process that runs `init` or `index` in a throwaway directory
+writes into the developer's real global registry, which is how agent test
+fixtures come to be registered alongside real work.
 
-### Three properties that decide the rest
+### Two properties that decide the rest
 
-**It records what was indexed, not what has memory.** Presence is a side effect
-of running `index`, so a repository whose memory was only ever added is absent.
-Nothing puts a project here on the strength of what it contains.
+**It never travels.** No mechanism carries it: not the git-notes carrier, not a
+team server, not a portable dump. It is written only by `init` and `index` on
+the machine they run on, so a new machine starts empty and re-accumulates only
+what it happens to adopt there.
 
-**It never travels.** No sync mechanism carries it: not the git-notes carrier,
-not a team server, not a portable dump. A new machine starts empty and
-re-accumulates only what it happens to index.
-
-**It is already declared disposable.** `docs/stability.md:247` classifies it
-as **Best-effort**, with no versioning and explicitly re-derivable by
+**It is already declared disposable.** `docs/stability.md:247` classifies it as
+**Best-effort**, with no versioning and explicitly re-derivable by
 re-registering. That classification is correct and this record does not weaken
 it.
 
-Together these mean the registry cannot answer "what projects does this user
-have", in principle rather than by accident, and that it fails at it silently.
-That is the finding the decisions below rest on: the problem is not that the
-registry is dirty, it is that it has been read as an inventory it was never
-able to be. That reading has already cost one design decision, and the
-migration script avoided it only because someone checked and built a filesystem
-scan instead.
+A machine-local store that nothing carries describes a machine, not a user. So
+the registry cannot answer "what projects does this person have" in principle
+rather than by accident, and it gives no sign that it cannot. That is the
+finding the decisions below rest on, and it is why the migration script scans
+the filesystem for stores rather than reading the registry: a migration is
+looking for stores that predate inkentry entirely, which by construction were
+never registered here.
 
 ## Decision
 
@@ -81,26 +70,36 @@ The `projects` table earns its place regardless, because
 `find_project_for_path` resolves a directory to its project and `link` cannot
 work without it.
 
-It is worth recording that the link graph is not currently in use: with
-`project_deps` empty in both registries, no cross-project read on this machine
-has ever reached anywhere extra. Whether ADR-003's feature earns its keep is a
-product question, out of scope here, and it should be taken on that evidence
-rather than on an assumption that the table is populated.
+**The two tables have different futures, and this record only settles the
+first.** `projects` is machine-local by nature: it maps this machine's paths to
+this machine's databases, and there is nothing in it another machine could use.
+`project_deps` is not obviously the same. A link between two projects is a
+statement about a person's or a team's work rather than about one checkout, and
+if it should ever follow a user across machines, a team server is the mechanism
+that already exists for carrying shared state. That makes link portability a
+question for the team-server surface, after v1, rather than a property of this
+store.
+
+Recorded because the table is empty today, so the question has never been
+forced: no cross-project read has yet reached anywhere extra. Whether ADR-003's
+feature earns its keep should be judged on that, and it is out of scope here.
 
 ### D2 - registration resolves a worktree to its main checkout
 
 A worktree and its main checkout are one project. That is the product's
 position everywhere else, and registration must not be the exception.
 
-The evidence says this is already true: 0 of inkentry's 30 registered roots are
-worktree-shaped, against a majority of the predecessor's 319. So the
-requirement is a **test that asserts it**, not a change that fixes it: register
-from inside a linked worktree and assert the row names the main checkout.
+Nothing currently asserts it. Registration canonicalises the project root
+(`init.rs:87`), and canonicalisation resolves symlinks, not worktrees, so the
+guarantee rests on callers happening to pass an already-resolved path rather
+than on the registration path enforcing it.
 
-If that test fails, route registration through the same resolution
-`find_project_dir` uses. Both outcomes are cheap. What is not acceptable is
-leaving it unasserted, because the predecessor's registry is a picture of what
-this looks like when it regresses.
+The requirement is therefore a **test**: register from inside a linked worktree
+and assert the row names the main checkout. If it passes, this decision is
+already satisfied by the tree and nothing more is owed. If it fails, route
+registration through the same resolution `find_project_dir` uses. Both outcomes
+are cheap; leaving it unasserted is what is not acceptable, because a
+regression here is invisible until someone reads the table.
 
 ### D3 - eviction stays in `autoclean`, and does not move into the read path
 
@@ -168,15 +167,10 @@ record.
   correctness fix, not tidying: today an unmounted volume reads as a deleted
   project.
 - **A `links` inspection and removal surface** is the follow-up D4 raises.
-- **The predecessor's registry is not inkentry's to clean.** It is a separate
-  file inkentry never opens, and it stays until the user deletes it. A line in
-  the upgrade docs, not a code path.
-- **Whether the registry should travel between a user's machines is a post-v1
-  question**, ruled so by the founder on 2026-08-19. It is raised by D1 rather
-  than answered by it: a machine-local store is why this cannot be an inventory
-  today, and making it portable would change that premise. Note that the two
-  candidate carriers are per-repository (git notes) and per-team (a server),
-  while the registry is per-user and spans repositories, so neither fits.
+- **Whether `project_deps` should follow a user across machines is a post-v1
+  question for the team-server surface**, per D1. `projects` is not part of
+  that question: it maps this machine's paths to this machine's databases and
+  has nothing another machine could use.
 - **None of these decisions alters a stored format, a wire contract or a
   documented guarantee.** They are free to land in any order and at any time,
   which is what the best-effort classification exists to buy. Sequencing is a
