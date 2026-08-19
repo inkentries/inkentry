@@ -382,8 +382,13 @@ emits one compact envelope per line, with no enclosing array and no commas.
 Parse accordingly: a reader written for one will not read the other. The
 examples below are `jsonl`.
 
+They were captured on an index built without a reachable embedder, which is
+why the memory payload carries no `score` and `token_count` is `0`. That is a
+real shape a consumer will meet, not a tidied one, and it is the conditional
+fields doing exactly what the tables below say: absent rather than null.
+
 ```json
-{"type":"code","fused_rank":1,"fused_score":0.01639344262295082,"corpus_rank":1,"code":{"chunk_id":1,"file_path":"src/auth.rs","language":"rust","node_type":"function","name":"validate_token","start_line":1,"end_line":4,"content":"pub fn validate_token(token: &str) -> bool {\n    !token.is_empty()\n}","distance":0.0000026024113,"from_graph":false,"governing_specs":[],"token_count":0,"project_name":null,"project_path":null,"summary":null}}
+{"type":"code","fused_rank":1,"fused_score":0.01639344262295082,"corpus_rank":1,"code":{"chunk_id":1,"file_path":"src/auth.rs","language":"rust","node_type":"function","name":"validate_token","start_line":1,"end_line":3,"content":"pub fn validate_token(token: &str) -> bool {\n    !token.is_empty()\n}","distance":0.0000026024113,"from_graph":false,"governing_specs":[],"token_count":0,"project_name":null,"project_path":null,"summary":null}}
 {"type":"memory","fused_rank":2,"fused_score":0.01639344262295082,"corpus_rank":1,"memory":{"id":"01a01a9a-4140-7cbb-8047-c624a5ecb8e4","kind":"decision","title":"Chose sqlite-vec over hnswlib","body":"No C++ dependency, single file.","tags":["storage"],"linked_files":[],"created_at":1787152712,"status":"active","distance":1e-6}}
 ```
 

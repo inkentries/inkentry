@@ -659,8 +659,8 @@ inkentry plumbing read-memory --kind decision --limit 5 | jq '{id, title}'
 ```
 
 ```json
-{"id":"01997c0e-8f21-7a4b-9c3d-2e5f8a1b4d60","title":"Chose sqlite-vec over hnswlib for vector search"}
-{"id":"01997c0e-9a03-7f18-8b52-71cd0e4a9f27","title":"Incremental index skips unchanged files via blake3 hash"}
+{"id":"01a01a9a-4140-7cbb-8047-c624a5ecb8e4","title":"Chose sqlite-vec over hnswlib for vector search"}
+{"id":"01a01a9a-51b7-7d02-9f3e-8ac41d60b95f","title":"Incremental index skips unchanged files via blake3 hash"}
 ```
 
 ---
