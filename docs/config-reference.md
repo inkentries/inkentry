@@ -28,9 +28,14 @@ Load order (later overrides earlier):
    directory (project-level, team-wide). Only `server_url`, `project_id`,
    `server_ca`, `mode`, `llm_url`, and `[index]` are read from this file; any
    other key in it is named in a warning on stderr and ignored.
-4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`,
-   `INKENTRY_PROJECT_ID`, `INKENTRY_SERVER_CA`, `INKENTRY_LLM_URL`,
-   `INKENTRY_LLM_MODEL`, `INKENTRY_MODE`.
+4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_PROJECT_ID`,
+   `INKENTRY_SERVER_CA`, `INKENTRY_LLM_URL`, `INKENTRY_LLM_MODEL`,
+   `INKENTRY_MODE`.
+
+`INKENTRY_SERVER_KEY` is deliberately not in that list: it overrides no field
+and takes no part in the load. It is read at request time, when the bearer for
+a given server is resolved (see
+[`server_key`](#server_key-not-a-field-in-either-file) below).
 
 A variable that is **set** overrides the file even when its value is empty:
 `INKENTRY_LLM_URL=""` blanks a configured `llm_url` rather than falling through
@@ -224,41 +229,59 @@ that changes whether a configured [`llm_url`](#llm_url) keeps your code off a
 remote LLM. See
 [Third-party models → How inkentry finds an LLM](third-party-models.md#how-inkentry-finds-an-llm).
 
-### `server_key`
+### `server_key` (not a field, in either file)
 
-- **Type:** string, optional
-- **Default:** unset
-- **Env override:** `INKENTRY_SERVER_KEY`
+- **Type:** not read
+- **Default:** n/a
+- **Related env var:** `INKENTRY_SERVER_KEY` (standalone, see below)
 
-This field only resolves the **cloud-kind** bearer, used for inkentry cloud
-requests (`INKENTRY_SERVER_KEY` if set, otherwise the `[auth].access_token`
-written by `inkentry login`). It is **not** the effective credential for a
-self-hosted team `inkentry-server`: since the per-origin key scoping in
-ADR-071, that bearer is resolved separately, keyed by the server's origin, so
-a developer holding keys for two different self-hosted servers doesn't have
-them collide or leak into each other.
+**Neither config file has a `server_key` field.** A `server_key` line in
+`~/.config/inkentry/config.toml` is read for nothing, and so is one in
+`.inkentry/config.toml`. Neither is parsed, migrated, or rewritten: the value
+sits in the file untouched until you remove it yourself.
 
-A bare `server_key` left in your personal `~/.config/inkentry/config.toml` is
-migrated into your OS keychain (macOS Keychain, Linux Secret Service, Windows
-Credential Manager) and stripped from the file automatically the next time it
-loads; it is then migrated a second time, into the per-origin key store, the
-first time it's needed to authenticate a specific server.
+A file that still carries the line is **named on stderr** at load time, telling
+you to rotate the key it holds and where to put the replacement. The rest of
+the file loads normally and the command runs; the warning never refuses
+anything, and it goes to stderr so `--format json` output is unaffected.
 
-Prefer one of these instead of hand-editing this field:
+A credential that has been sitting in a plaintext file should be treated as
+exposed, which is why the message says to rotate rather than to move it.
+
+Store the credential in the secret store instead:
 
 - `inkentry auth set-key --server <url>` stores a per-server key directly in the
-  secret store (the key is read from stdin or an interactive prompt, never a
-  flag, so it never lands in shell history or `ps` output).
+  secret store (macOS Keychain, Linux Secret Service, Windows Credential
+  Manager, or an owner-only file store). The key is read from stdin or an
+  interactive prompt, never a flag, so it never lands in shell history or `ps`
+  output.
 - `inkentry auth list-servers` lists which server origins have a stored key
   (never prints key material).
-- `INKENTRY_SERVER_KEY` works everywhere, including CI, and always takes
-  precedence over both the per-origin store and `[auth]`.
+- `INKENTRY_SERVER_KEY` works everywhere, including CI. It is a **standalone
+  environment variable, not an override of a config field**: there is no field
+  for it to override. When set, it is the bearer for every request, ahead of
+  both the per-origin store and `inkentry login` tokens.
 
-Do **not** commit a `server_key` to `.inkentry/config.toml`: the project file
-does not accept this field at all (see
-[Project config fields](#inkentryconfigtoml-project-level)); a line present
-there anyway never resolves to a credential, and is named on stderr telling
-you to rotate it. See
+### How the bearer is resolved
+
+Two tiers, branched by the target server's origin:
+
+| Target | Order |
+|--------|-------|
+| inkentry cloud | `INKENTRY_SERVER_KEY`, then `[auth].access_token` from `inkentry login` |
+| any other `server_url` (self-hosted / team) | `INKENTRY_SERVER_KEY`, then the per-origin key store |
+
+Each kind consults only its own tier: a cloud request never reads the
+per-origin store, and a self-hosted request never reads `[auth]`. The
+per-origin scoping (ADR-071) is what lets one developer hold keys for two
+different self-hosted servers without them colliding or leaking into each
+other.
+
+An origin with no stored key resolves to **no bearer**. If the server requires
+one, the request fails and the error names
+`inkentry auth set-key --server <url>` as the fix. Nothing is migrated on your
+behalf, so a key stored by a client older than the per-origin scheme is not
+picked up: set it again with that one command. See
 [`inkentry auth`](commands.md#inkentry-auth) for the full command reference.
 
 ### `project_id`
@@ -309,8 +332,9 @@ org_id = "org_..."
 While `access_token` is unexpired, it is the source of the `Authorization:
 Bearer` token every inkentry cloud request sends; it does not apply to a
 self-hosted `server_url`, which resolves its own credential separately (see
-`server_key` above). `refresh_token` rotates an expired access token and backs
-organization switching. The file is written with `0600` permissions. This
+[How the bearer is resolved](#how-the-bearer-is-resolved) above).
+`refresh_token` rotates an expired access token and backs organization
+switching. The file is written with `0600` permissions. This
 table is not read from `.inkentry/config.toml`.
 
 Every field is optional: a partial table (for example a login without an org,
@@ -382,6 +406,12 @@ the file is committed the value is already in the history and nothing the
 client does can take it back. The person holding the file is the only one who
 can rotate the credential, so staying silent would keep it from the one reader
 who could act. The removed `memory_server_key` alias is treated the same way.
+
+**The personal `~/.config/inkentry/config.toml` is read the same way.** It has
+no `server_key` field either, and a line there is likewise not read, named on
+stderr, and left in the file for you to remove. Neither file's value is ever
+parsed or migrated into the secret store.
+
 Use `inkentry auth set-key --server <url>` (or `INKENTRY_SERVER_KEY` in CI) to
 set a shared team credential per developer instead.
 
@@ -409,8 +439,9 @@ llm_context_length = 8192
 store_in_git_notes = true
 ```
 
-Written for you by `inkentry login` (the `[auth]` table) and by the one-time
-`server_key` migration; you don't normally hand-edit either.
+The `[auth]` table is written for you by `inkentry login`; you don't normally
+hand-edit it. Nothing else writes this file on your behalf: credentials go to
+the secret store via `inkentry auth set-key`, never here.
 
 ---
 
@@ -425,9 +456,10 @@ relocation option.
 loopback server, and never read from either TOML file.
 
 An unrecognised key parses without error and does nothing. In
-`.inkentry/config.toml` it is named in a warning; in the personal config it is
-silent, so check spelling against the field list above if a setting there
-appears to have no effect.
+`.inkentry/config.toml` every such key is named in a warning; in the personal
+config only `server_key` is (see above), and the rest are silent, so check
+spelling against the field list above if a setting there appears to have no
+effect.
 
 ---
 
@@ -436,7 +468,7 @@ appears to have no effect.
 | Variable | Overrides / effect |
 |----------|--------------------|
 | `INKENTRY_SERVER_URL` | `server_url` |
-| `INKENTRY_SERVER_KEY` | `server_key` (takes precedence over the per-origin secret store and `inkentry login` tokens) |
+| `INKENTRY_SERVER_KEY` | Bearer credential for `server_url`. Standalone: there is no `server_key` field for it to override. Takes precedence over both the per-origin secret store and `inkentry login` tokens. |
 | `INKENTRY_PROJECT_ID` | `project_id` |
 | `INKENTRY_SERVER_CA` | `server_ca` |
 | `INKENTRY_LLM_URL` | `llm_url` |
@@ -459,6 +491,6 @@ field here.
 ## What's next
 
 - [Stability contract](stability.md) - which of these keys semver freezes, which file each may be set in, and the deprecation policy for removing one
-- [Server setup](server-setup.md) - `server_url` / `server_key` in a team deployment
+- [Server setup](server-setup.md) - `server_url` and the shared server key in a team deployment
 - [Project memory](memory.md) - `store_in_git_notes` and memory backends
 - [Commands reference](commands.md) - `-c, --config` and per-command overrides

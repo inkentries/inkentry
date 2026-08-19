@@ -166,8 +166,8 @@ version. Use `GET /v1/health` for the server's real version.
 [Config reference](config-reference.md).
 
 **Also stable, and just as load-bearing: which file a key may be set in.** A key
-is not simply "supported"; it is supported in a specific place. Three keys are
-called out by name, because each is one a reader would otherwise reasonably
+is not simply "supported"; it is supported in a specific place. Three names are
+called out below, because each is one a reader would otherwise reasonably
 guess wrong about, and each restriction is part of the contract:
 
 - `server_url` is **ignored in the global personal config**
@@ -176,17 +176,25 @@ guess wrong about, and each restriction is part of the contract:
   `INKENTRY_SERVER_URL`. Everyone working on a project needs the same team
   server, which a per-developer file cannot guarantee. A global config that
   still sets it loads fine; the value is discarded.
-- `server_key` is **ignored in the project config** (`.inkentry/config.toml`). A
-  repository must never be able to hand a secret to whoever clones it. Use
-  `inkentry auth set-key --server <url>`, `inkentry login`, or
-  `INKENTRY_SERVER_KEY`.
+- `server_key` is **not a config key at all, in either file**. It is ignored in
+  the checked-in `.inkentry/config.toml` and ignored in the personal
+  `~/.config/inkentry/config.toml` alike. A repository must never be able to
+  hand a secret to whoever clones it, and a plaintext file is not a credential
+  store on anyone's machine, so there is no file the field is honoured in. A
+  file that still carries the line loads normally for its other keys, and the
+  line is **named on stderr with an instruction to rotate the key**: the value
+  has been sitting in plaintext, so it is treated as exposed rather than
+  relocated. Nothing reads it, nothing migrates it, and nothing rewrites the
+  file, so removing the line is yours to do. The credential belongs in the
+  secret store: `inkentry auth set-key --server <url>`, `inkentry login` for
+  inkentry cloud, or `INKENTRY_SERVER_KEY`.
 - `llm_url` reads from **both** files, project winning over personal, and
   `INKENTRY_LLM_URL` winning over both. A team endpoint is usually one approved
   provider rather than a developer's own machine, so it is worth stating once
   for the project, and anyone running a local model still outranks it from
   their personal file or the environment. Its credential does **not** follow it
   into either file (`inkentry auth set-key --llm` or `INKENTRY_LLM_KEY`), on the
-  same reasoning as `server_key`.
+  same reasoning that keeps `server_key` out of both.
 
 `mode` reads from **both** files, project winning over personal,
 because it names no host and so cannot route anything anywhere the project
@@ -199,18 +207,33 @@ Beyond those three:
   still loads. A key ignored because it is in the wrong file behaves the same
   way: the rest of the file is unaffected. In `.inkentry/config.toml` an ignored
   key is also **named on stderr**, which changes nothing about what loads. A
-  key that names a credential is named too, and says to rotate it: the file is
-  committed, so the value is already in the repository's history.
+  key that names a credential is named too, and says to rotate it: for the
+  committed project file because the value is already in the repository's
+  history, and for `server_key` in the personal file because it has been at
+  rest in plaintext. In the personal config, `server_key` is the only ignored
+  key that is named; the rest are silent.
 - The **project-level allowlist** is itself stable. A checked-in
   `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
   `server_ca`, `mode`, `llm_url`, and `[index]`. Adding a key to that allowlist is additive
   and allowed; removing one is a breaking change.
 - Environment variable overrides (`INKENTRY_*`) are stable on the same terms as
   the keys they override. They are not subject to the file restrictions above:
-  `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`, and `INKENTRY_LLM_URL` all take
-  effect wherever they are set. What a variable set to an **empty** value does
-  is documented in [Config reference](config-reference.md) but is not frozen
-  here.
+  `INKENTRY_SERVER_URL` and `INKENTRY_LLM_URL` take effect wherever they are
+  set. `INKENTRY_SERVER_KEY` is stable on its own terms rather than a key's,
+  since it overrides no field: it is the standalone bearer credential for
+  `server_url`, read when a request's credential is resolved rather than when
+  the config is loaded, and it outranks both the per-origin secret store and
+  `inkentry login` tokens. What a variable set to an **empty** value does is
+  documented in [Config reference](config-reference.md) but is not frozen here.
+
+- **Credential resolution is two tiers, and the order is part of the
+  contract.** For a request to `server_url`: `INKENTRY_SERVER_KEY`, then the
+  per-origin key store written by `inkentry auth set-key --server <url>` (for
+  an inkentry cloud origin, the `[auth]` token pair from `inkentry login` takes
+  that second place instead). There is no third tier and no fallback below
+  those: an origin with no stored key resolves to no bearer, and the resulting
+  authentication failure names `inkentry auth set-key --server <url>`. No key
+  is ever migrated between tiers or lifted out of a file on your behalf.
 
 ### Deprecation policy
 
