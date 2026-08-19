@@ -23,6 +23,11 @@ Index: 8226 files, 27734 chunks, 0 embeddings
 Server: http://127.0.0.1:7777  ✓  (auto-started)
 ```
 
+> The port above is what the tool actually printed when this was captured. The
+> default moved to 4655 on 2026-08-19 ([ADR-089](089-default-port-range.md)).
+> The transcript is left exactly as recorded, because it is evidence for the
+> defect this ADR exists to fix rather than guidance to follow.
+
 and then, five minutes later, a server resident at roughly 800MB doing 0% CPU
 and 0% GPU, with `spelunk status` reporting `Embeddings: 0`.
 

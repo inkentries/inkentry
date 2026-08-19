@@ -7,6 +7,15 @@
 > mechanically excluded). The systemd unit, dedicated user, credential handling,
 > and sandboxing decisions in this ADR remain in force.
 
+> **The port in the examples below is out of date (2026-08-19).** The systemd
+> unit, the Docker bridge discussion and the health-check probe all show 7777,
+> which was the default when this was written. The defaults have since moved to
+> the 465x range, 4658 for a team deployment, because 7777 and 7778 are
+> registered to common game servers. See
+> [ADR-089](089-default-port-range.md). The commands
+> here still work if you pass the port explicitly, but do not copy 7777 as
+> though it were the current default.
+
 **Date:** 2026-07-05
 **Deciders:** founder (Johan), architect
 **Trigger:** founder review on PR #516. The pre-v1.0 server

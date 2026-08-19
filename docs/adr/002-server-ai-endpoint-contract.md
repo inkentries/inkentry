@@ -185,7 +185,9 @@ Shipped in v0.8 behind PR #260. `spelunk memory harvest` routes all LLM calls th
 > `server_url` (use `https://`, or a loopback host), and `api_base_url` /
 > `lm_studio_url` are now parsed but ignored rather than still serving
 > `explore` and `index --summarize`. All inference routes through
-> `spelunk-server`. For current `server_url` configuration see
+> `spelunk-server`. The `:7777` in the example below is also stale: the
+> defaults moved to the 465x range on 2026-08-19, see
+> [ADR-089](089-default-port-range.md). For current `server_url` configuration see
 > [Team setup](../getting-started.md#team-setup-shared-memory-with-spelunk-server).
 
 If you previously used `lm_studio_url` (or `api_base_url`) in your config for
