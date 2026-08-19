@@ -15,16 +15,17 @@ now carries a pointer here.
 The default listener was 7777, with auto-start walking the ten ports above it
 when that one was taken.
 
-**7777 and 7778 are squatted on developer machines** by Unreal-engine dedicated
+**7777 and 7778 are registered on developer machines** by Unreal-engine dedicated
 servers, Terraria and ARK. That is a collision with exactly the audience this
-product is for: people who write code on the machine they also play on. It is
-not a hypothetical clash with a registry entry nobody honours; it is software
-that is actually listening.
+product is for: people who write code on the machine they also play on, and the
+prior claim on those numbers is theirs rather than ours. It is not a
+hypothetical clash with a registry entry nobody honours; it is software that is
+actually listening.
 
 The ten-port walk made it worse rather than better. A machine that had asked
 for one port could end up with the daemon claiming a block of the range, and
 the block it walked into is the same range the neighbouring games use, so the
-walk could land the daemon on a *different* squatted number and take that one
+walk could land the daemon on a *different* registered number and take that one
 too.
 
 A second problem surfaced while looking at this: **the loopback daemon and a
