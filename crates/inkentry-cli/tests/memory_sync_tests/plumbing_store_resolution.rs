@@ -21,6 +21,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use inkentry_core::storage::MemoryStore;
+use inkentry_core::test_support::git_command;
 
 // No characters `encode_project_id` would percent-encode, so the mocked route
 // path can be matched literally.
@@ -267,10 +268,9 @@ async fn push_from_a_linked_worktree_uses_the_main_worktree_store() {
     seed_store(&global_mem, "global store entry");
 
     let wt_root = tmp.path().join("linked");
-    let status = std::process::Command::new("git")
+    let status = git_command(&main_root)
         .args(["worktree", "add", "-b", "feat"])
         .arg(&wt_root)
-        .current_dir(&main_root)
         .status()
         .expect("run git worktree add");
     assert!(status.success(), "git worktree add failed");
