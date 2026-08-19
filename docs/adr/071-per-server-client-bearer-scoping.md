@@ -1,5 +1,21 @@
 # ADR-071: Per-server scoping of the client bearer credential
 
+> **Partially superseded by [ADR-088](088-retire-legacy-server-key-tiers.md) (2026-08-19).**
+> The legacy flat `server_key` tier and its transient migration, kept alive below
+> D1's map, are removed. Credential resolution is two tiers, not three. Wherever
+> this record describes a third tier, a migrate-on-read, or a "pending migration"
+> notice, ADR-088 governs.
+>
+> **Also partially superseded by
+> [ADR-090](090-credential-removal-surface.md) (2026-08-19).** D3's
+> `logout --servers` and `logout --server <url>` flags are removed and their
+> capability moves to `inkentry auth remove-key`. D3's reasoning is unchanged:
+> the flags moved, the scoping argument did not.
+>
+> The identifiers below are the pre-rename ones:
+> `SPELUNK_SERVER_KEY` is today's `INKENTRY_SERVER_KEY`, and `spelunk auth` is
+> today's `inkentry auth`.
+
 **Date:** 2026-07-16
 **Deciders:** founder (Johan); architect
 **Relationship to prior ADRs:** operates strictly inside
@@ -142,17 +158,22 @@ same disambiguation for free.
      per-invocation override.
   2. `[auth].access_token`, unchanged; its own refresh lifecycle, untouched
      by this ADR.
-  The server-key map and the legacy flat entry are never consulted for this
-  kind; a cloud request has no reason to touch either secret-store item.
+  The server-key map is never consulted for this kind; a cloud request has no
+  reason to touch it.
 - **Server-key kind** (any other origin), highest first:
   1. `SPELUNK_SERVER_KEY` environment variable, unchanged.
   2. `server_keys[origin]`, the map from D1, looked up by the normalized
      origin of the resolved `server_url`.
-  3. The legacy flat secret-store `server_key` entry, but only transiently:
+  3. ~~The legacy flat secret-store `server_key` entry, but only transiently:
      the first time this tier answers for an origin, it is migrated into the
      map and then removed, rather than read indefinitely alongside it (see
-     "Migration and back-compat" below).
+     "Migration and back-compat" below).~~
   `[auth].access_token` is never consulted for this kind.
+
+  **Item 3 is removed by [ADR-088](088-retire-legacy-server-key-tiers.md) D2.**
+  Server-key-kind resolution is `INKENTRY_SERVER_KEY`, then
+  `server_keys[origin]`, and nothing below. An origin the map has no entry for
+  resolves to no bearer.
 
 This answers "wouldn't this mean we're back to two keychain prompts?": the
 previous draft's flat four-tier chain could touch the map, then the legacy
@@ -187,8 +208,8 @@ Three commands, of which two are new:
   which is the same class of leak D4 closes for the committed file. The URL
   is normalized to its origin before storage, so `set-key` and resolution
   cannot disagree about spelling.
-- **`spelunk auth list-servers`** prints the origins present in the map, and
-  whether a legacy flat key also exists. It never prints key material, not
+- **`spelunk auth list-servers`** prints the origins present in the map, ~~and
+  whether a legacy flat key also exists~~. It never prints key material, not
   even truncated: a listing surface that shows secret prefixes trains users
   to have secrets on screen.
 - **`spelunk logout`** (existing) is scoped down to exactly the credential it
@@ -203,15 +224,26 @@ Three commands, of which two are new:
   behavior the founder review rejected: a developer recovering from a broken
   cloud login should not silently lose the server key(s) they use on other
   projects. Clearing a server-key credential is now its own explicit action:
-  - **`spelunk logout --servers`** clears the whole map and the legacy flat
+  - ~~**`spelunk logout --servers`** clears the whole map and the legacy flat
     entry (the "remove everything" behavior the previous draft made
-    automatic, now opt-in).
-  - **`spelunk logout --server <url>`** clears only that one origin's
+    automatic, now opt-in).~~
+  - ~~**`spelunk logout --server <url>`** clears only that one origin's
     credential (map entry, or the legacy entry if that origin is still
-    served by it).
+    served by it).~~
   Bare `logout`, when server keys are present, prints how many are stored and
   names the flag that removes them; it takes no destructive action on them
   itself.
+
+  Two later records change this. As of
+  [ADR-088](088-retire-legacy-server-key-tiers.md) there is no legacy flat entry
+  left to clear, so the map is all either flag ever reached. As of
+  [ADR-090](090-credential-removal-surface.md) D6 **both flags are removed
+  outright**, with no alias and no shim, and their capability moves to
+  `inkentry auth remove-key --server <url>` and `--all-servers`. D3's reasoning
+  is unchanged and is what ADR-090 carries to its conclusion: clearing a
+  server-key credential is its own explicit action rather than a side effect of
+  a cloud logout. Bare `logout` is unchanged, and its residual-key notice now
+  names `auth remove-key`.
 
 This is the first production caller of the `save_server_key`-shaped
 persistence path, which until now existed only for its tests, and it retires
@@ -321,6 +353,12 @@ left to say it once the load-time path is gone.
   single-server user to be migrated automatically the first time they run
   any command against their server post-upgrade, without this codebase
   carrying the fallback-read indefinitely.
+
+  **This migration is removed by
+  [ADR-088](088-retire-legacy-server-key-tiers.md) D3.** A stored flat key is not
+  migrated on the way out. The origin gets no bearer and the failure names
+  `inkentry auth set-key --server <url>`. The founder's "deprecate the migration
+  at create time" framing, quoted above, is exactly what ADR-088 executes.
 - **No origin-guessing is needed at migration time.** `bearer_for(server_url)`
   already knows the origin it is resolving for when it runs the migration
   above, so there is no ambiguity about which server a bare legacy key
