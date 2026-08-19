@@ -544,9 +544,18 @@ fn publish_notes_exit_codes() {
 
 use plumbing_helpers::{
     init_local_project, inkentry_bin_in, mount_memory_batch, mount_memory_since, mount_team_health,
-    seed_memory_note, write_team_config,
+    register_sqlite_vec, seed_memory_note, write_team_config,
 };
 use wiremock::MockServer;
+
+// An empty delta needs a store that is genuinely there and holds nothing. An
+// absent store is a different case with a different code: `push` refuses it
+// with exit 2 (see `absent_memory_store.rs`).
+fn create_empty_memory_store(proj: &Path) {
+    register_sqlite_vec();
+    let mem_path = proj.join(".inkentry").join("memory.db");
+    inkentry_core::storage::MemoryStore::open(&mem_path).expect("create empty memory.db");
+}
 
 // Return the single report object push/pull emit, asserting there is exactly
 // one. Their contract is one object per completed run.
@@ -684,6 +693,7 @@ async fn plumbing_push_nothing_to_push_is_exit_1_with_report() {
     let proj = TempDir::new().unwrap();
     init_local_project(proj.path());
     let cfg = write_team_config(proj.path(), &server.uri());
+    create_empty_memory_store(proj.path());
 
     let out = inkentry_bin_in(home.path())
         .current_dir(proj.path())
