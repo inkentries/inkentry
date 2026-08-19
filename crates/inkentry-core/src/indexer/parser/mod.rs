@@ -221,3 +221,52 @@ impl SourceParser {
         Ok(chunks)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SUPPORTED_LANGUAGES;
+
+    // Pinning this constant is an indirection, not a guarantee: it cannot tell
+    // whether the documented lists are right, only that nobody can change the
+    // set without being reminded they exist. `rich-formats` is checked with
+    // `cfg!` so both arms compile in either build and neither can rot unseen.
+    #[test]
+    fn supported_languages_pinned_against_documented_lists() {
+        let mut expected = vec![
+            "rust",
+            "python",
+            "javascript",
+            "jsx",
+            "typescript",
+            "tsx",
+            "go",
+            "java",
+            "c",
+            "cpp",
+            "json",
+            "html",
+            "css",
+            "hcl",
+            "php",
+            "ruby",
+            "csharp",
+            "kotlin",
+            "swift",
+            "sql",
+            "proto",
+            "markdown",
+            "text",
+            "notebook",
+        ];
+        if cfg!(feature = "rich-formats") {
+            expected.extend(["docx", "spreadsheet", "pdf"]);
+        }
+        assert_eq!(
+            SUPPORTED_LANGUAGES,
+            expected.as_slice(),
+            "SUPPORTED_LANGUAGES changed. Update the language lists in README.md \
+             (section 'Supported languages') and CLAUDE.md (section 'Supported \
+             Languages'), then update this expected array to match."
+        );
+    }
+}
