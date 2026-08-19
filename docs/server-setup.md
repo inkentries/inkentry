@@ -434,9 +434,11 @@ replaced.)
 > it reached git history, treat it as compromised: issue a new key on the server (e.g.
 > `openssl rand -hex 32` for a self-managed instance) and run `inkentry auth
 > set-key --server <url>` with the new value on every machine that had the old
-> one. A flat key from an even older install is picked up and migrated into
-> the per-server store automatically the first time it's needed; `auth
-> list-servers` notes when one is still pending migration.
+> Nothing migrates a key out of a config file for you: the line is named on
+> stderr and left where it is, so rotating and re-running `set-key` is the whole
+> recovery. A key stored by a client older than the per-origin scheme is not
+> picked up either; `auth list-servers` shows exactly which origins have a key,
+> and an origin missing from that list gets no bearer.
 
 By default a configured `server_url` runs in `local_first` mode: reads and
 writes stay in each developer's local `memory.db` and the server is a

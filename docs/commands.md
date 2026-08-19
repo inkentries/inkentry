@@ -750,11 +750,12 @@ plaintext anywhere. It lives in your operating system's secret store:
 - **Windows**: Credential Manager
 
 keyed by the server's origin, so keys for two different self-hosted servers
-never collide. A flat `server_key` from an install predating this scheme is
-migrated in automatically the first time it's needed for a given server; no
-action required. A `server_key` line in a project's checked-in
-`.inkentry/config.toml` is not read: a key belongs to a developer, not to a
-committed file. Each developer runs `inkentry auth set-key --server <url>`.
+never collide. Nothing is migrated into that store on your behalf: a flat key
+left by a client older than this scheme is not picked up, and neither is a
+`server_key` line in a config file. A key belongs to a developer, not to a
+committed file, so each developer runs `inkentry auth set-key --server <url>`
+once per server. If a server rejects the request because no key resolved, the
+error names that command.
 
 **Headless / CI / containers.** When no OS keychain backend is available, the
 credential never causes a hard failure:
@@ -792,7 +793,7 @@ inkentry auth list-servers
 |------------|-------|
 | `set-key --server <url>` | Store a bearer key for the given server, keyed by its origin (scheme + host + non-default port). |
 | `set-key --llm` | Store the credential for the configured `llm_url` chat-completions endpoint. A single entry: there is one LLM endpoint, not a set of them. |
-| `list-servers` | Print every server origin with a stored key, one per line. Never prints key material. Notes if a legacy flat key is still present and pending migration. It lists servers, so a stored LLM credential does not appear. |
+| `list-servers` | Print every server origin with a stored key, one per line, or `No server keys stored.` when the map is empty. Never prints key material. It lists servers, so a stored LLM credential does not appear. |
 
 `--server` and `--llm` are mutually exclusive, and exactly one is required.
 Either way the credential is read from stdin if piped, otherwise from an
@@ -857,7 +858,7 @@ inkentry logout [--servers | --server <url>]
 | Flag | Notes |
 |------|-------|
 | (none) | Clears only the `[auth]` cloud token pair. If any server keys are still stored, prints how many and how to clear them. |
-| `--servers` | Also clears every stored server key: the per-origin map and any legacy flat entry. |
+| `--servers` | Also clears every stored server key, by clearing the per-origin map. |
 | `--server <url>` | Also clears just the stored key for that one server's origin. Mutually exclusive with `--servers`. |
 
 ```bash
