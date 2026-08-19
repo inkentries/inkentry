@@ -1,8 +1,12 @@
-//! Explicit-probe failure classification and TLS error diagnostics.
+//! Why the tier came out offline, plus explicit-probe failure classification
+//! and TLS error diagnostics.
 //!
-//! Renders the full `source()` chain of a probe failure and distinguishes
-//! a transport-level miss from a TLS trust failure, so `status`/`check`
-//! can annotate the offline line with `[unreachable]` vs `[tls: <cause>]`.
+//! [`OfflineReason`] names the branch of the probe that produced
+//! `Tier::Offline`, and [`offline_search_hint`] turns it into the advice
+//! `status` prints. [`ConnFailure`] sub-classifies the one reason that has a
+//! transport story to tell: it renders the full `source()` chain of a probe
+//! failure and distinguishes a transport-level miss from a TLS trust failure,
+//! so the offline line reads `[unreachable]` vs `[tls: <cause>]`.
 
 /// Cause recorded for the most recent EXPLICIT (non-auto-discovered)
 /// `server_url` probe failure, set at most once per process (see
@@ -140,6 +144,62 @@ fn describe_rustls_error(e: &rustls::Error) -> String {
     }
 }
 
+/// Why the probe resolved to `Tier::Offline`. Carried on the tier itself
+/// rather than recorded on the side, because the advice `status` prints is
+/// only correct for the branch that actually fired: while
+/// `INKENTRY_NO_SERVER` is set no URL is ever read, so telling that user to
+/// configure one recommends an action guaranteed not to work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfflineReason {
+    /// `INKENTRY_NO_SERVER=1`. Outranks every other setting: the probe stops
+    /// before `mode` or `server_url` is consulted.
+    KillSwitch,
+    /// `mode = "offline"` in config, or `INKENTRY_MODE=offline`.
+    ModeOffline,
+    /// Loopback auto-discovery found no local daemon to use.
+    NoLocalServer,
+    /// A local daemon answered, but its embeddings are a different dimension
+    /// than this build reads, so it was ignored.
+    LocalServerUnusable,
+    /// An explicitly configured `server_url` did not serve the health probe.
+    /// `ConnFailure` carries how, when the failure was at transport level.
+    ExplicitServerUnavailable,
+}
+
+/// The bracketed suffix `status` appends to its offline `search` line,
+/// including the two spaces that separate it from `text`.
+///
+/// `failure` is read only for [`OfflineReason::ExplicitServerUnavailable`],
+/// the one reason with a transport story; a reachable server answering non-2xx
+/// leaves it `None` and renders as `[unreachable]`.
+///
+/// `server_url` appears in exactly one branch. It is the team-server feature,
+/// so it is the wrong answer for a solo user (whose semantic search comes from
+/// the local daemon) and an inert one under either explicit-offline setting.
+pub fn offline_search_hint(reason: OfflineReason, failure: Option<ConnFailure>) -> String {
+    match reason {
+        OfflineReason::KillSwitch => {
+            "  [INKENTRY_NO_SERVER is set: unset it to enable semantic search]".to_string()
+        }
+        OfflineReason::ModeOffline => {
+            "  [offline mode is on: remove mode = \"offline\" to enable semantic search]"
+                .to_string()
+        }
+        OfflineReason::NoLocalServer => "  [run `inkentry server start` for semantic search, \
+             or set server_url to share a team server]"
+            .to_string(),
+        OfflineReason::LocalServerUnusable => {
+            "  [the local server embeds at a different dimension than this build reads: \
+             run `inkentry server stop`, then `inkentry server start`]"
+                .to_string()
+        }
+        OfflineReason::ExplicitServerUnavailable => match failure {
+            Some(ConnFailure::Tls(cause)) => format!("  [tls: {cause}]"),
+            _ => "  [unreachable]".to_string(),
+        },
+    }
+}
+
 /// Hint appended to a TLS WARN when `server_ca` / `INKENTRY_SERVER_CA` is
 /// configured: the two classic server-setup.md client-trust traps, so a user
 /// does not have to rediscover them by trial and error.
@@ -154,6 +214,108 @@ pub(crate) fn cert_trust_hint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── offline_search_hint: one suggestion per reason ───────────────────────
+
+    const REASONS: [OfflineReason; 5] = [
+        OfflineReason::KillSwitch,
+        OfflineReason::ModeOffline,
+        OfflineReason::NoLocalServer,
+        OfflineReason::LocalServerUnusable,
+        OfflineReason::ExplicitServerUnavailable,
+    ];
+
+    // The defect this replaces was one hint printed alongside every offline
+    // tier. Asserting a single message would pass while that coupling stayed
+    // broken, so the suggestions must be distinguishable from each other.
+    #[test]
+    fn every_reason_gets_its_own_suggestion() {
+        let mut seen: Vec<String> = Vec::new();
+        for reason in REASONS {
+            let hint = offline_search_hint(reason, None);
+            assert!(
+                !seen.contains(&hint),
+                "{reason:?} repeats a suggestion already given for another reason: {hint}"
+            );
+            seen.push(hint);
+        }
+    }
+
+    // While the kill-switch is set the probe returns before any URL is read,
+    // so `server_url` cannot change the outcome. Naming it is advice that
+    // provably does nothing.
+    #[test]
+    fn kill_switch_names_the_variable_and_never_server_url() {
+        let hint = offline_search_hint(OfflineReason::KillSwitch, None);
+        assert!(hint.contains("INKENTRY_NO_SERVER"), "{hint}");
+        assert!(hint.contains("unset"), "{hint}");
+        assert!(!hint.contains("server_url"), "{hint}");
+    }
+
+    // `mode = "offline"` is the other explicit opt-out, and it is equally
+    // unmoved by a `server_url`.
+    #[test]
+    fn mode_offline_names_the_setting_and_never_server_url() {
+        let hint = offline_search_hint(OfflineReason::ModeOffline, None);
+        assert!(hint.contains("mode = \"offline\""), "{hint}");
+        assert!(!hint.contains("server_url"), "{hint}");
+    }
+
+    // The ordinary case. Semantic search for a solo user comes from the local
+    // daemon; `server_url` is the team-server feature and may only follow.
+    #[test]
+    fn no_local_server_leads_with_the_local_daemon() {
+        let hint = offline_search_hint(OfflineReason::NoLocalServer, None);
+        let daemon = hint
+            .find("inkentry server start")
+            .unwrap_or_else(|| panic!("must offer the local daemon: {hint}"));
+        let url = hint
+            .find("server_url")
+            .unwrap_or_else(|| panic!("must offer the team server too: {hint}"));
+        assert!(daemon < url, "server_url must not come first: {hint}");
+    }
+
+    // A running daemon this build cannot read from is a restart, not a
+    // configuration change, and never a reason to reach for a team server.
+    #[test]
+    fn local_server_unusable_asks_for_a_restart_not_a_remote() {
+        let hint = offline_search_hint(OfflineReason::LocalServerUnusable, None);
+        assert!(hint.contains("inkentry server stop"), "{hint}");
+        assert!(hint.contains("inkentry server start"), "{hint}");
+        assert!(!hint.contains("server_url"), "{hint}");
+    }
+
+    // The explicit-server branch keeps the `[tls: <cause>]` / `[unreachable]`
+    // annotation, and reads `ConnFailure` only there: a TLS cause recorded
+    // for some other offline reason would be a mislabel.
+    #[test]
+    fn explicit_server_renders_the_transport_failure() {
+        let tls = offline_search_hint(
+            OfflineReason::ExplicitServerUnavailable,
+            Some(ConnFailure::Tls("certificate expired".to_string())),
+        );
+        assert_eq!(tls, "  [tls: certificate expired]");
+
+        for failure in [None, Some(ConnFailure::Unreachable)] {
+            let hint = offline_search_hint(OfflineReason::ExplicitServerUnavailable, failure);
+            assert_eq!(hint, "  [unreachable]");
+        }
+    }
+
+    #[test]
+    fn a_transport_failure_never_leaks_into_another_reason() {
+        let failure = Some(ConnFailure::Tls("certificate expired".to_string()));
+        for reason in REASONS {
+            if reason == OfflineReason::ExplicitServerUnavailable {
+                continue;
+            }
+            let hint = offline_search_hint(reason, failure.clone());
+            assert!(
+                !hint.contains("certificate expired"),
+                "{reason:?} rendered an explicit-probe TLS cause: {hint}"
+            );
+        }
+    }
 
     // ── error_chain / find_rustls_cause / describe_rustls_error ─────────────
 
