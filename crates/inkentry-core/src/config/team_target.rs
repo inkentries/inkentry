@@ -55,9 +55,8 @@ fn non_blank(v: Option<String>) -> Option<String> {
 /// found by walking up from each path in `roots`.
 ///
 /// Deliberately does not go through [`super::Config::load`]: that resolves the
-/// secret store (an unanswerable keychain prompt in a detached daemon with no
-/// user session) and rewrites `config.toml` on the legacy-key migration path.
-/// Reading only the fields a target needs has neither side effect.
+/// secret store, which is an unanswerable keychain prompt in a detached daemon
+/// with no user session. Reading only the fields a target needs avoids it.
 ///
 /// A malformed or unreadable config contributes nothing rather than failing the
 /// whole resolution: one broken project must not disable the relay for every

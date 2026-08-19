@@ -689,7 +689,6 @@ async fn cloud_first_rejects_non_loopback_http() {
         server_url: Some("http://team-server:4655".to_string()),
         project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
         mode: Some(SyncMode::CloudFirst),
-        server_key: Some("secret".to_string()),
         ..Default::default()
     };
     // `map(|_| ())` discards the non-`Debug` `Box<dyn MemoryBackend>` so
@@ -723,7 +722,6 @@ async fn cloud_first_rejects_spoofed_loopback_http() {
             server_url: Some(url.to_string()),
             project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
             mode: Some(SyncMode::CloudFirst),
-            server_key: Some("secret".to_string()),
             ..Default::default()
         };
         let err = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)

@@ -147,35 +147,40 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     );
 }
 
-/// Migration end-to-end through the real binary and the real (file-backed)
-/// secret store: a legacy flat key planted the way a pre-ADR-071 client
-/// would have left it (raw `KEY_SERVER_KEY` entry, no map) is picked up
-/// transparently on first use against a self-hosted `server_url`: the
-/// request still succeeds, and `auth list-servers` afterward shows it
-/// migrated into the per-origin map with the legacy tier gone. This is the
-/// "continues to work transparently on first use" claim from the ADR,
-/// verified by actually running the binary against a live (mock) server
-/// rather than only asserting on `Config::bearer_for`'s return value.
+// ADR-088 D2/D3, end to end through the real binary and the real
+// (file-backed) secret store: a flat key planted the way a pre-ADR-071 client
+// would have left it is read for nothing. The request goes out with no
+// `Authorization` header at all, the server's rejection names
+// `inkentry auth set-key --server <url>`, and nothing is migrated into the
+// per-origin map on the way past.
 #[tokio::test]
-async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
+async fn a_flat_key_from_an_older_client_is_not_migrated_and_the_failure_names_the_fix() {
     let server = MockServer::start().await;
-    mount_health_and_pull(&server).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/v1/health$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "ok",
+            "version": "test",
+            "capabilities": ["memory"],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/v1/projects/.+/memory/since$"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
 
     let home = TempDir::new().unwrap();
     let cfg_dir = TempDir::new().unwrap();
 
-    // Plant a legacy flat key exactly where a pre-ADR-071 `inkentry login`/
-    // plaintext-config migration would have left it: the file-backed
-    // secret-store entry named by `KEY_SERVER_KEY` ("server_key"), under the
-    // same isolated HOME `inkentry_bin_in` points every child process at.
-    // `auth set-key` itself only ever writes the new per-origin map, so
-    // there is no CLI surface to plant this pre-migration state: writing
-    // the secrets.toml file directly is the only way to simulate an
-    // upgrading (not fresh) install.
-    let secrets_path = home.path().join(".config").join("inkentry");
-    std::fs::create_dir_all(&secrets_path).unwrap();
+    // `auth set-key` only ever writes the per-origin map, so writing
+    // secrets.toml directly is the only way to simulate an upgrading (not
+    // fresh) install.
+    let secrets_dir = home.path().join(".config").join("inkentry");
+    std::fs::create_dir_all(&secrets_dir).unwrap();
     std::fs::write(
-        secrets_path.join("secrets.toml"),
+        secrets_dir.join("secrets.toml"),
         "server_key = \"sk-legacy-preupgrade\"\n",
     )
     .unwrap();
@@ -183,9 +188,7 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
     let config_path = write_server_config(cfg_dir.path(), "legacy");
     let index_db = cfg_dir.path().join("index.db");
 
-    // Empty pull exits 1 (empty delta); the wire request, not the exit code, is
-    // what this test inspects.
-    inkentry_bin_in(home.path())
+    let out = inkentry_bin_in(home.path())
         .env_remove("INKENTRY_SERVER_KEY")
         .env("INKENTRY_SERVER_URL", server.uri())
         .env("INKENTRY_PROJECT_ID", PROJECT_ID)
@@ -203,32 +206,24 @@ async fn legacy_flat_key_migrates_transparently_on_first_real_request() {
         .iter()
         .find(|r| r.url.path().ends_with("/memory/since"))
         .expect("server received a /memory/since request");
-    assert_eq!(
-        since_req
-            .headers
-            .get("authorization")
-            .map(|v| v.to_str().unwrap()),
-        Some("Bearer sk-legacy-preupgrade"),
-        "the legacy key must be sent transparently on first use"
+    assert!(
+        since_req.headers.get("authorization").is_none(),
+        "the flat key must not be sent as a bearer"
     );
 
-    // And it must now be visible as a migrated per-origin entry, with the
-    // legacy tier gone (D3/D1's "migrate, don't dual-read forever").
-    let out = inkentry_bin_in(home.path())
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains(&format!("inkentry auth set-key --server {}", server.uri())),
+        "the failure must name the fix, got:\n{stderr}"
+    );
+
+    // Nothing was migrated into the map on the way past.
+    inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
         .assert()
         .success()
-        .get_output()
-        .stdout
-        .clone();
-    let text = String::from_utf8(out).unwrap();
-    assert!(
-        text.contains(server.uri().as_str()) || text.contains(&server.address().to_string()),
-        "migrated origin must be listed:\n{text}"
-    );
-    assert!(
-        !text.contains("a legacy server key is also stored"),
-        "legacy tier must be gone after migration:\n{text}"
-    );
+        .stdout(predicates::prelude::predicate::str::contains(
+            "No server keys stored",
+        ));
 }

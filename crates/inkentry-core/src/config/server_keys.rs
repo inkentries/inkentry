@@ -1,29 +1,30 @@
 //! Per-origin server-key map (ADR-071 D1/D2).
 //!
-//! The client's bearer credential used to be a single flat `server_key`
-//! (`secret_store::KEY_SERVER_KEY`), which cannot represent a developer who
-//! holds keys for two different self-hosted `server_url`s (ADR-056's
-//! recommended multi-server topology). This module gives the credential a
-//! home keyed by the server it belongs to: a single secret-store entry
-//! (`KEY_SERVER_KEYS_MAP`) whose payload is a JSON object mapping normalized
-//! origin to key. One entry, not one per host, so granting keychain access
-//! once covers every server (see the module-level rationale in ADR-071 D1).
+//! The client's bearer credential used to be a single flat `server_key`,
+//! which cannot represent a developer who holds keys for two different
+//! self-hosted `server_url`s (ADR-056's recommended multi-server topology).
+//! This module gives the credential a home keyed by the server it belongs to:
+//! a single secret-store entry (`KEY_SERVER_KEYS_MAP`) whose payload is a JSON
+//! object mapping normalized origin to key. One entry, not one per host, so
+//! granting keychain access once covers every server (see the module-level
+//! rationale in ADR-071 D1).
 //!
 //! [`bearer_for`] is the resolution entry point: it decides the credential
 //! *kind* (cloud vs. self-hosted) from the target `server_url`'s origin
-//! before touching any store, so a given request only ever consults the
-//! tier(s) its own kind uses (ADR-071 D2). The legacy flat entry is migrated
-//! into the map lazily: the first time server-key-kind resolution needs a
-//! credential for an origin the map does not yet have.
+//! before touching any store, so a given request only ever consults the tier
+//! its own kind uses (ADR-071 D2). The flat entry that predated the map is
+//! gone, along with the migrate-on-read it was kept alive for (ADR-088 D2/D3):
+//! `inkentry auth set-key --server <url>` is the one way a key gets into the
+//! map.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
 use super::AuthTokens;
-use super::secret_store::{KEY_SERVER_KEY, SecretStore};
+use super::secret_store::SecretStore;
 
-/// Key name for the per-origin server-key map: a single secret-store entry
-/// distinct from the legacy flat [`KEY_SERVER_KEY`] (ADR-071 D1).
+/// Key name for the per-origin server-key map: one secret-store entry holding
+/// every origin's key (ADR-071 D1).
 pub const KEY_SERVER_KEYS_MAP: &str = "server_keys";
 
 /// Default inkentry cloud API origin. Overridable via `INKENTRY_CLOUD_URL`,
@@ -71,27 +72,10 @@ fn write_map(store: &dyn SecretStore, map: &HashMap<String, String>) -> Result<(
     store.set(KEY_SERVER_KEYS_MAP, &raw)
 }
 
-/// Resolve (and lazily migrate) the server-key-kind credential for `origin`
-/// (D2 tiers 2-3, non-cloud): a map hit wins; otherwise a legacy flat entry
-/// is migrated into the map and deleted in one step, then returned. Migration
-/// runs at most once per origin: once the map has an entry, the legacy tier
-/// is never consulted again for it.
+/// The server-key-kind credential for `origin` (D2's second tier, non-cloud):
+/// whatever the map holds for it, and nothing else.
 fn server_key_for_origin(origin: &str, store: &dyn SecretStore) -> Result<Option<String>> {
-    let mut map = read_map(store)?;
-    if let Some(key) = map.get(origin) {
-        return Ok(Some(key.clone()));
-    }
-    let Some(legacy) = store.get(KEY_SERVER_KEY)? else {
-        return Ok(None);
-    };
-    map.insert(origin.to_string(), legacy.clone());
-    write_map(store, &map)?;
-    store.delete(KEY_SERVER_KEY)?;
-    eprintln!(
-        "inkentry: migrated a legacy server key into the per-server key map for {origin}. \
-         Run `inkentry auth set-key --server <url>` for any other server you use."
-    );
-    Ok(Some(legacy))
+    Ok(read_map(store)?.remove(origin))
 }
 
 /// Resolve the effective bearer for a request to `server_url` (ADR-071 D2).
@@ -99,10 +83,12 @@ fn server_key_for_origin(origin: &str, store: &dyn SecretStore) -> Result<Option
 /// Branches on credential kind by origin before touching any store:
 /// * **Cloud kind** (origin matches [`DEFAULT_CLOUD_URL`] /
 ///   `INKENTRY_CLOUD_URL`): `INKENTRY_SERVER_KEY` env, then `[auth]`'s access
-///   token. The map and the legacy entry are never consulted.
+///   token. The map is never consulted.
 /// * **Server-key kind** (any other origin): `INKENTRY_SERVER_KEY` env, then
-///   the per-origin map, then (migrating on read) the legacy flat entry.
-///   `[auth]` is never consulted.
+///   the per-origin map. `[auth]` is never consulted.
+///
+/// An origin the map has no entry for resolves to no bearer; the fix is
+/// `inkentry auth set-key --server <url>` (ADR-088 D3).
 pub fn bearer_for(
     auth: Option<&AuthTokens>,
     server_url: &str,
@@ -132,31 +118,21 @@ pub fn set_key_for_origin(server_url: &str, key: &str, store: &dyn SecretStore) 
     Ok(origin)
 }
 
-/// `inkentry auth list-servers`: origins with a stored key (sorted), plus
-/// whether a legacy (not-yet-migrated) flat key is also present. Never
+/// `inkentry auth list-servers`: origins with a stored key, sorted. Never
 /// returns key material.
-pub fn list_origins(store: &dyn SecretStore) -> Result<(Vec<String>, bool)> {
-    let map = read_map(store)?;
-    let mut origins: Vec<String> = map.into_keys().collect();
+pub fn list_origins(store: &dyn SecretStore) -> Result<Vec<String>> {
+    let mut origins: Vec<String> = read_map(store)?.into_keys().collect();
     origins.sort();
-    let legacy = store.get(KEY_SERVER_KEY)?.is_some();
-    Ok((origins, legacy))
+    Ok(origins)
 }
 
-/// Count of stored server-key credentials: map entries plus one if a legacy
-/// entry is still present (used by bare `inkentry logout` to report what it
-/// left untouched, D3).
+/// Count of stored server-key credentials (used by bare `inkentry logout` to
+/// report what it left untouched, D3).
 pub fn count(store: &dyn SecretStore) -> Result<usize> {
-    let (origins, legacy) = list_origins(store)?;
-    Ok(origins.len() + usize::from(legacy))
+    Ok(list_origins(store)?.len())
 }
 
 /// `inkentry logout --servers`: clear the per-origin map.
-///
-/// Only the map. The legacy flat entry (and any plaintext remnant still in
-/// `config.toml`) is a separate concern with its own belt-and-braces cleanup
-/// in [`super::remove_server_key`]; callers that want both call both (see
-/// `inkentry logout`'s `--servers` handling).
 pub fn clear_all(store: &dyn SecretStore) -> Result<()> {
     store
         .delete(KEY_SERVER_KEYS_MAP)
@@ -165,20 +141,11 @@ pub fn clear_all(store: &dyn SecretStore) -> Result<()> {
 
 /// `inkentry logout --server <url>`: clear only that origin's credential.
 /// Returns the normalized origin that was cleared.
-///
-/// A map entry for the origin is removed if present. Otherwise, when a
-/// legacy flat entry still exists, it is removed too: pre-migration the
-/// legacy entry is the fallback for *every* unmapped origin (see
-/// [`server_key_for_origin`]), so it may be serving this very one.
 pub fn clear_origin(server_url: &str, store: &dyn SecretStore) -> Result<String> {
     let origin = normalize_origin(server_url)?;
     let mut map = read_map(store)?;
     if map.remove(&origin).is_some() {
         write_map(store, &map)?;
-    } else {
-        store
-            .delete(KEY_SERVER_KEY)
-            .context("clearing the legacy server_key entry")?;
     }
     Ok(origin)
 }
@@ -242,22 +209,21 @@ mod tests {
     #[serial_test::serial]
     fn bearer_for_env_wins_over_everything_and_skips_store() {
         clear_env();
-        unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "sk-from-env") };
-
         let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
+        set_key_for_origin("https://team.example:4655", "sk-team", &store).unwrap();
         let auth = tokens("at-cloud");
 
-        // Even for the cloud origin, env wins and the map/legacy tiers are
-        // untouched by the resolution (no side effect on the store).
-        let result = bearer_for(Some(&auth), DEFAULT_CLOUD_URL, &store).unwrap();
-        assert_eq!(result.as_deref(), Some("sk-from-env"));
-        assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
-            Some("sk-legacy")
-        );
-
+        unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "sk-from-env") };
+        let cloud = bearer_for(Some(&auth), DEFAULT_CLOUD_URL, &store).unwrap();
+        let team = bearer_for(Some(&auth), "https://team.example:4655", &store).unwrap();
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
+
+        assert_eq!(cloud.as_deref(), Some("sk-from-env"));
+        assert_eq!(team.as_deref(), Some("sk-from-env"));
+        assert_eq!(
+            list_origins(&store).unwrap(),
+            vec!["https://team.example:4655"]
+        );
     }
 
     // ── bearer_for: cloud kind ───────────────────────────────────────────────
@@ -283,19 +249,17 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn bearer_for_cloud_origin_never_touches_map_or_legacy() {
+    fn bearer_for_cloud_origin_never_touches_the_map() {
         clear_env();
         let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
+        set_key_for_origin("https://team.example:4655", "sk-team", &store).unwrap();
         let auth = tokens("at-cloud");
 
         let result = bearer_for(Some(&auth), DEFAULT_CLOUD_URL, &store).unwrap();
         assert_eq!(result.as_deref(), Some("at-cloud"));
-        // The legacy entry must be untouched: cloud-kind resolution never
-        // migrates or reads it.
         assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
-            Some("sk-legacy")
+            list_origins(&store).unwrap(),
+            vec!["https://team.example:4655"]
         );
     }
 
@@ -314,21 +278,26 @@ mod tests {
         assert_eq!(result.as_deref(), Some("sk-team"));
     }
 
+    // ADR-088 D2/D3: the flat entry a pre-ADR-071 client left behind is not a
+    // tier and is not migrated on the way out. It resolves to nothing, and it
+    // is not consumed either: the store is the user's own, so the entry stays
+    // where it is until they clear it.
     #[test]
     #[serial_test::serial]
-    fn bearer_for_non_cloud_origin_migrates_legacy_entry_on_first_use() {
+    fn bearer_for_ignores_a_flat_key_left_by_an_older_client() {
         clear_env();
         let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
+        store.set("server_key", "sk-legacy").unwrap();
 
-        let result = bearer_for(None, "https://team.example:4655", &store).unwrap();
-        assert_eq!(result.as_deref(), Some("sk-legacy"));
-
-        // Migrated into the map...
-        let (origins, legacy) = list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://team.example:4655".to_string()]);
-        // ...and removed from the legacy tier.
-        assert!(!legacy, "legacy entry must be deleted after migration");
+        assert_eq!(
+            bearer_for(None, "https://team.example:4655", &store).unwrap(),
+            None
+        );
+        assert!(list_origins(&store).unwrap().is_empty());
+        assert_eq!(
+            store.get("server_key").unwrap().as_deref(),
+            Some("sk-legacy")
+        );
     }
 
     #[test]
@@ -344,19 +313,22 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn bearer_for_legacy_migration_does_not_leak_to_a_second_unmapped_origin() {
+    fn one_origins_key_does_not_leak_to_another() {
         clear_env();
         let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
+        set_key_for_origin("https://a.example:4655", "sk-a", &store).unwrap();
 
-        // First origin migrates and consumes the legacy entry.
-        let first = bearer_for(None, "https://a.example:4655", &store).unwrap();
-        assert_eq!(first.as_deref(), Some("sk-legacy"));
-
-        // A second, still-unmapped origin must fail closed, not silently
-        // reuse the first origin's now-migrated key.
-        let second = bearer_for(None, "https://b.example:4655", &store).unwrap();
-        assert_eq!(second, None);
+        assert_eq!(
+            bearer_for(None, "https://a.example:4655", &store)
+                .unwrap()
+                .as_deref(),
+            Some("sk-a")
+        );
+        // An unmapped origin must fail closed, never reuse another's key.
+        assert_eq!(
+            bearer_for(None, "https://b.example:4655", &store).unwrap(),
+            None
+        );
     }
 
     // ── D1: the map's on-the-wire JSON shape ─────────────────────────────────
@@ -380,8 +352,6 @@ mod tests {
                 "https://b.example": "sk-b",
             })
         );
-        // A single entry, not one per origin (D1's whole point).
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
     }
 
     #[test]
@@ -390,7 +360,7 @@ mod tests {
         // (read_map treats "absent" and "{}" the same, but nothing should
         // write an empty object pre-emptively).
         let store = MemoryStore::default();
-        assert_eq!(list_origins(&store).unwrap(), (vec![], false));
+        assert!(list_origins(&store).unwrap().is_empty());
         assert_eq!(store.get(KEY_SERVER_KEYS_MAP).unwrap(), None);
     }
 
@@ -402,8 +372,10 @@ mod tests {
         set_key_for_origin("https://Team.Example:4655/ignored/path", "sk-1", &store).unwrap();
         set_key_for_origin("https://team.example:4655", "sk-2", &store).unwrap();
 
-        let (origins, _) = list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://team.example:4655".to_string()]);
+        assert_eq!(
+            list_origins(&store).unwrap(),
+            vec!["https://team.example:4655".to_string()]
+        );
         assert_eq!(
             bearer_for(None, "https://team.example:4655", &store)
                 .unwrap()
@@ -412,34 +384,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn list_origins_reports_legacy_flag_independently_of_map() {
-        let store = MemoryStore::default();
-        assert_eq!(list_origins(&store).unwrap(), (vec![], false));
-
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
-        set_key_for_origin("https://a.example", "sk-a", &store).unwrap();
-        let (origins, legacy) = list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://a.example".to_string()]);
-        assert!(legacy);
-    }
-
     // ── clear_all / clear_origin / count ─────────────────────────────────────
 
     #[test]
-    fn clear_all_removes_the_map_but_not_the_legacy_entry() {
-        // The legacy entry is a separate concern (config::remove_server_key
-        // handles it, including the plaintext config.toml remnant); see
-        // `clear_all`'s doc comment.
+    fn clear_all_removes_every_origin() {
         let store = MemoryStore::default();
         set_key_for_origin("https://a.example", "sk-a", &store).unwrap();
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
+        set_key_for_origin("https://b.example", "sk-b", &store).unwrap();
 
         clear_all(&store).unwrap();
 
-        let (origins, legacy) = list_origins(&store).unwrap();
-        assert_eq!(origins, Vec::<String>::new());
-        assert!(legacy, "clear_all must not touch the legacy entry");
+        assert!(list_origins(&store).unwrap().is_empty());
     }
 
     #[test]
@@ -450,56 +405,40 @@ mod tests {
 
         clear_origin("https://a.example", &store).unwrap();
 
-        let (origins, _) = list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://b.example".to_string()]);
-    }
-
-    #[test]
-    fn clear_origin_falls_back_to_legacy_when_origin_not_yet_mapped() {
-        let store = MemoryStore::default();
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
-
-        // This origin was never resolved (so never migrated), but the legacy
-        // entry might be serving it: clear_origin removes it defensively.
-        clear_origin("https://never-resolved.example", &store).unwrap();
-
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None);
+        assert_eq!(
+            list_origins(&store).unwrap(),
+            vec!["https://b.example".to_string()]
+        );
     }
 
     #[test]
     fn clear_origin_is_a_no_op_when_nothing_is_stored() {
         let store = MemoryStore::default();
         clear_origin("https://nothing.example", &store).unwrap();
-        assert_eq!(list_origins(&store).unwrap(), (vec![], false));
+        assert!(list_origins(&store).unwrap().is_empty());
     }
 
     #[test]
-    fn count_reflects_map_size_plus_legacy() {
+    fn count_reflects_map_size() {
         let store = MemoryStore::default();
         assert_eq!(count(&store).unwrap(), 0);
         set_key_for_origin("https://a.example", "sk-a", &store).unwrap();
         assert_eq!(count(&store).unwrap(), 1);
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
+        set_key_for_origin("https://b.example", "sk-b", &store).unwrap();
         assert_eq!(count(&store).unwrap(), 2);
     }
 
     // ── adversarial: independent test-engineer coverage ──────────────────────
     //
-    // The tests above are the Engineer's own suite. These probe cases their
-    // own tests don't: a corrupted store payload, and a map entry coexisting
-    // with the legacy tier for a *different* origin than the one already
-    // migrated (the scenario the ADR's "no cross-origin leak" claim rests on
-    // but the Engineer's `..._does_not_leak_to_a_second_unmapped_origin` test
-    // only exercises with an *empty* map, not a map that already has an
-    // unrelated origin in it).
+    // The tests above are the Engineer's own suite. These probe a case their
+    // own tests don't: a corrupted store payload.
 
-    /// A corrupted `server_keys` payload must fail resolution loudly (`Err`),
-    /// never silently fall through to "no credential" or, worse, to the
-    /// legacy tier. A silent fallthrough here would be the dangerous case: an
-    /// operator could believe a server is unauthenticated-safe (loopback,
-    /// firewalled) when in fact resolution swallowed a real error and just
-    /// returned `None`, or could get a stale/wrong key from the legacy tier
-    /// instead of a clear "your credential store is broken" signal.
+    // A corrupted `server_keys` payload must fail resolution loudly (`Err`),
+    // never silently fall through to "no credential". A silent fallthrough
+    // here would be the dangerous case: an operator could believe a server is
+    // unauthenticated-safe (loopback, firewalled) when in fact resolution
+    // swallowed a real error and just returned `None`, instead of a clear
+    // "your credential store is broken" signal.
     #[test]
     #[serial_test::serial]
     fn corrupted_map_json_fails_resolution_loudly_not_silently() {
@@ -507,11 +446,6 @@ mod tests {
         let store = MemoryStore::default();
         // Not valid JSON at all.
         store.set(KEY_SERVER_KEYS_MAP, "{not valid json").unwrap();
-        // A legacy entry is also present: a silent-fallthrough implementation
-        // could mistakenly hand this out instead of surfacing the corruption.
-        store
-            .set(KEY_SERVER_KEY, "sk-legacy-should-not-be-returned")
-            .unwrap();
 
         let result = bearer_for(None, "https://team.example:4655", &store);
         assert!(
@@ -532,11 +466,10 @@ mod tests {
         );
     }
 
-    /// `set_key_for_origin` / `list_origins` must likewise surface a
-    /// corrupted map rather than silently treating it as empty and
-    /// overwriting it (which would quietly discard whatever the corrupted
-    /// payload's other origins were, destroying credentials for servers the
-    /// corruption didn't even touch).
+    // `set_key_for_origin` / `list_origins` must likewise surface a corrupted
+    // map rather than silently treating it as empty and overwriting it (which
+    // would quietly discard whatever the corrupted payload's other origins
+    // were, destroying credentials for servers the corruption didn't touch).
     #[test]
     fn corrupted_map_json_fails_set_and_list_loudly() {
         let store = MemoryStore::default();
@@ -544,86 +477,6 @@ mod tests {
 
         assert!(set_key_for_origin("https://a.example", "sk-a", &store).is_err());
         assert!(list_origins(&store).is_err());
-    }
-
-    /// Both a per-origin map entry AND the legacy flat key exist
-    /// simultaneously (the realistic post-partial-migration state: one
-    /// origin was already explicitly `auth set-key`'d while another is still
-    /// waiting on its first-use migration). Resolving the *already-mapped*
-    /// origin must return the map's value and must NOT touch or delete the
-    /// legacy entry, since it isn't this origin's to consume. Resolving the
-    /// *unmapped* origin afterward must migrate the legacy entry, and must
-    /// leave the first origin's map entry untouched (no cross-origin
-    /// overwrite of an unrelated key while writing the map back).
-    #[test]
-    #[serial_test::serial]
-    fn mapped_origin_and_legacy_entry_coexist_without_leaking_or_clobbering() {
-        clear_env();
-        let store = MemoryStore::default();
-        // Origin A was explicitly set via `auth set-key`.
-        set_key_for_origin("https://a.example:4655", "sk-a-explicit", &store).unwrap();
-        // A legacy flat key also still exists (not yet migrated, so it belongs
-        // to whichever origin first resolves through the fallback tier).
-        store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
-
-        // Resolving A must return A's own key, untouched by the legacy tier.
-        let a = bearer_for(None, "https://a.example:4655", &store).unwrap();
-        assert_eq!(a.as_deref(), Some("sk-a-explicit"));
-        assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
-            Some("sk-legacy"),
-            "resolving an already-mapped origin must not touch the legacy entry"
-        );
-
-        // Resolving a second, unmapped origin B migrates the legacy entry
-        // into B's slot...
-        let b = bearer_for(None, "https://b.example:4655", &store).unwrap();
-        assert_eq!(b.as_deref(), Some("sk-legacy"));
-        assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None, "legacy consumed");
-
-        // ...and A's own key must be exactly what it was before, not
-        // overwritten by the read-modify-write that added B.
-        let (mut origins, legacy) = list_origins(&store).unwrap();
-        origins.sort();
-        assert_eq!(
-            origins,
-            vec![
-                "https://a.example:4655".to_string(),
-                "https://b.example:4655".to_string(),
-            ]
-        );
-        assert!(!legacy);
-        assert_eq!(
-            bearer_for(None, "https://a.example:4655", &store)
-                .unwrap()
-                .as_deref(),
-            Some("sk-a-explicit"),
-            "A's key must survive B's migration write unchanged"
-        );
-    }
-
-    /// `clear_origin` on an origin that is present in the map must remove
-    /// only the map entry, even when a legacy entry also still exists
-    /// (serving some *other*, not-yet-migrated origin); it must not
-    /// mistakenly delete the legacy entry too, which would strand whichever
-    /// other origin is still relying on it.
-    #[test]
-    fn clear_origin_on_mapped_origin_does_not_touch_an_unrelated_legacy_entry() {
-        let store = MemoryStore::default();
-        set_key_for_origin("https://a.example:4655", "sk-a", &store).unwrap();
-        store
-            .set(KEY_SERVER_KEY, "sk-legacy-for-someone-else")
-            .unwrap();
-
-        clear_origin("https://a.example:4655", &store).unwrap();
-
-        assert_eq!(
-            store.get(KEY_SERVER_KEY).unwrap().as_deref(),
-            Some("sk-legacy-for-someone-else"),
-            "clearing a mapped origin must leave an unrelated legacy entry intact"
-        );
-        let (origins, _) = list_origins(&store).unwrap();
-        assert!(origins.is_empty());
     }
 
     /// The two-server, two-key motivating case (task's acceptance sketch),

@@ -3,82 +3,6 @@ use std::path::Path;
 
 use super::AuthTokens;
 use super::paths::inkentry_config_dir;
-use super::secret_store::{self, KEY_SERVER_KEY, SecretStore};
-
-/// Persist a bearer into the **legacy flat** secret-store entry
-/// (`KEY_SERVER_KEY`, superseded by the per-origin map in
-/// [`super::server_keys`], ADR-071 D1).
-///
-/// `inkentry login` does NOT call this: it writes the `[auth]` table via
-/// [`save_auth_tokens`], and `cfg.server_key` derives from that at load time.
-/// The only production caller left is [`super::Config::load_with_store`]'s
-/// plaintext-file migration (moving a bare `server_key` out of
-/// `config.toml`); `inkentry auth set-key` writes the per-origin map instead
-/// (see [`super::server_keys::set_key_for_origin`]), never this flat entry. It
-/// is stored in the OS keychain (macOS Keychain / Linux Secret Service /
-/// Windows Credential Manager) by default, falling back to an owner-only file
-/// when no keychain backend is available (CI / headless). The credential is
-/// **never** written to `config.toml`.
-pub fn save_server_key(key: &str) -> Result<()> {
-    let store = secret_store::default_store(&inkentry_config_dir())?;
-    save_server_key_with(key, store.as_ref())
-}
-
-/// Same as [`save_server_key`] but with an injected [`SecretStore`] (tests).
-pub fn save_server_key_with(key: &str, store: &dyn SecretStore) -> Result<()> {
-    store
-        .set(KEY_SERVER_KEY, key)
-        .context("persisting server_key to the secret store")
-}
-
-/// Remove the CLI bearer credential everywhere it might live.
-///
-/// What `inkentry logout --servers` clears (ADR-071 D3): the secret-store
-/// entry **and** any legacy plaintext `server_key` left in
-/// `~/.config/inkentry/config.toml`. Bare `inkentry logout` no longer calls
-/// this; it only clears the `[auth]` cloud token pair (see
-/// [`remove_auth_tokens`]). No-op for any location where the credential is
-/// absent.
-pub fn remove_server_key() -> Result<()> {
-    let store = secret_store::default_store(&inkentry_config_dir())?;
-    remove_server_key_with(store.as_ref(), &inkentry_config_dir().join("config.toml"))
-}
-
-/// Same as [`remove_server_key`] but with an injected [`SecretStore`] and an
-/// explicit legacy config path (tests).
-pub fn remove_server_key_with(store: &dyn SecretStore, config_path: &Path) -> Result<()> {
-    store
-        .delete(KEY_SERVER_KEY)
-        .context("removing server_key from the secret store")?;
-    // Belt-and-braces: also strip any legacy plaintext key still in the file.
-    remove_server_key_from(config_path)
-}
-
-/// Same as [`remove_server_key`] but operates on an explicit path (useful in tests).
-pub fn remove_server_key_from(config_path: &Path) -> Result<()> {
-    if !config_path.exists() {
-        return Ok(());
-    }
-    let existing = std::fs::read_to_string(config_path)
-        .with_context(|| format!("reading {}", config_path.display()))?;
-
-    let updated: String = existing
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            // Keep every line that is NOT a `server_key = …` assignment.
-            // strip_prefix avoids a raw byte-index slice and handles the
-            // "server_key" prefix unambiguously.
-            let after_key = trimmed.strip_prefix("server_key");
-            !matches!(after_key, Some(rest) if rest.trim_start().starts_with('='))
-        })
-        .map(|line| format!("{line}\n"))
-        .collect();
-
-    std::fs::write(config_path, updated)
-        .with_context(|| format!("writing {}", config_path.display()))?;
-    Ok(())
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // `[auth]` table persistence (WorkOS device-flow tokens)
@@ -113,8 +37,8 @@ pub fn save_auth_tokens_to(tokens: &AuthTokens, config_path: &Path) -> Result<()
 /// What bare `inkentry logout` clears (ADR-071 D3): only the `[auth]` cloud
 /// token pair. It no longer touches self-hosted server keys as a side
 /// effect; clearing those requires the explicit `--servers` or
-/// `--server <url>` flag (see [`remove_server_key`]). No-op if the file or
-/// the table is absent. Other keys are preserved.
+/// `--server <url>` flag (see [`super::server_keys::clear_all`]). No-op if
+/// the file or the table is absent. Other keys are preserved.
 pub fn remove_auth_tokens() -> Result<()> {
     remove_auth_tokens_from(&inkentry_config_dir().join("config.toml"))
 }

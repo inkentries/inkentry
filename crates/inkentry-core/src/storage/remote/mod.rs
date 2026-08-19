@@ -94,6 +94,38 @@ impl RemoteMemoryBackend {
     }
 }
 
+/// The command that fixes a rejected credential, or nothing for a status that
+/// is not about credentials.
+///
+/// A 401/403 from a self-hosted server is a missing per-origin key more often
+/// than anything else, and nothing migrates one into place on the user's
+/// behalf any more (ADR-088 D3), so the error is where they learn the command.
+pub fn credential_hint(status: reqwest::StatusCode, base_url: &str) -> String {
+    if status != reqwest::StatusCode::UNAUTHORIZED && status != reqwest::StatusCode::FORBIDDEN {
+        return String::new();
+    }
+    format!(
+        " Store a key for this server with `inkentry auth set-key --server {base_url}`, or run \
+         `inkentry login` if it is inkentry cloud."
+    )
+}
+
+/// [`reqwest::Response::error_for_status`] plus [`credential_hint`].
+pub(super) trait CheckedResponse: Sized {
+    fn checked(self, base_url: &str) -> Result<Self>;
+}
+
+impl CheckedResponse for reqwest::Response {
+    fn checked(self, base_url: &str) -> Result<Self> {
+        let status = self.status();
+        let hint = credential_hint(status, base_url);
+        if !hint.is_empty() {
+            anyhow::bail!("{base_url} rejected the credential ({status}).{hint}");
+        }
+        Ok(self.error_for_status()?)
+    }
+}
+
 // ── Trait implementation ──────────────────────────────────────────────────────
 
 #[async_trait]
@@ -154,7 +186,7 @@ impl MemoryBackend for RemoteMemoryBackend {
         }
 
         let resp = http_resp
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for POST /memory")?
             .json::<AddNoteResponse>()
             .await
@@ -200,7 +232,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .send()
             .await
             .context("POST /memory/search")?
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for POST /memory/search")?
             .json::<NoteListPayload>()
             .await
@@ -255,7 +287,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .send()
             .await
             .context("GET /memory")?
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for GET /memory")?
             .json::<NoteListPayload>()
             .await
@@ -276,7 +308,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             return Ok(None);
         }
         let note = resp
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for GET /memory/{id}")?
             .json::<NoteResponse>()
             .await
@@ -290,7 +322,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .send()
             .await
             .context("GET /stats")?
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for GET /stats")?
             .json::<CountResponse>()
             .await
@@ -307,7 +339,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .send()
             .await
             .context("POST /memory/{id}/archive")?
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for POST /memory/{id}/archive")?
             .json::<BoolResponse>()
             .await
@@ -326,7 +358,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .send()
             .await
             .context("POST /memory/{id}/supersede")?
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for POST /memory/{id}/supersede")?
             .json::<BoolResponse>()
             .await
@@ -351,7 +383,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .send()
             .await
             .context("GET /memory (source_ref filter)")?
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for GET /memory")?
             .json::<NoteListPayload>()
             .await
@@ -365,7 +397,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .send()
             .await
             .context("GET /memory/harvested-shas")?
-            .error_for_status()
+            .checked(&self.base_url)
             .context("server returned error for GET /memory/harvested-shas")?
             .json::<HarvestedShasPayload>()
             .await

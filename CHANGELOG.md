@@ -265,6 +265,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- **BREAKING: a `server_key` in your personal `~/.config/inkentry/config.toml`
+  is no longer read, and a key stored by a client older than the per-origin
+  scheme is no longer migrated forward** (ADR-088). Run
+  `inkentry auth set-key --server <url>` once per server. A config file that
+  still carries the line is named on stderr; rotate that key rather than moving
+  it, since it has been sitting in plaintext.
 - **The `--mode` flag on `search`** (`auto`/`text`/`semantic`/`hybrid`/
   `ast-grep`), **the top-level `graph` command**, and **`memory search`**. All
   three exit `2` with a message naming the replacement rather than a bare clap
