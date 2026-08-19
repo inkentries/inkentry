@@ -510,7 +510,66 @@ async fn test_status_shows_offline_tier() {
         // ADR-067 D3: the memory line reflects the resolved backend (sqlite by
         // default), not a tier-derived git-notes label.
         .stdout(predicate::str::contains("sqlite (local)"))
-        .stdout(predicate::str::contains("set server_url to enable"));
+        // The kill-switch is why this run is offline, so the hint has to name
+        // it. Recommending `server_url` here recommends an action that cannot
+        // work: the variable short-circuits the probe before any URL is read.
+        .stdout(predicate::str::contains("INKENTRY_NO_SERVER"))
+        .stdout(predicate::str::contains("server_url").not());
+}
+
+// The ordinary offline case: no kill-switch, no explicit mode, simply no
+// daemon running. Semantic search comes from the local daemon here, so the
+// hint must lead with `inkentry server start`; `server_url` is the team-server
+// feature and solves a different problem.
+#[tokio::test]
+async fn test_status_offline_without_the_kill_switch_points_at_the_local_daemon() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir(&project_dir).unwrap();
+    fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    let db_path = temp.path().join("index.db");
+    fs::write(&config_path, format!("db_path = {:?}\n", db_path)).unwrap();
+
+    let mut cmd = inkentry_bin();
+    cmd.env("INKENTRY_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(&project_dir)
+        .assert()
+        .success();
+
+    // `inkentry_bin` isolates HOME and disables the fixed-port discovery
+    // fallback, so loopback auto-discovery finds nothing and the tier is
+    // offline without the kill-switch being set.
+    let stdout = inkentry_bin()
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Offline"))
+        .stdout(predicate::str::contains("inkentry server start"))
+        .stdout(predicate::str::contains("INKENTRY_NO_SERVER").not())
+        .get_output()
+        .stdout
+        .clone();
+
+    let out = String::from_utf8_lossy(&stdout);
+    let hint = out
+        .lines()
+        .find(|l| l.contains("inkentry server start"))
+        .expect("the offline search line carries the hint");
+    let daemon_at = hint.find("inkentry server start").unwrap();
+    if let Some(url_at) = hint.find("server_url") {
+        assert!(
+            daemon_at < url_at,
+            "the local daemon must be suggested before server_url: {hint}"
+        );
+    }
 }
 
 #[tokio::test]

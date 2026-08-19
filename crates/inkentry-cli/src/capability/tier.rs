@@ -2,13 +2,17 @@
 
 use crate::config::{Config, SyncMode};
 
+use super::diagnostics::OfflineReason;
 use super::state::{Capabilities, EmbedderState, ServerLimits};
 
 /// CLI capability tier for this process.
 #[derive(Debug, Clone)]
 pub enum Tier {
     /// No server configured, or server unreachable. Offline features only.
-    Offline,
+    /// The payload names which branch of the probe produced this, so a caller
+    /// rendering the offline state advises on that branch rather than on a
+    /// guess.
+    Offline(OfflineReason),
     /// Server reachable. All `caps`-listed features are available.
     Server {
         url: String,
@@ -44,14 +48,14 @@ impl Tier {
     pub fn server_url(&self) -> Option<&str> {
         match self {
             Tier::Server { url, .. } => Some(url),
-            Tier::Offline => None,
+            Tier::Offline(_) => None,
         }
     }
 
     pub fn caps(&self) -> Option<&Capabilities> {
         match self {
             Tier::Server { caps, .. } => Some(caps),
-            Tier::Offline => None,
+            Tier::Offline(_) => None,
         }
     }
 
@@ -63,7 +67,7 @@ impl Tier {
     pub fn embedder_state(&self) -> Option<EmbedderState> {
         match self {
             Tier::Server { embedder_state, .. } => Some(*embedder_state),
-            Tier::Offline => None,
+            Tier::Offline(_) => None,
         }
     }
 
@@ -74,7 +78,7 @@ impl Tier {
     pub fn server_limits(&self) -> Option<ServerLimits> {
         match self {
             Tier::Server { server_limits, .. } => *server_limits,
-            Tier::Offline => None,
+            Tier::Offline(_) => None,
         }
     }
 
@@ -191,7 +195,7 @@ mod tests {
 
     #[test]
     fn tier_offline_is_server_false() {
-        let tier = Tier::Offline;
+        let tier = Tier::Offline(OfflineReason::NoLocalServer);
         assert!(!tier.is_server());
     }
 
@@ -209,7 +213,7 @@ mod tests {
 
     #[test]
     fn tier_offline_returns_none_url() {
-        let tier = Tier::Offline;
+        let tier = Tier::Offline(OfflineReason::NoLocalServer);
         assert_eq!(tier.server_url(), None);
     }
 
@@ -228,7 +232,7 @@ mod tests {
 
     #[test]
     fn tier_offline_returns_none_caps() {
-        let tier = Tier::Offline;
+        let tier = Tier::Offline(OfflineReason::NoLocalServer);
         assert!(tier.caps().is_none());
     }
 
@@ -250,7 +254,7 @@ mod tests {
         };
         assert!(auto.is_auto_discovered());
         assert!(!explicit.is_auto_discovered());
-        assert!(!Tier::Offline.is_auto_discovered());
+        assert!(!Tier::Offline(OfflineReason::NoLocalServer).is_auto_discovered());
     }
 
     #[test]
@@ -274,7 +278,10 @@ mod tests {
             explicit.explicit_remote_url(),
             Some("http://server.example.com:4655")
         );
-        assert_eq!(Tier::Offline.explicit_remote_url(), None);
+        assert_eq!(
+            Tier::Offline(OfflineReason::NoLocalServer).explicit_remote_url(),
+            None
+        );
     }
 
     #[test]
@@ -431,7 +438,8 @@ mod tests {
     #[test]
     fn effective_config_offline_tier_is_noop() {
         let cfg = Config::default();
-        let eff = Tier::Offline.effective_config(&cfg, std::path::Path::new("/tmp/proj"));
+        let eff = Tier::Offline(OfflineReason::NoLocalServer)
+            .effective_config(&cfg, std::path::Path::new("/tmp/proj"));
         assert_eq!(eff.server_url, None);
         assert_eq!(eff.inference_url, None);
     }
@@ -446,6 +454,9 @@ mod tests {
             server_limits: None,
         };
         assert_eq!(tier.embedder_state(), Some(EmbedderState::Loading));
-        assert_eq!(Tier::Offline.embedder_state(), None);
+        assert_eq!(
+            Tier::Offline(OfflineReason::NoLocalServer).embedder_state(),
+            None
+        );
     }
 }

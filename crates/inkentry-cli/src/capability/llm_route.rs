@@ -153,6 +153,7 @@ fn remote_route(cfg: &Config, project_root: &Path, remote_tier: &Tier) -> LlmRou
 
 #[cfg(test)]
 mod tests {
+    use super::super::diagnostics::OfflineReason;
     use super::super::state::{Capabilities, EmbedderState};
     use super::*;
     use wiremock::matchers::{method, path};
@@ -405,15 +406,19 @@ mod tests {
     // must be the actionable one rather than the offline one, which belongs
     // only to the explicit opt-out the two tests above pin.
     //
-    // Driven off `Tier::Offline` rather than a real probe: loopback
+    // Driven off `Tier::Offline(OfflineReason::NoLocalServer)` rather than a real probe: loopback
     // auto-discovery falls back to DEFAULT_SERVER_PORT, so an empty state dir does not
     // mean "no local server" on a machine running the daemon this repo's own
     // agent workflow encourages — it means the daemon answers and the route
     // comes back `Local`.
     #[test]
     fn nothing_configured_anywhere_reports_no_llm_not_offline() {
-        let route = route_without_probing_the_remote(&Config::default(), root(), &Tier::Offline)
-            .expect("with no server_url there is nothing left to probe");
+        let route = route_without_probing_the_remote(
+            &Config::default(),
+            root(),
+            &Tier::Offline(OfflineReason::NoLocalServer),
+        )
+        .expect("with no server_url there is nothing left to probe");
         assert_eq!(
             route.reason(),
             Some(NoLlmReason::NoLlmAnywhere),
@@ -431,7 +436,12 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            route_without_probing_the_remote(&cfg, root(), &Tier::Offline).is_none(),
+            route_without_probing_the_remote(
+                &cfg,
+                root(),
+                &Tier::Offline(OfflineReason::NoLocalServer)
+            )
+            .is_none(),
             "the remote arm must still be given its chance to probe"
         );
     }
@@ -488,7 +498,8 @@ mod tests {
             llm_url: Some("http://127.0.0.1:1234".to_string()),
             ..Default::default()
         };
-        let route = local_route(&cfg, root(), &Tier::Offline).expect("the guard must apply");
+        let route = local_route(&cfg, root(), &Tier::Offline(OfflineReason::NoLocalServer))
+            .expect("the guard must apply");
         assert_eq!(
             route.reason(),
             Some(NoLlmReason::LocalConfiguredButNotServed)
@@ -548,7 +559,7 @@ mod tests {
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
-        assert!(local_route(&cfg, root(), &Tier::Offline).is_none());
+        assert!(local_route(&cfg, root(), &Tier::Offline(OfflineReason::NoLocalServer)).is_none());
         let no_llm = server_tier("http://127.0.0.1:4655", false, true);
         assert!(local_route(&cfg, root(), &no_llm).is_none());
     }
@@ -626,7 +637,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            remote_route(&cfg, root(), &Tier::Offline).reason(),
+            remote_route(&cfg, root(), &Tier::Offline(OfflineReason::NoLocalServer)).reason(),
             Some(NoLlmReason::NoLlmAnywhere)
         );
     }

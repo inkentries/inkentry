@@ -175,7 +175,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         };
 
         let (tier_str, tier_url, caps_json) = match tier {
-            Tier::Offline => ("offline", serde_json::Value::Null, serde_json::Value::Null),
+            Tier::Offline(_) => ("offline", serde_json::Value::Null, serde_json::Value::Null),
             Tier::Server { url, caps, .. } => (
                 "server",
                 serde_json::Value::String(url.clone()),
@@ -501,15 +501,13 @@ async fn print_tier_section(
     mem_path: &std::path::Path,
 ) {
     match tier {
-        Tier::Offline => {
-            let server_hint = if cfg.server_url.is_some() {
-                match capability::explicit_probe_failure() {
-                    Some(capability::ConnFailure::Tls(cause)) => format!("  [tls: {cause}]"),
-                    _ => "  [unreachable]".to_string(),
-                }
-            } else {
-                "  [set server_url to enable semantic search]".to_string()
-            };
+        Tier::Offline(reason) => {
+            // Keyed to why the probe gave up, never to whether `server_url`
+            // happens to be set: with the kill-switch in force no URL is read
+            // at all, so a hint derived from the config recommends an action
+            // that cannot change the outcome (#126).
+            let server_hint =
+                capability::offline_search_hint(*reason, capability::explicit_probe_failure());
             cprintln!("Capability tier:  \x1b[33mOffline\x1b[0m");
             if let Some(line) = sync_mode_line(cfg, mem_path).await {
                 println!("{line}");

@@ -325,6 +325,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`inkentry status` now says why it is offline** instead of always suggesting
+  `server_url`, which could not help under `INKENTRY_NO_SERVER` or
+  `mode = "offline"` and is the wrong advice for a solo user anyway. It names
+  whichever setting is in force, or points at `inkentry server start`.
 - **`plumbing push`, `plumbing pull` and `plumbing read-memory` now act on the
   same memory store the `memory` commands do.** In a project that was
   configured but never indexed they acted on the machine-global store instead,
