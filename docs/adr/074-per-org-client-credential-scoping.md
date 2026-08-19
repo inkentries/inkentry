@@ -221,6 +221,14 @@ migration path and the legacy `[auth]` table it retires are deprecated as of
 this ADR and removed no earlier than **v1.1**, matching ADR-071's own
 migration window.
 
+**Note (2026-08-19):** the ADR-071 D2 `server_keys` migration this paragraph
+takes as its model was removed by
+[ADR-088](088-retire-legacy-server-key-tiers.md), on the reasoning that a
+migration path earns its keep only while people are still travelling it. The
+shape described here is unaffected as a shape; the analogy is now to a retired
+mechanism, and the `[auth]` migration's own removal window (no earlier than
+v1.1) is untouched.
+
 ### D4 – `org switch` and `logout` operate on the cache
 
 - **`spelunk org switch <target>`**: if `<target>` already has a fresh (or
