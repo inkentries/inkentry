@@ -357,7 +357,7 @@ impl Config {
     ///   1. Defaults
     ///   2. `~/.config/inkentry/config.toml` (global personal)
     ///   3. `.inkentry/config.toml` discovered by walking up from CWD (project-level, team-wide)
-    ///   4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_SERVER_KEY`, `INKENTRY_PROJECT_ID`
+    ///   4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_PROJECT_ID`
     ///
     /// `server_url` is the one field step 2 is not allowed to set (see the
     /// `server_url` field doc): a team server is a project-wide decision, so
@@ -365,6 +365,10 @@ impl Config {
     /// it, never a single developer's personal file. `mode` layers the normal
     /// way over all four steps; step 3 names on stderr any key it is
     /// not read for.
+    ///
+    /// `INKENTRY_SERVER_KEY` takes no part in this load. It is a bearer, not a
+    /// config field, and is read at request time by
+    /// [`server_keys::bearer_for`].
     ///
     /// Pass `path` to override the global config location (used by `--config` flag).
     pub fn load(path: Option<&Path>) -> Result<Self> {
