@@ -6,6 +6,8 @@ mod plumbing_helpers;
 mod auth_config_partial;
 #[path = "auth_llm_tests/auth_llm_key.rs"]
 mod auth_llm_key;
+#[path = "auth_llm_tests/auth_remove_key.rs"]
+mod auth_remove_key;
 #[path = "auth_llm_tests/auth_server_keys.rs"]
 mod auth_server_keys;
 #[path = "auth_llm_tests/backend_kind_diagnostic.rs"]

@@ -24,6 +24,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`inkentry auth remove-key` removes a stored credential** (ADR-090): one
+  server's key (`--server <url>`), every server key (`--all-servers`), or the
+  LLM endpoint's key (`--llm`, which nothing could remove before). Removing a
+  credential that is not stored says so and exits 0.
 - **A memory entry stored without a vector is now repaired.** Entries stored
   while the embedder was loading, unavailable or disabled were absent from
   semantic search and no re-push fixed them; the server now fills those vectors
@@ -271,6 +275,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- **BREAKING: `inkentry logout --servers` and `inkentry logout --server <url>`**
+  (ADR-090). Run `inkentry auth remove-key --all-servers` or
+  `inkentry auth remove-key --server <url>` instead. Bare `inkentry logout` is
+  unchanged.
 - **BREAKING: a `server_key` in your personal `~/.config/inkentry/config.toml`
   is no longer read, and a key stored by a client older than the per-origin
   scheme is no longer migrated forward** (ADR-088). Run

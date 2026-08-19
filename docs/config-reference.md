@@ -257,6 +257,9 @@ Store the credential in the secret store instead:
   output.
 - `inkentry auth list-servers` lists which server origins have a stored key
   (never prints key material).
+- `inkentry auth remove-key --server <url>` takes one back out again, and
+  `--all-servers` removes them all. Removing a key that is not stored says so
+  and exits 0 rather than reporting a removal that did not happen.
 - `INKENTRY_SERVER_KEY` works everywhere, including CI. It is a **standalone
   environment variable, not an override of a config field**: there is no field
   for it to override. When set, it is the bearer for every request, ahead of

@@ -1,11 +1,11 @@
-//! `inkentry auth set-key` / `inkentry auth list-servers` / the `inkentry logout`
-//! server-key scoping correction (ADR-071 D1/D3).
-//!
-//! Drives the real binary end to end against an isolated `HOME` (via
-//! `inkentry_bin_in`, `INKENTRY_SECRET_STORE=file`) so these tests never touch
-//! the developer's real `~/.config/inkentry` or the OS keychain, and so
-//! `auth set-key`'s persisted key survives across the separate process spawns
-//! each assertion below makes.
+// `inkentry auth set-key` / `inkentry auth list-servers` / the `inkentry logout`
+// server-key scoping correction (ADR-071 D1/D3, ADR-090 D6).
+//
+// Drives the real binary end to end against an isolated `HOME` (via
+// `inkentry_bin_in`, `INKENTRY_SECRET_STORE=file`) so these tests never touch
+// the developer's real `~/.config/inkentry` or the OS keychain, and so
+// `auth set-key`'s persisted key survives across the separate process spawns
+// each assertion below makes.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
@@ -113,66 +113,37 @@ fn bare_logout_does_not_clear_stored_server_keys() {
         .stdout(predicate::str::contains("https://team.example:4655"));
 }
 
+// ADR-090 D6: `--servers` and `--server <url>` are gone from `logout`, with
+// no alias and no shim. The capability moved to `auth remove-key`, which the
+// tests in `auth_remove_key.rs` pin.
 #[test]
-fn logout_servers_flag_clears_all_stored_server_keys() {
+fn logout_no_longer_accepts_the_server_key_flags() {
     let home = TempDir::new().unwrap();
-    set_key(home.path(), "https://a.example:4655", "sk-a");
-    set_key(home.path(), "https://b.example:4655", "sk-b");
-
     inkentry_bin_in(home.path())
         .arg("logout")
         .arg("--servers")
         .assert()
-        .success();
-
-    inkentry_bin_in(home.path())
-        .arg("auth")
-        .arg("list-servers")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No server keys stored"));
-}
-
-#[test]
-fn logout_server_flag_clears_only_that_one_origin() {
-    let home = TempDir::new().unwrap();
-    set_key(home.path(), "https://a.example:4655", "sk-a");
-    set_key(home.path(), "https://b.example:4655", "sk-b");
-
+        .failure();
     inkentry_bin_in(home.path())
         .arg("logout")
         .arg("--server")
         .arg("https://a.example:4655")
         .assert()
-        .success();
-
-    let out = inkentry_bin_in(home.path())
-        .arg("auth")
-        .arg("list-servers")
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let text = String::from_utf8(out).unwrap();
-    assert!(
-        !text.contains("a.example"),
-        "cleared origin still listed:\n{text}"
-    );
-    assert!(
-        text.contains("b.example"),
-        "untouched origin missing:\n{text}"
-    );
+        .failure();
 }
 
+// The residual-key notice is the discoverability bridge the whole record turns
+// on: a user who reaches for `logout` looking for key removal is told there
+// which command actually removes one.
 #[test]
-fn logout_servers_and_server_flags_are_mutually_exclusive() {
+fn bare_logout_names_auth_remove_key_when_server_keys_remain() {
     let home = TempDir::new().unwrap();
+    set_key(home.path(), "https://team.example:4655", "sk-team-secret");
+
     inkentry_bin_in(home.path())
         .arg("logout")
-        .arg("--servers")
-        .arg("--server")
-        .arg("https://a.example")
         .assert()
-        .failure();
+        .success()
+        .stdout(predicate::str::contains("inkentry auth remove-key"))
+        .stdout(predicate::str::contains("logout --servers").not());
 }

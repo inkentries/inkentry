@@ -413,6 +413,12 @@ $ inkentry auth list-servers
 https://inkentry.internal.example.com
 ```
 
+Remove one with `inkentry auth remove-key --server <url>`. It clears that
+origin and nothing else, so a developer holding keys for several servers can
+revoke one without losing the rest; `--all-servers` clears them all. An origin
+that has no stored key is reported as such rather than as a removal, so a
+mistyped URL does not read as a completed revocation.
+
 For CI / headless use, the environment variable still works and takes
 precedence over any stored key:
 
@@ -435,7 +441,10 @@ replaced.)
 > file, especially if it reached git history, treat it as compromised: issue a
 > new key on the server (e.g. `openssl rand -hex 32` for a self-managed
 > instance) and run `inkentry auth set-key --server <url>` with the new value on
-> every machine that had the old one. Nothing migrates a key out of a config
+> every machine that had the old one. On a machine that should lose access
+> instead of getting the replacement, run `inkentry auth remove-key --server
+> <url>` there and confirm with `inkentry auth list-servers`. Nothing migrates
+> a key out of a config
 > file for you and nothing deletes the line: it is named on stderr and left
 > where it is, so rotating, re-running `set-key` and deleting the line yourself
 > is the whole recovery. A key stored by a client older than the per-origin scheme is not

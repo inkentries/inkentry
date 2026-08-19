@@ -948,7 +948,8 @@ Store credentials in the OS secret store: the per-server bearers a self-hosted
 inkentry cloud `[auth]` token pair.
 
 ```
-inkentry auth set-key (--server <url> | --llm)
+inkentry auth set-key    (--server <url> | --llm)
+inkentry auth remove-key (--server <url> | --llm | --all-servers)
 inkentry auth list-servers
 ```
 
@@ -956,14 +957,28 @@ inkentry auth list-servers
 |------------|-------|
 | `set-key --server <url>` | Store a bearer key for the given server, keyed by its origin (scheme + host + non-default port). |
 | `set-key --llm` | Store the credential for the configured `llm_url` chat-completions endpoint. A single entry: there is one LLM endpoint, not a set of them. |
+| `remove-key --server <url>` | Remove that one server's stored key. The URL is resolved to its origin the same way `set-key` stored it, so any form of the URL that set the key also removes it. |
+| `remove-key --all-servers` | Remove every stored server key. Named for what it clears: a stored LLM credential is not a server key and survives it. |
+| `remove-key --llm` | Remove the stored `llm_url` credential. |
 | `list-servers` | Print every server origin with a stored key, one per line, or `No server keys stored.` when the map is empty. Never prints key material. It lists servers, so a stored LLM credential does not appear. |
 
-`--server` and `--llm` are mutually exclusive, and exactly one is required.
-Either way the credential is read from stdin if piped, otherwise from an
+On `set-key`, `--server` and `--llm` are mutually exclusive and exactly one is
+required; `remove-key` takes the same shape with `--all-servers` added. There is
+no confirmation prompt on `remove-key`: the credentials are your own, on your
+own machine, and a single `set-key` puts any of them back.
+
+The credential `set-key` stores is read from stdin if piped, otherwise from an
 interactive prompt. **It is never accepted as a flag value or a positional
 argument**, because arguments are readable by any user on the machine through
-the process table. Nothing about either command prints key material, and
-neither writes a credential into `config.toml`.
+the process table. No command here ever prints key material, and none writes a
+credential into `config.toml`.
+
+Removing a credential that is not stored is not an error: it exits 0 so the
+command is safe in a rotation script across machines that do not all hold the
+key. It says `No server key was stored for <origin>.` rather than reporting a
+removal, so a mistyped URL never reads as a completed revocation. Removing the
+last server key removes the stored entry entirely, so an OS keychain audit
+afterwards finds nothing left behind.
 
 ```bash
 echo "$SERVER_KEY" | inkentry auth set-key --server https://inkentry.internal.example.com
@@ -971,6 +986,10 @@ inkentry auth list-servers
 
 inkentry auth set-key --llm                 # prompts
 echo "$LLM_KEY" | inkentry auth set-key --llm
+
+inkentry auth remove-key --server https://inkentry.internal.example.com
+inkentry auth remove-key --all-servers
+inkentry auth remove-key --llm
 ```
 
 Resolution precedence for a given request's `server_url`: the `INKENTRY_SERVER_KEY`
@@ -1008,26 +1027,22 @@ inkentry org switch acme
 
 ## inkentry logout
 
-Remove stored inkentry cloud credentials. Bare `inkentry logout` clears **only**
-the `[auth]` token pair written by `inkentry login`; it does not touch any
+Remove stored inkentry cloud credentials. `inkentry logout` clears **only** the
+`[auth]` token pair written by `inkentry login`; it does not touch any
 self-hosted server key, so recovering from a broken cloud login never costs
-you the keys you use on other projects (ADR-071 D3). Clearing server keys is a
-separate, explicit action:
+you the keys you use on other projects (ADR-071 D3). Removing server keys is a
+separate, explicit action, spelled [`inkentry auth
+remove-key`](#inkentry-auth) (ADR-090).
 
 ```
-inkentry logout [--servers | --server <url>]
+inkentry logout
 ```
 
-| Flag | Notes |
-|------|-------|
-| (none) | Clears only the `[auth]` cloud token pair. If any server keys are still stored, prints how many and how to clear them. |
-| `--servers` | Also clears every stored server key, by clearing the per-origin map. |
-| `--server <url>` | Also clears just the stored key for that one server's origin. Mutually exclusive with `--servers`. |
+It takes no flags. If any server keys are still stored, it prints how many and
+names the command that removes them.
 
 ```bash
 inkentry logout
-inkentry logout --server https://inkentry.internal.example.com
-inkentry logout --servers
 ```
 
 ---

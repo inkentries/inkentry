@@ -526,7 +526,7 @@ impl Config {
 ///
 /// The public entry point for CLI commands that need to read or write the
 /// per-origin key map directly (`inkentry auth set-key` / `list-servers` /
-/// `logout --servers`), the same resolution [`Config::load`] and
+/// `remove-key`), the same resolution [`Config::load`] and
 /// [`Config::bearer_for`] use internally.
 pub fn default_secret_store() -> Result<Box<dyn SecretStore>> {
     secret_store::default_store(&inkentry_config_dir())

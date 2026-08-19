@@ -45,6 +45,10 @@ Credential Manager, or an owner-only `secrets.toml` when no keychain is
 available). It is never accepted as a flag value or a positional argument. Set
 `INKENTRY_LLM_KEY` instead when you need a non-interactive path such as CI.
 
+`inkentry auth remove-key --llm` takes it back out of the secret store. It
+removes nothing else, and it cannot reach `INKENTRY_LLM_KEY`, which is yours to
+unset.
+
 **Precedence**, highest first:
 
 | Value | Order |

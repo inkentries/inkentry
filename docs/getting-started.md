@@ -619,9 +619,11 @@ inkentry auth set-key --server https://inkentry.internal.example.com
 
 The key is stored in your OS keychain (macOS Keychain, Linux Secret Service,
 Windows Credential Manager) rather than in plaintext, keyed by the server's
-origin so a second project's server key never collides with this one. For CI /
-headless use, the `INKENTRY_SERVER_KEY` environment variable works everywhere
-and takes precedence over the stored key:
+origin so a second project's server key never collides with this one. To take
+it back out, `inkentry auth remove-key --server <url>` removes that one origin
+and leaves every other server's key in place. For CI / headless use, the
+`INKENTRY_SERVER_KEY` environment variable works everywhere and takes
+precedence over the stored key:
 
 ```bash
 export INKENTRY_SERVER_KEY="your-shared-api-key"

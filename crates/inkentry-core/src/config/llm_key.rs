@@ -56,6 +56,17 @@ pub fn set_with_store(key: &str, store: &dyn SecretStore) -> Result<()> {
     store.set(KEY_LLM_KEY, trimmed)
 }
 
+/// Remove the stored LLM credential (`inkentry auth remove-key --llm`).
+/// Returns whether the store held one (ADR-090 D2/D4).
+///
+/// `INKENTRY_LLM_KEY` is a separate tier this cannot reach: an environment
+/// variable is the caller's to unset, so removal here is about the store only.
+pub fn clear_with_store(store: &dyn SecretStore) -> Result<bool> {
+    let had_key = store.get(KEY_LLM_KEY)?.is_some();
+    store.delete(KEY_LLM_KEY)?;
+    Ok(had_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +124,33 @@ mod tests {
         let store = MemoryStore::default();
 
         assert_eq!(resolve_with_store(&store).unwrap(), None);
+    }
+
+    // ADR-090 D2: the LLM credential gained a remover, so the key `auth
+    // set-key --llm` installs can be taken back out again.
+    #[test]
+    #[serial_test::serial]
+    fn clear_removes_the_stored_key_and_reports_that_it_did() {
+        clear_env();
+        let store = MemoryStore::default();
+        set_with_store("sk-from-store", &store).unwrap();
+
+        assert!(clear_with_store(&store).unwrap());
+        assert_eq!(resolve_with_store(&store).unwrap(), None);
+        assert_eq!(store.get(KEY_LLM_KEY).unwrap(), None);
+    }
+
+    // D4: absence is not an error, and is not reported as a removal.
+    #[test]
+    #[serial_test::serial]
+    fn clear_of_an_absent_key_is_idempotent_and_reports_no_removal() {
+        clear_env();
+        let store = MemoryStore::default();
+
+        assert!(!clear_with_store(&store).unwrap());
+        set_with_store("sk-from-store", &store).unwrap();
+        assert!(clear_with_store(&store).unwrap());
+        assert!(!clear_with_store(&store).unwrap());
     }
 
     #[test]
