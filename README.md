@@ -169,7 +169,7 @@ inkentry ships with a [Claude Code skill](SKILL.md) and [agent guide](docs/agent
 
 Tree-sitter AST-aware chunking for: **Rust**, **Go**, **Python**, **TypeScript**, **JavaScript**, **JSX**, **TSX**, **Java**, **C**, **C++**, **PHP**, **Ruby**, **C#**, **Swift**, **Kotlin**, **JSON**, **HTML**, **CSS**, **HCL**, **Proto**, **SQL**.
 
-Purpose-built chunkers, without tree-sitter, for **Markdown** (split on headings), **Jupyter notebooks** (`.ipynb`: one chunk per cell, code cells tagged with the notebook's kernel language) and **plain text** (`.txt`, `.rst`, `.adoc`, and extensionless `README`, `CHANGELOG` and siblings).
+Purpose-built chunkers, without tree-sitter, for **Markdown** (split on headings), **Jupyter notebooks** (`.ipynb`: one chunk per cell, markdown and code kept apart) and **plain text** (`.txt`, `.rst`, `.adoc`, `.asciidoc`, and extensionless `README`, `CHANGELOG` and siblings).
 
 A file whose type is in neither group is skipped, not indexed as text.
 

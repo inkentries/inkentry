@@ -57,12 +57,18 @@ authenticated principal.
 
 **Authentication runs ahead of route matching, and covers paths that match no
 route.** A request whose bearer token is missing or wrong is answered `401
-unauthorized` whether or not the path it names exists, so no unauthenticated
-response reveals the shape of the router. The diagnostic consequence is that a
-`401` is not evidence that the URL is right: a typo'd path and a rejected key
-are indistinguishable on the wire. Once the token is accepted, an unmatched path
-returns the ordinary `404 not_found`, so a `401` that becomes a `404` after
-fixing the credential means the path was wrong all along.
+unauthorized` whether or not the path it names exists, so an unauthenticated
+caller cannot map the router by probing paths and reading the status codes back.
+The diagnostic consequence is that a `401` is not evidence that the URL is
+right: a typo'd path and a rejected key are indistinguishable on the wire. Once
+the token is accepted, an unmatched path falls through to the router's own
+handler-less `404`, which carries no body at all, unlike the
+`{"error":{"code":"not_found"}}` a handler returns for something it looked for
+and did not find. So a `401` that becomes an empty `404` after fixing the
+credential means the path was wrong all along.
+
+Probing is not the only way to learn the route list, and this ordering is not a
+secrecy control: the spec endpoint below serves the whole table without a token.
 
 To get the true route list rather than guessing at it, print the spec the
 running binary generates: `inkentry-server --print-openapi`. A live server also
