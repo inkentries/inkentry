@@ -193,9 +193,11 @@ fn resolve_memory_path(explicit_db: Option<&std::path::Path>, cfg: &Config) -> s
     global
 }
 
-/// Refuse to read a memory store that is not there.
+/// Refuse a memory store that is not there.
 ///
-/// Exit 1 means "no entries", and an absent store is not that. Skipped when
+/// Applied to the commands that only read from the store or only send from it
+/// (`read-memory`, `push`), never to the ones that receive: exit 1 means "no
+/// entries" or "empty delta", and an absent store is neither. Skipped when
 /// `cloud_first` routes memory to a team server, which owns the store and
 /// leaves the local path a placeholder nothing opens.
 fn require_memory_store(mem_path: &std::path::Path, cfg: &Config) -> Result<()> {
@@ -228,13 +230,18 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
         PlumbingCommand::PublishNotes(a) => return publish_notes::publish_notes(a).await,
         // The memory commands target memory.db and never read a chunk, so they
         // neither require an index nor take the project's identity from one.
+        // Checked here rather than inside `push` so the refusal cannot reach
+        // `sync`, which shares push's core but bootstraps a fresh checkout.
         PlumbingCommand::Push(a) => {
             let mem_path = a
                 .source
                 .clone()
                 .unwrap_or_else(|| resolve_memory_path(args.db.as_deref(), &cfg));
+            require_memory_store(&mem_path, &cfg)?;
             return push::push(a, &mem_path, &cfg).await;
         }
+        // Pull receives, so it may create: that is how a fresh checkout first
+        // gets team memory.
         PlumbingCommand::Pull(_) => {
             let mem_path = resolve_memory_path(args.db.as_deref(), &cfg);
             return pull::pull(&mem_path, &cfg).await;

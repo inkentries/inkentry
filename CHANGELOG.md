@@ -136,6 +136,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING: `inkentry plumbing push` exits `2` when there is no local memory
+  store**, instead of creating one and reporting an empty delta at exit `1`.
+  Run `inkentry init` in the project first, or point `--source` at a real
+  `memory.db`. `inkentry plumbing pull` and `inkentry sync` are unchanged: they
+  still create the store when none exists.
+
 - **BREAKING: the default server port moved from 7777 to 4655**, and the team
   deployment convention from 7777 to 4658. 7777/7778 are registered ports.
   **Loopback users need do nothing**: the port was never in `config.toml`,
