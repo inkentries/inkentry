@@ -306,3 +306,37 @@ async fn push_outside_any_project_names_the_global_store_it_acts_on() {
         "the store actually acted on must be named: stderr={stderr}"
     );
 }
+
+// `read-memory` derives its store the same way `push` does, so it reached the
+// global store in the same directory. Unlike push it never writes, but a
+// silently-wrong read is what a caller then acts on.
+#[tokio::test]
+async fn read_memory_uses_the_project_store_of_a_configured_but_unindexed_project() {
+    let server = MockServer::start().await;
+    mount_health(&server).await;
+
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let (config_path, global_mem) = write_global_config(home.path());
+    make_unindexed_project(proj.path(), &server.uri());
+    seed_store(
+        &proj.path().join(".inkentry").join("memory.db"),
+        "project store entry",
+    );
+    seed_store(&global_mem, "global store entry");
+
+    let out = inkentry_bin_in(home.path())
+        .current_dir(proj.path())
+        .arg("--config")
+        .arg(&config_path)
+        .args(["plumbing", "read-memory"])
+        .output()
+        .expect("run plumbing read-memory");
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        stdout.contains("project store entry") && !stdout.contains("global store entry"),
+        "read-memory must read the project store; stdout={stdout}, stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

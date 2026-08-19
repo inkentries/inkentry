@@ -358,12 +358,14 @@ fn read_memory_exit_codes() {
         .unwrap();
     assert_empty("read-memory unmatched kind", &empty);
 
+    // No memory store at all, which is not the same as a store holding no
+    // entries: exit 2, never the exit 1 that means "no results".
     let (_t2, missing_db, cfg2) = unindexed_project();
     let err = inkentry_cmd(&missing_db, &cfg2)
         .arg("read-memory")
         .output()
         .unwrap();
-    assert_hard_error("read-memory no index", &err);
+    assert_hard_error("read-memory no store", &err);
 }
 
 // ── embed ────────────────────────────────────────────────────────────────────

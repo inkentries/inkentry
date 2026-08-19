@@ -200,10 +200,14 @@ fn read_memory_exits_1_for_nonexistent_id() {
         .code(1);
 }
 
-// ── error path: missing DB ────────────────────────────────────────────────────
+// ── error path: missing store ─────────────────────────────────────────────────
 
+// An absent store is not an empty one, so this is exit 2 and not the exit 1
+// that means "no entries". The diagnostic names the memory store rather than
+// the index: `read-memory` never reads a chunk and no longer takes the
+// project's identity from `index.db`.
 #[test]
-fn read_memory_exits_nonzero_when_db_missing() {
+fn read_memory_exits_nonzero_when_the_memory_store_is_missing() {
     let tmp = TempDir::new().unwrap();
     let config_path = tmp.path().join("config.toml");
     let db_path = tmp.path().join("nonexistent.db");
@@ -223,5 +227,5 @@ fn read_memory_exits_nonzero_when_db_missing() {
         .arg("read-memory")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("No index found"));
+        .stderr(predicate::str::contains("No memory store found"));
 }
