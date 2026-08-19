@@ -449,13 +449,23 @@ async fn cancellation_on_last_chunk_completes_cleanly_no_panic() {
 // fires essentially instantly, almost certainly before the disconnect
 // (which has to round-trip a real TCP close) can possibly have
 // propagated, so it inevitably starts its first chunk. What's
-// guaranteed here is acceptance criterion #1  -  bounded to at most one
-// wasted chunk, then stopped for good  -  not criterion #2's "zero,"
-// which is scoped to the queued-behind-another-batch case. This test
-// pins that distinction down so it isn't mistaken for a regression
-// later.
+// guaranteed here is acceptance criterion #1  -  at most one forward pass
+// completes after the request is abandoned, then it stops for good  -  not
+// criterion #2's "zero," which is scoped to the queued-behind-another-batch
+// case. This test pins that distinction down so it isn't mistaken for a
+// regression later.
+//
+// Criterion #1 is deliberately measured from the moment the cancel flag is
+// set, not from the start of the request. How many passes run *before* the
+// flag arrives is a function of how long the disconnect takes to reach the
+// server, which is a property of machine load rather than of cancellation:
+// bounding the total would fail under contention while the cancellation path
+// was working correctly. Bounding total wasted work is left to the siblings
+// that can do it without a wall clock, `client_disconnect_stops_embedder_progress`
+// and `server_side_embed_timeout_cancels_in_flight_batch`, which fail on a
+// propagation regression of a few hundred milliseconds.
 #[tokio::test]
-async fn solo_request_disconnected_stops_within_one_chunk_no_contention() {
+async fn solo_request_disconnected_stops_within_one_pass_after_cancellation() {
     let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let published_cancel = Arc::new(std::sync::Mutex::new(None));
