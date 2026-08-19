@@ -63,8 +63,10 @@ Three call sites, `init.rs:91`, `index/mod.rs:153` and `index/phases.rs:323`.
 never run `link` still accumulates rows, and every agent that indexes a fixture
 writes into the developer's real global registry.
 
-**`project_deps` is empty.** The link graph this registry exists to hold has
-never had an entry on the machine that has been running the product longest.
+**`project_deps` is empty in both registries.** Not a rename artifact:
+inkentry's registry is only weeks old, but the predecessor's carries the same
+two-table schema, 319 projects, and **0 links**. Across the whole life of the
+product on this machine, `link` has never been run.
 
 ### The observation that reframes the question
 
@@ -108,8 +110,9 @@ The registry exists to answer one question: **which other projects should a
 cross-project read reach into.** That is what ADR-003 needs and what `links`
 and `status --all` display.
 
-It is worth being honest that it is not currently doing that job for anyone:
-`project_deps` is empty, so no cross-project read reaches anywhere extra today.
+It is worth being honest that it has never done that job for anyone here:
+`project_deps` is empty in this registry and in the predecessor's 319-project
+one, so no cross-project read has ever reached anywhere extra.
 The `projects` table still earns its place, because `find_project_for_path`
 resolves a directory to its project and `link` needs that to work at all. But
 the link graph is a capability the product offers rather than one in use, and
