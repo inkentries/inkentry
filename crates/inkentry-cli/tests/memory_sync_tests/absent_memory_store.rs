@@ -153,6 +153,42 @@ async fn push_refuses_an_absent_store_and_creates_nothing() {
     );
 }
 
+// An explicit `--source` gets the same answer as the resolved path. A path the
+// caller named and got wrong is where conjuring a store is least defensible:
+// the run reports an empty delta for a file the caller believes holds their
+// memory.
+#[tokio::test]
+async fn push_refuses_an_absent_explicit_source() {
+    let server = MockServer::start().await;
+    mount_team_health(&server).await;
+    mount_batch_ok(&server).await;
+
+    let checkout = Checkout::fresh(&server.uri());
+    let source = checkout.proj.path().join("nowhere").join("memory.db");
+    let out = checkout
+        .cmd()
+        .args(["plumbing", "push", "--source"])
+        .arg(&source)
+        .output()
+        .expect("run plumbing push --source");
+
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !source.exists(),
+        "a refused push must not create the source it was pointed at, {}",
+        source.display()
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a named source that is not there is a hard error; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains(&source.display().to_string()),
+        "the diagnostic must name the path the caller gave; stderr={stderr}"
+    );
+}
+
 // Pull receives, and creating the store is how a fresh checkout first receives
 // team memory.
 #[tokio::test]
