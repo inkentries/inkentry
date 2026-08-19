@@ -198,13 +198,13 @@ mod tests {
     #[test]
     fn tier_server_returns_url() {
         let tier = Tier::Server {
-            url: "http://inkentry.internal:7777".to_string(),
+            url: "http://inkentry.internal:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
             server_limits: None,
         };
-        assert_eq!(tier.server_url(), Some("http://inkentry.internal:7777"));
+        assert_eq!(tier.server_url(), Some("http://inkentry.internal:4655"));
     }
 
     #[test]
@@ -235,14 +235,14 @@ mod tests {
     #[test]
     fn tier_auto_discovered_flag() {
         let auto = Tier::Server {
-            url: "http://127.0.0.1:7777".to_string(),
+            url: "http://127.0.0.1:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Ready,
             server_limits: None,
         };
         let explicit = Tier::Server {
-            url: "http://server.example.com:7777".to_string(),
+            url: "http://server.example.com:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
@@ -256,14 +256,14 @@ mod tests {
     #[test]
     fn tier_explicit_remote_url_only_for_explicit_server() {
         let auto = Tier::Server {
-            url: "http://127.0.0.1:7777".to_string(),
+            url: "http://127.0.0.1:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Ready,
             server_limits: None,
         };
         let explicit = Tier::Server {
-            url: "http://server.example.com:7777".to_string(),
+            url: "http://server.example.com:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
@@ -272,7 +272,7 @@ mod tests {
         assert_eq!(auto.explicit_remote_url(), None);
         assert_eq!(
             explicit.explicit_remote_url(),
-            Some("http://server.example.com:7777")
+            Some("http://server.example.com:4655")
         );
         assert_eq!(Tier::Offline.explicit_remote_url(), None);
     }
@@ -311,7 +311,7 @@ mod tests {
         // which reads only `server_url`) stays local. This is the core of the
         // ADR-004 split-brain fix.
         let tier = Tier::Server {
-            url: "http://127.0.0.1:7777".to_string(),
+            url: "http://127.0.0.1:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Ready,
@@ -326,7 +326,7 @@ mod tests {
         );
         assert_eq!(
             eff.inference_url.as_deref(),
-            Some("http://127.0.0.1:7777"),
+            Some("http://127.0.0.1:4655"),
             "auto-discovered server URL must route inference via inference_url"
         );
         assert!(
@@ -334,7 +334,7 @@ mod tests {
             "project_id should be derived so the inference client can address the project"
         );
         // Inference resolves to the loopback server; memory selection does not.
-        assert_eq!(eff.resolve_inference_url(), Some("http://127.0.0.1:7777"));
+        assert_eq!(eff.resolve_inference_url(), Some("http://127.0.0.1:4655"));
     }
 
     #[test]
@@ -353,14 +353,14 @@ mod tests {
         // below — so this test is pinned to the one mode where "left
         // unchanged" is still correct.
         let tier = Tier::Server {
-            url: "http://team.example.com:7777".to_string(),
+            url: "http://team.example.com:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: false,
             embedder_state: EmbedderState::Ready,
             server_limits: None,
         };
         let cfg = Config {
-            server_url: Some("http://team.example.com:7777".to_string()),
+            server_url: Some("http://team.example.com:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
@@ -369,7 +369,7 @@ mod tests {
 
         assert_eq!(
             eff.server_url.as_deref(),
-            Some("http://team.example.com:7777"),
+            Some("http://team.example.com:4655"),
             "explicit team server_url must be preserved (memory stays remote)"
         );
         assert_eq!(
@@ -379,7 +379,7 @@ mod tests {
         );
         assert_eq!(
             eff.resolve_inference_url(),
-            Some("http://team.example.com:7777")
+            Some("http://team.example.com:4655")
         );
     }
 
@@ -394,7 +394,7 @@ mod tests {
         // exactly as it would for a real auto-discovered loopback server
         // sitting alongside a configured cloud `server_url`.
         let tier = Tier::Server {
-            url: "http://127.0.0.1:7777".to_string(),
+            url: "http://127.0.0.1:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Ready,
@@ -416,13 +416,13 @@ mod tests {
         );
         assert_eq!(
             eff.inference_url.as_deref(),
-            Some("http://127.0.0.1:7777"),
+            Some("http://127.0.0.1:4655"),
             "local_first must route inference to the tier's (loopback) URL, \
              even though an explicit server_url is also set"
         );
         assert_eq!(
             eff.resolve_inference_url(),
-            Some("http://127.0.0.1:7777"),
+            Some("http://127.0.0.1:4655"),
             "resolve_inference_url must return the local loopback URL, never \
              the cloud server_url, in local_first"
         );
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn tier_embedder_state_accessor() {
         let tier = Tier::Server {
-            url: "http://127.0.0.1:7777".to_string(),
+            url: "http://127.0.0.1:4655".to_string(),
             caps: Capabilities::all(),
             auto_discovered: true,
             embedder_state: EmbedderState::Loading,

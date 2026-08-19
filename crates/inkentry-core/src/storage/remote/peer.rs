@@ -124,7 +124,7 @@ mod tests {
     // just-dropped mock server's port would race: another test can claim it.
     #[tokio::test]
     async fn an_unreachable_probe_falls_back_to_the_team_dialect() {
-        let uri = "http://192.0.2.1:7777".to_string();
+        let uri = "http://192.0.2.1:4655".to_string();
         assert_eq!(
             detect_dialect(&client(), &uri).await,
             PeerDialect::TeamServer

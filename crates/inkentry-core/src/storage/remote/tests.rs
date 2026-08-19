@@ -3,7 +3,7 @@ use super::*;
 fn backend(project_id: &str) -> RemoteMemoryBackend {
     RemoteMemoryBackend {
         client: reqwest::Client::new(),
-        base_url: "http://127.0.0.1:7777".to_string(),
+        base_url: "http://127.0.0.1:4655".to_string(),
         project_id: project_id.to_string(),
         api_key: None,
     }
@@ -18,7 +18,7 @@ fn url_percent_encodes_local_fallback_slug() {
     let b = backend("local/9f2a8b3c4d5e6f70");
     assert_eq!(
         b.url("memory/search"),
-        "http://127.0.0.1:7777/v1/projects/local%2F9f2a8b3c4d5e6f70/memory/search"
+        "http://127.0.0.1:4655/v1/projects/local%2F9f2a8b3c4d5e6f70/memory/search"
     );
 }
 
@@ -27,7 +27,7 @@ fn url_percent_encodes_github_remote_slug() {
     let b = backend("github.com/spelunk-cloud/spelunk");
     assert_eq!(
         b.url("memory"),
-        "http://127.0.0.1:7777/v1/projects/github.com%2Fspelunk-cloud%2Fspelunk/memory"
+        "http://127.0.0.1:4655/v1/projects/github.com%2Fspelunk-cloud%2Fspelunk/memory"
     );
 }
 
@@ -51,7 +51,7 @@ fn url_leaves_simple_slug_unchanged() {
     let b = backend("my-project");
     assert_eq!(
         b.url("memory"),
-        "http://127.0.0.1:7777/v1/projects/my-project/memory"
+        "http://127.0.0.1:4655/v1/projects/my-project/memory"
     );
 }
 

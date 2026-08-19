@@ -221,7 +221,7 @@ mod tests {
         let cfg = tmp.path().join("config.toml");
         std::fs::write(
             &cfg,
-            "server_url = \"http://team:7777\"\nproject_id = \"old/slug\"\n",
+            "server_url = \"http://team:4655\"\nproject_id = \"old/slug\"\n",
         )
         .unwrap();
 
@@ -238,7 +238,7 @@ mod tests {
     fn write_project_slug_adds_key_preserving_other_keys() {
         let tmp = TempDir::new().unwrap();
         let cfg = tmp.path().join("config.toml");
-        std::fs::write(&cfg, "server_url = \"http://team:7777\"\n").unwrap();
+        std::fs::write(&cfg, "server_url = \"http://team:4655\"\n").unwrap();
 
         let (_, wrote) = write_project_slug(&cfg, "github.com/acme/app").unwrap();
         assert!(wrote);

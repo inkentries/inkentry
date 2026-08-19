@@ -660,7 +660,7 @@ inkentry server logs [-n <lines>]
 
 | Subcommand | Notes |
 |------------|-------|
-| `start` | Idempotent; binds `--port` exactly (default 7777) on `127.0.0.1`. Reclaims a wedged prior daemon of ours instead of drifting to a new port; fails loudly if an unrelated process holds the port. A single-instance guard refuses a second server against a different `server.db`. |
+| `start` | Idempotent; binds `--port` exactly (default 4655) on `127.0.0.1`. Reclaims a wedged prior daemon of ours instead of drifting to a new port; fails loudly if an unrelated process holds the port. A single-instance guard refuses a second server against a different `server.db`. |
 | `stop` | Graceful SIGTERM, then SIGKILL escalation for an unresponsive daemon; reports success only once the process is confirmed gone. |
 | `status` | Print PID, port, instance id, and uptime |
 | `logs` | Print the last N lines of the server log (`-n`, default 50) |

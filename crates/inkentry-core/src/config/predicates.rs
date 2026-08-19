@@ -81,7 +81,8 @@ fn host_is_loopback(host: &str) -> bool {
 /// but names no explicit port.
 ///
 /// A loopback `server_url` with no port can never be the auto-discovered
-/// local daemon (which always binds a specific port, default `7777`): it is a
+/// local daemon (which always binds a specific port, default
+/// [`crate::config::DEFAULT_SERVER_PORT`]): it is a
 /// near-certain leftover misconfiguration (e.g. a stale `server_url` after a
 /// team-server value was cleared down to a bare host). Callers use this to
 /// warn, not reject: unlike [`validate_transport_url`], a portless loopback
@@ -95,7 +96,7 @@ pub fn is_loopback_url_missing_port(url: &str) -> bool {
         .trim_start_matches("https://");
     let host = host_part.split('/').next().unwrap_or(host_part);
     match host.strip_prefix('[') {
-        // IPv6: `[::1]` (no port) vs `[::1]:7777` (port present after `]:`).
+        // IPv6: `[::1]` (no port) vs `[::1]:4655` (port present after `]:`).
         Some(_) => !host.contains("]:"),
         None => !host.contains(':'),
     }
@@ -152,32 +153,32 @@ mod tests {
 
     #[test]
     fn is_loopback_url_recognises_127_0_0_1() {
-        assert!(is_loopback_url("http://127.0.0.1:7777"));
-        assert!(is_loopback_url("http://127.0.0.1:7777/"));
+        assert!(is_loopback_url("http://127.0.0.1:4655"));
+        assert!(is_loopback_url("http://127.0.0.1:4655/"));
         assert!(is_loopback_url("http://127.0.0.1"));
     }
 
     #[test]
     fn is_loopback_url_recognises_localhost() {
-        assert!(is_loopback_url("http://localhost:7777"));
+        assert!(is_loopback_url("http://localhost:4655"));
         assert!(is_loopback_url("http://localhost"));
     }
 
     #[test]
     fn is_loopback_url_recognises_ipv6_loopback() {
-        assert!(is_loopback_url("http://[::1]:7777"));
+        assert!(is_loopback_url("http://[::1]:4655"));
         assert!(is_loopback_url("http://[::1]"));
     }
 
     #[test]
     fn is_loopback_url_recognises_127_subnet() {
-        assert!(is_loopback_url("http://127.1.2.3:7777"));
+        assert!(is_loopback_url("http://127.1.2.3:4655"));
     }
 
     #[test]
     fn is_loopback_url_rejects_non_loopback() {
-        assert!(!is_loopback_url("http://inkentry.internal:7777"));
-        assert!(!is_loopback_url("http://192.168.1.100:7777"));
+        assert!(!is_loopback_url("http://inkentry.internal:4655"));
+        assert!(!is_loopback_url("http://192.168.1.100:4655"));
         assert!(!is_loopback_url("https://example.com"));
         assert!(!is_loopback_url("http://10.0.0.1"));
     }
@@ -209,13 +210,13 @@ mod tests {
     fn is_loopback_url_accepts_real_loopback_host_carrying_userinfo() {
         // Stripping userinfo must not swing the other way and reject a
         // genuinely loopback host that happens to carry credentials.
-        assert!(is_loopback_url("http://evil.example@127.0.0.1:7777"));
-        assert!(is_loopback_url("http://user:pass@localhost:7777"));
+        assert!(is_loopback_url("http://evil.example@127.0.0.1:4655"));
+        assert!(is_loopback_url("http://user:pass@localhost:4655"));
     }
 
     #[test]
     fn is_loopback_url_splits_userinfo_on_the_last_at_sign() {
-        assert!(is_loopback_url("http://a@b@127.0.0.1:7777"));
+        assert!(is_loopback_url("http://a@b@127.0.0.1:4655"));
         assert!(!is_loopback_url("http://127.0.0.1@a@evil.example"));
     }
 
@@ -249,7 +250,7 @@ mod tests {
         // as an ordinary character would put `127.0.0.1` after the last `@` and
         // read the whole thing as loopback.
         assert!(!is_loopback_url(r"http://evil.example\@127.0.0.1"));
-        assert!(!is_loopback_url(r"http://evil.example\@127.0.0.1:7777"));
+        assert!(!is_loopback_url(r"http://evil.example\@127.0.0.1:4655"));
         assert!(!is_loopback_url(r"http://evil.example\\@127.0.0.1"));
     }
 
@@ -257,7 +258,7 @@ mod tests {
     fn is_loopback_url_accepts_expanded_ipv6_loopback() {
         // Consequence of parsing the literal instead of comparing it to the
         // string "::1": every spelling the parser calls loopback is loopback.
-        assert!(is_loopback_url("http://[0:0:0:0:0:0:0:1]:7777"));
+        assert!(is_loopback_url("http://[0:0:0:0:0:0:0:1]:4655"));
     }
 
     #[test]
@@ -273,7 +274,7 @@ mod tests {
     fn is_loopback_url_missing_port_flags_bare_localhost() {
         // The exact field-observed misconfig: a stale `server_url =
         // "http://localhost"` with no port, which can never be the
-        // auto-discovered daemon (default port 7777).
+        // auto-discovered daemon (default port 4655).
         assert!(is_loopback_url_missing_port("http://localhost"));
         assert!(is_loopback_url_missing_port("https://localhost"));
         assert!(is_loopback_url_missing_port("http://localhost/"));
@@ -284,9 +285,9 @@ mod tests {
 
     #[test]
     fn is_loopback_url_missing_port_accepts_when_port_present() {
-        assert!(!is_loopback_url_missing_port("http://localhost:7777"));
-        assert!(!is_loopback_url_missing_port("http://127.0.0.1:7777"));
-        assert!(!is_loopback_url_missing_port("http://[::1]:7777"));
+        assert!(!is_loopback_url_missing_port("http://localhost:4655"));
+        assert!(!is_loopback_url_missing_port("http://127.0.0.1:4655"));
+        assert!(!is_loopback_url_missing_port("http://[::1]:4655"));
     }
 
     #[test]
@@ -294,44 +295,44 @@ mod tests {
         // A non-loopback host without a port is a normal https:// URL
         // (default port 443), not a misconfiguration signal.
         assert!(!is_loopback_url_missing_port("https://example.com"));
-        assert!(!is_loopback_url_missing_port("http://team-server:7777"));
+        assert!(!is_loopback_url_missing_port("http://team-server:4655"));
     }
 
     // ── validate_transport_url (loopback-only plaintext http) ──────────────────
 
     #[test]
     fn validate_transport_url_rejects_non_loopback_http() {
-        let err = validate_transport_url("http://team-server:7777")
+        let err = validate_transport_url("http://team-server:4655")
             .expect_err("non-loopback http:// must be rejected");
-        assert!(err.contains("http://team-server:7777"));
+        assert!(err.contains("http://team-server:4655"));
         assert!(err.contains("https"));
         assert!(err.contains("loopback"));
     }
 
     #[test]
     fn validate_transport_url_rejects_non_loopback_ip_http() {
-        assert!(validate_transport_url("http://192.168.1.100:7777").is_err());
-        assert!(validate_transport_url("http://10.0.0.1:7777").is_err());
+        assert!(validate_transport_url("http://192.168.1.100:4655").is_err());
+        assert!(validate_transport_url("http://10.0.0.1:4655").is_err());
     }
 
     #[test]
     fn validate_transport_url_accepts_loopback_http() {
-        assert!(validate_transport_url("http://127.0.0.1:7777").is_ok());
-        assert!(validate_transport_url("http://localhost:7777").is_ok());
-        assert!(validate_transport_url("http://[::1]:7777").is_ok());
-        assert!(validate_transport_url("http://127.5.6.7:7777").is_ok());
+        assert!(validate_transport_url("http://127.0.0.1:4655").is_ok());
+        assert!(validate_transport_url("http://localhost:4655").is_ok());
+        assert!(validate_transport_url("http://[::1]:4655").is_ok());
+        assert!(validate_transport_url("http://127.5.6.7:4655").is_ok());
     }
 
     #[test]
     fn validate_transport_url_accepts_any_https() {
-        assert!(validate_transport_url("https://team-server:7777").is_ok());
+        assert!(validate_transport_url("https://team-server:4655").is_ok());
         assert!(validate_transport_url("https://example.com").is_ok());
-        assert!(validate_transport_url("https://127.0.0.1:7777").is_ok());
+        assert!(validate_transport_url("https://127.0.0.1:4655").is_ok());
     }
 
     #[test]
     fn validate_transport_url_rejects_unknown_scheme() {
-        let err = validate_transport_url("ftp://team-server:7777").unwrap_err();
+        let err = validate_transport_url("ftp://team-server:4655").unwrap_err();
         assert!(err.contains("http"));
     }
 
@@ -339,8 +340,8 @@ mod tests {
     /// — the check is symmetric across address families.
     #[test]
     fn validate_transport_url_rejects_non_loopback_ipv6_http() {
-        assert!(validate_transport_url("http://[2001:db8::1]:7777").is_err());
-        assert!(validate_transport_url("http://[fe80::1]:7777").is_err());
+        assert!(validate_transport_url("http://[2001:db8::1]:4655").is_err());
+        assert!(validate_transport_url("http://[fe80::1]:4655").is_err());
     }
 
     /// Known limitation, asserted so it can't silently regress into a security
@@ -353,7 +354,7 @@ mod tests {
     /// time (which would also make validation do network I/O).
     #[test]
     fn validate_transport_url_rejects_hostname_alias_even_if_it_would_resolve_to_loopback() {
-        let err = validate_transport_url("http://my-loopback-alias:7777")
+        let err = validate_transport_url("http://my-loopback-alias:4655")
             .expect_err("a non-literal loopback hostname must be rejected, not DNS-resolved");
         assert!(err.contains("loopback"));
     }
@@ -375,7 +376,7 @@ mod tests {
             "http://127.0.0.1.evil.example",
             "http://127.0.0.1@evil.example",
             "http://127.0.0.1:1234@evil.example",
-            "http://127.0.0.1.evil.example:7777/v1/health",
+            "http://127.0.0.1.evil.example:4655/v1/health",
             r"http://evil.example\@127.0.0.1",
         ] {
             let err = validate_transport_url(url)

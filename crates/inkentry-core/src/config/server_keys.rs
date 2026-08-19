@@ -224,9 +224,9 @@ mod tests {
 
     #[test]
     fn normalize_origin_ignores_path_query_and_trailing_slash() {
-        let a = normalize_origin("http://team.example:7777/a/b?x=1").unwrap();
-        let b = normalize_origin("http://team.example:7777/").unwrap();
-        let c = normalize_origin("http://team.example:7777").unwrap();
+        let a = normalize_origin("http://team.example:4655/a/b?x=1").unwrap();
+        let b = normalize_origin("http://team.example:4655/").unwrap();
+        let c = normalize_origin("http://team.example:4655").unwrap();
         assert_eq!(a, b);
         assert_eq!(b, c);
     }
@@ -306,11 +306,11 @@ mod tests {
     fn bearer_for_non_cloud_origin_uses_map_entry_ignoring_auth() {
         clear_env();
         let store = MemoryStore::default();
-        set_key_for_origin("https://team.example:7777", "sk-team", &store).unwrap();
+        set_key_for_origin("https://team.example:4655", "sk-team", &store).unwrap();
         let auth = tokens("at-cloud");
 
         // A cloud [auth] token must never leak to a self-hosted origin.
-        let result = bearer_for(Some(&auth), "https://team.example:7777", &store).unwrap();
+        let result = bearer_for(Some(&auth), "https://team.example:4655", &store).unwrap();
         assert_eq!(result.as_deref(), Some("sk-team"));
     }
 
@@ -321,12 +321,12 @@ mod tests {
         let store = MemoryStore::default();
         store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
 
-        let result = bearer_for(None, "https://team.example:7777", &store).unwrap();
+        let result = bearer_for(None, "https://team.example:4655", &store).unwrap();
         assert_eq!(result.as_deref(), Some("sk-legacy"));
 
         // Migrated into the map...
         let (origins, legacy) = list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://team.example:7777".to_string()]);
+        assert_eq!(origins, vec!["https://team.example:4655".to_string()]);
         // ...and removed from the legacy tier.
         assert!(!legacy, "legacy entry must be deleted after migration");
     }
@@ -337,7 +337,7 @@ mod tests {
         clear_env();
         let store = MemoryStore::default();
         assert_eq!(
-            bearer_for(None, "https://team.example:7777", &store).unwrap(),
+            bearer_for(None, "https://team.example:4655", &store).unwrap(),
             None
         );
     }
@@ -350,12 +350,12 @@ mod tests {
         store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
 
         // First origin migrates and consumes the legacy entry.
-        let first = bearer_for(None, "https://a.example:7777", &store).unwrap();
+        let first = bearer_for(None, "https://a.example:4655", &store).unwrap();
         assert_eq!(first.as_deref(), Some("sk-legacy"));
 
         // A second, still-unmapped origin must fail closed, not silently
         // reuse the first origin's now-migrated key.
-        let second = bearer_for(None, "https://b.example:7777", &store).unwrap();
+        let second = bearer_for(None, "https://b.example:4655", &store).unwrap();
         assert_eq!(second, None);
     }
 
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn map_entry_payload_is_a_flat_json_object_of_origin_to_key() {
         let store = MemoryStore::default();
-        set_key_for_origin("https://a.example:7777", "sk-a", &store).unwrap();
+        set_key_for_origin("https://a.example:4655", "sk-a", &store).unwrap();
         set_key_for_origin("https://b.example", "sk-b", &store).unwrap();
 
         let raw = store.get(KEY_SERVER_KEYS_MAP).unwrap().unwrap();
@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(
             parsed,
             serde_json::json!({
-                "https://a.example:7777": "sk-a",
+                "https://a.example:4655": "sk-a",
                 "https://b.example": "sk-b",
             })
         );
@@ -399,13 +399,13 @@ mod tests {
     #[test]
     fn set_key_for_origin_normalizes_and_overwrites() {
         let store = MemoryStore::default();
-        set_key_for_origin("https://Team.Example:7777/ignored/path", "sk-1", &store).unwrap();
-        set_key_for_origin("https://team.example:7777", "sk-2", &store).unwrap();
+        set_key_for_origin("https://Team.Example:4655/ignored/path", "sk-1", &store).unwrap();
+        set_key_for_origin("https://team.example:4655", "sk-2", &store).unwrap();
 
         let (origins, _) = list_origins(&store).unwrap();
-        assert_eq!(origins, vec!["https://team.example:7777".to_string()]);
+        assert_eq!(origins, vec!["https://team.example:4655".to_string()]);
         assert_eq!(
-            bearer_for(None, "https://team.example:7777", &store)
+            bearer_for(None, "https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-2")
@@ -513,7 +513,7 @@ mod tests {
             .set(KEY_SERVER_KEY, "sk-legacy-should-not-be-returned")
             .unwrap();
 
-        let result = bearer_for(None, "https://team.example:7777", &store);
+        let result = bearer_for(None, "https://team.example:4655", &store);
         assert!(
             result.is_err(),
             "a corrupted map must fail loudly, not resolve to Some/None silently; got {result:?}"
@@ -525,7 +525,7 @@ mod tests {
         store
             .set(KEY_SERVER_KEYS_MAP, "[\"not\", \"a\", \"map\"]")
             .unwrap();
-        let result2 = bearer_for(None, "https://team.example:7777", &store);
+        let result2 = bearer_for(None, "https://team.example:4655", &store);
         assert!(
             result2.is_err(),
             "a wrong-shaped-but-valid-JSON map must also fail loudly; got {result2:?}"
@@ -561,13 +561,13 @@ mod tests {
         clear_env();
         let store = MemoryStore::default();
         // Origin A was explicitly set via `auth set-key`.
-        set_key_for_origin("https://a.example:7777", "sk-a-explicit", &store).unwrap();
+        set_key_for_origin("https://a.example:4655", "sk-a-explicit", &store).unwrap();
         // A legacy flat key also still exists (not yet migrated, so it belongs
         // to whichever origin first resolves through the fallback tier).
         store.set(KEY_SERVER_KEY, "sk-legacy").unwrap();
 
         // Resolving A must return A's own key, untouched by the legacy tier.
-        let a = bearer_for(None, "https://a.example:7777", &store).unwrap();
+        let a = bearer_for(None, "https://a.example:4655", &store).unwrap();
         assert_eq!(a.as_deref(), Some("sk-a-explicit"));
         assert_eq!(
             store.get(KEY_SERVER_KEY).unwrap().as_deref(),
@@ -577,7 +577,7 @@ mod tests {
 
         // Resolving a second, unmapped origin B migrates the legacy entry
         // into B's slot...
-        let b = bearer_for(None, "https://b.example:7777", &store).unwrap();
+        let b = bearer_for(None, "https://b.example:4655", &store).unwrap();
         assert_eq!(b.as_deref(), Some("sk-legacy"));
         assert_eq!(store.get(KEY_SERVER_KEY).unwrap(), None, "legacy consumed");
 
@@ -588,13 +588,13 @@ mod tests {
         assert_eq!(
             origins,
             vec![
-                "https://a.example:7777".to_string(),
-                "https://b.example:7777".to_string(),
+                "https://a.example:4655".to_string(),
+                "https://b.example:4655".to_string(),
             ]
         );
         assert!(!legacy);
         assert_eq!(
-            bearer_for(None, "https://a.example:7777", &store)
+            bearer_for(None, "https://a.example:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-a-explicit"),
@@ -610,12 +610,12 @@ mod tests {
     #[test]
     fn clear_origin_on_mapped_origin_does_not_touch_an_unrelated_legacy_entry() {
         let store = MemoryStore::default();
-        set_key_for_origin("https://a.example:7777", "sk-a", &store).unwrap();
+        set_key_for_origin("https://a.example:4655", "sk-a", &store).unwrap();
         store
             .set(KEY_SERVER_KEY, "sk-legacy-for-someone-else")
             .unwrap();
 
-        clear_origin("https://a.example:7777", &store).unwrap();
+        clear_origin("https://a.example:4655", &store).unwrap();
 
         assert_eq!(
             store.get(KEY_SERVER_KEY).unwrap().as_deref(),
@@ -636,7 +636,7 @@ mod tests {
     fn two_projects_two_origins_two_keys_resolve_independently_interleaved() {
         clear_env();
         let store = MemoryStore::default();
-        set_key_for_origin("https://proj-a.example:7777", "sk-proj-a", &store).unwrap();
+        set_key_for_origin("https://proj-a.example:4655", "sk-proj-a", &store).unwrap();
         set_key_for_origin("https://proj-b.example:9443", "sk-proj-b", &store).unwrap();
 
         // Interleave lookups (A, B, A, B) to catch any accidental
@@ -644,7 +644,7 @@ mod tests {
         // introduce.
         for _ in 0..3 {
             assert_eq!(
-                bearer_for(None, "https://proj-a.example:7777", &store)
+                bearer_for(None, "https://proj-a.example:4655", &store)
                     .unwrap()
                     .as_deref(),
                 Some("sk-proj-a")

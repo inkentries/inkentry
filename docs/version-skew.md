@@ -8,7 +8,7 @@ The CLI talks to three server-side peers, and they drift independently:
 
 | Peer | How it is reached | Why it drifts |
 |---|---|---|
-| **Loopback server** | auto-discovered on `127.0.0.1:7777` | The CLI starts and manages it, so it is normally the same version. It can go stale when a long-running daemon outlives an upgrade. |
+| **Loopback server** | auto-discovered on `127.0.0.1:4655` | The CLI starts and manages it, so it is normally the same version. It can go stale when a long-running daemon outlives an upgrade. |
 | **Team `inkentry-server`** | explicit `server_url` | Upgraded on someone else's schedule. Skew is guaranteed, in both directions. |
 | **cloud-api** | explicit `server_url` | Released independently of the CLI, so it can be ahead of any released CLI at any time. |
 

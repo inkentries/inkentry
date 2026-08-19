@@ -100,7 +100,7 @@ pub async fn resolve_llm_route(cfg: &Config, project_root: &Path) -> LlmRoute {
 /// try. `None` means `server_url` is set and step 4 must probe it.
 ///
 /// Split from [`resolve_llm_route`] so that terminal is reachable from a test
-/// without a loopback probe: auto-discovery falls back to port 7777, so on a
+/// without a loopback probe: auto-discovery falls back to `DEFAULT_SERVER_PORT`, so on a
 /// machine running the local daemon there is no config that makes
 /// `resolve_llm_route` observe "no local server".
 fn route_without_probing_the_remote(
@@ -406,7 +406,7 @@ mod tests {
     // only to the explicit opt-out the two tests above pin.
     //
     // Driven off `Tier::Offline` rather than a real probe: loopback
-    // auto-discovery falls back to port 7777, so an empty state dir does not
+    // auto-discovery falls back to DEFAULT_SERVER_PORT, so an empty state dir does not
     // mean "no local server" on a machine running the daemon this repo's own
     // agent workflow encourages — it means the daemon answers and the route
     // comes back `Local`.
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn a_configured_server_url_still_reaches_the_remote_step() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
@@ -438,10 +438,10 @@ mod tests {
 
     #[test]
     fn local_route_takes_the_local_llm_when_the_tier_advertises_one() {
-        let tier = server_tier("http://127.0.0.1:7777", true, true);
+        let tier = server_tier("http://127.0.0.1:4655", true, true);
         let route = local_route(&Config::default(), root(), &tier).expect("local arm applies");
         assert!(matches!(route, LlmRoute::Local(_)), "got {route:?}");
-        assert_eq!(route.target_url(), Some("http://127.0.0.1:7777"));
+        assert_eq!(route.target_url(), Some("http://127.0.0.1:4655"));
     }
 
     // The version-skew guard at the decision layer: a tier that advertises an
@@ -452,7 +452,7 @@ mod tests {
         let mut caps = Capabilities::all();
         caps.llm_complete = false;
         let tier = Tier::Server {
-            url: "http://127.0.0.1:7777".to_string(),
+            url: "http://127.0.0.1:4655".to_string(),
             caps,
             auto_discovered: true,
             embedder_state: EmbedderState::Ready,
@@ -468,11 +468,11 @@ mod tests {
     fn local_route_stops_when_llm_url_is_set_and_the_tier_serves_no_llm() {
         let cfg = Config {
             llm_url: Some("http://127.0.0.1:1234".to_string()),
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
-        let tier = server_tier("http://127.0.0.1:7777", false, true);
+        let tier = server_tier("http://127.0.0.1:4655", false, true);
         let route = local_route(&cfg, root(), &tier).expect("the guard must apply");
         assert_eq!(
             route.reason(),
@@ -507,16 +507,16 @@ mod tests {
     #[test]
     fn cloud_first_routes_to_the_remote_even_with_llm_url_set() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             llm_url: Some("http://127.0.0.1:1234".to_string()),
             mode: Some(inkentry_core::config::SyncMode::CloudFirst),
             ..Default::default()
         };
-        let tier = server_tier("https://team.example:7777", true, false);
+        let tier = server_tier("https://team.example:4655", true, false);
         let route = local_route(&cfg, root(), &tier).expect("step 2 matches on the remote");
         assert!(matches!(route, LlmRoute::Local(_)), "got {route:?}");
-        assert_eq!(route.target_url(), Some("https://team.example:7777"));
+        assert_eq!(route.target_url(), Some("https://team.example:4655"));
     }
 
     // The same config in `local_first`, for contrast: there the guard stops the
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn local_first_with_the_same_config_stops_instead_of_using_the_remote() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             llm_url: Some("http://127.0.0.1:1234".to_string()),
             ..Default::default()
@@ -533,7 +533,7 @@ mod tests {
             cfg.resolve_mode(),
             inkentry_core::config::SyncMode::LocalFirst
         );
-        let tier = server_tier("http://127.0.0.1:7777", false, true);
+        let tier = server_tier("http://127.0.0.1:4655", false, true);
         let route = local_route(&cfg, root(), &tier).expect("the guard must apply");
         assert_eq!(
             route.reason(),
@@ -544,26 +544,26 @@ mod tests {
     #[test]
     fn local_route_defers_to_the_remote_when_no_local_llm_was_asked_for() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
         assert!(local_route(&cfg, root(), &Tier::Offline).is_none());
-        let no_llm = server_tier("http://127.0.0.1:7777", false, true);
+        let no_llm = server_tier("http://127.0.0.1:4655", false, true);
         assert!(local_route(&cfg, root(), &no_llm).is_none());
     }
 
     #[test]
     fn remote_route_targets_the_server_url_when_it_advertises_an_llm() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
-        let tier = server_tier("https://team.example:7777", true, false);
+        let tier = server_tier("https://team.example:4655", true, false);
         let route = remote_route(&cfg, root(), &tier);
         assert!(matches!(route, LlmRoute::Remote(_)), "got {route:?}");
-        assert_eq!(route.target_url(), Some("https://team.example:7777"));
+        assert_eq!(route.target_url(), Some("https://team.example:4655"));
     }
 
     // The remote arm must resolve its bearer against the remote's own origin.
@@ -573,15 +573,15 @@ mod tests {
     #[test]
     fn remote_route_config_names_the_remote_origin_for_credential_resolution() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
-        let tier = server_tier("https://team.example:7777", true, false);
+        let tier = server_tier("https://team.example:4655", true, false);
         match remote_route(&cfg, root(), &tier) {
             LlmRoute::Remote(eff) => assert_eq!(
                 eff.resolve_inference_url(),
-                Some("https://team.example:7777"),
+                Some("https://team.example:4655"),
                 "the remote's own origin is what the bearer must be resolved for"
             ),
             other => panic!("expected the remote arm, got {other:?}"),
@@ -591,10 +591,10 @@ mod tests {
     #[test]
     fn remote_route_derives_a_project_id_when_the_config_has_none() {
         let cfg = Config {
-            server_url: Some("http://127.0.0.1:7777".to_string()),
+            server_url: Some("http://127.0.0.1:4655".to_string()),
             ..Default::default()
         };
-        let tier = server_tier("http://127.0.0.1:7777", true, false);
+        let tier = server_tier("http://127.0.0.1:4655", true, false);
         match remote_route(&cfg, root(), &tier) {
             LlmRoute::Remote(eff) => assert!(
                 eff.project_id.is_some(),
@@ -607,11 +607,11 @@ mod tests {
     #[test]
     fn remote_route_reports_no_llm_when_the_server_url_has_none() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
-        let tier = server_tier("https://team.example:7777", false, false);
+        let tier = server_tier("https://team.example:4655", false, false);
         assert_eq!(
             remote_route(&cfg, root(), &tier).reason(),
             Some(NoLlmReason::NoLlmAnywhere)
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn remote_route_reports_no_llm_when_the_server_url_is_unreachable() {
         let cfg = Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };

@@ -62,7 +62,7 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
 // `INKENTRY_STATE_DIR` pointing at the mock. Going through the real discovery
 // path (rather than injecting an `inference_url`) is what makes the
 // "embed never reaches the team server_url" tests meaningful, and pins the
-// probe to this mock instead of whatever happens to listen on port 7777 on the
+// probe to this mock instead of whatever happens to listen on port 4655 on the
 // machine running the tests.
 //
 // Mutates process-global env, so every test using it must be `#[serial]`.

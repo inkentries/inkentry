@@ -231,7 +231,7 @@ fn a_missing_key_file_refuses_to_start_rather_than_using_the_environment() {
             "--host",
             "127.0.0.1",
             "--port",
-            "7777",
+            "4655",
             "--db",
             "/nonexistent-inkentry-test-dir/server.db",
             "--llm-url",

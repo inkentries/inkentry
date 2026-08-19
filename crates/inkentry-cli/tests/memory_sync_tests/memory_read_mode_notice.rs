@@ -113,7 +113,7 @@ fn local_first_read_serves_data_without_sync_nag() {
     // `.inkentry/config.toml` (`memory_list` sets `.current_dir(tmp.path())`).
     plumbing_helpers::write_project_server_config(
         tmp.path(),
-        "https://team.invalid:7777",
+        "https://team.invalid:4655",
         "team/proj",
     );
 
@@ -149,7 +149,7 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
     );
     plumbing_helpers::write_project_server_config(
         tmp.path(),
-        "https://team.invalid:7777",
+        "https://team.invalid:4655",
         "team/proj",
     );
 

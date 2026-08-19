@@ -312,7 +312,7 @@ jobs:
 
           health=""
           for _ in $(seq 1 30); do
-            health="$(docker run --rm --network container:inkentry-server-ci curlimages/curl -s http://127.0.0.1:7777/v1/health || true)"
+            health="$(docker run --rm --network container:inkentry-server-ci curlimages/curl -s http://127.0.0.1:4655/v1/health || true)"
             [ -n "$health" ] && break
             sleep 1
           done

@@ -54,7 +54,7 @@ LoadCredential=tls-key:/etc/inkentry/tls-key
 # The TLS certificate chain is public; it stays a plain readable path (readable
 # under ProtectSystem=strict, which makes /etc read-only, not hidden).
 ExecStart=/usr/local/bin/inkentry-server \
-  --host 0.0.0.0 --port 7777 \
+  --host 0.0.0.0 --port 4658 \
   --db /var/lib/inkentry/inkentry.db \
   --tls-cert /etc/inkentry/tls-cert \
   --tls-key %d/tls-key

@@ -15,7 +15,7 @@ The shapes we distinguish:
 
 | Shape | Where the agent runs | `INKENTRY_SERVER_URL` |
 |---|---|---|
-| Local (R0) | Your workstation | `http://127.0.0.1:7777` (auto) |
+| Local (R0) | Your workstation | `http://127.0.0.1:4655` (auto) |
 | **Local Docker (R1)** | A container on your machine | `https://inkentry.your-domain` (portable) |
 | Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.inkentry.com` |
 | Self-hosted remote (R3) | Your own VM / pod | `https://inkentry.your-domain`: see [Server setup](server-setup.md) |
@@ -119,11 +119,11 @@ the host's loopback.
 matches the literal host string and performs no DNS resolution: only `127.x`,
 `::1`, and `localhost` count as loopback. Docker's DNS special-casing therefore
 never enters into it, and both bridge addresses are rejected on every platform.
-Setting `INKENTRY_SERVER_URL=http://host.docker.internal:7777` (or
-`http://172.17.0.1:7777`) fails the moment the CLI needs the server:
+Setting `INKENTRY_SERVER_URL=http://host.docker.internal:4655` (or
+`http://172.17.0.1:4655`) fails the moment the CLI needs the server:
 
 ```
-error: invalid server URL "http://host.docker.internal:7777": plaintext http:// is only
+error: invalid server URL "http://host.docker.internal:4655": plaintext http:// is only
 allowed to a loopback address (127.0.0.1/::1/localhost); use https:// for any other host
 ```
 

@@ -852,11 +852,11 @@ mod tests {
         // hint must name the probed server instead.
         let line = embedder_status_line(
             &EmbedderState::Unavailable,
-            Some("https://team.example:7777"),
+            Some("https://team.example:4655"),
         )
         .expect("unavailable renders a line");
         assert!(line.contains("unavailable"));
-        assert!(line.contains("https://team.example:7777"), "got: {line}");
+        assert!(line.contains("https://team.example:4655"), "got: {line}");
         assert!(
             !line.contains("inkentry server logs"),
             "must not point a remote failure at local logs: {line}"
@@ -928,7 +928,7 @@ mod tests {
         unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path()) };
 
         let cfg = crate::config::Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             ..Default::default()
         };
         let line = sync_mode_line(&cfg, &unused_mem_path())
@@ -1009,7 +1009,7 @@ mod tests {
         }
 
         let cfg = crate::config::Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             ..Default::default()
         };
         let line = sync_mode_line(&cfg, &mem_path).await.expect("mode line");
@@ -1286,7 +1286,7 @@ mod tests {
     async fn mode_line_cloud_first_is_neutral_mode_word() {
         clear_no_server_env();
         let cfg = crate::config::Config {
-            server_url: Some("https://team.example:7777".to_string()),
+            server_url: Some("https://team.example:4655".to_string()),
             mode: Some(crate::config::SyncMode::CloudFirst),
             ..Default::default()
         };

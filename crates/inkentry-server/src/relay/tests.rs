@@ -680,11 +680,11 @@ async fn a_declared_server_with_an_undeclared_project_is_refused() {
 async fn a_declared_but_plaintext_non_loopback_target_is_refused() {
     // Even a locally-declared target may not be reached over plaintext http
     // off-host: the entries and the bearer would cross the wire in the clear.
-    let registry = registry_for(vec![target("http://team-server:7777", "acme/app")]);
+    let registry = registry_for(vec![target("http://team-server:4655", "acme/app")]);
 
     let err = registry
         .push(RelayPushRequest {
-            server_url: "http://team-server:7777".to_string(),
+            server_url: "http://team-server:4655".to_string(),
             project_id: "acme/app".to_string(),
             bearer: None,
             since_cursor: None,

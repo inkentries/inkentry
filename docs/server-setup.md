@@ -34,7 +34,7 @@ refused unless both TLS and a key are set (see
 below), so there is no way to expose it in cleartext.
 
 **Docker is an equally valid vehicle for the same shape.** With in-process TLS
-the container binds its routable interface directly and `-p 443:7777` publishes a
+the container binds its routable interface directly and `-p 443:4658` publishes a
 working `https://` endpoint; see [Docker](#4-docker-a-team-server-or-a-local-scaffold)
 below.
 
@@ -125,7 +125,7 @@ terminates HTTPS itself:
 ```bash
 INKENTRY_SERVER_KEY=$(openssl rand -hex 32) \
 inkentry-server \
-  --host 0.0.0.0 --port 7777 \
+  --host 0.0.0.0 --port 4658 \
   --tls-cert /etc/inkentry/tls-cert \
   --tls-key  /etc/inkentry/tls-key
 ```
@@ -139,7 +139,7 @@ inkentry-server \
   `INKENTRY_SERVER_KEY`). A routable bind with TLS but no key is refused, as is a
   routable bind with no TLS.
 
-That is the whole exposure story: `https://<host>:7777` now answers, the bearer
+That is the whole exposure story: `https://<host>:4658` now answers, the bearer
 key is required, and the connection is encrypted by the server with nothing in
 front of it. The bind flags are distinct from the API-key flags on purpose:
 `--tls-key` is the TLS private key, `--key`/`--key-file` is the bearer API key,
@@ -197,7 +197,7 @@ The shipped unit's `ExecStart` is:
 
 ```ini
 ExecStart=/usr/local/bin/inkentry-server \
-  --host 0.0.0.0 --port 7777 \
+  --host 0.0.0.0 --port 4658 \
   --db /var/lib/inkentry/inkentry.db \
   --tls-cert /etc/inkentry/tls-cert \
   --tls-key %d/tls-key
@@ -304,14 +304,14 @@ export INKENTRY_SERVER_KEY=$(openssl rand -hex 32)
 # (and its only diagnostic output) the moment it exits, including on an
 # ADR-066 fail-fast bind/TLS refusal.
 docker run -d --name inkentry-server \
-  -p 443:7777 \
+  -p 443:4658 \
   -v inkentry-data:/data \
   -v /etc/inkentry/tls-cert:/tls/cert:ro \
   -v /etc/inkentry/tls-key:/tls/key:ro \
   -e INKENTRY_SERVER_KEY \
   -e INKENTRY_SERVER_TLS_CERT=/tls/cert \
   -e INKENTRY_SERVER_TLS_KEY=/tls/key \
-  inkentry-server --host 0.0.0.0 --port 7777
+  inkentry-server --host 0.0.0.0 --port 4658
 ```
 
 `https://<host>` now answers, keyed, with the container serving TLS itself.
@@ -331,11 +331,11 @@ container:inkentry-server`). The runtime image is a minimal Debian base with no
 
 ```bash
 docker run --rm --network container:inkentry-server curlimages/curl \
-  curl http://127.0.0.1:7777/v1/health
+  curl http://127.0.0.1:4655/v1/health
 ```
 
 To make it team-reachable, give it a routable TLS bind as shown above (the
-`team-server` compose profile does this); a bare `docker run -p 7777:7777 ...` of
+`team-server` compose profile does this); a bare `docker run -p 4655:4655 ...` of
 the loopback scaffold will **not** be reachable, because `-p` forwards host
 traffic to the container's routable interface, not into its private loopback, so
 nothing published reaches a loopback-only bind.
@@ -572,7 +572,7 @@ cargo build --release --bin inkentry-server
 # Run
 ./target/release/inkentry-server \
   --db /var/lib/inkentry/inkentry.db \
-  --port 7777 \
+  --port 4655 \
   --key your-api-key
 ```
 
@@ -581,7 +581,7 @@ cargo build --release --bin inkentry-server
 | Flag | Env | Default | Purpose |
 |---|---|---|---|
 | `--host` | (none) | `127.0.0.1` | Interface to bind. Non-loopback needs both a key and TLS (`--tls-cert`/`--tls-key`); see below. |
-| `--port` | (none) | `7777` | Port to bind. |
+| `--port` | (none) | `4655` | Port to bind. |
 | `--key` | (none) | unset | Shared bearer API key, passed inline. Visible in the process table; prefer `--key-file` or `INKENTRY_SERVER_KEY`. Leave every key source unset only for a loopback dev server. |
 | `--key-file` | (none) | unset | Read the key from a file (whole contents, trimmed). First-class alternative to `INKENTRY_SERVER_KEY`, not a fallback. |
 | (none) | `INKENTRY_SERVER_KEY` | unset | Read the key from the environment. Fully supported alongside `--key-file`. |

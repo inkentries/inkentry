@@ -25,7 +25,7 @@
     <array>
         <string>/usr/local/bin/inkentry-server</string>
         <string>--port</string>
-        <string>7777</string>
+        <string>4655</string>
     </array>
 
     <key>RunAtLoad</key>

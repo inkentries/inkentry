@@ -33,6 +33,14 @@ pub use sync_mode::SyncMode;
 pub use team_target::{TeamTarget, declared_team_targets};
 pub use tls::apply_server_ca;
 
+/// Default TCP port for `inkentry-server`.
+///
+/// 4655 spells `inkl` on a phone keypad; the team-deployment convention is
+/// 4658 (`inkt`). The former default, 7777, is registered on developer machines
+/// by Unreal-engine dedicated servers, Terraria and ARK, whose claim on it
+/// predates ours (ADR-089).
+pub const DEFAULT_SERVER_PORT: u16 = 4655;
+
 #[cfg(test)]
 use tempfile::TempDir;
 
@@ -142,7 +150,8 @@ pub struct Config {
 
     // ── inkentry-server (optional) ─────────────────────────────────────────────
     /// URL of the inkentry-server instance, e.g. `https://inkentry.internal.example.com`
-    /// (or `http://127.0.0.1:7777` for loopback; non-loopback `http://` is rejected).
+    /// (or `http://127.0.0.1:<DEFAULT_SERVER_PORT>` for loopback; non-loopback
+    /// `http://` is rejected).
     /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
     /// semantic search and embedding.
     /// Set in `.inkentry/config.toml` (project-level) or via `INKENTRY_SERVER_URL` only:
@@ -585,7 +594,7 @@ pub fn default_secret_store() -> Result<Box<dyn SecretStore>> {
 /// capturing stderr; `Config::validate_with_project` prints the result.
 ///
 /// A loopback `server_url` missing a port can never be the auto-discovered
-/// local daemon (which always binds a specific port, default 7777): it is a
+/// local daemon (which always binds a specific port, [`DEFAULT_SERVER_PORT`]): it is a
 /// near-certain leftover misconfiguration, most often a stale `server_url`
 /// after a team-server value was pared down to a bare host. This is a
 /// warning, not a validation error: unlike a non-loopback plaintext
@@ -596,7 +605,7 @@ fn portless_loopback_server_url_warning(url: &str) -> Option<String> {
     }
     Some(format!(
         "Warning: server_url ({url}) is a loopback host with no port; this can never be \
-         the auto-discovered local server (default port 7777). If this is a leftover \
+         the auto-discovered local server (default port {DEFAULT_SERVER_PORT}). If this is a leftover \
          value, remove server_url from config; otherwise add the port your server \
          actually listens on."
     ))
@@ -866,7 +875,7 @@ mod tests {
     fn resolve_mode_defaults_local_first_with_server_url() {
         clear_inkentry_env();
         let cfg = Config {
-            server_url: Some("http://team.example.com:7777".to_string()),
+            server_url: Some("http://team.example.com:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             ..Default::default()
         };
@@ -878,7 +887,7 @@ mod tests {
     fn resolve_mode_explicit_mode_wins_over_default() {
         clear_inkentry_env();
         let cfg = Config {
-            server_url: Some("http://team.example.com:7777".to_string()),
+            server_url: Some("http://team.example.com:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
@@ -892,7 +901,7 @@ mod tests {
         clear_inkentry_env();
         // Even an explicit cloud_first mode is overridden by the kill-switch.
         let cfg = Config {
-            server_url: Some("http://team.example.com:7777".to_string()),
+            server_url: Some("http://team.example.com:4655".to_string()),
             project_id: Some("team/proj".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
@@ -986,7 +995,7 @@ embedding_model = "some-other-model"
         std::fs::write(
             &config_path,
             r#"
-memory_server_url = "http://old.example.com:7777"
+memory_server_url = "http://old.example.com:4655"
 memory_server_key = "secret-token"
 project_id = "my-proj"
 "#,
@@ -1031,7 +1040,7 @@ memory_server_key = "old-token"
         assert_eq!(cfg.server_url, None);
         assert_eq!(cfg.server_key, None);
         assert_eq!(
-            cfg.bearer_for_with_store("http://new.example.com:7777", &store)
+            cfg.bearer_for_with_store("http://new.example.com:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("new-token")
@@ -1097,8 +1106,8 @@ memory_server_key = "old-token"
     #[test]
     fn validate_passes_for_loopback_url_without_project_id() {
         for url in &[
-            "http://127.0.0.1:7777",
-            "http://localhost:7777",
+            "http://127.0.0.1:4655",
+            "http://localhost:4655",
             "http://127.0.0.1:7778/",
         ] {
             let cfg = Config {
@@ -1116,7 +1125,7 @@ memory_server_key = "old-token"
     #[test]
     fn validate_fails_for_non_loopback_url_without_project_id() {
         let cfg = Config {
-            server_url: Some("http://inkentry.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1129,7 +1138,7 @@ memory_server_key = "old-token"
     fn portless_loopback_server_url_warning_fires_for_bare_localhost() {
         // The exact field-observed misconfig: `server_url = "http://localhost"`
         // with no port, silently accepted and used instead of the healthy
-        // auto-discovered daemon on 7777.
+        // auto-discovered daemon on 4655.
         let warning = portless_loopback_server_url_warning("http://localhost")
             .expect("a portless loopback server_url must produce a warning");
         assert!(warning.contains("http://localhost"), "got: {warning}");
@@ -1139,11 +1148,11 @@ memory_server_key = "old-token"
     #[test]
     fn portless_loopback_server_url_warning_is_none_when_port_present() {
         assert_eq!(
-            portless_loopback_server_url_warning("http://localhost:7777"),
+            portless_loopback_server_url_warning("http://localhost:4655"),
             None
         );
         assert_eq!(
-            portless_loopback_server_url_warning("http://127.0.0.1:7777"),
+            portless_loopback_server_url_warning("http://127.0.0.1:4655"),
             None
         );
     }
@@ -1182,7 +1191,7 @@ memory_server_key = "old-token"
         // set, no project_id is persisted, but the caller asserts a project slug
         // is available from --project. This must pass (previously blocked sync).
         let cfg = Config {
-            server_url: Some("http://inkentry.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1193,7 +1202,7 @@ memory_server_key = "old-token"
     fn validate_with_project_false_still_fails_non_loopback_without_project_id() {
         // No --project and no configured project_id → the requirement still bites.
         let cfg = Config {
-            server_url: Some("http://inkentry.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1204,13 +1213,13 @@ memory_server_key = "old-token"
     fn validate_delegates_to_validate_with_project() {
         // validate() == validate_with_project(project_id.is_some()).
         let with_id = Config {
-            server_url: Some("http://inkentry.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: Some("p".to_string()),
             ..Default::default()
         };
         assert!(with_id.validate().is_ok());
         let without_id = Config {
-            server_url: Some("http://inkentry.internal:7777".to_string()),
+            server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: None,
             ..Default::default()
         };
@@ -1244,11 +1253,11 @@ memory_server_key = "old-token"
     fn resolve_inference_url_prefers_inference_url() {
         // Auto-discovered case: inference_url set, server_url unset.
         let cfg = Config {
-            inference_url: Some("http://127.0.0.1:7777".to_string()),
+            inference_url: Some("http://127.0.0.1:4655".to_string()),
             server_url: None,
             ..Default::default()
         };
-        assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:7777"));
+        assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:4655"));
     }
 
     #[test]
@@ -1260,13 +1269,13 @@ memory_server_key = "old-token"
         clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
-            server_url: Some("http://team.example.com:7777".to_string()),
+            server_url: Some("http://team.example.com:4655".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
         assert_eq!(
             cfg.resolve_inference_url(),
-            Some("http://team.example.com:7777")
+            Some("http://team.example.com:4655")
         );
     }
 
@@ -1318,12 +1327,12 @@ memory_server_key = "old-token"
         // where server_url would otherwise be a candidate too.
         clear_inkentry_env();
         let cfg = Config {
-            inference_url: Some("http://127.0.0.1:7777".to_string()),
-            server_url: Some("http://team.example.com:7777".to_string()),
+            inference_url: Some("http://127.0.0.1:4655".to_string()),
+            server_url: Some("http://team.example.com:4655".to_string()),
             mode: Some(SyncMode::CloudFirst),
             ..Default::default()
         };
-        assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:7777"));
+        assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:4655"));
     }
 
     // ── env var overrides ────────────────────────────────────────────────────
@@ -1338,7 +1347,7 @@ memory_server_key = "old-token"
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
             &config_path,
-            r#"server_url = "http://personal.example.com:7777"
+            r#"server_url = "http://personal.example.com:4655"
 "#,
         )
         .unwrap();
@@ -1355,18 +1364,18 @@ memory_server_key = "old-token"
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
             &config_path,
-            r#"server_url = "http://config.example.com:7777"
+            r#"server_url = "http://config.example.com:4655"
 "#,
         )
         .unwrap();
 
         unsafe {
-            std::env::set_var("INKENTRY_SERVER_URL", "http://env.example.com:7777");
+            std::env::set_var("INKENTRY_SERVER_URL", "http://env.example.com:4655");
         }
         let cfg = load_hermetic(&config_path).unwrap();
         assert_eq!(
             cfg.server_url,
-            Some("http://env.example.com:7777".to_string())
+            Some("http://env.example.com:4655".to_string())
         );
     }
 
@@ -1422,7 +1431,7 @@ memory_server_key = "old-token"
         std::fs::write(&config_path, "").unwrap();
 
         unsafe {
-            std::env::set_var("INKENTRY_MEMORY_SERVER_URL", "http://old.example.com:7777");
+            std::env::set_var("INKENTRY_MEMORY_SERVER_URL", "http://old.example.com:4655");
         }
         let cfg = load_hermetic(&config_path).unwrap();
         unsafe {
@@ -1443,7 +1452,7 @@ memory_server_key = "old-token"
         std::fs::create_dir_all(&inkentry_dir).unwrap();
         std::fs::write(
             inkentry_dir.join("config.toml"),
-            r#"server_url = "http://proj.example.com:7777"
+            r#"server_url = "http://proj.example.com:4655"
 project_id = "team/proj"
 "#,
         )
@@ -1460,7 +1469,7 @@ project_id = "team/proj"
         .unwrap();
         assert_eq!(
             cfg.server_url,
-            Some("http://proj.example.com:7777".to_string())
+            Some("http://proj.example.com:4655".to_string())
         );
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
     }
@@ -1580,7 +1589,7 @@ mode = "cloud_first"
         let (_tmp, cfg) = load_layered(
             "",
             Some(
-                "server_url = \"http://team.example:7777\"\nproject_id = \"team/proj\"\nmode = \"cloud_first\"\n",
+                "server_url = \"http://team.example:4655\"\nproject_id = \"team/proj\"\nmode = \"cloud_first\"\n",
             ),
         );
         let cfg = cfg.unwrap();
@@ -1864,7 +1873,7 @@ mode = "cloud_first"
         assert_eq!(cfg.server_key, None);
         assert!(cfg.auth.is_none());
         assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:7777", &store)
+            cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-legacy")
@@ -1890,7 +1899,7 @@ mode = "cloud_first"
         // The legacy key is still migrated and reachable for a self-hosted
         // origin; the cloud token never leaks to it.
         assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:7777", &store)
+            cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-legacy")
@@ -1932,7 +1941,7 @@ mode = "cloud_first"
         assert_eq!(cfg.server_key, None);
         // Legacy key still present in the store, reachable via bearer_for.
         assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:7777", &store)
+            cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-legacy")
@@ -1973,7 +1982,7 @@ mode = "cloud_first"
         std::fs::create_dir_all(&inkentry_dir).unwrap();
         std::fs::write(
             inkentry_dir.join("config.toml"),
-            r#"memory_server_url = "http://old.example.com:7777"
+            r#"memory_server_url = "http://old.example.com:4655"
 project_id = "team/old"
 "#,
         )
@@ -2004,8 +2013,8 @@ project_id = "team/old"
         std::fs::create_dir_all(&inkentry_dir).unwrap();
         std::fs::write(
             inkentry_dir.join("config.toml"),
-            r#"server_url = "http://new.example.com:7777"
-memory_server_url = "http://old.example.com:7777"
+            r#"server_url = "http://new.example.com:4655"
+memory_server_url = "http://old.example.com:4655"
 project_id = "team/new"
 "#,
         )
@@ -2022,7 +2031,7 @@ project_id = "team/new"
         .unwrap();
         assert_eq!(
             cfg.server_url,
-            Some("http://new.example.com:7777".to_string())
+            Some("http://new.example.com:4655".to_string())
         );
         assert_eq!(cfg.project_id, Some("team/new".to_string()));
     }
@@ -2044,7 +2053,7 @@ project_id = "team/new"
         let path = tmp.path().join("config.toml");
         std::fs::write(
             &path,
-            "server_url = \"http://team:7777\"\nserver_key = \"sk-sp-legacy\"\nproject_id = \"p\"\n",
+            "server_url = \"http://team:4655\"\nserver_key = \"sk-sp-legacy\"\nproject_id = \"p\"\n",
         )
         .unwrap();
 
@@ -2059,7 +2068,7 @@ project_id = "team/new"
         );
         // Resolves transparently through bearer_for for the configured server.
         assert_eq!(
-            cfg.bearer_for_with_store("http://team:7777", &store)
+            cfg.bearer_for_with_store("http://team:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-sp-legacy")
@@ -2096,7 +2105,7 @@ project_id = "team/new"
         );
         assert_eq!(
             second
-                .bearer_for_with_store("https://team.example:7777", &store)
+                .bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-sp-legacy")
@@ -2124,7 +2133,7 @@ project_id = "team/new"
             Some("sk-fresh-store")
         );
         assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:7777", &store)
+            cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-fresh-store")
@@ -2143,7 +2152,7 @@ project_id = "team/new"
         let path = tmp.path().join("config.toml");
         std::fs::write(
             &path,
-            "server_url = \"http://team:7777\"\nproject_id = \"p\"\n",
+            "server_url = \"http://team:4655\"\nproject_id = \"p\"\n",
         )
         .unwrap();
 
@@ -2159,7 +2168,7 @@ project_id = "team/new"
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
         assert_eq!(cfg.server_key, None);
         assert_eq!(
-            cfg.bearer_for_with_store("http://team:7777", &store)
+            cfg.bearer_for_with_store("http://team:4655", &store)
                 .unwrap()
                 .as_deref(),
             Some("sk-sp-new")
@@ -2242,7 +2251,7 @@ project_id = "team/new"
         let proj_cfg = inkentry_dir.join("config.toml");
         std::fs::write(
             &proj_cfg,
-            "server_url = \"https://team.example:7777\"\nserver_key = \"team-shared-key\"\nproject_id = \"team/proj\"\n",
+            "server_url = \"https://team.example:4655\"\nserver_key = \"team-shared-key\"\nproject_id = \"team/proj\"\n",
         )
         .unwrap();
 
@@ -2261,13 +2270,13 @@ project_id = "team/new"
         // now-unrecognized `server_key` key).
         assert_eq!(
             cfg.server_url,
-            Some("https://team.example:7777".to_string())
+            Some("https://team.example:4655".to_string())
         );
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
         // No credential resolves anywhere: not eagerly, not per-origin.
         assert_eq!(cfg.server_key, None);
         assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:7777", &store)
+            cfg.bearer_for_with_store("https://team.example:4655", &store)
                 .unwrap(),
             None
         );
@@ -2297,7 +2306,7 @@ project_id = "team/new"
 
         let cfg = Config::load_with_store(Some(&path), &file_store).unwrap();
         assert_eq!(
-            cfg.bearer_for_with_store("https://team.example:7777", &file_store)
+            cfg.bearer_for_with_store("https://team.example:4655", &file_store)
                 .unwrap()
                 .as_deref(),
             Some("sk-headless")

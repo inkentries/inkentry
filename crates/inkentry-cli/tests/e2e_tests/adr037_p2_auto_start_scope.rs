@@ -39,7 +39,7 @@ fn assert_write_never_auto_starts(mode_toml: &str) {
     let config_path = home.join("config.toml");
     std::fs::write(&config_path, "").unwrap();
 
-    write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
+    write_project_server_config(&project, "https://team.invalid:4655", "team/proj");
     if !mode_toml.is_empty() {
         let cfg_path = project.join(".inkentry").join("config.toml");
         let mut existing = std::fs::read_to_string(&cfg_path).unwrap();
@@ -143,7 +143,7 @@ fn inkentry_no_server_env_write_never_auto_starts() {
     let mem_path = project.join("memory.db");
     let config_path = home.join("config.toml");
     std::fs::write(&config_path, "").unwrap();
-    write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
+    write_project_server_config(&project, "https://team.invalid:4655", "team/proj");
 
     let out = inkentry_bin_in(&home)
         .env("INKENTRY_NO_SERVER", "1")
@@ -314,7 +314,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
 
     let out = inkentry_bin_in(&home)
         .current_dir(&repo)
-        .env("INKENTRY_SERVER_URL", "https://team.invalid:7777")
+        .env("INKENTRY_SERVER_URL", "https://team.invalid:4655")
         .env("INKENTRY_PROJECT_ID", "team/proj")
         .env("INKENTRY_MODE", "local_first")
         .args([
@@ -374,7 +374,7 @@ fn write_still_commits_and_stays_outbox_pending_when_no_auto_start_happens() {
     let mem_path = project.join("memory.db");
     let config_path = home.join("config.toml");
     std::fs::write(&config_path, "").unwrap();
-    write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
+    write_project_server_config(&project, "https://team.invalid:4655", "team/proj");
 
     let out = inkentry_bin_in(&home)
         .current_dir(&project)
@@ -424,7 +424,7 @@ fn memory_list_never_auto_starts_the_local_server() {
     let mem_path = project.join("memory.db");
     let config_path = home.join("config.toml");
     std::fs::write(&config_path, "").unwrap();
-    write_project_server_config(&project, "https://team.invalid:7777", "team/proj");
+    write_project_server_config(&project, "https://team.invalid:4655", "team/proj");
 
     assert!(
         !state_dir_under(&home).exists(),

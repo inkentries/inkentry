@@ -174,7 +174,7 @@ async fn search_text_mode_zero_egress() {
     }
 
     // No inference server at all for the search itself: text mode must not
-    // need one, and a stray loopback probe (default port 7777, nothing
+    // need one, and a stray loopback probe (default port 4655, nothing
     // listening) must fail closed locally, never touch the trap.
     let empty_state_dir = TempDir::new().expect("empty state dir");
     let trap = EgressTrap::start().await;

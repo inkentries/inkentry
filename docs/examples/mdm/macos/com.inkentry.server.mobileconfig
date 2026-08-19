@@ -103,7 +103,7 @@
 									<string>--host</string>
 									<string>0.0.0.0</string>
 									<string>--port</string>
-									<string>7777</string>
+									<string>4658</string>
 									<!-- Persistent DB path for a shared/always-on host. -->
 									<string>--db</string>
 									<string>/var/lib/inkentry/inkentry.db</string>

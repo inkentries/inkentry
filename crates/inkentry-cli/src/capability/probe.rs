@@ -1,6 +1,7 @@
 //! Server probing: loopback auto-discovery, explicit `server_url` health
 //! checks, and the per-process cached `Tier` this crate reads everywhere.
 
+use inkentry_core::config::DEFAULT_SERVER_PORT;
 use tokio::sync::OnceCell;
 
 use crate::config::Config;
@@ -71,7 +72,7 @@ static TIER: OnceCell<Tier> = OnceCell::const_new();
 ///    (`auto_discovered = false`).
 /// 3. If `cfg.server_url` is `None` → loopback auto-discovery:
 ///    a. Read `~/.local/state/inkentry/server.port`; probe `127.0.0.1:<port>`.
-///    b. Fallback: probe `127.0.0.1:7777`.
+///    b. Fallback: probe `127.0.0.1:<DEFAULT_SERVER_PORT>`.
 ///    Both loopback probes use a **250 ms** timeout.
 ///    On success: `auto_discovered = true`. On failure: `Tier::Offline`.
 ///
@@ -134,9 +135,6 @@ const REMOTE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// Loopback probe timeout (auto-discovery of a locally-running server).
 const LOOPBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Default loopback port for `inkentry-server`.
-const DEFAULT_LOOPBACK_PORT: u16 = 7777;
-
 async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
     // ── 1. INKENTRY_NO_SERVER short-circuit ───────────────────────────────────
     if matches!(
@@ -165,7 +163,7 @@ async fn probe(url: Option<&str>, server_ca: Option<&std::path::Path>) -> Tier {
 /// Loopback auto-discovery only: never consults `cfg.server_url`.
 ///
 /// Step 3a: port file written by `inkentry server start`. Step 3b: fall back to
-/// the default port 7777. Both steps use the 250 ms loopback timeout and treat
+/// [`DEFAULT_SERVER_PORT`]. Both steps use the 250 ms loopback timeout and treat
 /// any probe failure as `Tier::Offline` (never a hard error: loopback
 /// auto-discovery finding nothing is the normal "no local server" case, not a
 /// misconfiguration).
@@ -191,8 +189,8 @@ async fn probe_loopback() -> Tier {
         tracing::debug!("loopback probe on port {port} failed: falling back to default port");
     }
 
-    // Step 3b: default port 7777
-    let default_url = format!("http://127.0.0.1:{DEFAULT_LOOPBACK_PORT}");
+    // Step 3b: the default port
+    let default_url = format!("http://127.0.0.1:{DEFAULT_SERVER_PORT}");
     tracing::debug!("loopback auto-discovery: probing default {default_url}");
     let tier = probe_url(&default_url, LOOPBACK_PROBE_TIMEOUT, true, None)
         .await
@@ -767,8 +765,8 @@ mod tests {
     }
 
     #[test]
-    fn default_loopback_port_is_7777() {
-        assert_eq!(DEFAULT_LOOPBACK_PORT, 7777);
+    fn default_loopback_port_is_4655() {
+        assert_eq!(DEFAULT_SERVER_PORT, 4655);
     }
 
     // ── INKENTRY_NO_SERVER short-circuit behaviour ─────────────────────────────
@@ -1217,7 +1215,7 @@ mod tests {
         // Deliberately no MockServer / no listener on this address: if
         // `probe_url` tried to send a request it would get a connection error,
         // not this validation message.
-        let result = probe_url("http://team-server:7777", REMOTE_PROBE_TIMEOUT, false, None).await;
+        let result = probe_url("http://team-server:4655", REMOTE_PROBE_TIMEOUT, false, None).await;
         let err = result.expect_err("non-loopback http:// must be a hard error");
         assert!(err.contains("loopback"), "got: {err}");
         assert!(err.contains("https"), "got: {err}");
@@ -1228,7 +1226,7 @@ mod tests {
     #[tokio::test]
     async fn probe_url_rejects_non_loopback_http_even_when_auto_discovered() {
         let result = probe_url(
-            "http://team-server:7777",
+            "http://team-server:4655",
             LOOPBACK_PROBE_TIMEOUT,
             true,
             None,

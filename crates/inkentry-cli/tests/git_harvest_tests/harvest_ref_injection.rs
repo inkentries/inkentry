@@ -38,7 +38,7 @@ fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
         db_path
     );
     fs::write(&config_path, content).expect("write config.toml");
-    plumbing_helpers::write_project_server_config(dir, "http://127.0.0.1:7777", "test/proj");
+    plumbing_helpers::write_project_server_config(dir, "http://127.0.0.1:4655", "test/proj");
     config_path
 }
 

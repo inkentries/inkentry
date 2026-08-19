@@ -63,13 +63,13 @@ fn config_toml(home: &std::path::Path) -> String {
 fn logout_server_flag_clears_that_origin_only_and_keeps_cloud_pair() {
     let home = TempDir::new().unwrap();
     seed_cloud_auth(home.path());
-    set_key(home.path(), "https://a.example:7777", "sk-a");
-    set_key(home.path(), "https://b.example:7777", "sk-b");
+    set_key(home.path(), "https://a.example:4655", "sk-a");
+    set_key(home.path(), "https://b.example:4655", "sk-b");
 
     inkentry_bin_in(home.path())
         .arg("logout")
         .arg("--server")
-        .arg("https://a.example:7777")
+        .arg("https://a.example:4655")
         .assert()
         .success();
 
@@ -106,8 +106,8 @@ fn logout_server_flag_clears_that_origin_only_and_keeps_cloud_pair() {
 fn bare_logout_clears_cloud_pair_only_and_keeps_server_keys() {
     let home = TempDir::new().unwrap();
     seed_cloud_auth(home.path());
-    set_key(home.path(), "https://a.example:7777", "sk-a");
-    set_key(home.path(), "https://b.example:7777", "sk-b");
+    set_key(home.path(), "https://a.example:4655", "sk-a");
+    set_key(home.path(), "https://b.example:4655", "sk-b");
 
     inkentry_bin_in(home.path())
         .arg("logout")
@@ -137,8 +137,8 @@ fn bare_logout_clears_cloud_pair_only_and_keeps_server_keys() {
 fn logout_servers_flag_clears_all_server_keys_and_keeps_cloud_pair() {
     let home = TempDir::new().unwrap();
     seed_cloud_auth(home.path());
-    set_key(home.path(), "https://a.example:7777", "sk-a");
-    set_key(home.path(), "https://b.example:7777", "sk-b");
+    set_key(home.path(), "https://a.example:4655", "sk-a");
+    set_key(home.path(), "https://b.example:4655", "sk-b");
 
     inkentry_bin_in(home.path())
         .arg("logout")

@@ -105,7 +105,7 @@ Add a `.inkentryignore` file (same syntax as `.gitignore`) to exclude paths from
 ## Server daemon
 
 ```bash
-inkentry server start           # start the local daemon (idempotent; auto-binds 127.0.0.1:7777)
+inkentry server start           # start the local daemon (idempotent; auto-binds 127.0.0.1:4655)
 inkentry server status          # PID, port, instance id, uptime
 inkentry server logs            # last 50 lines of the server log
 inkentry server stop            # stop the daemon (SIGTERM)

@@ -392,9 +392,9 @@ pub enum ServerCommand {
 
 #[derive(Args, Debug)]
 pub struct ServerStartArgs {
-    /// Port to bind (default 7777). Explicit `start` does not drift to another
-    /// port: if this one is held by an unrelated process, start fails loudly.
-    #[arg(long, default_value = "7777")]
+    /// Port to bind. Explicit `start` does not drift to another port: if this
+    /// one is held by an unrelated process, start fails loudly.
+    #[arg(long, default_value_t = inkentry_core::config::DEFAULT_SERVER_PORT)]
     pub port: u16,
 
     /// Path to the inkentry-server binary (default: the `inkentry-server` in PATH)
@@ -489,8 +489,7 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
 
     let bin = which_inkentry_server()?;
     let db = state_dir.join("server.db");
-    const PORT_RANGE: u16 = 11;
-    let port = find_available_port(start_port, PORT_RANGE)?;
+    let port = find_available_port(start_port)?;
 
     let log_file = open_log_file_for_append(&log_path(&state_dir))?;
     let llm = LlmSpawn::resolve(cfg, None, None)?;
@@ -723,18 +722,21 @@ async fn ensure_port_available_for_start(port: u16) -> Result<()> {
 }
 
 /// Walk ports `start..start+range` to find the first unbound one.
-fn find_available_port(start: u16, range: u16) -> Result<u16> {
-    for offset in 0..range {
-        let port = start.saturating_add(offset);
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Ok(port);
-        }
+/// Pick the port for an auto-started daemon: `preferred` when it is free,
+/// otherwise whatever the OS hands out from the ephemeral range.
+///
+/// The previous version walked the eleven ports above `preferred`, claiming a
+/// block of the registered range we have no business holding and risking a
+/// neighbouring service's number. Nothing needs the daemon's port to be
+/// predictable: `server.port` records whatever it bound, and loopback
+/// discovery reads that file before it falls back to the default.
+fn find_available_port(preferred: u16) -> Result<u16> {
+    if std::net::TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
+        return Ok(preferred);
     }
-    anyhow::bail!(
-        "No free port found in {}–{}.  Stop another service or pass --port.",
-        start,
-        start.saturating_add(range - 1),
-    )
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .context("binding an ephemeral loopback port for the auto-started server")?;
+    Ok(listener.local_addr()?.port())
 }
 
 /// Build the argument list passed to `inkentry-server` when auto-spawning the daemon.
@@ -1156,28 +1158,29 @@ mod tests {
     // ── find_available_port ──────────────────────────────────────────────────
 
     #[test]
-    fn find_available_port_succeeds() {
-        // Port 0 triggers OS assignment; we use a high ephemeral range that is
-        // very likely free in CI.
-        let port = find_available_port(19700, 20).expect("should find a free port");
-        assert!((19700..19720).contains(&port));
+    fn find_available_port_returns_the_preferred_port_when_free() {
+        // Ask the OS for a free port, release it, then confirm we take it back
+        // rather than drifting: binding the *requested* port is the point.
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let free = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        assert_eq!(find_available_port(free).unwrap(), free);
     }
 
     #[test]
-    fn find_available_port_fails_when_all_bound() {
-        // Bind to every port in a tiny range, then verify we get an error.
-        let range: u16 = 3;
-        let start: u16 = 19750;
-        let _listeners: Vec<std::net::TcpListener> = (start..start + range)
-            .filter_map(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
-            .collect();
-        // Only error if we actually managed to bind all three.
-        if _listeners.len() == range as usize {
-            assert!(
-                find_available_port(start, range).is_err(),
-                "expected error when all ports are bound"
-            );
-        }
+    fn find_available_port_falls_back_to_an_ephemeral_port_when_taken() {
+        // The occupied case must yield a different, bindable port instead of
+        // failing or walking into the preferred port's neighbours.
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let taken = held.local_addr().unwrap().port();
+
+        let port = find_available_port(taken).expect("must fall back, not fail");
+        assert_ne!(port, taken);
+        assert!(
+            std::net::TcpListener::bind(("127.0.0.1", port)).is_ok(),
+            "fallback port {port} must be bindable"
+        );
     }
 
     // ── pid_is_alive ─────────────────────────────────────────────────────────
@@ -1206,8 +1209,8 @@ mod tests {
     #[test]
     fn read_port_round_trips() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(port_path(tmp.path()), b"7777\n").unwrap();
-        assert_eq!(read_port(tmp.path()), Some(7777));
+        std::fs::write(port_path(tmp.path()), b"4655\n").unwrap();
+        assert_eq!(read_port(tmp.path()), Some(4655));
     }
 
     // ── which_inkentry_server ─────────────────────────────────────────────────
@@ -1300,7 +1303,7 @@ mod tests {
     fn spawn_daemon_args_bind_loopback() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
-        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
+        let args = build_daemon_args(&db, 4655, &LlmSpawn::default());
 
         // Collect as strings for readable assertions.
         let args_str: Vec<String> = args
@@ -1333,7 +1336,7 @@ mod tests {
     fn spawn_daemon_args_do_not_bind_wildcard() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
-        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
+        let args = build_daemon_args(&db, 4655, &LlmSpawn::default());
 
         let args_str: Vec<String> = args
             .iter()
@@ -1378,7 +1381,7 @@ mod tests {
     fn spawn_daemon_args_include_db_path() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("server.db");
-        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
+        let args = build_daemon_args(&db, 4655, &LlmSpawn::default());
 
         let args_str: Vec<String> = args
             .iter()
@@ -1405,7 +1408,7 @@ mod tests {
     fn spawn_daemon_args_without_llm_are_host_port_db_only() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("server.db");
-        let args = build_daemon_args(&db, 7777, &LlmSpawn::default());
+        let args = build_daemon_args(&db, 4655, &LlmSpawn::default());
 
         let args_str: Vec<String> = args
             .iter()
@@ -1418,7 +1421,7 @@ mod tests {
                 "--host".to_string(),
                 "127.0.0.1".to_string(),
                 "--port".to_string(),
-                "7777".to_string(),
+                "4655".to_string(),
                 "--db".to_string(),
                 db.to_string_lossy().into_owned(),
             ]
@@ -1434,7 +1437,7 @@ mod tests {
             model: Some("gpt-oss".to_string()),
             key: Some("sk-llm-secret".to_string()),
         };
-        let args = build_daemon_args(&db, 7777, &llm);
+        let args = build_daemon_args(&db, 4655, &llm);
 
         let args_str: Vec<String> = args
             .iter()
@@ -1485,7 +1488,7 @@ mod tests {
         };
         let log = std::fs::File::create(tmp.path().join("server.log")).unwrap();
         let mut child =
-            spawn_daemon_unix(&fake_server, &tmp.path().join("server.db"), 7777, &llm, log)
+            spawn_daemon_unix(&fake_server, &tmp.path().join("server.db"), 4655, &llm, log)
                 .expect("spawning the recording stand-in");
         child.wait().unwrap();
 
@@ -1533,7 +1536,7 @@ mod tests {
         let mut child = spawn_daemon_unix(
             &fake_server,
             &tmp.path().join("server.db"),
-            7777,
+            4655,
             &LlmSpawn::default(),
             log,
         )
@@ -1704,7 +1707,7 @@ mod tests {
         let child = spawn_daemon_unix(
             &bin,
             &tmp.path().join("server.db"),
-            7777,
+            4655,
             &LlmSpawn::default(),
             log,
         )
@@ -1821,7 +1824,7 @@ mod tests {
         let mut child = spawn_daemon_unix(
             &tmp.path().join("fake-inkentry-server"),
             &tmp.path().join("server.db"),
-            7777,
+            4655,
             &LlmSpawn::default(),
             log,
         )
@@ -2036,7 +2039,7 @@ mod tests {
     fn cleanup_removes_db_path_file() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(pid_path(tmp.path()), "1\n").unwrap();
-        std::fs::write(port_path(tmp.path()), "7777\n").unwrap();
+        std::fs::write(port_path(tmp.path()), "4655\n").unwrap();
         std::fs::write(db_path_file(tmp.path()), "/x/server.db\n").unwrap();
         cleanup_state_files(tmp.path());
         assert!(!db_path_file(tmp.path()).exists());

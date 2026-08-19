@@ -148,7 +148,7 @@ inkentry context              # confirms the configured server is reachable
 On the server host, probe the service without curl/wget:
 
 ```powershell
-& "$env:ProgramData\inkentry\inkentry-server.exe" --health-check --port 7777
+& "$env:ProgramData\inkentry\inkentry-server.exe" --health-check --port 4655
 ```
 
 ## What is in this directory

@@ -1,6 +1,7 @@
 use super::color::cprintln;
 use anyhow::{Context, Result};
 use clap::Args;
+use inkentry_core::config::DEFAULT_SERVER_PORT;
 
 #[derive(Args, Debug)]
 pub struct InitArgs {
@@ -119,7 +120,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     let server_line: Option<String> = {
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() {
-            match super::server::ensure_server_running(7777, &cfg).await {
+            // One line on purpose: `daemon_spawn_call_sites` pins the config
+            // argument lexically, and it reads a single line at a time.
+            match super::server::ensure_server_running(DEFAULT_SERVER_PORT, &cfg).await {
                 Ok((port, true)) => Some(format!(
                     "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
                 )),
