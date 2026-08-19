@@ -303,6 +303,24 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`plumbing push`, `plumbing pull` and `plumbing read-memory` now mean the
+  same memory store the `memory` commands do.** All three took the memory
+  store to be a sibling of the index db, and the index walk recognises a
+  project only by a *present* `index.db`. In a project configured but never
+  indexed they therefore stepped over it to the machine-global store, while
+  `memory add`, `memory list` and `sync` in that same directory stayed on the
+  project store. `push` then reported an empty delta, which reads as "nothing
+  to push" rather than "I am looking somewhere else", and `push` writes. The
+  `.inkentry/` directory is now what says a project is here, so a linked git
+  worktree also shares the main worktree's store. Commands that read chunks
+  still require an index.
+- **Outside any project, the plumbing memory commands name the global store
+  they act on** on stderr, so an empty delta there cannot be misread as an
+  empty project store. stdout stays the JSONL report alone.
+- **`plumbing read-memory` refuses a memory store that does not exist**
+  (exit 2) instead of resolving one and reporting no entries. Exit 1 means "no
+  entries", and an absent store is not that. The diagnostic names the memory
+  store rather than the index.
 - **Docs: the memory-sharing claim is corrected in the remaining four places.**
   `docs/memory.md`, `docs/commands.md`, `SKILL.md` and `SECURITY.md` each still
   said memory travels with the repository. `git push` does not push
