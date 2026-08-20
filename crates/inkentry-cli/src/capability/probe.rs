@@ -123,7 +123,7 @@ fn state_dir_for_message() -> String {
 ///
 /// Gathers the recorded facts, then hands the decision to [`classify_responder`],
 /// which is where the policy lives so it can be tested on a host that cannot
-/// stand up a process named `inkentry-server` (see ADR-091). Also reached by
+/// stand up a process named `inkentry-server`. Also reached by
 /// `server::probe_local_relay_port` through the `capability` re-export, so the
 /// relay-reuse gate and step 3a apply the identical check.
 pub(crate) fn untrusted_responder(reported: Option<&str>) -> Option<Untrusted> {
@@ -173,7 +173,7 @@ fn recorded_pid_is_server(pid: u32) -> bool {
 /// what lets the decision be unit-tested on every platform, including the happy
 /// path (`None`) that every command travels when a daemon is running: a test can
 /// pass `pid_matches_server` directly instead of fabricating a process the OS
-/// query would accept, which is impossible to stage on Windows (ADR-091).
+/// query would accept, which is impossible to stage on Windows.
 fn classify_responder(
     recorded_pid: Option<u32>,
     pid_matches_server: bool,
@@ -2923,7 +2923,7 @@ mod tests {
     // cannot fabricate without shipping a second binary, so the live-process
     // path stays unix-only and the cross-platform coverage is the pure policy
     // tests above plus the subprocess test in
-    // `security_tests/loopback_discovery_trust.rs` (ADR-091).
+    // `security_tests/loopback_discovery_trust.rs`.
 
     #[cfg(unix)]
     const RECORDED_INSTANCE_ID: &str = "00000000-0000-0000-0000-000000000001";

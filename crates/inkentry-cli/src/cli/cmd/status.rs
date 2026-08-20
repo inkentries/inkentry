@@ -1062,6 +1062,7 @@ mod tests {
             inkentry_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
                 .unwrap();
         let instance_id = db.get_or_create_instance_id().unwrap();
+        let relay_instance_id = instance_id.clone();
         let state = inkentry_server::AppState {
             db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
             auth: std::sync::Arc::new(inkentry_server::auth::ApiKeyAuth::new(None)),
@@ -1091,11 +1092,29 @@ mod tests {
         });
 
         let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+        let prev_trust = std::env::var_os("INKENTRY_TEST_TRUST_RECORDED_RESPONDER");
         let tmp_state = tempfile::TempDir::new().unwrap();
-        unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path()) };
+        unsafe {
+            std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path());
+            // The relay is in-process, so the recorded pid is this test binary
+            // and the OS query cannot match it. The seam relaxes only that: the
+            // recorded instance id below is still checked against what the
+            // responder reports.
+            std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1");
+        }
         std::fs::write(
             tmp_state.path().join("server.port"),
             format!("{relay_port}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp_state.path().join("server.pid"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp_state.path().join("server.instance_id"),
+            format!("{relay_instance_id}\n"),
         )
         .unwrap();
 
@@ -1134,6 +1153,10 @@ mod tests {
             match prev_state_dir {
                 Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                 None => std::env::remove_var("INKENTRY_STATE_DIR"),
+            }
+            match prev_trust {
+                Some(v) => std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", v),
+                None => std::env::remove_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
             }
         }
 
@@ -1176,6 +1199,7 @@ mod tests {
             inkentry_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
                 .unwrap();
         let instance_id = db.get_or_create_instance_id().unwrap();
+        let relay_instance_id = instance_id.clone();
         let state = inkentry_server::AppState {
             db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
             auth: std::sync::Arc::new(inkentry_server::auth::ApiKeyAuth::new(None)),
@@ -1205,11 +1229,29 @@ mod tests {
         });
 
         let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+        let prev_trust = std::env::var_os("INKENTRY_TEST_TRUST_RECORDED_RESPONDER");
         let tmp_state = tempfile::TempDir::new().unwrap();
-        unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path()) };
+        unsafe {
+            std::env::set_var("INKENTRY_STATE_DIR", tmp_state.path());
+            // The relay is in-process, so the recorded pid is this test binary
+            // and the OS query cannot match it. The seam relaxes only that: the
+            // recorded instance id below is still checked against what the
+            // responder reports.
+            std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1");
+        }
         std::fs::write(
             tmp_state.path().join("server.port"),
             format!("{relay_port}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp_state.path().join("server.pid"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp_state.path().join("server.instance_id"),
+            format!("{relay_instance_id}\n"),
         )
         .unwrap();
 
@@ -1264,6 +1306,10 @@ mod tests {
             match prev_state_dir {
                 Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                 None => std::env::remove_var("INKENTRY_STATE_DIR"),
+            }
+            match prev_trust {
+                Some(v) => std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", v),
+                None => std::env::remove_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
             }
         }
 

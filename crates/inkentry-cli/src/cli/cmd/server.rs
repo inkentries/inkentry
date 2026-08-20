@@ -270,8 +270,8 @@ pub(crate) fn process_matches_server(pid: u32) -> bool {
 /// semantics can be pinned by a unit test without spawning a process. ADR-085
 /// records that this substring match is wrong in both directions (a pre-rename
 /// `spelunk-server` fails it; any process whose argv contains the string passes
-/// it); ADR-091 pins that with tests, so a later attempt to strengthen it starts
-/// from a known baseline. `tasklist` output is matched case-insensitively,
+/// it). Tests pin that, so a later attempt to strengthen it starts from a
+/// known baseline. `tasklist` output is matched case-insensitively,
 /// mirroring how Windows renders the image name; `ps` argv is matched as-is.
 #[cfg(unix)]
 fn listing_names_server(listing: &str) -> bool {
@@ -500,7 +500,16 @@ pub(crate) async fn probe_local_relay_port() -> Option<u16> {
     let state_dir = inkentry_state_dir().ok()?;
     let port = read_port(&state_dir)?;
     let health = probe_health(port).await?;
-    if crate::capability::untrusted_responder(health.instance_id.as_deref()).is_some() {
+    if let Some(why) = crate::capability::untrusted_responder(health.instance_id.as_deref()) {
+        // Loud on purpose. Something answered and could not be verified, which
+        // is the case worth telling the user about rather than the ordinary
+        // "no daemon" one, which returns above without a word.
+        eprintln!(
+            "warning: the process answering 127.0.0.1:{port} is not the server recorded in \
+             {}: {why}. No memory entries or credentials were sent to it. If that is your \
+             own daemon, run `inkentry server stop && inkentry server start`.",
+            state_dir.display()
+        );
         return None;
     }
     Some(port)
