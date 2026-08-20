@@ -35,7 +35,7 @@ jobs:
     env:
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install libdbus (keyring sync-secret-service backend)
         run: sudo apt-get install -y libdbus-1-dev pkg-config
@@ -48,7 +48,7 @@ jobs:
       # See ci.yml's `test` job for why this is Swatinem/rust-cache rather
       # than a hand-rolled `actions/cache` with a version-prefixed key.
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Runs first: if the checker itself stopped rejecting anything, the two
       # jobs below would pass while guaranteeing nothing.
