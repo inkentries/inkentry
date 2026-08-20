@@ -1,9 +1,14 @@
-# AGENT.md: inkentry-powered project
+# AGENTS.md: inkentry-powered project
 
 > **Template for end users of inkentry.**
-> Copy this file to the root of your project (rename to `AGENT.md` or `CLAUDE.md`),
-> adjust the project-specific sections, and commit it. This instructs AI agents
-> to use inkentry for context retrieval rather than brute-force file reads.
+> Copy this file to your project root as `AGENTS.md`, adjust the
+> project-specific sections, and commit it. This instructs AI agents to use
+> inkentry for context retrieval rather than brute-force file reads.
+>
+> `AGENTS.md` is the cross-agent convention (see <https://agents.md>): plain
+> Markdown, no frontmatter, read by the agent nearest it in the directory tree.
+> It is a project convention rather than a way to obtain inkentry's skill. For
+> that, install the plugin: see [installing the skill](../plugin.md).
 
 ---
 

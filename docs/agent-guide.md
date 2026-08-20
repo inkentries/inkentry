@@ -204,7 +204,7 @@ inkentry plumbing graph-edges --symbol <symbol>   # follow callers/callees the r
 inkentry chunks <file>                       # read the exact indexed code
 ```
 
-Two or three passes usually suffice: search, trace with `plumbing graph-edges`, read with `chunks` (or your own file-read tool for lines outside a chunk), then decide whether you have enough context or need a sharper query. See the "Exploring: multi-hop retrieval" section of `SKILL.md`.
+Two or three passes usually suffice: search, trace with `plumbing graph-edges`, read with `chunks` (or your own file-read tool for lines outside a chunk), then decide whether you have enough context or need a sharper query. See the "Exploring: multi-hop retrieval" section of [the skill](https://github.com/inkentries/agent-plugin/blob/main/skills/inkentry/SKILL.md).
 
 ## After making changes
 
@@ -667,7 +667,7 @@ AGENT=true inkentry search "<topic>" --only-memory           # search prior deci
 
 # Fit results within a token budget
 inkentry search "<topic>" --budget 4000                        # fit within token limit
-# For multi-hop questions, loop search + graph-edges + chunks yourself (see SKILL.md)
+# For multi-hop questions, loop search + graph-edges + chunks yourself (see https://github.com/inkentries/agent-plugin/blob/main/skills/inkentry/SKILL.md)
 
 # After changes — refresh the index and verify call sites
 inkentry plumbing graph-edges --symbol <symbol>

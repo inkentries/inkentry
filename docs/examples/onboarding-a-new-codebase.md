@@ -97,6 +97,6 @@ inkentry search "how the project is built and deployed" --graph
 For a synthesised answer, loop these primitives yourself — search, trace with
 `inkentry plumbing graph-edges --symbol <symbol>`, read with
 `inkentry chunks <file>`, then refine the query and repeat. See the
-"Exploring: multi-hop retrieval" section of `SKILL.md`.
+"Exploring: multi-hop retrieval" section of [the skill](https://github.com/inkentries/agent-plugin/blob/main/skills/inkentry/SKILL.md).
 
 After this session you'll have a solid mental model and a set of memory entries that make every future session faster.

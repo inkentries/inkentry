@@ -135,7 +135,7 @@ There is no `explore` command. inkentry retrieves context; your agent reasons ov
 it. For a question that needs tracing across files, loop over the primitives
 yourself — `search` (add `--graph`), `plumbing graph-edges --symbol <symbol>`,
 `chunks <file>` — refining the query each pass. See the "Exploring: multi-hop
-retrieval" section of [`SKILL.md`](SKILL.md).
+retrieval" section of [the skill](https://github.com/inkentries/agent-plugin/blob/main/skills/inkentry/SKILL.md).
 
 ### Multi-project search
 
@@ -163,7 +163,7 @@ Install git hooks to auto-harvest memory on every commit:
 inkentry hooks install
 ```
 
-inkentry ships with a [Claude Code skill](SKILL.md) and [agent guide](docs/agent-guide.md) for integration with AI coding agents.
+inkentry ships as an [Agent Plugins](https://agent-plugins.org/) plugin from [inkentries/agent-plugin](https://github.com/inkentries/agent-plugin), so the skill installs into Claude Code and any other client implementing the standard. [How to install it](docs/plugin.md), and the longer [agent guide](docs/agent-guide.md).
 
 ## Supported languages
 

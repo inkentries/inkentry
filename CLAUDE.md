@@ -38,7 +38,7 @@ inkentry memory add --kind handoff --title "Handoff: <summary>" --body "what's d
 inkentry index .
 ```
 
-Full reference: `SKILL.md` and `docs/agent-guide.md`.
+Full reference: `docs/agent-guide.md`, and the agent skill at https://github.com/inkentries/agent-plugin.
 
 ---
 
