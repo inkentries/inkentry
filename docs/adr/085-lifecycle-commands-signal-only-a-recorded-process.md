@@ -2,17 +2,13 @@
 
 > **The *Future work* section is superseded by
 > [ADR-091](091-relay-discovery-trusts-only-the-recorded-daemon.md)
-> (2026-08-20).** The question this record left open, whether loopback discovery
-> should be trusted for anything beyond "reuse this relay", is settled there:
-> the relay path verifies a responder against a recorded pid and a recorded
-> `instance_id` before handing it memory entries or the team bearer. The signal
-> this record said it lacked was built by
-> [PR #174](https://github.com/inkentries/inkentry/pull/174).
+> (2026-08-20).** The relay path now verifies a responder against a recorded pid
+> and a recorded `instance_id` before handing it memory entries or the team
+> bearer. The recorded signal this record said it lacked now exists.
 >
-> **The Decision below is unchanged and is not superseded.** ADR-091 governs
-> *disclosing to* a responder; this record governs *acting against* a process,
-> and it still forbids sourcing a signal target from a port probe or an argv
-> match.
+> **The Decision below is unchanged.** ADR-091 governs *disclosing to* a
+> responder; this record governs *acting against* a process, and it still
+> forbids sourcing a signal target from a port probe or an argv match.
 
 **Date:** 2026-08-19
 **Deciders:** architecture review (this record); founder (Johan) sign-off via PR review
@@ -221,10 +217,9 @@ branch already diagnoses and instructs.
 ## Future work
 
 > **Settled by [ADR-091](091-relay-discovery-trusts-only-the-recorded-daemon.md)
-> (2026-08-20).** The paragraph below described an open question. It is closed:
-> `probe_local_relay_port` verifies the responder against the recorded pid and
-> the recorded `instance_id` before trusting it, and a refusal returns nothing
-> rather than falling through. Read the paragraph as history.
+> (2026-08-20).** `probe_local_relay_port` verifies the responder against the
+> recorded pid and `instance_id`, and a refusal returns nothing rather than
+> falling through. Read the paragraph below as history.
 
 Whether loopback discovery should be trusted at all for anything beyond "reuse
 this relay" is open and tracked separately: `probe_local_relay_port` accepts a
