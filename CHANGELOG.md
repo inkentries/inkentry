@@ -12,374 +12,230 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 ### Internal
 
 - **`cargo test -p inkentry-server --bins` no longer aborts the whole run.**
-  `Args` binds fields to `INKENTRY_*` variables and clap reads all of them on
-  every parse, so a test setting one raced every test that parses. The loser
-  hit clap's `Error::exit()`, killing the harness with status 2 and naming no
-  failing test. The per-variable `#[serial]` groups could not prevent it: they
-  exclude the sibling test naming the same variable, not the dozen that parse.
-  Parses and environment mutations in that module now share one lock, and
-  every test parse goes through `try_parse_from`, so a parse that fails anyway
-  fails its own test instead of the run. `cargo nextest`, which CI uses, gave
-  each test its own process and never showed this.
+  Tests that parse `INKENTRY_*`-bound args now share one lock and parse through
+  `try_parse_from`, so a failed parse fails its own test instead of killing the
+  harness. `cargo nextest`, which CI uses, never showed this.
 
 ### Added
 
-- **Releases now ship checksums and a signed build provenance attestation.**
-  Every release publishes a `SHA256SUMS` asset, and each archive and package
-  carries an attestation binding it to this repository and the commit it was
-  built from. Verify a download with
+- **Releases ship checksums and a signed build-provenance attestation.** Every
+  release publishes a `SHA256SUMS` asset, and each archive and package carries an
+  attestation binding it to this repository and commit. Verify with
   `gh attestation verify <file> --repo inkentries/inkentry`. Releases up to
   `v1.0.0-rc2` have neither.
 - **`inkentry auth remove-key` removes a stored credential** (ADR-090): one
-  server's key (`--server <url>`), every server key (`--all-servers`), or the
-  LLM endpoint's key (`--llm`, which nothing could remove before). Removing a
-  credential that is not stored says so and exits 0.
-- **A memory entry stored without a vector is now repaired.** Entries stored
-  while the embedder was loading, unavailable or disabled were absent from
-  semantic search and no re-push fixed them; the server now fills those vectors
-  in. Every element of `POST …/memory/batch`'s `results` gained an `embedded`
-  boolean describing the stored row.
-- **`GET /v1/health` advertises `accepts_pushed_vectors`.** A client that has
-  already embedded an entry locally can send that vector and skip server-side
-  embedding, but only against a server that says it accepts one. The flag is
-  ready-gated alongside `index.embed` and `search.semantic`: `true` only while
-  the embedder is ready with a known dimension, and `false` while it is loading,
-  unavailable or disabled. Absent on an older server, which a client reads as
-  `false` and pushes text only.
-
-  Until now no self-hosted server ever set it, so the client's whole
-  pushed-vector path was unreachable and every pushed entry was re-embedded on
-  arrival.
-- **Unified `search` over code and memory.** One `search` command returns code
+  server (`--server <url>`), all servers (`--all-servers`), or the LLM endpoint
+  key (`--llm`). Removing a credential that is not stored exits 0.
+- **Memory entries stored without a vector are repaired.** Entries stored while
+  the embedder was loading, unavailable or disabled are now backfilled
+  server-side. Each `/memory/batch` result gains an `embedded` boolean.
+- **`GET /v1/health` advertises `accepts_pushed_vectors`.** A client can send a
+  vector it embedded locally and skip server-side embedding, but only when the
+  server advertises acceptance (`true` only while the embedder is ready with a
+  known dimension). Absent on an older server, read as `false`.
+- **Unified `search` over code and memory** (ADR-081). One `search` returns code
   chunks and memory entries interleaved into a single ranked list, fused by
-  reciprocal rank fusion on rank position alone (`RRF_K = 60`, code-before-memory
-  tie-break); the incomparable per-corpus relevance magnitudes are never
-  compared. See ADR-081.
+  reciprocal rank fusion on rank position alone (`RRF_K = 60`).
 - **Corpus filters `--only-code` / `--only-memory` / `--only-text` on `search`.**
-  `--only-text` runs full-text over the in-scope corpora with no embedding and no
-  server. `--only-code` and `--only-memory` are mutually exclusive.
-- **Typed, nested result envelope.** `search --format json`/`jsonl` emits one
-  object per result carrying a `type` discriminator (`code`/`memory`), its
-  `fused_rank`/`fused_score`/`corpus_rank`, and the existing `SearchResult` or
-  `Note` nested under a `code`/`memory` key. The human format interleaves in
-  fused order with a per-result `[code]`/`[memory]` label.
-- **Attachments are unranked on both sides of the envelope.** `--graph`
-  call-graph neighbours, `--expand-graph` relates-to neighbours and cross-project
-  entries are appended after the ranked members with
-  `fused_rank`/`fused_score`/`corpus_rank` all `null` — none of them was ranked
-  against the query. Memory attachments are labelled `[memory · attached]` in the
-  human format.
-- **`--as-of <date>` and `--expand-graph` carry onto `search`** from the removed
-  `memory search`; `--local-only` disables the cross-project dependency pass on
-  both corpora.
-- **`inkentry import <dump>`** reads a [portable dump](docs/dump-format.md) into
-  this project: memory entries and their relationships, plus any projects and
-  recorded commands the dump carries. This is how an existing store crosses into
-  a store this build created — nothing is opened in place.
-
-  - The dump is verified **whole** before anything is written, and any mismatch
-    refuses the entire file. There is no partial import, and every store the
-    import touches is rolled back together.
-  - Import **refuses to run when this project's memory does not live in the local
-    store** — `mode = "cloud_first"` with a `server_url`. The refusal names the
-    recovery path (`INKENTRY_MODE=local_first`, then `inkentry sync`).
-  - Entries arriving with an identifier keep it. Entries without one are assigned
-    a UUIDv7 seeded from their own creation time, so a back catalogue keeps its
-    ordering.
-  - **The reported count is of entries that landed.** Two records sharing a
-    memory entry's content-addressed identity are one entry; the fold is reported
-    on its own line, and records already in the store are reported apart again.
-  - **Embeddings are not carried in a dump.** The import then runs `memory
-    reindex`'s pass; with no embedder reachable it still succeeds and reports how
-    many entries are waiting plus the command that finishes the job, and
-    `--no-embed` skips the attempt. Under `--format json` stdout carries exactly
-    one document, the import summary.
-
+  `--only-text` runs full-text with no embedding and no server; `--only-code` and
+  `--only-memory` are mutually exclusive.
+- **Typed, nested `search` result envelope.** `search --format json`/`jsonl`
+  emits one object per result with a `type` discriminator (`code`/`memory`) and
+  the payload nested under a `code`/`memory` key; the human format labels each
+  result `[code]`/`[memory]`.
+- **Graph and cross-project attachments are unranked.** `--graph` neighbours,
+  `--expand-graph` neighbours and cross-project entries are appended after the
+  ranked members with `fused_rank`/`fused_score`/`corpus_rank` all `null`.
+- **`--as-of <date>` and `--expand-graph` work on `search`**; `--local-only`
+  disables the cross-project dependency pass on both corpora.
+- **`inkentry import <dump>`** reads a [portable dump](docs/dump-format.md) —
+  memory entries, relationships, projects and recorded commands — into a store
+  this build created; nothing is opened in place. The dump is verified whole
+  before anything is written. Entries keep their id or are assigned a UUIDv7 from
+  their creation time; embeddings are not carried, so import runs `memory
+  reindex`'s pass and reports how many entries await embedding (`--no-embed`
+  skips it). Refuses to run under `cloud_first` with a `server_url`, naming the
+  recovery path.
 - **Imported memory entries travel with the repository.** `inkentry import`
-  appends what it landed to `refs/notes/inkentry`, so a teammate cloning the repo
-  gets the imported decisions along with the code. Entries the ref already holds
-  are skipped rather than duplicated, so re-importing the same dump adds nothing.
-  The carry is best-effort (the local store is the store of record) and
-  `store_in_git_notes = false` turns it off. **Known limitation:** a supersede
-  edge reaches the clone's carrier but not the clone's `memory.db`, so a
-  superseded entry reads as archived in a clone while the link to its successor
-  is not queryable there.
-- **Deterministic structural chunk summaries, in the built-in tier.** The
-  `summary:` slot folded into each chunk's embedding input is composed offline
-  from signals already present after parse, with no model, no key and no network,
-  and is byte-identical for the same chunk and edges on every run. A hard token
-  cap (`SUMMARY_TOKEN_CAP`) bounds the slot, dropping whole lower-priority
-  ingredients rather than truncating the code tail. The composed summary is
-  secret-scanned before storage. See ADR-080.
-- **Title-less chunks (Markdown sections, oversized windows) get an MMR-selected
-  summary**, chosen deterministically from short units of the chunk with no
-  whole-chunk re-embed, and drained last.
+  appends what it landed to `refs/notes/inkentry` (`store_in_git_notes = false`
+  turns it off), so a teammate cloning the repo gets the imported decisions.
+  Known limitation: a supersede edge reaches a clone's carrier but not its
+  `memory.db`.
+- **Deterministic structural chunk summaries in the built-in tier** (ADR-080).
+  Each chunk's `summary:` embedding slot is composed offline — no model, no key,
+  no network — and is byte-identical across runs. It is secret-scanned before
+  storage.
+- **Title-less chunks (Markdown sections, oversized windows) get an
+  MMR-selected summary**, chosen deterministically with no whole-chunk re-embed.
 - **`inkentry status` reports the embedding backlogs.** `memory_embedding_pending`
-  (text and JSON) counts memory entries not yet in semantic search and names
-  `inkentry memory reindex` as the fix. `status --format json` also gains
-  `embedding_refresh_pending` — chunks that have a vector whose input changed and
-  await an in-place re-embed (`null` when none) — and `summary_scheme`, the
-  composition scheme the index's vectors were built under. `search` names the
-  same refresh signal on stderr, and does not print an unqualified "No results
-  found." over a still-refreshing index.
-- **`inkentry context` surfaces active agent sessions at session start**, ahead
-  of handoffs: the roster of other live `intent` entries, and one warning per
-  file the current worktree has already modified that an active intent also
-  claims (`⚠  Overlap: <file> is listed in an active intent`). JSON output (and
-  `AGENT=true`) gains the `intent` section plus a top-level `overlaps` array of
-  file paths. Under `--budget` the intent roster packs last; the overlap warnings
-  are budget-exempt and always emitted, even at `--budget 0`. Intents stay scoped
-  to the local project.
-- **`inkentry harvest` is now a top-level command**, with full flag and source
-  parity with the old spelling (`--git-range`, `--branch`, `--source
-  git|claude-code|failures`, `--batch-size`, `--history-file`, `--since`,
-  `--confirm`, `--detach`, `--db`, `--backend`). The post-commit hook and the
-  `--ci` workflow snippet now install `inkentry harvest`.
+  counts entries not yet in semantic search and names `inkentry memory reindex`.
+  `status --format json` also gains `embedding_refresh_pending` and
+  `summary_scheme`, and `search` no longer prints a bare "No results found." over
+  a still-refreshing index.
+- **`inkentry context` surfaces active agent sessions at session start.** It
+  lists other live `intent` entries and warns per file the current worktree has
+  modified that an active intent also claims. JSON output (and `AGENT=true`) gains
+  an `intent` section and a top-level `overlaps` array; the overlap warnings are
+  budget-exempt.
+- **`inkentry harvest` is a top-level command**, with full flag and source parity
+  (`--git-range`, `--branch`, `--source`, `--batch-size`, `--history-file`,
+  `--since`, `--confirm`, `--detach`, `--db`, `--backend`). The post-commit hook
+  and the `--ci` snippet install `inkentry harvest`.
 - **`inkentry plumbing push` and `inkentry plumbing pull`** — one-way memory
   transfer as plumbing, for seeding a team server or running in CI. Each emits a
-  single JSONL report object and follows the plumbing exit-code contract, with
-  one documented exception: an empty delta exits `1` **and still emits the
-  report**, so a machine consumer can read the outcome of an empty run; only a
-  run that did not complete exits `2` with stdout empty. Both require an
-  explicitly-configured team `server_url` — never the inference loopback.
-  `plumbing push` accepts `--source <path>` and `--include-archived`.
+  single JSONL report and follows the plumbing exit-code contract (an empty delta
+  exits `1` but still emits the report). Both require an explicitly-configured
+  team `server_url`.
 
 ### Changed
 
 - **BREAKING: `inkentry plumbing push` exits `2` when there is no local memory
-  store**, instead of creating one and reporting an empty delta at exit `1`.
-  Run `inkentry init` in the project first, or point `--source` at a real
-  `memory.db`. `inkentry plumbing pull` and `inkentry sync` are unchanged: they
-  still create the store when none exists.
-
-- **BREAKING: the default server port moved from 7777 to 4655**, and the team
-  deployment convention from 7777 to 4658. 7777/7778 are registered ports.
-  **Loopback users need do nothing**: the port was never in `config.toml`,
-  `inkentry server start` records whatever it bound in `server.port`, and
-  auto-discovery reads that file before falling back to the default — an
-  already-running daemon on 7777 keeps being found until it is restarted.
-  **Team operators need do nothing either**: their `server_url` and their
-  unit's `--port` are explicit and unchanged; only the shipped defaults moved.
-  Adopting the new unit files (`packaging/inkentry-server-team*.service`, the
-  MDM examples, the `team-server` compose profile) means moving the server and
-  its clients' `server_url` together.
-
+  store**, instead of creating one and reporting an empty delta. Run
+  `inkentry init` first, or point `--source` at a real `memory.db`.
+  `plumbing pull` and `sync` still create the store.
+- **BREAKING: the default server port is 4655** (team convention 4658), off the
+  registered 7777/7778. Loopback and team users need do nothing — the port comes
+  from `server.port` or an explicit `--port`, not a shipped default. Adopting the
+  new unit files means moving the server and its clients' `server_url` together.
 - **An auto-started daemon whose port is taken now takes an ephemeral port**
-  instead of walking the ten ports above it. Explicit `inkentry server start` is
-  unchanged: it binds `--port` exactly and fails loudly if that port is held.
-
+  instead of walking the ports above it. Explicit `inkentry server start` still
+  binds `--port` exactly and fails loudly if it is held.
 - **BREAKING: the memory write routes take `vector` / `vector_model` /
-  `vector_precision` in place of a bare `embedding`.** `POST
-  /v1/projects/{id}/memory` and `POST /v1/projects/{id}/memory/batch` now use
-  the same three field names the hosted API already uses, so one client payload
-  means the same thing against either. **The old `embedding` name is removed
-  outright with no alias**: unknown fields are ignored on this wire, so a
-  request still sending it is accepted and the entry is embedded server-side as
-  if no vector had been supplied.
-
-  A vector must arrive with **both** its `vector_model` and `vector_precision`,
-  or the write is refused with `400`. An untagged vector cannot be checked
-  against what the server itself embeds with, and storing one would put a vector
-  of unknown provenance in the same index as the server's own. `vector_model`
-  must name the server's embedding model and `vector_precision` must be `fp32`;
-  the existing dimension check is unchanged.
-
+  `vector_precision`** in place of a bare `embedding`, matching the hosted API.
+  The `embedding` field is removed with no alias, so a request still sending it is
+  embedded server-side. A vector must arrive with both `vector_model` (the
+  server's model) and `vector_precision` (`fp32`), or the write is refused
+  with `400`.
 - **BREAKING: a store written by an older build is not opened in place, and there
-  is no migration path.** Both schema ladders are gone, and the two stores answer
-  differently:
-
-  - `index.db` is **discarded and rebuilt empty**, carrying only the `usage`
-    table across. **You must re-index** (`inkentry index .`) to get search back.
-  - `memory.db` is **refused outright**, with a message pointing at `inkentry
-    import`.
-
-  **Export your memory with `spelunk-export` before upgrading from 0.9.8, then
-  `inkentry import` the dump it writes.** `spelunk-export` is a standalone
-  per-platform asset on the [spelunk-cloud/spelunk
-  releases](https://github.com/spelunk-cloud/spelunk/releases) page — it is not in
-  the inkentry archive, the `.deb`, the Homebrew formula or the Scoop manifest.
-  There is nothing left that converts an older `memory.db` in place, and this
-  build will not open it — an unexported store is unreachable memory. A store
-  from a genuinely newer build is refused and left untouched in both cases.
-- **BREAKING: every memory-entry id is now a UUID string.** `id` and
-  `superseded_by` are JSON **strings** on every command that emits them (`memory
-  list --format json`, `memory show`, `memory graph`, `plumbing read-memory`),
-  and both endpoints of a `memory graph` edge are strings too. A script parsing
-  an integer `id` out of JSON breaks and must be updated. `memory graph`, `memory
-  add --relates-to` and `plumbing read-memory --id` accept a UUID where they
-  previously took an integer. **Old numeric ids no longer resolve** — a numeric
-  id is answered with a message pointing at `inkentry memory list`. Ids are now
-  stable across machines and survive an edit. See ADR-078.
+  is no migration path.** `index.db` is discarded and rebuilt empty — re-index
+  with `inkentry index .`; `memory.db` is refused with a pointer to
+  `inkentry import`. Export first with `spelunk-export` before upgrading from
+  0.9.8, then `inkentry import` the dump — see [Upgrading](docs/upgrading.md). A
+  store from a newer build is refused and left untouched.
+- **BREAKING: every memory-entry id is a UUID string** (ADR-078). `id` and
+  `superseded_by` are JSON strings everywhere they appear, and `memory graph`,
+  `memory add --relates-to` and `plumbing read-memory --id` take a UUID. Old
+  numeric ids no longer resolve (answered with a pointer to `inkentry memory
+  list`), so a script parsing an integer `id` must be updated. Ids are now stable
+  across machines and survive an edit.
 - **BREAKING: a self-hosted `inkentry-server` identifies memory entries by
-  UUIDv7, and every route carrying a note id now speaks strings.** `id`,
-  `superseded_by`, `conflicts[].id`, the `new_id` supersede body and the
-  `{note_id}` path segment were `integer`/`int64` and are now `string`; the
-  OpenAPI document is regenerated to match. Existing servers upgrade in place:
-  entries predating the cursor are assigned an identity on the next start, seeded
-  from their own creation time. A client holding an integer id from an older
-  server will not resolve it — there is no mapping and no compatibility path.
+  UUIDv7**, and every route carrying a note id now speaks strings (the OpenAPI
+  document is regenerated to match). Servers upgrade in place — existing entries
+  are assigned an identity on the next start — but a client holding an integer id
+  from an older server cannot resolve it.
 - **BREAKING: `search --format json`/`jsonl` is the nested code/memory envelope,
-  not a flat `SearchResult[]`.** Consumers that parsed the top-level array, or
-  that re-sorted results by `distance`, must move to the emitted order /
-  `fused_rank`; the per-corpus `distance`/`score` survive as within-corpus
-  diagnostics but are not comparable across corpora (ADR-081).
-- **`search` is no longer a pure read.** Folding in the memory corpus brings
-  `memory list`/`context`'s git-notes refresh with it, so a plain `inkentry
-  search` may run `git notes merge` and update `memory.db` when a teammate's
-  entries have arrived. It is OID-gated and does no work when nothing changed.
-- **`search` requires an index.** The zero-setup "returns results with nothing
-  indexed" affordance is gone: an uninitialised directory funnels to `inkentry
-  init`. Full-text results are available immediately once `init` has parsed the
-  tree, while semantic ranking builds in the background; the zero-coverage,
-  embedder-unavailable and stale-empty paths degrade to full-text search, not a
-  structural scan.
-- **PageRank now runs before the embed phase**, so a cold first index embeds
-  PageRank-central code first (it previously fell back to modification-time
-  order). Structural summaries are composed in the same pass, so a chunk's first
-  vector already carries its summary.
-- **A chunk whose embedding input changes is re-embedded in place, without
-  dropping coverage.** The `chunks.embed_pending` flag queues it, and every
-  existing vector is kept until its replacement lands (delete-then-insert per
-  chunk, in the batch transaction), so semantic search coverage never falls to
-  zero while a refresh drains.
-- Memory entry relationships are stored by entry id rather than an internal row
-  number, and the memory store declares foreign-key enforcement itself. An edge
-  naming an entry that does not exist is refused on every build.
-- The `external_id` the CLI mints when pushing an entry to the hosted API is now
-  a UUIDv7 rather than a v4.
-- **Team memory sharing now has a single everyday verb: `inkentry sync`**
-  (two-way convergence). This is a **surface change only** — `sync`'s behaviour,
-  the sync-mode table (`offline` / `local_first` / `cloud_first`), the wire
-  protocol and every server route are unchanged. `memory reconcile` and the
-  `login` / `logout` / `org` / `auth` commands are untouched.
-- **Install paths changed with the rename; the old instructions no longer work.**
-  This is the first release published under the `inkentry` name:
-
-  - Install script: `curl -fsSL https://get.inkentry.com/install.sh | sh`
-    (PowerShell: `irm https://get.inkentry.com/install.ps1 | iex`).
-  - Homebrew: `brew install inkentries/inkentry/inkentry`.
-  - Scoop: the bucket moved to its own repository —
-    `scoop bucket add inkentry https://github.com/inkentries/scoop-inkentry`.
-
-  Anything still pointing at the predecessor project's repository or install host
-  will fail.
+  not a flat `SearchResult[]`** (ADR-081). Consumers that parsed the top-level
+  array, or re-sorted by `distance`, must move to the emitted order / `fused_rank`;
+  per-corpus `distance`/`score` are not comparable across corpora.
+- **`search` is no longer a pure read.** Folding in the memory corpus brings the
+  git-notes refresh with it, so a plain `search` may run `git notes merge` and
+  update `memory.db` when a teammate's entries have arrived. It is OID-gated and
+  does nothing when nothing changed.
+- **`search` requires an index.** An uninitialised directory funnels to
+  `inkentry init`. Full-text results are available once `init` has parsed the
+  tree; semantic ranking builds in the background.
+- **PageRank runs before the embed phase**, so a cold first index embeds
+  PageRank-central code first. Structural summaries are composed in the same pass,
+  so a chunk's first vector already carries its summary.
+- **A chunk whose embedding input changes is re-embedded in place.** Every
+  existing vector is kept until its replacement lands, so semantic search coverage
+  never falls to zero while a refresh drains.
+- **Memory entry relationships are stored by entry id**, and the memory store
+  enforces foreign keys itself: an edge naming an entry that does not exist is
+  refused.
+- **The `external_id` the CLI mints when pushing to the hosted API is a UUIDv7**
+  rather than a v4.
+- **Team memory sharing has a single everyday verb: `inkentry sync`** (two-way
+  convergence). Surface change only — `sync`'s behaviour, the sync modes, the wire
+  protocol and every server route are unchanged.
+- **Install and package paths are under the `inkentry` name:** install script
+  `curl -fsSL https://get.inkentry.com/install.sh | sh` (PowerShell:
+  `irm https://get.inkentry.com/install.ps1 | iex`), Homebrew
+  `brew install inkentries/inkentry/inkentry`, Scoop
+  `scoop bucket add inkentry https://github.com/inkentries/scoop-inkentry`.
 - **BREAKING: a plaintext `http://` team server is refused even when no
-  credential is configured.** The transport guard only ran when a bearer was
-  present, so a keyless client sent memory in the clear to a non-loopback host
-  without complaint. It now runs on every remote sync client. If you run a team
-  server over plain `http://` with no bearer, `inkentry sync` stops with a
-  transport error where it previously worked: put TLS in front of it, or bind it
-  to loopback. Nothing about a TLS or loopback server changes.
+  credential is configured.** The transport guard now runs on every remote sync
+  client, not only when a bearer is present. If you run a team server over plain
+  `http://` with no bearer, put TLS in front of it or bind it to loopback. TLS
+  and loopback servers are unaffected.
 
 ### Deprecated
 
-- **`inkentry memory harvest` is now a deprecated alias of `inkentry harvest`.**
-  It keeps working and produces identical results for one release, printing a
-  one-line deprecation warning on stderr. The alias exists so post-commit hooks
-  installed before this change keep working until they are re-installed; removal
-  is a later release.
+- **`inkentry memory harvest` is a deprecated alias of `inkentry harvest`.** It
+  still works and produces identical results, printing a one-line deprecation
+  warning, so post-commit hooks installed before this change keep working until
+  re-installed. Removal is a later release.
 
 ### Removed
 
 - **BREAKING: `inkentry logout --servers` and `inkentry logout --server <url>`**
-  (ADR-090). Run `inkentry auth remove-key --all-servers` or
-  `inkentry auth remove-key --server <url>` instead. Bare `inkentry logout` is
-  unchanged.
-- **BREAKING: a `server_key` in your personal `~/.config/inkentry/config.toml`
-  is no longer read, and a key stored by a client older than the per-origin
-  scheme is no longer migrated forward** (ADR-088). Run
-  `inkentry auth set-key --server <url>` once per server. A config file that
-  still carries the line is named on stderr; rotate that key rather than moving
-  it, since it has been sitting in plaintext.
-- **The `--mode` flag on `search`** (`auto`/`text`/`semantic`/`hybrid`/
-  `ast-grep`), **the top-level `graph` command**, and **`memory search`**. All
-  three exit `2` with a message naming the replacement rather than a bare clap
-  error, and none appears in `--help` (ADR-082):
-
+  (ADR-090). Use `inkentry auth remove-key --all-servers` or
+  `--server <url>` instead. Bare `inkentry logout` is unchanged.
+- **BREAKING: a `server_key` in `~/.config/inkentry/config.toml` is no longer
+  read or migrated forward** (ADR-088). Run `inkentry auth set-key --server <url>`
+  once per server. A config file still carrying the line is named on stderr —
+  rotate that key rather than moving it.
+- **The `--mode` flag on `search`, the top-level `graph` command, and
+  `memory search`** (ADR-082). All three exit `2` naming the replacement and are
+  absent from `--help`:
   - `--mode text` → `--only-text`; `semantic`/`hybrid`/`auto` → the default;
     `ast-grep` → no replacement.
-  - `graph` → `search <symbol> --graph` (the symbol's chunk plus its 1-hop
-    neighbours) or `plumbing graph-edges --symbol <name>` / `--file <path>`
-    (exact edges, JSONL). `memory graph` is a different command and is
-    unaffected.
+  - `graph` → `search <symbol> --graph`, or `plumbing graph-edges --symbol
+    <name>` / `--file <path>`. `memory graph` is a different command, unaffected.
   - `memory search` → `search --only-memory`, with `--as-of` / `--expand-graph` /
-    `--local-only` carried over. The rest of the `memory` family is unchanged.
-
+    `--local-only` carried over.
 - **The in-process ast-grep structural-search engine** and the `ast-grep-core`
   dependency. Tree-sitter grammars (`ast-grep-language`) that back
   parsing/chunking stay.
-- **LLM-generated chunk summaries.** `inkentry index` no longer calls an LLM for
-  summaries and the `--summary-batch-size` flag is gone; `--no-summaries` now
-  skips the structural pass. For abstractive summaries, run your own agent over
-  `inkentry plumbing cat-chunks` output — see
-  `docs/examples/abstractive-summaries.md`. `memory harvest` is now the only
-  feature that calls an LLM.
-- **`inkentry check`.** Index freshness is `inkentry index` run directly
-  (blake3-gated, so a re-index is a no-op when nothing changed), server health is
-  `inkentry server status` and `inkentry status`, and active-intent plus
-  file-overlap surfacing is `inkentry context`. Its `--format json` object and the
-  `--format porcelain` `stale=/total=/last_indexed=` line are gone. For anyone
-  who parsed them: the file counts and the `last_indexed_at` / `memory_backend`
-  fields are on `inkentry status --format json`, and the stale-file list is
-  `inkentry plumbing ls-files --stale`. Note that plumbing form's inverted
-  exit-code polarity — it exits `0` when stale files exist and `1` when the index
-  is fresh — so a "fail if stale" gate must test for output presence rather than
-  a non-zero exit.
-- **`inkentry explore` and the `POST /v1/projects/{project_id}/explore` server
-  route** (ADR-079). Multi-hop exploration is now a skill your own agent runs
-  against `search`, `graph` and `chunks` — see "Exploring: multi-hop retrieval" in
-  `SKILL.md`. Two consequences: an LLM-configured server no longer advertises an
-  `explore` capability in `/v1/health` (it advertises `llm.complete` only), and
-  `inkentry status --format json` drops the `explore` key from its `usage_7d`
-  object.
+- **LLM-generated chunk summaries.** `inkentry index` no longer calls an LLM;
+  `--summary-batch-size` is gone and `--no-summaries` now skips the structural
+  pass. For abstractive summaries, run your own agent over `inkentry plumbing
+  cat-chunks` (see `docs/examples/abstractive-summaries.md`). `harvest` is now the
+  only LLM-backed feature.
+- **`inkentry check`.** Use `inkentry index` for freshness (blake3-gated),
+  `inkentry server status` / `inkentry status` for health, and `inkentry context`
+  for intents and overlap. The file counts and `last_indexed_at` / `memory_backend`
+  fields move to `inkentry status --format json`, and the stale-file list is
+  `inkentry plumbing ls-files --stale` — note its inverted exit polarity (`0` when
+  stale files exist), so a "fail if stale" gate must test for output, not a
+  non-zero exit.
+- **`inkentry explore` and the `POST /v1/projects/{project_id}/explore` route**
+  (ADR-079). Multi-hop exploration is now a skill your agent runs over `search`,
+  `graph` and `chunks` (see `SKILL.md`). A server no longer advertises an
+  `explore` capability in `/v1/health`, and `status --format json` drops the
+  `explore` key from `usage_7d`.
 - **`inkentry memory push`, `inkentry memory pull`, `inkentry memory watch` and
   `inkentry memory since`.** One-way transfer is now `inkentry plumbing push` /
-  `inkentry plumbing pull`; two-way convergence stays `inkentry sync`. Live
-  streaming and point-in-time queries return with the cloud product. The commands
-  are gone outright — no aliases, no stubs. The server's `/memory/since` and
-  `/memory/stream` routes are **unchanged**.
-- The memory store's schema-migration ladder and the two maintenance routines
-  that ran on every open to backfill the content-addressed convergence key and
-  promote its index to unique. The store is created at its final shape, so both
-  had nothing left to do.
+  `pull`; two-way is `inkentry sync`. Streaming and point-in-time queries return
+  with the cloud product. No aliases. The server's `/memory/since` and
+  `/memory/stream` routes are unchanged.
+- **The memory store's schema-migration ladder** and its two on-open backfill
+  routines. The store is created at its final shape.
 
 ### Fixed
 
-- **The background embed worker no longer stalls for two and a half minutes
-  when you have opted out of a server.** Under `INKENTRY_NO_SERVER=1`,
-  `INKENTRY_MODE=offline` or `mode = "offline"`, its readiness wait spent the
-  full ten-probe backoff on a decision that was settled before the first
-  probe. It now returns at once and prints the skip notice.
-
+- **The background embed worker no longer stalls for ~2.5 minutes when you have
+  opted out of a server.** Under `INKENTRY_NO_SERVER=1`, `INKENTRY_MODE=offline`
+  or `mode = "offline"`, it now returns at once and prints the skip notice.
 - **A piped `inkentry init` or `inkentry server start` returns on Windows**
-  instead of blocking until the background worker exits. The command printed
-  everything and its own process ended, but the reader saw no end of output:
-  for `init` that was the whole embed pass, for `server start` the daemon's
-  lifetime. Only pipes were affected, so CI, agent harnesses, `| tee` and
-  `$(...)` capture always hit it and a terminal never did. macOS and Linux
-  were never affected.
-- **Entries arriving from `inkentry sync` or `inkentry plumbing pull` are now
-  embedded locally**, so a teammate's entry is findable by semantic
-  `inkentry memory search` on your machine. They previously landed with no
-  vector and nothing said so. With no embedder reachable the pull still
-  succeeds and reports how many entries are pending; the next sync or pull
-  picks them up. `plumbing pull`'s report gained `embedded_locally` and
-  `without_local_vector`.
-
-- **`inkentry status` now says why it is offline** instead of always suggesting
-  `server_url`, which could not help under `INKENTRY_NO_SERVER` or
-  `mode = "offline"` and is the wrong advice for a solo user anyway. It names
-  whichever setting is in force, or points at `inkentry server start`.
-- **`inkentry search` and `inkentry index` now say why semantic ranking is off**
-  instead of reporting every case as "no server running". They name the reason
-  `inkentry status` names and give the same remedy: unset the switch you set, or
-  restart a daemon that is running but unusable.
-- **`plumbing push`, `plumbing pull` and `plumbing read-memory` now act on the
-  same memory store the `memory` commands do.** In a project that was
-  configured but never indexed they acted on the machine-global store instead,
-  silently. A linked git worktree now shares the main worktree's store too.
-- **Outside any project, the plumbing memory commands name the global store
-  they act on** on stderr. stdout stays the JSONL report alone.
+  instead of blocking until the background worker exits. Only pipes were affected
+  (CI, agent harnesses, `| tee`, `$(...)`); terminals, macOS and Linux were not.
+- **Entries arriving from `inkentry sync` or `inkentry plumbing pull` are
+  embedded locally**, so a teammate's entry is findable by semantic search. With
+  no embedder reachable the pull still succeeds and reports how many are pending.
+  `plumbing pull`'s report gained `embedded_locally` and `without_local_vector`.
+- **`inkentry status` says why it is offline** instead of always suggesting
+  `server_url`. It names whichever setting is in force, or points at
+  `inkentry server start`.
+- **`inkentry search` and `inkentry index` say why semantic ranking is off**
+  instead of reporting every case as "no server running", with the same remedy
+  `inkentry status` gives.
+- **`plumbing push`, `plumbing pull` and `plumbing read-memory` act on the same
+  memory store the `memory` commands do.** In a configured-but-unindexed project
+  they previously acted on the machine-global store; a linked worktree now shares
+  the main worktree's store.
+- **Outside any project, the plumbing memory commands name the global store they
+  act on** on stderr; stdout stays the JSONL report alone.
 - **`plumbing read-memory` exits 2 when no memory store exists**, rather than
   reporting no entries.
 - **Docs: the memory-sharing claim is corrected in the remaining four places.**
@@ -387,228 +243,121 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   said memory travels with the repository. `git push` does not push
   `refs/notes/*`, so entries stay local until the pre-push hook is installed.
 - **Docs: `SKILL.md` notes the plumbing exit-code contract where the commands are
-  recommended**, not only in the plumbing reference section, since a plumbing
-  verb exits 1 on an empty result and these are the lines an agent copies into a
-  script.
+  recommended**, since a plumbing verb exits 1 on an empty result and these are
+  the lines an agent copies into a script.
 - **`mode` in `.inkentry/config.toml` now takes effect.** The project config
-  read four keys and dropped everything else without a word, so a team that
-  wrote `server_url`, `project_id` and `mode = "cloud_first"` together (the
-  shape the team-server docs show) silently ran `local_first`, with memory
-  staying in each developer's own store while the setup read as
-  server-authoritative. `mode` is now read from either file: the project config
-  wins over the personal one, and `INKENTRY_MODE` still wins over both.
-  `INKENTRY_NO_SERVER=1` still forces `offline` regardless.
-- **A `server_key` line in `.inkentry/config.toml` now says so, and says to
-  rotate.** The field is still never read from a committed file; it used to be
-  dropped in silence, which kept the exposure from the only person who could act
-  on it.
-- **`llm_url` is now a project config key.** A team usually points at one
-  approved provider, so the endpoint is a project-wide fact worth stating once
-  rather than asking every developer to repeat it; the project file wins over
-  the personal one and `INKENTRY_LLM_URL` wins over both, so anyone running a
-  local model still overrides it. The credential does not follow it into either
-  file.
-- **A key `.inkentry/config.toml` is not read for is named on stderr** instead
-  of being dropped in silence, with `llm_url` carrying its own message and its
-  own reason. This is a warning, never a refusal: the key is ignored, the rest
-  of the file loads, and the command runs unchanged.
-- **An index rebuilt for a new schema now says so, instead of reading as an
-  empty repository.** Opening an `index.db` this build cannot read discards and
-  recreates it, keeping the recorded usage history; the only account of that was
-  a `tracing::warn!`, and the CLI logs at `error` by default, so nothing the user
-  saw distinguished a rebuilt-and-empty index from a genuine absence of matches.
-  `search` printed `No results found.` and exited `0`. The run that performs the
-  rebuild now states it, naming the schema version it replaced and the reindex
-  that repairs it. The emptiness stays attributed afterwards too: until an index
-  run has been through the tree, `search`'s no-results line and `status` both say
-  the index was emptied by a rebuild rather than never built, and
-  `status --format json` carries the discarded version as `index_rebuilt_from`
-  (`null` otherwise). The rebuild is still a statement, not a gate, and it still
-  leaves a working tool.
-- **Embedding no longer collapses to a single thread on hosts with two physical
-  cores.** The thread budget reserved a flat two physical cores for request
-  serving, which on a 2-core host reserved the whole machine and left a first
-  index running for hours. It now reserves a quarter of the host, capped at two,
-  from the physical and logical counts separately and takes the smaller result:
-  hosts with eight or more physical cores are unchanged, smaller ones keep a
-  proportional share. When the budget does resolve to 1, the server log and
-  `inkentry status` now name the `INKENTRY_EMBED_THREADS` override, and
-  `/v1/health` reports the resolved value as `limits.embed_threads`. (#112)
-
-- **`hooks install` no longer promises harvesting it cannot do.** Harvest is the
-  only LLM-backed feature and a default install has no LLM, so the install now
-  resolves the LLM route and says harvesting stays inactive until one is
-  reachable, carrying the same guidance `harvest` itself fails with. The hook is
-  installed either way, and configuring an LLM later needs no reinstall.
-
+  previously read only four keys, so `mode = "cloud_first"` written alongside
+  `server_url` silently ran `local_first`. `mode` is now read from either file
+  (project wins over personal; `INKENTRY_MODE` over both).
+- **A `server_key` line in `.inkentry/config.toml` now warns and says to
+  rotate**, instead of being dropped in silence. The field is still never read
+  from a committed file.
+- **`llm_url` is now a project config key**, so a team can state its provider once
+  (project wins over personal; `INKENTRY_LLM_URL` over both). The credential does
+  not follow it into either file.
+- **A key `.inkentry/config.toml` is not read for is named on stderr** instead of
+  dropped in silence. This is a warning, never a refusal: the rest of the file
+  loads and the command runs.
+- **An index rebuilt for a new schema now says so**, instead of reading as an
+  empty repository. The rebuild keeps recorded usage; `search` and `status`
+  attribute the emptiness until a re-index, and `status --format json` carries the
+  discarded version as `index_rebuilt_from`.
+- **Embedding no longer collapses to a single thread on 2-core hosts** (#112). The
+  thread budget now reserves a quarter of the host (capped at two) from the
+  physical and logical counts separately. When it resolves to 1, the log and
+  `inkentry status` name `INKENTRY_EMBED_THREADS`, and `/v1/health` reports
+  `limits.embed_threads`.
+- **`hooks install` no longer promises harvesting it cannot do.** With no LLM
+  reachable it says harvesting stays inactive until one is, carrying `harvest`'s
+  own guidance. The hook installs either way; configuring an LLM later needs no
+  reinstall.
 - **`--detach` no longer converts every failure into silence.** A detached run's
-  stdout and stderr went to a null sink, so a per-commit harvest could fail on
-  every commit with nothing to find. Both now append to
-  `.inkentry/background.log`, under a header naming the run and its time.
-
+  stdout and stderr now append to `.inkentry/background.log` under a header naming
+  the run and its time.
 - **The post-commit hook no longer does nothing when `inkentry` is off `PATH`.**
-  It gated on `command -v inkentry` and invoked a bare command, so every source
-  build and every custom install directory silently skipped indexing and
-  harvesting on each commit. It now embeds the installing binary's absolute
-  path, quoted through the same helper the pre-push hook already used. A hook
-  whose binary has since been removed still exits 0 rather than failing the
-  commit. Re-run `inkentry hooks install` to re-resolve a moved binary.
-
+  It now embeds the installing binary's absolute path. A hook whose binary was
+  removed exits 0 rather than failing the commit; re-run `inkentry hooks install`
+  to re-resolve a moved binary.
 - **A server key file saved with a UTF-8 BOM no longer makes every request fail
-  with 401.** The BOM (`EF BB BF`), which many Windows editors write by default,
-  survived the key's trim because U+FEFF is a format character rather than
-  whitespace, so it was hashed as part of the key. No client could match it: a
-  bearer token arrives as header-safe ASCII, so nothing an operator could send,
-  including the file's exact contents, would ever authenticate, and the server
-  logged a normal startup. A leading BOM is now stripped from every key source
-  (`--key`, `--key-file`, `INKENTRY_SERVER_KEY`, the systemd `server-key`
-  credential), and a resolved key still holding a byte an HTTP header cannot
-  carry now refuses startup with an error naming the source it came from.
-- **Docs: memory did not "travel with the repo" by default, as the getting-started
-  guide and the README both claimed.** Publishing your own memory notes is opt-in
-  and needs `inkentry hooks install --pre-push`; only the fetch side is automatic.
-  Both documents now say so, and the getting-started guide documents `--pre-push`,
-  the two `.git/config` entries `init` writes, and the fact that the post-commit
-  hook's harvesting is inactive until an LLM is configured. Its team-setup section
-  now recommends `inkentry sync` over `inkentry plumbing push`, whose plumbing
-  exit code 1 on an empty delta made an already-synced run look like a failure.
-  The supported-language lists in the README and CLAUDE.md now state that
-  `inkentry languages` is build-dependent (`rich-formats` adds DOCX, spreadsheets
-  and PDF, and is on for every release binary).
-- **Docs: Jupyter notebooks were parsed but never listed as supported.**
-  `notebook` has been in `SUPPORTED_LANGUAGES` and printed by `inkentry
-  languages` all along, with its own per-cell chunker and no feature gate, yet
-  neither the README nor CLAUDE.md named it, so a reader with a `.ipynb`-heavy
-  repo checking the list first would conclude the tool had nothing for them.
-  Both lists now include it, and the README regained `text`, which it had also
-  dropped. The README further claimed tree-sitter chunking for Markdown, which
-  uses a heading splitter, and claimed every other file type is indexed as
-  sliding-window text, when an undetected type is skipped entirely; both are
-  corrected.
+  with 401.** A leading BOM is stripped from every key source (`--key`,
+  `--key-file`, `INKENTRY_SERVER_KEY`, the systemd credential), and a resolved key
+  still holding a byte an HTTP header cannot carry refuses startup, naming its
+  source.
+- **Docs: memory does not "travel with the repo" by default**, contrary to the
+  getting-started guide and README. Publishing your own notes is opt-in via
+  `inkentry hooks install --pre-push`; only the fetch side is automatic. Both now
+  say so, getting-started documents `--pre-push` and the two `.git/config` entries
+  `init` writes, and the supported-language lists note that `inkentry languages`
+  is build-dependent (`rich-formats` adds DOCX, spreadsheets, PDF).
+- **Docs: Jupyter notebooks are now listed as supported.** `notebook` has always
+  been parsed (a per-cell chunker, no feature gate) but neither the README nor
+  CLAUDE.md named it; both now do, and the README regained `text`. The README's
+  Markdown-chunking and skipped-file-type claims are corrected too.
 - **`status` no longer misreads a foreign pid as a live embed worker when the
-  project path itself contains "inkentry" and "index".** The liveness check
-  matched those two words as a substring anywhere in the recorded pid's
-  `ps -o args=` output, which includes the running binary's full path — so a
-  project kept under, say, `~/code/inkentry/indexing/`, or a worktree branch
-  named similarly, made any live-but-unrelated process recycling that pid read
-  as a running worker. `status` then reported "Embedding in progress"
-  indefinitely after a crash, and the stale pid record was never cleaned up
-  because it always looked live. The check now requires the pid's own binary to
-  be `inkentry` exactly and an actual `index` subcommand token, not a substring
-  anywhere on the line; the Windows `tasklist` path is tightened the same way,
-  to an exact image-name match.
+  project path contains "inkentry" and "index".** The liveness check now requires
+  the pid's own binary to be `inkentry` and an actual `index` subcommand token,
+  not a substring anywhere on the `ps` line; the Windows `tasklist` path is
+  tightened the same way.
 - **The local relay's idle-retirement can no longer orphan a session a request
-  just touched.** `push`/`poll`/`ack` used to release the sessions-map lock
-  before recording the call as liveness, and idle retirement re-locks that same
-  map to recheck; if retirement won that gap it could remove a session on a
-  stale timestamp while the in-flight call still held the (now orphaned)
-  session. Because the session's background pull task never restarts once
-  started, the effect was background sync stalling until the next `push`
-  re-registered the project. Liveness is now recorded under the same lock
-  acquisition that finds or creates the session, so the two decisions always
-  read the same observation.
+  just touched.** Liveness is now recorded under the same lock that finds or
+  creates the session, so retirement cannot remove a session mid-call and stall
+  background sync.
 - **A daemon started from a shell now survives that shell exiting.** On Unix the
-  spawned `inkentry-server` was orphaned but never left the spawning terminal's
-  session and process group, so closing the terminal SIGHUPed the "background"
-  server out from under the user — routine wherever the starting shell is
-  short-lived, as in a container step. The child now calls `setsid()` before
-  `exec`, giving it a session of its own and no controlling terminal; its
-  descriptors already pointed at `/dev/null` and the log file. Windows
+  spawned `inkentry-server` stayed in the terminal's session, so closing it
+  SIGHUPed the server; the child now calls `setsid()` before `exec`. Windows
   detachment is unchanged.
-- **`inkentry server stop` no longer implies nothing is running when the pid
-  file is missing.** The error said `no server.pid found — is inkentry-server
-  running?` even with a server plainly alive in `ps`; it now distinguishes "this
-  CLI has no record" from "nothing is running" and says how to find the process.
-- **A memory push no longer stalls every other request on the server.** The
-  batch endpoint embedded entries one at a time while holding the server's
-  global database lock, so a routine `inkentry sync` — fifty entries per chunk —
-  queued memory reads, live streaming and project lookups behind the whole
-  batch, and with a real CPU embedder it ran past the request timeout. Entries
-  are embedded once, together, before the lock is taken. Both memory writes now
-  also pass through the same embed admission bound as `search` and `index`, so
-  no route can queue on the embedder unbounded. One consequence to know about: a
-  batch's embedding call is now all-or-nothing, so a text that makes the
-  embedder fail leaves every entry in that request stored text-only, where
-  before only the failing entry lost its vector. `inkentry memory reindex`
-  backfills them.
-- **A busy server no longer aborts a sync.** Now that the memory write routes
-  can shed with `429`, `inkentry sync`, `inkentry plumbing push` and
-  `inkentry memory add` honour the server's `Retry-After` and retry a bounded
-  number of times, printing what they are waiting on, instead of failing the
-  chunk and stopping the run at the first shed. A server still shedding after
-  those retries reports the condition and asks for a re-run, which resumes from
-  the entries that had not landed.
-- **`search` now returns the same order for the same query.** Both hybrid
-  searches fused their two ranked lists through a `HashMap` and sorted on the RRF
-  score alone, so an unchanged index could return one query's results in a
-  different order on every call — a ten-result fusion produced twelve distinct
-  orderings across twenty in-process calls. Personalised PageRank's node ordering
-  and an unordered `chunks_by_ids` fed the same instability into the scores
-  themselves. The fused order is now total and deterministic, tie-broken on keys
-  that are properties of the content — path plus start and end line for code, the
-  entry UUID for memory — rather than on SQLite rowids, so two machines that
-  indexed the same tree agree. The property also holds on a partially embedded
-  index, where RRF ties are pervasive rather than incidental.
+- **`inkentry server stop` no longer implies nothing is running when the pid file
+  is missing.** It now distinguishes "this CLI has no record" from "nothing is
+  running" and says how to find the process.
+- **A memory push no longer stalls every other request on the server.** Batch
+  entries are embedded together before the server's global DB lock is taken, and
+  both memory writes now pass through the same embed admission bound as `search`
+  and `index`. One consequence: a batch's embedding call is all-or-nothing, so a
+  text that fails the embedder leaves that request's entries stored text-only;
+  `inkentry memory reindex` backfills them.
+- **A busy server no longer aborts a sync.** `inkentry sync`, `inkentry plumbing
+  push` and `inkentry memory add` now honour the server's `Retry-After` on a `429`
+  and retry a bounded number of times, then report and ask for a re-run that
+  resumes from the entries that had not landed.
+- **`search` returns the same order for the same query.** The fused order is now
+  total and deterministic, tie-broken on content properties — path plus line span
+  for code, the entry UUID for memory — rather than SQLite rowids, so two machines
+  that indexed the same tree agree, including on a partially embedded index.
 - **`import` no longer implies text search covers the entries it could not
-  embed.** The completion message said full-text "already finds them, so results
-  will look complete", but the memory text matcher requires the query as a
-  contiguous phrase and was never a fallback for the ranking those entries are
-  missing. The message and `docs/commands.md` now say what actually reaches them:
-  `memory list` and `context`, which take no query, and `inkentry memory reindex`
-  to finish the job.
-- **Team memory now converges in the background against a server with an
-  internal CA.** The daemon's relay built its HTTP clients without the
-  configured `server_ca`, so on a corporate or self-signed server every
-  background attempt failed the TLS handshake: `inkentry status` showed a
-  permanent sync error and only a manual `inkentry sync` moved anything. The CA
-  now reaches both the catch-up client and the streaming one — they are separate
-  clients, and fixing only the first would have left streaming broken while
-  catch-up appeared to work.
+  embed.** The completion message and `docs/commands.md` now name what actually
+  reaches them: `memory list` and `context` (which take no query), and
+  `inkentry memory reindex` to finish the job.
+- **Team memory converges in the background against a server with an internal
+  CA.** The daemon's relay now builds both its catch-up and streaming HTTP clients
+  with the configured `server_ca`, so background sync no longer fails the TLS
+  handshake on a self-signed server.
 
 ### Security
 
 - **Loopback auto-discovery verifies a responder before making it the embedding
-  backend**, so a local process squatting the recorded port can no longer
-  receive your indexed code. **Restart your daemon after upgrading**
-  (`inkentry server stop`, then `inkentry server start`): one started by an
-  earlier build recorded no instance id, and a stale port file no longer falls
-  back to the default port, so neither is discovered until you restart.
-- **The local relay no longer hands memory entries or your team credential to
-  an unverified local listener.** It now checks the responder is the daemon this
-  CLI recorded, the same check loopback discovery makes. **Restart your daemon
-  after upgrading** so its instance id is recorded; until then the relay refuses
-  it and says so.
-- **`inkentry harvest`'s git-commit walk now secret-scans each commit message**,
-  skipping a matching commit (warning with its SHA only) and continuing the walk,
-  instead of promoting it into memory and on to `refs/notes/inkentry` unchecked.
+  backend**, so a local process squatting the recorded port can no longer receive
+  your indexed code. **Restart your daemon after upgrading** (`inkentry server
+  stop`, then `start`): one started by an earlier build recorded no instance id
+  and is not rediscovered until restarted.
+- **The local relay no longer hands memory entries or your team credential to an
+  unverified local listener.** It now checks the responder is the daemon this CLI
+  recorded. **Restart your daemon after upgrading** so its instance id is
+  recorded.
+- **`inkentry harvest`'s git-commit walk secret-scans each commit message**,
+  skipping a matching commit (warning with its SHA only) and continuing, instead
+  of promoting it into memory and `refs/notes/inkentry` unchecked.
 - **Bumped `h2` to 0.4.16** for RUSTSEC-2026-0258 (unbounded empty DATA frames).
 - **The local relay no longer opens outbound connections to a caller-chosen
-  host.** `POST /local/relay/push` took `server_url` and `bearer` from the
-  request body, and the daemon then connected there carrying that credential,
-  retried forever, and returned the remote failure to the caller. Any process on
-  the machine could therefore borrow the daemon's network position and read the
-  error as an oracle for what it could reach. A request now only *selects* among
-  the team servers this machine already declares — the daemon's own environment,
-  the project it was started in, and the registry — and can never describe a new
-  one. Failures report a fixed string, with the detail going to the daemon log.
-  The routes are also no longer mounted at all on a non-loopback bind, rather
-  than being served behind a check, and relay sessions are capped and retired
-  when idle instead of accumulating one immortal reconnect task per request.
-  This surface is local-only and its authentication posture is unchanged: with
-  no server key configured, every route stays open to local callers by design
-  (ADR-056). What is closed is the outbound capability, which no other route
-  granted.
-- **The `/llm/complete` rate limit can no longer be lifted by setting a
-  header.** The bucket key used the caller's own `X-Forwarded-For` value
-  whenever one was present, so varying it per request minted a fresh budget and
-  removed the control that bounds what a caller can spend of the operator's LLM
-  credit — measured, a limit of two requests served two hundred. The key now
-  comes from the TCP peer. An operator genuinely running a proxy opts in with
-  `--trusted-proxy` (or `INKENTRY_TRUSTED_PROXIES`), and only the trailing
-  forwarded entry is read — the one the proxy itself appended, rather than the
-  leading one a client can prepend. Forwarded values must parse as IP addresses
-  and expired windows are now evicted, so the limiter's table can no longer be
-  grown without bound by arbitrary attacker-chosen keys.
+  host.** `POST /local/relay/push` previously took `server_url` and `bearer` from
+  the request body and connected there; a request now only *selects* among the
+  team servers this machine already declares. The relay routes are unmounted on a
+  non-loopback bind, and relay sessions are capped and retired when idle. The
+  surface is local-only and its authentication posture is unchanged (ADR-056);
+  only the outbound capability is closed.
+- **The `/llm/complete` rate limit can no longer be lifted by setting a header.**
+  The bucket key used the caller's own `X-Forwarded-For`; it now comes from the
+  TCP peer. An operator running a proxy opts in with `--trusted-proxy` (or
+  `INKENTRY_TRUSTED_PROXIES`), and only the trailing forwarded entry is read.
 
 ## [0.9.8] — 2026-08-07
 
