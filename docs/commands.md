@@ -513,7 +513,7 @@ every command that has one, so `AGENT=true inkentry search "..."` emits the
 array of envelopes without an explicit `--format`. It changes the default only:
 an explicit `--format` always wins.
 
-#### Choosing a corpus, and where `--mode` went
+#### Choosing a corpus
 
 Which corpus you search is part of consuming the output correctly, because it
 determines which payload keys you will see:
@@ -527,24 +527,6 @@ determines which payload keys you will see:
 
 `--only-code` and `--only-memory` are mutually exclusive; either one composes
 with `--only-text`.
-
-**`search` has no `--mode` flag.** There is no ranking mode to choose:
-`search` always uses the best ranking available. Passing `--mode` exits `2` with
-a migration hint rather than being ignored.
-
-| Instead of | Use |
-|---|---|
-| `--mode text` | `--only-text` |
-| `--mode semantic`, `--mode hybrid`, `--mode auto` | no flag; that is the default |
-| `--mode ast-grep` | no structural search; `--only-text` is the nearest |
-
-Two sibling surfaces behave the same way and exit `2` with their own hints:
-`inkentry memory search "<q>"` is `inkentry search "<q>" --only-memory`, and
-the top-level `inkentry graph <symbol>` is `inkentry search "<symbol>"
---graph` or `inkentry plumbing graph-edges --symbol <symbol>`. Because such a
-call exits non-zero in milliseconds, a harness that swallows the exit code
-records zero results and reads it as "no matches" rather than as a broken
-invocation.
 
 ---
 

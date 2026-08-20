@@ -53,23 +53,6 @@ Use `--only-text` for targeted lookups without a server. Use plain `search` for 
 
 With `--format json`/`jsonl`, each result is a nested envelope naming the corpus it came from — `{type, fused_rank, fused_score, corpus_rank, code|memory: {…}}` — not a flat array of results. Read the payload under `.code` or `.memory` per `.type`; relevance inside it is `distance` (lower is better), not a score. `--graph` neighbours and memory attachments are appended after the ranked members with all three fusion fields `null`.
 
-**Command forms `inkentry` does not define** — these exit 2 with a migration hint, and are not in `--help`:
-
-| Instead of | Use |
-|---|---|
-| `inkentry memory search "<q>"` | `inkentry search "<q>" --only-memory` |
-| `inkentry graph <symbol>` | `inkentry search "<symbol>" --graph`, or `inkentry plumbing graph-edges --symbol <symbol>` |
-| `inkentry search --mode text` | `inkentry search --only-text` |
-| `inkentry search --mode semantic\|hybrid\|auto` | no flag — that is the default |
-| `inkentry search --mode ast-grep` | no structural search; `--only-text` is the nearest |
-
-`inkentry memory graph <id>` is a different, live command.
-
-`inkentry explore` is not defined either. It exits 2 like the rows above, but with
-clap's generic unknown-subcommand error rather than a hint naming a replacement,
-because there is no single command to name: the loop below is the replacement,
-and you run it.
-
 ### Exploring: multi-hop retrieval (you run the loop)
 
 inkentry retrieves context; **your model reasons over it.** For an open-ended question that needs tracing across files, run this loop yourself using the primitives below.
