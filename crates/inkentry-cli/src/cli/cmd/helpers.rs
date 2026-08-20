@@ -167,6 +167,7 @@ pub(crate) fn spawn_detached() -> Result<()> {
         }
     }
 
+    let _std_handles = StdHandlesNotInherited::for_spawn();
     cmd.spawn()
         .context("spawning detached background process")?;
     Ok(())
@@ -237,5 +238,115 @@ pub(crate) fn open_private_file_for_write(path: &std::path::Path) -> Result<std:
             .truncate(true)
             .open(path)
             .with_context(|| format!("opening {}", path.display()))
+    }
+}
+
+/// Keeps a detached child from inheriting the standard handles this process
+/// holds but never hands it, for as long as the value lives.
+///
+/// Windows inherits by handle table, not by stream. `CreateProcessW` is called
+/// with `bInheritHandles = TRUE`, which duplicates every handle marked
+/// inheritable in this process, not only the three named in `STARTUPINFO`. So
+/// a parent whose own stdout is a pipe passes that pipe to a detached child
+/// that redirected all three of its own streams and never writes to it. Nothing
+/// in the child ever closes it, so the reader sees no EOF until the child
+/// exits: the whole embed pass for `index`, the daemon's lifetime for
+/// `server start`. Redirecting the child's streams, which every spawn site here
+/// already does, does not address it, because the leaked handle is not one of
+/// the three the child was given.
+///
+/// Clearing `HANDLE_FLAG_INHERIT` for the span of the spawn stops the copy
+/// being made while leaving this process free to keep writing to its own
+/// stdout. The previous flags are restored on drop, so an ordinary child
+/// spawned afterwards still inherits normally.
+///
+/// Scope: the standard handles only. Any other inheritable handle open in this
+/// process is still copied, so if a pipe reader still blocks with this in
+/// place, the culprit is a non-standard handle and the answer is
+/// `STARTUPINFOEX` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, which means
+/// calling `CreateProcessW` directly instead of through `std::process`.
+///
+/// Not thread safe: the flag is a property of the process, not of the caller.
+/// Every user of this is a CLI path spawning from the main thread.
+///
+/// Inert on Unix, where `Stdio::null()` genuinely closes the stream in the
+/// child and every other descriptor is close-on-exec.
+#[cfg(windows)]
+pub(crate) struct StdHandlesNotInherited {
+    restored_on_drop: Vec<*mut std::ffi::c_void>,
+}
+
+#[cfg(windows)]
+mod win {
+    use std::ffi::c_void;
+
+    pub(super) const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    pub(super) const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    pub(super) const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    pub(super) const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+
+    unsafe extern "system" {
+        pub(super) fn GetStdHandle(nStdHandle: u32) -> *mut c_void;
+        pub(super) fn GetHandleInformation(hObject: *mut c_void, lpdwFlags: *mut u32) -> i32;
+        pub(super) fn SetHandleInformation(hObject: *mut c_void, dwMask: u32, dwFlags: u32) -> i32;
+    }
+}
+
+#[cfg(windows)]
+impl StdHandlesNotInherited {
+    /// Clear the inherit flag on every standard handle that currently carries
+    /// it. Handles that are absent, unqueryable or already non-inheritable are
+    /// skipped, so nothing here can fail the spawn it precedes.
+    pub(crate) fn for_spawn() -> Self {
+        let mut restored_on_drop = Vec::new();
+        for id in [
+            win::STD_INPUT_HANDLE,
+            win::STD_OUTPUT_HANDLE,
+            win::STD_ERROR_HANDLE,
+        ] {
+            // SAFETY: each call takes a handle this process owns, or a null or
+            // invalid handle that the guards below reject before use.
+            let handle = unsafe { win::GetStdHandle(id) };
+            if handle.is_null() || handle as isize == -1 {
+                continue;
+            }
+            let mut flags = 0u32;
+            if unsafe { win::GetHandleInformation(handle, &mut flags) } == 0
+                || flags & win::HANDLE_FLAG_INHERIT == 0
+            {
+                continue;
+            }
+            if unsafe { win::SetHandleInformation(handle, win::HANDLE_FLAG_INHERIT, 0) } != 0 {
+                restored_on_drop.push(handle);
+            }
+        }
+        Self { restored_on_drop }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for StdHandlesNotInherited {
+    fn drop(&mut self) {
+        for handle in self.restored_on_drop.drain(..) {
+            // SAFETY: the handle was queried successfully above and this
+            // process still owns it; restoring the flag it had on entry.
+            unsafe {
+                win::SetHandleInformation(
+                    handle,
+                    win::HANDLE_FLAG_INHERIT,
+                    win::HANDLE_FLAG_INHERIT,
+                )
+            };
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) struct StdHandlesNotInherited;
+
+#[cfg(not(windows))]
+impl StdHandlesNotInherited {
+    pub(crate) fn for_spawn() -> Self {
+        Self
     }
 }
