@@ -15,6 +15,13 @@ on:
 # (checkout only) covers all of them.
 permissions: {}
 
+# Every `uses:` below is pinned to a commit SHA rather than a tag, here and in
+# every other workflow in this repo. A tag is a mutable pointer: whoever
+# controls the action's repository can move `v2` onto a different commit, and
+# every run picks it up with no diff to review — including jobs holding a token
+# or a release credential. The trailing comment names the release the SHA came
+# from, and Dependabot bumps the SHA and that comment together.
+
 env:
   CARGO_TERM_COLOR: always
   # Force the file-backed secret store in all CI runs. The OS keychain
@@ -41,7 +48,7 @@ jobs:
       # info on. Mirrors CARGO_PROFILE_TEST_DEBUG below.
       CARGO_PROFILE_DEV_DEBUG: 0
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Git isolation lint
         run: scripts/check-git-isolation.sh
@@ -64,7 +71,7 @@ jobs:
       # required a manual version-prefix bump to reset once it got poisoned;
       # see the `test` job below for that history).
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Disk usage (after cache restore)
         run: df -h
@@ -144,7 +151,7 @@ jobs:
             # inkentry-server tests use embedder: None and never load the model.
             test-flags: ""
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install libdbus (keyring sync-secret-service backend, Linux only)
         if: runner.os == 'Linux'
@@ -179,12 +186,12 @@ jobs:
       # vs `--no-default-features`), which otherwise share the same OS/rustc
       # host and would collide on the action's automatic job-based key.
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.test-flags }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2.85.11
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-nextest
 
@@ -219,7 +226,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # A standalone job, not folded into the `test` job's matrix: `test`
       # builds the `test` cargo profile (for nextest) while clippy here builds
@@ -243,7 +250,7 @@ jobs:
         run: rustup component add clippy
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Windows/macOS only: the Check & Lint job already runs this on Linux,
       # but a Linux-only pass can't see #[cfg(windows)] or #[cfg(unix)]-gated
@@ -263,7 +270,7 @@ jobs:
       contents: read
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The packaging scripts only otherwise run at release-tag time, where a
       # break is expensive. node:test is a builtin: nothing to install.
@@ -282,7 +289,7 @@ jobs:
     # no cargo cache, so allow a generous ceiling.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
         run: docker build -t inkentry-server:ci .
@@ -342,7 +349,7 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install libdbus (keyring sync-secret-service backend)
         run: sudo apt-get install -y libdbus-1-dev pkg-config
@@ -353,7 +360,7 @@ jobs:
           rustup default stable
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Generate OpenAPI spec
         run: cargo run -p inkentry-server -- --print-openapi > /tmp/openapi-generated.json

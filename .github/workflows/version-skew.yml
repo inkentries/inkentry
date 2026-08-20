@@ -70,7 +70,7 @@ jobs:
       # download lives here; config, registry and secret store stay isolated.
       SKEW_MODEL_CACHE: ${{ github.workspace }}/.skew-model-cache/models
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install libdbus (keyring sync-secret-service backend)
         run: sudo apt-get install -y libdbus-1-dev pkg-config
@@ -83,7 +83,7 @@ jobs:
       # See ci.yml's `test` job for why this is Swatinem/rust-cache rather
       # than a hand-rolled `actions/cache` with a version-prefixed key.
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # The previous release is the newest published tag carrying this version's
       # major that is not the version in this tree. The major filter is the
@@ -177,7 +177,7 @@ jobs:
 
       - name: Cache the embedder model
         if: steps.prev.outputs.tag != ''
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.skew-model-cache
           key: ${{ runner.os }}-skew-embedder-model-v1

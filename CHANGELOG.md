@@ -24,6 +24,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Releases now ship checksums and a signed build provenance attestation.**
+  Every release publishes a `SHA256SUMS` asset, and each archive and package
+  carries an attestation binding it to this repository and the commit it was
+  built from. Verify a download with
+  `gh attestation verify <file> --repo inkentries/inkentry`. Releases up to
+  `v1.0.0-rc2` have neither.
 - **`inkentry auth remove-key` removes a stored credential** (ADR-090): one
   server's key (`--server <url>`), every server key (`--all-servers`), or the
   LLM endpoint's key (`--llm`, which nothing could remove before). Removing a
