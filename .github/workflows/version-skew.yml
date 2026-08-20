@@ -37,8 +37,12 @@ name: Version skew
 on:
   push:
     branches: ["main"]
+  # No base-branch filter, matching ci.yml. This job's check is required on
+  # main, and a `branches:` filter here would skip the whole workflow for a PR
+  # stacked on another PR's branch — so the required context would never
+  # report and the PR would sit pending and unmergeable rather than failing
+  # visibly. See the longer note in ci.yml.
   pull_request:
-    branches: ["main"]
   workflow_dispatch:
 
 permissions: {}
