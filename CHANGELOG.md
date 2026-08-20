@@ -267,6 +267,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   physical and logical counts separately. When it resolves to 1, the log and
   `inkentry status` name `INKENTRY_EMBED_THREADS`, and `/v1/health` reports
   `limits.embed_threads`.
+- **The embedder sizes its single-chunk budget to the host's real RAM on
+  Windows** (#124). Windows had no RAM detection, so the embedder always fell
+  back to the conservative 2 GiB budget regardless of the machine; it now reads
+  total physical memory via `GlobalMemoryStatusEx`, as macOS and Linux already
+  did, and the startup log reads `unknown` instead of a false `0.0 GiB` when
+  detection fails.
 - **`hooks install` no longer promises harvesting it cannot do.** With no LLM
   reachable it says harvesting stays inactive until one is, carrying `harvest`'s
   own guidance. The hook installs either way; configuring an LLM later needs no
