@@ -68,6 +68,24 @@ impl wiremock::Respond for ContentDerivedEmbedResponder {
     }
 }
 
+// Every subject this file harvests. The mock titles an entry with its commit's
+// subject and embeds only that, so these decide the axes the fixture occupies
+// and `fixture_entries_occupy_distinct_axes` proves they do not collide.
+const INIT_SUBJECT: &str = "feat: choose sqlite over postgres for the local index";
+
+const SECRET_SCAN_SUBJECTS: [&str; 2] = [
+    "fix: point the deploy job at the new bucket",
+    "feat: add a retry budget so flaky upstreams cannot stall the queue",
+];
+
+const WALK_SUBJECTS: [&str; 5] = [
+    "feat: cache resolved refs so the walker stops re-reading packfiles",
+    "refactor: split the parser so grammar upgrades stay local",
+    "chore: replace the leaked CI token",
+    "fix: give the queue a bounded channel so a slow consumer cannot OOM the host",
+    "feat: record why the embedding dimension is pinned",
+];
+
 fn content_axis(text: &str) -> usize {
     let mut acc: usize = 0;
     for (i, b) in text.bytes().enumerate() {
@@ -83,17 +101,40 @@ fn content_axis(text: &str) -> usize {
 // entry per `COMMIT <sha>` line. A commit that never reaches the LLM therefore
 // yields no entry, so "stored" in these tests tracks "was sent for extraction"
 // exactly.
+//
+// The prompt carries each commit's subject on the line after its sha, and the
+// reply echoes it as the title. Nothing here may carry the sha: the fixture
+// embedder above is one-hot on `content_axis(text) % EMBEDDING_DIM`, so two
+// entries collide only when their texts hash to the same axis, and a sha in
+// the text re-rolls that hash every run. That is what made this file fail
+// about one run in a hundred. Subjects are fixed, so the axes are fixed, and
+// `fixture_entries_occupy_distinct_axes` holds them apart.
+fn entry_body(subject: &str) -> String {
+    format!("{subject}. Extracted by the mock extractor.")
+}
+
+// Mirrors what harvest embeds for dedup (`memory/harvest.rs`), so the axis
+// check above measures the same string the product does.
+fn embed_text_for(subject: &str) -> String {
+    format!("title: {subject} | text: {}", entry_body(subject))
+}
+
 fn extraction_reply(prompt: &str) -> String {
-    let entries: Vec<serde_json::Value> = prompt
-        .lines()
-        .filter_map(|line| line.strip_prefix("COMMIT "))
-        .map(|sha| sha.trim().to_string())
-        .map(|sha| {
+    let lines: Vec<&str> = prompt.lines().collect();
+    let entries: Vec<serde_json::Value> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let sha = line.strip_prefix("COMMIT ")?.trim();
+            let subject = lines.get(i + 1)?.trim();
+            Some((sha, subject))
+        })
+        .map(|(sha, subject)| {
             serde_json::json!({
                 "sha": sha[..sha.len().min(8)].to_string(),
                 "kind": "decision",
-                "title": format!("Decision recorded in {}", &sha[..sha.len().min(8)]),
-                "body": format!("Extracted from commit {sha} by the mock extractor."),
+                "title": subject,
+                "body": entry_body(subject),
                 "tags": ["fixture"],
             })
         })
@@ -194,15 +235,7 @@ fn init_project(dir: &Path) {
     git(dir, &["config", "user.email", "test@example.com"]);
     git(dir, &["config", "user.name", "Test"]);
     git(dir, &["add", "."]);
-    git(
-        dir,
-        &[
-            "commit",
-            "-q",
-            "-m",
-            "feat: choose sqlite over postgres for the local index",
-        ],
-    );
+    git(dir, &["commit", "-q", "-m", INIT_SUBJECT]);
 }
 
 // Add an empty commit carrying `subject` (and `body`, when non-empty), and
@@ -329,6 +362,30 @@ impl Harness {
 
 // ── tests ─────────────────────────────────────────────────────────────────
 
+// The fixture embedder is one-hot, so two entries are either orthogonal or
+// exactly identical: a collision is a hash clash on `content_axis % dim`, not a
+// near miss. Harvest then drops one entry as a duplicate and the walk reads as
+// though it lost a commit. Adding or reordering a subject can trigger that, so
+// this fails at the fixture rather than in whichever test happens to notice.
+#[test]
+fn fixture_entries_occupy_distinct_axes() {
+    let dim = inkentry_core::embeddings::EMBEDDING_DIM;
+    let mut seen: std::collections::HashMap<usize, &str> = std::collections::HashMap::new();
+
+    for subject in std::iter::once(INIT_SUBJECT)
+        .chain(SECRET_SCAN_SUBJECTS)
+        .chain(WALK_SUBJECTS)
+    {
+        let axis = content_axis(&embed_text_for(subject)) % dim;
+        if let Some(other) = seen.insert(axis, subject) {
+            panic!(
+                "'{subject}' and '{other}' both embed on axis {axis}, so harvest \
+                 will drop one as a duplicate. Reword one of them."
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn harvest_skips_a_commit_whose_message_matches_a_secret_pattern() {
     let (h, server) = harness().await;
@@ -338,14 +395,10 @@ async fn harvest_skips_a_commit_whose_message_matches_a_secret_pattern() {
     let key = aws_key();
     let secret_sha = commit(
         h.project.path(),
-        "fix: point the deploy job at the new bucket",
+        SECRET_SCAN_SUBJECTS[0],
         &format!("Rotated after the outage; old value was {key}."),
     );
-    let clean_sha = commit(
-        h.project.path(),
-        "feat: add a retry budget so flaky upstreams cannot stall the queue",
-        "",
-    );
+    let clean_sha = commit(h.project.path(), SECRET_SCAN_SUBJECTS[1], "");
 
     let output = h.harvest(&[]);
     let text = combined(&output);
@@ -353,6 +406,14 @@ async fn harvest_skips_a_commit_whose_message_matches_a_secret_pattern() {
     assert!(
         output.status.success(),
         "one matching commit must not fail the harvest:\n{text}"
+    );
+
+    assert!(
+        !text.contains("[dedup]"),
+        "no commit here is a restatement of another, so a dedup drop means the \
+         fixture built entries that read alike rather than the walk losing a \
+         commit; the missing-sha assertion below would report that as the \
+         wrong defect:\n{text}"
     );
 
     let refs = stored_source_refs(&h.mem_db);
@@ -387,21 +448,15 @@ async fn a_branch_walk_stores_every_clean_commit_despite_one_match() {
 
     let key = aws_key();
     let mut clean = Vec::new();
-    for subject in [
-        "feat: cache resolved refs so the walker stops re-reading packfiles",
-        "refactor: split the parser so grammar upgrades stay local",
-    ] {
+    for subject in [WALK_SUBJECTS[0], WALK_SUBJECTS[1]] {
         clean.push(commit(h.project.path(), subject, ""));
     }
     let secret_sha = commit(
         h.project.path(),
-        "chore: replace the leaked CI token",
+        WALK_SUBJECTS[2],
         &format!("The exposed value was {key}, now revoked."),
     );
-    for subject in [
-        "fix: give the queue a bounded channel so a slow consumer cannot OOM the host",
-        "feat: record why the embedding dimension is pinned",
-    ] {
+    for subject in [WALK_SUBJECTS[3], WALK_SUBJECTS[4]] {
         clean.push(commit(h.project.path(), subject, ""));
     }
 
@@ -413,6 +468,13 @@ async fn a_branch_walk_stores_every_clean_commit_despite_one_match() {
     assert!(
         output.status.success(),
         "a multi-batch walk must survive one matching commit:\n{text}"
+    );
+
+    assert!(
+        !text.contains("[dedup]"),
+        "a dedup drop here is the fixture colliding on an embedding axis, not \
+         the walk losing a commit; the missing-sha assertion below would name \
+         the wrong defect:\n{text}"
     );
 
     let refs = stored_source_refs(&h.mem_db);
