@@ -978,10 +978,12 @@ async fn test_index_prints_note_when_no_server_configured() {
         .assert()
         .success()
         // Structural summaries are offline and always run, so there is no
-        // "skipping summaries" notice any more. Offline, the actionable note is
-        // that semantic search needs a local server; the index still succeeds
-        // (chunks are stored for full-text search).
-        .stderr(predicate::str::contains("inkentry server start"));
+        // "skipping summaries" notice any more. The notice names the reason the
+        // probe recorded: here the kill-switch, which is set below, so the
+        // actionable step is unsetting it. Offering `inkentry server start`
+        // under it would be advice the variable guarantees cannot take effect.
+        .stderr(predicate::str::contains("INKENTRY_NO_SERVER is set"))
+        .stderr(predicate::str::contains("inkentry server start").not());
 }
 
 #[test]

@@ -131,14 +131,12 @@ pub(super) async fn run_embed_phases(
 
 /// Build the differentiated notice lines shown when the embedding phase is
 /// skipped, so an unembedded index is never a silent surprise. Pure so it can
-/// be unit-tested; the four cases mirror the server's readiness contract.
-/// `server_url` is `cfg.server_url` (used only for the offline case).
+/// be unit-tested; the cases mirror the server's readiness contract.
 ///
-/// `remote_url` is `Some` when the probed server came from an explicit
-/// `server_url` (not loopback auto-discovery). The unavailable-embedder
-/// notice must then name that server instead of pointing at `inkentry server
-/// logs`, which only reads the local auto-daemon's log and would show clean
-/// logs for a failure that lives on the remote server.
+/// The whole tier is the input rather than fields derived from it: an offline
+/// tier carries the reason the probe recorded, and only that reason can say
+/// which server was contacted and what would change the outcome.
+/// `server_url` is `cfg.server_url`, read only where the notice names it.
 ///
 /// `is_windows` gates the Windows Defender Firewall hint in the offline
 /// case: that hint is a real cause only on Windows, and printing it on every
@@ -147,20 +145,25 @@ pub(super) async fn run_embed_phases(
 /// `cfg!(windows)`; injected here so the platform-specific behaviour is
 /// testable without `#[cfg(windows)]` test gating.
 fn embed_skipped_lines(
-    embedder_state: Option<capability::EmbedderState>,
+    tier: &capability::Tier,
     server_url: Option<&str>,
-    remote_url: Option<&str>,
     is_windows: bool,
 ) -> Vec<String> {
-    use capability::EmbedderState;
-    match embedder_state {
-        Some(EmbedderState::Loading) => vec![
+    use capability::{EmbedderState, Tier};
+    match tier {
+        Tier::Server {
+            embedder_state: EmbedderState::Loading,
+            ..
+        } => vec![
             "Note: the embedder is still warming up — chunks indexed for full-text search."
                 .to_string(),
             "Re-run `inkentry index` in a moment to add embeddings (check `inkentry server status`)."
                 .to_string(),
         ],
-        Some(EmbedderState::Unavailable) => match remote_url {
+        Tier::Server {
+            embedder_state: EmbedderState::Unavailable,
+            ..
+        } => match tier.explicit_remote_url() {
             Some(url) => vec![
                 format!(
                     "Warning: the embedder failed to load on team server {url}; chunks indexed \
@@ -179,54 +182,80 @@ fn embed_skipped_lines(
         },
         // Reachable server without a ready embedder for any other reason
         // (`disabled`, or an older server that never advertised `index.embed`).
-        Some(_) => vec![
+        Tier::Server { .. } => vec![
             "Note: this server has no embedder — chunks indexed for full-text search only."
                 .to_string(),
         ],
-        // Offline: no server reachable. Reaching this arm with `server_url`
-        // set means the probe took the explicit-URL path (see
-        // `capability::probe::probe`): an auto-discovered loopback miss never
-        // carries a `server_url`, so the message can unconditionally say
-        // "configured server_url" rather than guessing.
-        None => {
-            if let Some(url) = server_url {
-                let mut lines = vec![format!(
-                    "Warning: server_url is explicitly configured to {url}, which is \
-                     unreachable, so the embedding phase is skipped. This overrides the \
-                     auto-discovered local server, so a healthy `inkentry server start` \
-                     daemon elsewhere will not be used while server_url is set."
-                )];
-                if is_windows {
-                    lines.push(
-                        "On Windows, allow the loopback listener through Defender Firewall \
-                         (accept the prompt on `inkentry server start`)."
-                            .to_string(),
-                    );
-                }
+        Tier::Offline(reason) => embed_skipped_offline_lines(*reason, server_url, is_windows),
+    }
+}
+
+/// The offline half of [`embed_skipped_lines`], keyed to the reason the probe
+/// recorded rather than to whether a `server_url` happens to be set.
+///
+/// The embed phase waits on the inference tier, which under `local_first` is a
+/// loopback probe even when `server_url` points elsewhere. Derived from the
+/// config, this notice named a server the run never contacted, and asked a user
+/// whose daemon discovery had just refused out loud to start the daemon they had
+/// already started.
+fn embed_skipped_offline_lines(
+    reason: capability::OfflineReason,
+    server_url: Option<&str>,
+    is_windows: bool,
+) -> Vec<String> {
+    use capability::OfflineReason;
+    if let Some(advice) = capability::shared_offline_advice(reason) {
+        // An explicit opt-out is what the user asked for; nothing is wrong with
+        // it, so it does not get a warning's prefix.
+        let prefix = match reason {
+            OfflineReason::KillSwitch
+            | OfflineReason::ModeOfflineEnv
+            | OfflineReason::ModeOfflineConfig => "Note",
+            _ => "Warning",
+        };
+        return vec![
+            format!("{prefix}: {advice}."),
+            "Chunks are indexed for full-text search; re-run `inkentry index` afterwards \
+             to add embeddings."
+                .to_string(),
+        ];
+    }
+    match reason {
+        OfflineReason::ExplicitServerUnavailable => {
+            let target = match server_url {
+                Some(url) => format!("server_url is explicitly configured to {url}, which is"),
+                None => "the configured server_url is".to_string(),
+            };
+            let mut lines = vec![format!(
+                "Warning: {target} unreachable, so the embedding phase is skipped. This \
+                 overrides the auto-discovered local server, so a healthy `inkentry server \
+                 start` daemon elsewhere will not be used while server_url is set."
+            )];
+            if is_windows {
                 lines.push(
-                    "Chunks are indexed for full-text search. Re-run `inkentry index` once \
-                     the server is reachable to add embeddings."
+                    "On Windows, allow the loopback listener through Defender Firewall \
+                     (accept the prompt on `inkentry server start`)."
                         .to_string(),
                 );
-                lines
-            } else {
-                vec![
-                    "Note: start a local server (`inkentry server start`) to enable semantic search."
-                        .to_string(),
-                ]
             }
+            lines.push(
+                "Chunks are indexed for full-text search. Re-run `inkentry index` once \
+                 the server is reachable to add embeddings."
+                    .to_string(),
+            );
+            lines
         }
+        // The only other reason `shared_offline_advice` declines.
+        _ => vec![
+            "Note: start a local server (`inkentry server start`) to enable semantic search."
+                .to_string(),
+        ],
     }
 }
 
 /// Print the embed-skipped notice to stderr.
 pub(super) fn eprint_embed_skipped_notice(tier: &capability::Tier, cfg: &Config) {
-    for line in embed_skipped_lines(
-        tier.embedder_state(),
-        cfg.server_url.as_deref(),
-        tier.explicit_remote_url(),
-        cfg!(windows),
-    ) {
+    for line in embed_skipped_lines(tier, cfg.server_url.as_deref(), cfg!(windows)) {
         eprintln!("{line}");
     }
 }
@@ -344,10 +373,31 @@ mod tests {
 
     // ── embed_skipped_lines: 0-chunks / offline notice (#5) ─────────────────────
 
+    // A reachable server whose embedder is in `state`. `auto_discovered`
+    // decides whether the notice may point at `inkentry server logs`, which
+    // only ever reads the local daemon's log.
+    fn server_tier(
+        state: capability::EmbedderState,
+        auto_discovered: bool,
+        url: &str,
+    ) -> capability::Tier {
+        capability::Tier::Server {
+            url: url.to_string(),
+            caps: capability::Capabilities::all(),
+            auto_discovered,
+            embedder_state: state,
+            server_limits: None,
+        }
+    }
+
     #[test]
     fn embed_skipped_loading_advises_retry() {
-        let lines =
-            embed_skipped_lines(Some(capability::EmbedderState::Loading), None, None, false);
+        let tier = server_tier(
+            capability::EmbedderState::Loading,
+            true,
+            "http://127.0.0.1:4655",
+        );
+        let lines = embed_skipped_lines(&tier, None, false);
         assert!(!lines.is_empty(), "notice must not be silent");
         let joined = lines.join("\n");
         assert!(joined.contains("warming up"));
@@ -358,12 +408,12 @@ mod tests {
     fn embed_skipped_unavailable_loopback_points_at_logs() {
         // Loopback auto-discovery: the failing embedder IS the local daemon,
         // so `inkentry server logs` is the right place to look.
-        let lines = embed_skipped_lines(
-            Some(capability::EmbedderState::Unavailable),
-            None,
-            None,
-            false,
+        let tier = server_tier(
+            capability::EmbedderState::Unavailable,
+            true,
+            "http://127.0.0.1:4655",
         );
+        let lines = embed_skipped_lines(&tier, None, false);
         let joined = lines.join("\n");
         assert!(joined.contains("failed to load"));
         assert!(joined.contains("inkentry server logs"));
@@ -374,12 +424,12 @@ mod tests {
         // Explicit server_url: `inkentry server logs` reads the LOCAL daemon's
         // log, which is clean when the failure lives on the team server. The
         // notice must name the probed server instead.
-        let lines = embed_skipped_lines(
-            Some(capability::EmbedderState::Unavailable),
-            None,
-            Some("https://team.example:4655"),
+        let tier = server_tier(
+            capability::EmbedderState::Unavailable,
             false,
+            "https://team.example:4655",
         );
+        let lines = embed_skipped_lines(&tier, None, false);
         let joined = lines.join("\n");
         assert!(joined.contains("failed to load"));
         assert!(
@@ -400,7 +450,8 @@ mod tests {
         // daemon). Without this, a user with a healthy loopback daemon running
         // has no path from the message to the real cause: the daemon was
         // never being used because server_url overrides it.
-        let lines = embed_skipped_lines(None, Some("http://127.0.0.1:4655"), None, false);
+        let tier = capability::Tier::Offline(capability::OfflineReason::ExplicitServerUnavailable);
+        let lines = embed_skipped_lines(&tier, Some("http://127.0.0.1:4655"), false);
         let joined = lines.join("\n");
         assert!(joined.contains("http://127.0.0.1:4655"), "got: {joined}");
         assert!(joined.contains("unreachable"), "got: {joined}");
@@ -423,14 +474,14 @@ mod tests {
         // The Windows Defender Firewall hint is a real cause ONLY on Windows;
         // printing it unconditionally (the field bug, hit on macOS) actively
         // misdirects a user on any other platform.
-        let windows_lines = embed_skipped_lines(None, Some("http://127.0.0.1:4655"), None, true);
+        let tier = capability::Tier::Offline(capability::OfflineReason::ExplicitServerUnavailable);
+        let windows_lines = embed_skipped_lines(&tier, Some("http://127.0.0.1:4655"), true);
         assert!(
             windows_lines.join("\n").contains("Firewall"),
             "the Windows hint must still show when the host platform is Windows"
         );
 
-        let non_windows_lines =
-            embed_skipped_lines(None, Some("http://127.0.0.1:4655"), None, false);
+        let non_windows_lines = embed_skipped_lines(&tier, Some("http://127.0.0.1:4655"), false);
         assert!(
             !non_windows_lines.join("\n").contains("Firewall"),
             "the Windows-only hint must not print on a non-Windows host: got: {:?}",
@@ -440,9 +491,114 @@ mod tests {
 
     #[test]
     fn embed_skipped_no_server_suggests_starting_one() {
-        let lines = embed_skipped_lines(None, None, None, false);
+        let tier = capability::Tier::Offline(capability::OfflineReason::NoLocalServer);
+        let lines = embed_skipped_lines(&tier, None, false);
         let joined = lines.join("\n");
         assert!(joined.contains("inkentry server start"));
+    }
+
+    const NO_LOCAL_SERVER_NOTICE: &str =
+        "Note: start a local server (`inkentry server start`) to enable semantic search.";
+
+    // `index` carries the same blind notice `search` did: a daemon refused by
+    // discovery draws a warning naming the cause and the stop/start remedy, and
+    // then this told the reader to start the server they had already started.
+    #[test]
+    fn embed_skipped_recorded_daemon_refused_by_discovery_does_not_ask_for_a_fresh_start() {
+        let tier = capability::Tier::Offline(capability::OfflineReason::RecordedServerUnreachable);
+        for server_url in [None, Some("https://team.example:4655")] {
+            let joined = embed_skipped_lines(&tier, server_url, false).join("\n");
+            assert_ne!(joined, NO_LOCAL_SERVER_NOTICE);
+            assert!(
+                joined.contains("could not be identified"),
+                "must name the cause the warning above named: {joined}"
+            );
+            assert!(
+                joined.contains("inkentry server stop"),
+                "must carry the same stop/start remedy: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn embed_skipped_local_server_unusable_names_the_dimension_mismatch() {
+        let tier = capability::Tier::Offline(capability::OfflineReason::LocalServerUnusable);
+        for server_url in [None, Some("https://team.example:4655")] {
+            let joined = embed_skipped_lines(&tier, server_url, false).join("\n");
+            assert_ne!(joined, NO_LOCAL_SERVER_NOTICE);
+            assert!(joined.contains("different dimension"), "{joined}");
+            assert!(joined.contains("inkentry server stop"), "{joined}");
+        }
+    }
+
+    #[test]
+    fn embed_skipped_genuinely_no_server_and_no_server_url_keeps_its_existing_text() {
+        let tier = capability::Tier::Offline(capability::OfflineReason::NoLocalServer);
+        assert_eq!(
+            embed_skipped_lines(&tier, None, false),
+            vec![NO_LOCAL_SERVER_NOTICE.to_string()]
+        );
+    }
+
+    #[test]
+    fn embed_skipped_explicit_offline_opt_out_names_the_switch_not_a_server_to_start() {
+        for reason in [
+            capability::OfflineReason::KillSwitch,
+            capability::OfflineReason::ModeOfflineEnv,
+            capability::OfflineReason::ModeOfflineConfig,
+        ] {
+            let tier = capability::Tier::Offline(reason);
+            let joined =
+                embed_skipped_lines(&tier, Some("https://team.example:4655"), false).join("\n");
+            assert!(
+                !joined.contains("inkentry server start"),
+                "{reason:?} offers a server start that cannot take effect: {joined}"
+            );
+        }
+    }
+
+    // Half the reported defect was `status` and the command notices disagreeing
+    // about one condition. The five config-independent reasons are rendered from
+    // `capability::shared_offline_advice`, so agreement is by construction; this
+    // pins that, and pins that no surface invents a remedy the others withhold.
+    //
+    // `ExplicitServerUnavailable` is excluded from the remedy comparison: its
+    // `status` rendering is a transport annotation (`[unreachable]` /
+    // `[tls: ...]`), not advice, so there is nothing there to agree with.
+    #[test]
+    fn status_and_the_command_notices_agree_on_every_offline_reason() {
+        const URL: &str = "https://team.example:4655";
+        for reason in capability::ALL_OFFLINE_REASONS {
+            let tier = capability::Tier::Offline(reason);
+            let status = capability::offline_search_hint(reason, None);
+            let search =
+                crate::cli::cmd::search::semantic_unavailable_message(&tier, Some(URL), false);
+            let index = embed_skipped_lines(&tier, Some(URL), false).join("\n");
+
+            if let Some(advice) = capability::shared_offline_advice(reason) {
+                for (surface, text) in [("status", &status), ("search", &search), ("index", &index)]
+                {
+                    assert!(
+                        text.contains(advice),
+                        "{reason:?}: {surface} does not render the shared advice\n                           advice: {advice}\n  {surface}: {text}"
+                    );
+                }
+            }
+
+            if reason == capability::OfflineReason::ExplicitServerUnavailable {
+                continue;
+            }
+            for (surface, text) in [("search", &search), ("index", &index)] {
+                for remedy in ["inkentry server start", "inkentry server stop"] {
+                    assert_eq!(
+                        text.contains(remedy),
+                        status.contains(remedy),
+                        "{reason:?}: status and {surface} disagree on whether \
+                         `{remedy}` is the fix\n  status: {status}\n  {surface}: {text}"
+                    );
+                }
+            }
+        }
     }
 
     // ── wait_for_embedder: the worker owns the readiness wait (ADR-070 D2) ────
@@ -765,22 +921,34 @@ mod tests {
 
     #[test]
     fn embed_skipped_is_never_silent() {
+        let mut tiers: Vec<capability::Tier> = Vec::new();
         for state in [
-            Some(capability::EmbedderState::Loading),
-            Some(capability::EmbedderState::Unavailable),
-            Some(capability::EmbedderState::Disabled),
-            Some(capability::EmbedderState::Unknown),
-            None,
+            capability::EmbedderState::Loading,
+            capability::EmbedderState::Unavailable,
+            capability::EmbedderState::Disabled,
+            capability::EmbedderState::Unknown,
         ] {
+            for auto_discovered in [true, false] {
+                tiers.push(server_tier(
+                    state,
+                    auto_discovered,
+                    "https://team.example:4655",
+                ));
+            }
+        }
+        tiers.extend(
+            capability::ALL_OFFLINE_REASONS
+                .into_iter()
+                .map(capability::Tier::Offline),
+        );
+
+        for tier in &tiers {
             for url in [Some("http://x:1"), None] {
-                for remote_url in [None, Some("https://team.example:4655")] {
-                    for is_windows in [false, true] {
-                        assert!(
-                            !embed_skipped_lines(state, url, remote_url, is_windows).is_empty(),
-                            "state {state:?} url {url:?} remote_url {remote_url:?} \
-                             is_windows {is_windows} produced no notice"
-                        );
-                    }
+                for is_windows in [false, true] {
+                    assert!(
+                        !embed_skipped_lines(tier, url, is_windows).is_empty(),
+                        "tier {tier:?} url {url:?} is_windows {is_windows} produced no notice"
+                    );
                 }
             }
         }

@@ -357,6 +357,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `server_url`, which could not help under `INKENTRY_NO_SERVER` or
   `mode = "offline"` and is the wrong advice for a solo user anyway. It names
   whichever setting is in force, or points at `inkentry server start`.
+- **`inkentry search` and `inkentry index` now say why semantic ranking is off**
+  instead of reporting every case as "no server running". They name the offline
+  reason `inkentry status` names, and give the same remedy: unset the switch you
+  set, or restart a daemon that is running but unusable. If you saw a discovery
+  warning and were told no server was running, restart the daemon
+  (`inkentry server stop`, then `inkentry server start`).
 - **`plumbing push`, `plumbing pull` and `plumbing read-memory` now act on the
   same memory store the `memory` commands do.** In a project that was
   configured but never indexed they acted on the machine-global store instead,

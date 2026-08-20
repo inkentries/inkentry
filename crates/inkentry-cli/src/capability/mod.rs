@@ -49,7 +49,9 @@ mod probe;
 mod state;
 mod tier;
 
-pub use diagnostics::{explicit_probe_failure, offline_search_hint};
+#[cfg(test)]
+pub(crate) use diagnostics::ALL_OFFLINE_REASONS;
+pub use diagnostics::{explicit_probe_failure, offline_search_hint, shared_offline_advice};
 // Both are named only inside `capability` and its tests: a caller pattern-matches
 // the `Tier::Offline` payload and hands it straight back to `offline_search_hint`
 // alongside `explicit_probe_failure()`, never spelling either type out.

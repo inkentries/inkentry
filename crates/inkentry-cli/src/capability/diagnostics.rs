@@ -2,8 +2,11 @@
 //! and TLS error diagnostics.
 //!
 //! [`OfflineReason`] names the branch of the probe that produced
-//! `Tier::Offline`, and [`offline_search_hint`] turns it into the advice
-//! `status` prints. [`ConnFailure`] sub-classifies the one reason that has a
+//! `Tier::Offline`. [`shared_offline_advice`] turns it into one cause-and-remedy
+//! sentence, which [`offline_search_hint`] brackets for `status` and the
+//! `search` / `index` notices fold into their own frames, so the three surfaces
+//! cannot advise differently on one condition.
+//! [`ConnFailure`] sub-classifies the one reason that has a
 //! transport story to tell: it renders the full `source()` chain of a probe
 //! failure and distinguishes a transport-level miss from a TLS trust failure,
 //! so the offline line reads `[unreachable]` vs `[tls: <cause>]`.
@@ -178,6 +181,20 @@ pub enum OfflineReason {
     ExplicitServerUnavailable,
 }
 
+/// Every reason, for the tests that must cover all of them. Kept beside the
+/// enum so a new variant is one edit away from every surface's coverage rather
+/// than silently untested in three test modules at once.
+#[cfg(test)]
+pub(crate) const ALL_OFFLINE_REASONS: [OfflineReason; 7] = [
+    OfflineReason::KillSwitch,
+    OfflineReason::ModeOfflineEnv,
+    OfflineReason::ModeOfflineConfig,
+    OfflineReason::NoLocalServer,
+    OfflineReason::LocalServerUnusable,
+    OfflineReason::RecordedServerUnreachable,
+    OfflineReason::ExplicitServerUnavailable,
+];
+
 /// The bracketed suffix `status` appends to its offline `search` line,
 /// including the two spaces that separate it from `text`.
 ///
@@ -189,35 +206,52 @@ pub enum OfflineReason {
 /// so it is the wrong answer for a solo user (whose semantic search comes from
 /// the local daemon) and an inert one under either explicit-offline setting.
 pub fn offline_search_hint(reason: OfflineReason, failure: Option<ConnFailure>) -> String {
+    if let Some(advice) = shared_offline_advice(reason) {
+        return format!("  [{advice}]");
+    }
     match reason {
-        OfflineReason::KillSwitch => {
-            "  [INKENTRY_NO_SERVER is set: unset it to enable semantic search]".to_string()
-        }
-        OfflineReason::ModeOfflineEnv => {
-            "  [INKENTRY_MODE=offline is set: unset it to enable semantic search]".to_string()
-        }
-        OfflineReason::ModeOfflineConfig => {
-            "  [offline mode is on: remove mode = \"offline\" to enable semantic search]"
-                .to_string()
-        }
-        OfflineReason::NoLocalServer => "  [run `inkentry server start` for semantic search, \
-             or set server_url to share a team server]"
-            .to_string(),
-        OfflineReason::LocalServerUnusable => {
-            "  [the local server embeds at a different dimension than this build reads: \
-             run `inkentry server stop`, then `inkentry server start`]"
-                .to_string()
-        }
-        OfflineReason::RecordedServerUnreachable => {
-            "  [the recorded local server did not answer, or could not be identified as \
-             the one that was started: run `inkentry server stop`, then \
-             `inkentry server start`]"
-                .to_string()
-        }
         OfflineReason::ExplicitServerUnavailable => match failure {
             Some(ConnFailure::Tls(cause)) => format!("  [tls: {cause}]"),
             _ => "  [unreachable]".to_string(),
         },
+        // The only other reason `shared_offline_advice` declines.
+        _ => "  [run `inkentry server start` for semantic search, \
+             or set server_url to share a team server]"
+            .to_string(),
+    }
+}
+
+/// The cause-and-remedy sentence behind every offline notice, unframed: `status`
+/// brackets it onto its `search` row, while `search` and `index` fold it into
+/// their own notices. One reason, one remedy, written once, so the surfaces
+/// cannot drift into contradicting each other.
+///
+/// `None` for the two reasons each surface renders itself:
+/// [`OfflineReason::ExplicitServerUnavailable`], whose text names a URL only
+/// the caller holds and whose `status` rendering is a transport annotation
+/// rather than advice, and [`OfflineReason::NoLocalServer`], the ordinary
+/// no-daemon case, where each surface has long-standing wording of its own.
+pub fn shared_offline_advice(reason: OfflineReason) -> Option<&'static str> {
+    match reason {
+        OfflineReason::KillSwitch => {
+            Some("INKENTRY_NO_SERVER is set: unset it to enable semantic search")
+        }
+        OfflineReason::ModeOfflineEnv => {
+            Some("INKENTRY_MODE=offline is set: unset it to enable semantic search")
+        }
+        OfflineReason::ModeOfflineConfig => {
+            Some("offline mode is on: remove mode = \"offline\" to enable semantic search")
+        }
+        OfflineReason::LocalServerUnusable => Some(
+            "the local server embeds at a different dimension than this build reads: \
+             run `inkentry server stop`, then `inkentry server start`",
+        ),
+        OfflineReason::RecordedServerUnreachable => Some(
+            "the recorded local server did not answer, or could not be identified as \
+             the one that was started: run `inkentry server stop`, then \
+             `inkentry server start`",
+        ),
+        OfflineReason::NoLocalServer | OfflineReason::ExplicitServerUnavailable => None,
     }
 }
 
@@ -238,15 +272,7 @@ mod tests {
 
     // ── offline_search_hint: one suggestion per reason ───────────────────────
 
-    const REASONS: [OfflineReason; 7] = [
-        OfflineReason::KillSwitch,
-        OfflineReason::ModeOfflineEnv,
-        OfflineReason::ModeOfflineConfig,
-        OfflineReason::NoLocalServer,
-        OfflineReason::LocalServerUnusable,
-        OfflineReason::RecordedServerUnreachable,
-        OfflineReason::ExplicitServerUnavailable,
-    ];
+    use super::ALL_OFFLINE_REASONS as REASONS;
 
     // The defect this replaces was one hint printed alongside every offline
     // tier. Asserting a single message would pass while that coupling stayed
