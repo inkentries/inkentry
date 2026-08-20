@@ -415,6 +415,7 @@ rest of the API" settles nothing here.
 | Malicious or broken team server floods the daemon over SSE | D | Low | Medium | **Bounded.** The unresolved SSE receive buffer is capped and a frame without a terminator errors rather than growing (`oversized_sse_frame_without_terminator_errors_instead_of_growing_forever`); the frame is only ever a wake-up signal, never the note payload |
 | One project's relay failure affects another's | D | Low | Low | Per-session isolation: errors are caught and recorded, never propagated as a panic, and hold no lock a request handler needs |
 | Pulled entries leak across projects on one team server | I | Low | Medium | Sessions are keyed on (server, project); covered by `pulled_rows_never_leak_across_projects_on_the_same_team_server` |
+| A local process holds the recorded port and receives the outbox and the team bearer | I | Low | High | **Closed on the CLI side.** `probe_local_relay_port` sends nothing until the responder matches the pid and `instance_id` this CLI recorded at daemon start, and a refusal returns nothing rather than trying another port (ADR-091) |
 
 ### Residual risks (open, deliberate)
 
@@ -443,7 +444,9 @@ each is a real capability granted to any process running locally on the machine.
    session can have arbitrary entries written into the **team** server's memory,
    authenticated by a credential it never had to read. This is a confused-deputy
    *use* of the credential, not disclosure of it: no route returns the bearer, and
-   `last_error` is fixed text.
+   `last_error` is fixed text. Read that as a claim about the daemon's **routes**.
+   It says nothing about a process that is not answering a route but holding the
+   port instead, which is the case ADR-091 closes from the CLI side.
 
 All three sit under the deliberate no-key local posture of
 [ADR-056](../adr/056-oss-server-tenancy-model.md): the loopback daemon is
@@ -453,6 +456,27 @@ argument, which is why the residuals are listed rather than dismissed — it let
 local process act *against the team server*, over the network, with a credential it
 does not hold. Closing 1 and 3 needs a local caller identity the loopback posture
 does not currently provide; that is a post-v1.0 decision, not a v1.0 gate.
+
+### Test-only overrides that relax discovery
+
+Two environment variables weaken loopback discovery, and a shipped binary reads
+both: neither is behind `#[cfg(test)]`. They are listed together because the pair
+is the fact worth knowing. Either alone is a narrow testing affordance; two of
+them is a documented way to influence which local process the CLI will talk to.
+
+| Variable | What it relaxes | What it still cannot do |
+|----------|-----------------|-------------------------|
+| `INKENTRY_TEST_DISCOVERY_PORT` | Replaces `DEFAULT_SERVER_PORT` for the fixed-port fallback, so discovery probes a port of the caller's choosing | Reach the fallback at all when a usable state file exists, and any non-numeric value is refused rather than ignored |
+| `INKENTRY_TEST_TRUST_RECORDED_RESPONDER` | Answers "the recorded pid is an `inkentry-server`" without running the OS process query | Supply a pid, or skip the `instance_id` match: a pid must still be recorded and the responder's reported id must still equal the recorded one. Read only on the discovery-trust path, never by `classify_running_server`, so it cannot widen what a lifecycle command will signal (ADR-085) |
+
+Both are fail-safe by construction and unset for every real user, and setting
+either requires the ability to control the CLI's environment, which is a position
+from which a local attacker already has better options: the loopback daemon is
+unauthenticated by design (ADR-056) and `memory.db` is readable directly. So
+neither raises the ceiling on what a local process can do. They are recorded here
+because a reader auditing discovery should find them in one place, and because two
+is the number at which this stops being an isolated affordance and starts being a
+pattern that wants a rule.
 
 ### Why this surface is not in `docs/openapi.json` — decided
 
