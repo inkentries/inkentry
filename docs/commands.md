@@ -434,7 +434,7 @@ A memory entry. These fields are always present:
 
 | Field | Type |
 |---|---|
-| `id` | string. A **UUID**, not an integer: the numeric ids used before 1.0.0 are gone and do not map onto these |
+| `id` | string. A **UUID**, not an integer |
 | `kind` | string, for example `decision`, `requirement`, `handoff` |
 | `title`, `body` | string |
 | `tags`, `linked_files` | array of strings, possibly empty |
@@ -513,7 +513,7 @@ every command that has one, so `AGENT=true inkentry search "..."` emits the
 array of envelopes without an explicit `--format`. It changes the default only:
 an explicit `--format` always wins.
 
-#### Choosing a corpus, and where `--mode` went
+#### Choosing a corpus
 
 Which corpus you search is part of consuming the output correctly, because it
 determines which payload keys you will see:
@@ -527,24 +527,6 @@ determines which payload keys you will see:
 
 `--only-code` and `--only-memory` are mutually exclusive; either one composes
 with `--only-text`.
-
-**`--mode` was removed in 1.0.0.** There is no ranking mode to choose any more:
-`search` always uses the best ranking available. Passing it exits `2` with a
-migration hint rather than being ignored.
-
-| Removed | Use instead |
-|---|---|
-| `--mode text` | `--only-text` |
-| `--mode semantic`, `--mode hybrid`, `--mode auto` | no flag; that is the default |
-| `--mode ast-grep` | no replacement; structural search was removed |
-
-Two sibling surfaces went the same way and exit `2` with their own hints:
-`inkentry memory search "<q>"` is now `inkentry search "<q>" --only-memory`, and
-the top-level `inkentry graph <symbol>` is now `inkentry search "<symbol>"
---graph` or `inkentry plumbing graph-edges --symbol <symbol>`. Because a removed
-flag exits non-zero in milliseconds, a harness that swallows the exit code
-records zero results and reads it as "no matches" rather than as a broken
-invocation.
 
 ---
 
@@ -1175,10 +1157,10 @@ local content, same as `memory add`.
 
 **Backfilling missing embeddings:** a note's semantic vector is minted at
 `memory add` time, and again by `inkentry sync` / `inkentry plumbing push` for
-any entry in the set they are about to push that still lacks one. A note that misses both, added
-while the embedder was down and never pushed, or carried
-through the 768→896 embedding-dimension upgrade (which drops the old vectors),
-stays present-but-unembedded: still listed by `memory list` and `context`, but
+any entry in the set they are about to push that still lacks one. A note that
+misses both — added while the embedder was down and never pushed, or arrived
+from an `inkentry import` (a portable dump carries no vectors) — stays
+present-but-unembedded: still listed by `memory list` and `context`, but
 absent from the semantic ranking of `inkentry search`. Text search is not a
 dependable fallback for it — the memory text matcher requires the query as a
 contiguous phrase (see [`inkentry search`](#inkentry-search)).
@@ -1315,9 +1297,7 @@ spent. The same handling covers `inkentry memory add` against a server.
 
 For a one-directional transfer (seeding, CI), use the plumbing forms
 `inkentry plumbing push` (local → server) or `inkentry plumbing pull`
-(server → local); each emits a single JSONL report. The former porcelain
-`inkentry memory push` / `inkentry memory pull` have been removed; there is no
-alias, so invoking them errors as an unknown subcommand.
+(server → local); each emits a single JSONL report.
 
 **The push embeds what it pushes.** Before the batch is built, both `inkentry
 sync` and `inkentry plumbing push` embed every entry in the push set that has no

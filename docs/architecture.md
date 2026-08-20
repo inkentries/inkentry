@@ -148,13 +148,13 @@ If memory ever grows to corpus scale, migrating `note_embeddings` to int8 would
 be the obvious follow-up — but until then the int8 cost (a second quantised path
 to maintain, plus a forced memory re-embed/re-harvest on migration) buys nothing.
 
-There is no dimension-upgrade path any more, in either store, because there is
+There is no dimension-upgrade path in either store, because there is
 no migration path at all. Each store declares its final shape in a single schema
 file and stamps `PRAGMA user_version` at creation; a file carrying anything else
 is never converted in place. `memory.db` refuses one and points at `inkentry
-import`; `index.db` discards and rebuilds, carrying only `usage`. A stale 768-dim
-vector table therefore cannot reach a read path: it is not upgraded, it is gone
-with the file that held it.
+import`; `index.db` discards and rebuilds, carrying only `usage`. A vector table
+from a store this build cannot read therefore never reaches a read path: it is
+not upgraded, it is gone with the file that held it.
 
 ### Backend abstraction
 

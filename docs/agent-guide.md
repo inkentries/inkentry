@@ -45,17 +45,12 @@ You can also use `--format json` on individual commands.
 ### The `search` envelope, and how a consumer gets it wrong silently
 
 This is the one shape worth getting right before you write a parser around it,
-because both ways of getting it wrong report **zero results** instead of an
-error:
+because getting it wrong reports **zero results** instead of an error:
 
-- **Reading the old flat shape.** Before 1.0.0 each result was a bare
-  `SearchResult`, so `.name` and `.file_path` sat at the top level. They are now
-  under `.code`. A selector written against the old shape matches nothing on
-  every result, at full query latency, and looks exactly like a codebase with no
-  match in it.
-- **Passing a flag that no longer exists.** `--mode` was removed (see below), so
-  the process exits `2` in a few milliseconds having printed nothing to stdout.
-  A harness that does not check the exit code records an empty result set.
+- **Reading fields at the top level.** Each result nests its payload under
+  `.code` or `.memory`; `.name` and `.file_path` are not at the top level. A
+  selector written against the top level matches nothing on every result, at full
+  query latency, and looks exactly like a codebase with no match in it.
 
 The minimum a consumer needs:
 
@@ -91,21 +86,7 @@ payloads, see
 Its stability level is in the
 [Stability contract](stability.md#structured-output-from-porcelain-commands).
 
-### Flags an older agent may still be carrying
-
-These were removed in 1.0.0. Each exits `2` with a migration hint on stderr and
-nothing on stdout, so check exit codes rather than reading an empty result as an
-empty codebase.
-
-| Removed | Use instead |
-|---|---|
-| `inkentry search --mode text` | `inkentry search --only-text` |
-| `inkentry search --mode semantic\|hybrid\|auto` | no flag; that is the default |
-| `inkentry search --mode ast-grep` | no replacement; structural search was removed |
-| `inkentry memory search "<q>"` | `inkentry search "<q>" --only-memory` |
-| `inkentry graph <symbol>` | `inkentry search "<symbol>" --graph`, or `inkentry plumbing graph-edges --symbol <symbol>` |
-
-`inkentry memory graph <id>` is a different, live command and is unaffected.
+### Choosing a corpus
 
 Corpus selection is part of reading the output correctly, since it decides which
 payload keys appear: plain `search` interleaves both corpora, `--only-code` and

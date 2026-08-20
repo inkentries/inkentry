@@ -138,7 +138,7 @@ reading `false`, or an older server omitting the field, pushes text only.
 `limits` (verified against `handlers.rs`)
 advertises the server's own `/index/embed` sizing so a client can batch
 correctly against the server it's actually talking to; a server predating this
-field should be assumed to enforce the old blanket 30s request budget with no
+field should be assumed to enforce a blanket 30s request budget with no
 exemption.
 
 ### `POST /v1/projects/{project_id}/memory/search`

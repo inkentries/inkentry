@@ -866,11 +866,10 @@ A note's semantic vector is normally minted when the note is first added
 (`inkentry memory add`), and `inkentry plumbing push` / `inkentry sync` mint one for
 any entry in the set they are about to push that still lacks it (see [Repair
 during push and sync](#repair-during-push-and-sync)). A note that misses both
-moments, because no embedder was reachable, or because the store was upgraded
-across the 768→896 embedding-dimension change (which drops the old vectors and
-rebuilds `note_embeddings` empty), stays in `memory.db` **present but
-unembedded**. Such a note is still listed by `memory list` and `context`, which
-take no query. It is missing from the *semantic* ranking of `inkentry search`,
+moments — because no embedder was reachable when it was added, or because it
+arrived from an `inkentry import` (a portable dump carries no vectors) — stays
+in `memory.db` **present but unembedded**. Such a note is still listed by
+`memory list` and `context`, which take no query. It is missing from the *semantic* ranking of `inkentry search`,
 because that ranking is a KNN over the embedding vectors and this note has none.
 
 Do not count on text search to reach it in the meantime. The memory text matcher
@@ -887,9 +886,8 @@ inference stays on-machine there regardless of the sync-mode replica setting.
 In `cloud_first` with a team `server_url` set, `reindex` is not applicable and
 exits with an actionable error, since `memory.db` isn't the store of record in
 that mode; `cloud_first` with no `server_url` set behaves like `local_first`
-and reindexes against the loopback embedder. Reach for it after upgrading
-across the 768→896 change, or when notes were added while the embedder was
-down.
+and reindexes against the loopback embedder. Reach for it after an `inkentry
+import`, or when notes were added while the embedder was down.
 
 ```bash
 # Embed every active note that is missing a vector
@@ -922,7 +920,7 @@ takes a while; `--dry-run` tells you how many are pending first.
 path (`inkentry index`, which re-embeds changed files' chunks); the two operate
 on separate stores and neither substitutes for the other.
 
-After the 768→896 upgrade drops the old vectors, the first memory command prints
+When active notes are present but unembedded, the first memory command prints
 a one-line notice naming the count and pointing at `inkentry memory reindex`, so
 the recall gap is discoverable without `RUST_LOG`. The notice is a pointer, not
 an auto-repair: it embeds nothing itself. Running `reindex` is what restores

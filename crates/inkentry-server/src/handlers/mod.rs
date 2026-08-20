@@ -37,7 +37,7 @@ mod tests;
 pub const MAX_TITLE_LEN: usize = 500;
 /// Max length (chars) for a memory entry's `body`.
 pub const MAX_BODY_LEN: usize = 50_000;
-/// Max length (bytes) for a `project_id` path slug (e.g. `usercise/spelunk`).
+/// Max length (bytes) for a `project_id` path slug (e.g. `inkentries/inkentry`).
 pub const MAX_SLUG_LEN: usize = 200;
 /// Max number of chunks accepted in a single `/index/embed` request. Also
 /// advertised in `/v1/health`'s `limits.max_batch_chunks` so a client can size
@@ -136,7 +136,7 @@ fn validate_pushed_vector(
 }
 
 /// Reject a `project_id` path parameter that is empty or unreasonably long.
-/// Project ids are human slugs (e.g. `usercise/spelunk`), not UUIDs, so this
+/// Project ids are human slugs (e.g. `inkentries/inkentry`), not UUIDs, so this
 /// is a length/sanity cap rather than a UUID-format check.
 fn validate_project_slug(slug: &str) -> Result<(), AppError> {
     if slug.is_empty() {

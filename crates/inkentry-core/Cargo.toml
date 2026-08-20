@@ -1,6 +1,6 @@
 [package]
 name = "inkentry-core"
-version = "1.0.0-rc2"
+version = "1.0.0-rc3"
 edition = "2024"
 description = "Core library for inkentry — storage, indexer, search, embeddings"
 license = "MIT"
