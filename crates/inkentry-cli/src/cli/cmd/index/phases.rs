@@ -562,6 +562,27 @@ mod tests {
     // `capability::shared_offline_advice`, so agreement is by construction; this
     // pins that, and pins that no surface invents a remedy the others withhold.
     //
+    // The search-side counterpart of this lives in `search.rs`. It is repeated
+    // here rather than left to the agreement test because that test compares
+    // advice and remedies, and an appended URL changes neither: index could name
+    // a server the run never contacted and still agree with the other two.
+    #[test]
+    fn a_loopback_offline_reason_never_names_the_configured_server_url() {
+        for reason in [
+            capability::OfflineReason::NoLocalServer,
+            capability::OfflineReason::LocalServerUnusable,
+            capability::OfflineReason::RecordedServerUnreachable,
+        ] {
+            let tier = capability::Tier::Offline(reason);
+            let lines = embed_skipped_lines(&tier, Some("https://team.example:4655"), false);
+            let joined = lines.join(" ");
+            assert!(
+                !joined.contains("https://team.example:4655"),
+                "{reason:?} names a server the embed phase never contacted: {joined}"
+            );
+        }
+    }
+
     // `ExplicitServerUnavailable` is excluded from the remedy comparison: its
     // `status` rendering is a transport annotation (`[unreachable]` /
     // `[tls: ...]`), not advice, so there is nothing there to agree with.

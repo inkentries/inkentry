@@ -182,8 +182,10 @@ pub enum OfflineReason {
 }
 
 /// Every reason, for the tests that must cover all of them. Kept beside the
-/// enum so a new variant is one edit away from every surface's coverage rather
-/// than silently untested in three test modules at once.
+/// enum so a new variant reaches every surface's coverage from here rather than
+/// being silently untested in three test modules at once. Adding one takes two
+/// edits: `shared_offline_advice`, which the compiler forces, and this array's
+/// length, which it does not.
 #[cfg(test)]
 pub(crate) const ALL_OFFLINE_REASONS: [OfflineReason; 7] = [
     OfflineReason::KillSwitch,

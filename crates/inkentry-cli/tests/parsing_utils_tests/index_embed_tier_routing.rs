@@ -267,9 +267,10 @@ async fn no_server_url_configured_embeds_via_loopback_auto_discovery() {
     );
 }
 
-// Test 4 (unchanged): explicit offline (`INKENTRY_NO_SERVER=1`) skips the
-// embed phase with the existing differentiated notice; no server is
-// contacted.
+// Test 4: explicit offline (`INKENTRY_NO_SERVER=1`) skips the embed phase and
+// names the switch. It used to assert `inkentry server start` while setting the
+// switch that makes starting one pointless; it now asserts that advice is
+// absent. No server is contacted either way.
 #[tokio::test]
 async fn explicit_offline_skips_embed_phase_with_no_server_configured() {
     let home = TempDir::new().unwrap();

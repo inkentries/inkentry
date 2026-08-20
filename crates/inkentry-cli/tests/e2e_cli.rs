@@ -979,7 +979,7 @@ async fn test_index_prints_note_when_no_server_configured() {
         .success()
         // Structural summaries are offline and always run, so there is no
         // "skipping summaries" notice any more. The notice names the reason the
-        // probe recorded: here the kill-switch, which is set below, so the
+        // probe recorded: here the kill-switch, set above, so the
         // actionable step is unsetting it. Offering `inkentry server start`
         // under it would be advice the variable guarantees cannot take effect.
         .stderr(predicate::str::contains("INKENTRY_NO_SERVER is set"))

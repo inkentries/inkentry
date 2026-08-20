@@ -750,9 +750,9 @@ fn memory_warmup_notice(missing: i64) -> String {
 /// is `cfg.server_url`, read only where the notice names it. `is_windows` is
 /// injected so the platform-gated hint stays unit-testable on any host.
 ///
-/// `pub(crate)` for the cross-surface agreement test in `index::phases`, which
-/// pins this notice and the index one to the same remedy per reason.
-pub(crate) fn semantic_unavailable_message(
+/// Visible to `index::phases` for the cross-surface agreement test, which pins
+/// this notice and the index one to the same remedy per reason.
+pub(in crate::cli::cmd) fn semantic_unavailable_message(
     tier: &capability::Tier,
     server_url: Option<&str>,
     is_windows: bool,
