@@ -21,8 +21,10 @@ jobs:
     # the job runs directly on the runner VM (macOS, Windows).
     container: ${{ matrix.container }}
     timeout-minutes: 30
+    # Builds and uploads a run artifact; the release itself is created by the
+    # `release` job below, which is the only job here that needs write.
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -173,8 +175,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Same as `build`: consumes and produces run artifacts only.
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
