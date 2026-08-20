@@ -11,6 +11,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Internal
 
+- **Loopback discovery trust checks gained cross-platform coverage.** The
+  verification a responder passes before it becomes the embedding backend was
+  tested only on Unix, where a live process can be named `inkentry-server`. The
+  trust policy is now split into a pure classifier tested on every platform,
+  including the happy path every command travels; `process_matches_server`'s
+  deliberately weak substring semantics are pinned by unit tests; and a
+  subprocess test drives the state-file path (step 3a) end to end without
+  depending on the host OS. A test-only `INKENTRY_TEST_TRUST_RECORDED_RESPONDER`
+  seam, read only on the discovery-trust path and never by the process-kill path,
+  backs the cross-platform tests. See ADR-091.
 - **`cargo test -p inkentry-server --bins` no longer aborts the whole run.**
   `Args` binds fields to `INKENTRY_*` variables and clap reads all of them on
   every parse, so a test setting one raced every test that parses. The loser
@@ -556,6 +566,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   (`inkentry server stop`, then `inkentry server start`): one started by an
   earlier build recorded no instance id, and a stale port file no longer falls
   back to the default port, so neither is discovered until you restart.
+- **The local relay reuse gate now verifies the responder too.**
+  `probe_local_relay_port`, which the memory outbox uses to hand memory to a
+  running local daemon, trusted any healthy answer on the recorded port. It now
+  applies the same recorded pid and instance id check loopback discovery does, so
+  a healthy but unverifiable responder no longer receives memory. As with
+  discovery, restart your daemon after upgrading so its instance id is recorded.
 - **`inkentry harvest`'s git-commit walk now secret-scans each commit message**,
   skipping a matching commit (warning with its SHA only) and continuing the walk,
   instead of promoting it into memory and on to `refs/notes/inkentry` unchecked.

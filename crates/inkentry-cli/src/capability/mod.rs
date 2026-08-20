@@ -62,6 +62,9 @@ pub use llm_message::{NoLlmReason, no_llm_message};
 #[allow(unused_imports)]
 pub use llm_route::{LlmRoute, resolve_llm_route};
 pub(crate) use probe::inkentry_state_dir;
+// The loopback-discovery trust check, reused by `server::probe_local_relay_port`
+// so the relay-reuse gate refuses the same responders step 3a does (ADR-091).
+pub(crate) use probe::untrusted_responder;
 pub use probe::{get_inference_tier, get_inference_tier_fresh, get_tier};
 // `Capabilities` is only reached from outside this module by other crates'
 // `#[cfg(test)]` code (`Capabilities::all()`), so a non-test build sees this

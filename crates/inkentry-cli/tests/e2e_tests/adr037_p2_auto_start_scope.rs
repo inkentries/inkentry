@@ -295,7 +295,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
         llm: None,
         max_tokens_ceiling: 8192,
         rate_limiter: Arc::new(inkentry_server::rate_limiter::RateLimiter::new(1000, 60)),
-        instance_id,
+        instance_id: instance_id.clone(),
         started_by: None,
         trusted_proxies: Default::default(),
         relay: inkentry_server::relay::RelayRegistry::disabled(),
@@ -311,9 +311,26 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
     let state_dir = home.join(".local").join("state").join("inkentry");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(state_dir.join("server.port"), format!("{relay_port}\n")).unwrap();
+    // `probe_local_relay_port` now applies the step-3a trust check (ADR-091): a
+    // healthy answer on the recorded port is used only if the recorded pid and
+    // instance_id still identify the responder as the daemon this CLI started.
+    // The relay above runs in-process, so there is no separate `inkentry-server`
+    // to point a real pid at: record one and let the child trust it via the
+    // discovery-trust test seam, while the recorded instance_id is still checked
+    // for real against what the router reports. Without this the child would
+    // refuse the relay and the nudge gate under test would never be reached, so
+    // the test would pass for the wrong reason.
+    std::fs::write(state_dir.join("server.pid"), "99999\n").unwrap();
+    std::fs::write(
+        state_dir.join("server.instance_id"),
+        format!("{instance_id}\n"),
+    )
+    .unwrap();
 
     let out = inkentry_bin_in(&home)
         .current_dir(&repo)
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1")
         .env("INKENTRY_SERVER_URL", "https://team.invalid:4655")
         .env("INKENTRY_PROJECT_ID", "team/proj")
         .env("INKENTRY_MODE", "local_first")
