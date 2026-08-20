@@ -63,7 +63,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             git curl ca-certificates build-essential pkg-config libdbus-1-dev
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust stable (Linux container)
         if: matrix.container != ''
@@ -84,7 +84,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Cache Cargo registry
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -165,7 +165,7 @@ jobs:
           "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: inkentry-${{ github.ref_name }}-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
@@ -179,10 +179,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download x86_64 Linux artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: inkentry-${{ github.ref_name }}-x86_64-unknown-linux-gnu
           path: linux-amd64
@@ -293,7 +293,7 @@ jobs:
           done
 
       - name: Upload deb artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: inkentry-${{ github.ref_name }}-amd64-deb
           path: inkentry_${{ env.DEB_VERSION }}_amd64.deb
@@ -318,7 +318,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
     steps:
       - name: Download Linux artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: inkentry-${{ github.ref_name }}-${{ matrix.target }}
           path: tarball
@@ -371,10 +371,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
           merge-multiple: true
@@ -442,7 +442,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Read sha256 digests from the GitHub release
         env:
@@ -476,7 +476,7 @@ jobs:
       # checkout failure — that tap serves the pre-rename binary names and would
       # publish this repo's checksums under URLs it does not own.
       - name: Checkout homebrew-inkentry tap
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: inkentries/homebrew-inkentry
           path: tap
@@ -524,7 +524,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Read Windows sha256 digest from the GitHub release
         env:
@@ -542,7 +542,7 @@ jobs:
           echo "VER=${VER}"                               >> "$GITHUB_ENV"
 
       - name: Checkout scoop-inkentry bucket
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: inkentries/scoop-inkentry
           path: bucket-repo

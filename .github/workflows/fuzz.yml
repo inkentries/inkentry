@@ -18,7 +18,7 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The fuzz crate is a standalone workspace (fuzz/Cargo.toml has its own
       # empty [workspace]) with its own Cargo.lock, which drifts from the main
@@ -48,7 +48,7 @@ jobs:
       # covers that build (into ~/.cargo/bin, cached by default) plus the
       # fuzz targets' own build cache.
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: "fuzz -> target"
 
@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-crashes-${{ github.run_id }}
           path: fuzz/artifacts/fuzz_parser/

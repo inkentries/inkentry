@@ -22,7 +22,7 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust stable
         run: |
@@ -34,7 +34,7 @@ jobs:
       # tool itself. install-action fetches a prebuilt binary instead of
       # compiling one, which is both faster and needs no cache to stay fast.
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2.85.11
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-audit
 
@@ -48,7 +48,7 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust stable
         run: |
@@ -59,7 +59,7 @@ jobs:
       # workspace, so a prebuilt binary from install-action replaces both the
       # cache and the from-source `cargo install`.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2.85.11
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-deny
 
