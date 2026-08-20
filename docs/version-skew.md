@@ -138,7 +138,7 @@ Two shapes of warning can appear:
 - **The body was not a health object at all.** The line names the peer URL, the
   consequence, and a bounded sample of what did arrive. This one is now the
   only route to the legacy fallback, because no individual field can reach it
-  any more. In practice it means the URL is not a inkentry server.
+  any more. In practice it means the URL is not an inkentry server.
 
 If the capabilities you expect are missing and no warning appears, the peer
 genuinely did not advertise them. That distinction, between a peer that said no

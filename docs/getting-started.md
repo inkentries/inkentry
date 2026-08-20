@@ -142,7 +142,7 @@ binaries on your `$PATH`. Supported targets:
 > `x86_64-apple-darwin`).
 
 ```bash
-# Example: macOS Apple Silicon. Replace <version> with the release tag, e.g. v0.9.0
+# Example: macOS Apple Silicon. Replace <version> with the release tag, e.g. v1.0.0-rc2
 curl -L https://github.com/inkentries/inkentry/releases/download/<version>/inkentry-<version>-aarch64-apple-darwin.tar.gz \
   | tar -xz && chmod +x inkentry inkentry-server && sudo mv inkentry inkentry-server /usr/local/bin/
 
@@ -189,44 +189,14 @@ a launchd plist (`packaging/inkentry-server.plist`) for macOS and a systemd unit
 `inkentry` autostarts the server on demand (see section 2) — but they're useful
 on a shared or always-on host.
 
-### Upgrading from spelunk (0.9.8 or earlier)
+### Coming from spelunk
 
-inkentry refuses a `memory.db` written by spelunk rather than converting it, so
-**export before you upgrade**. The export tool is **`spelunk-export`**, a
-standalone per-platform asset on the [spelunk-cloud/spelunk
-releases](https://github.com/spelunk-cloud/spelunk/releases) page — deliberately
-not part of the inkentry archive, the `.deb`, the Homebrew formula or the Scoop
-manifest, so upgrading through a package manager will not put it on your machine.
-Run it against the old project, then bring the dump across:
-
-```bash
-inkentry import <dump>
-```
-
-If your entries were also shared through git notes, renaming the ref hydrates
-them directly — but it carries **only the notes-resident entries** (on one real
-corpus, 51 of 343), so it is not a substitute for the export:
-
-```bash
-git fetch <old-remote> 'refs/notes/spelunk:refs/notes/inkentry'
-```
-
-`index.db` needs no migration at all: run `inkentry init` and it is rebuilt from
-your source tree.
-
-One thing does not come across: **credentials**. Secrets live under inkentry's
-own name, so a team server's bearer key and any LLM key have to be set again
-with `inkentry auth set-key --server <url>` and `inkentry auth set-key --llm`
-(or `inkentry login` for inkentry cloud, or the `INKENTRY_SERVER_KEY` and
-`INKENTRY_LLM_KEY` variables in CI). Purely local use needs none of them. See
-[Upgrading](upgrading.md#credentials-do-not-migrate) for the detail.
-
-That aside, that is the whole of it for one machine. **If you share a
-repository with anyone, it is not a personal upgrade**: `.inkentry/config.toml` is tracked, and
-so is every committed script, CI step and agent instruction that calls the CLI,
-so one person's commit reaches colleagues still on the old binary. See
-[Upgrading](upgrading.md) for the team sequence, the symptoms, and what to do if
-you already upgraded without exporting.
+1.0.0 does not open a memory store an earlier build wrote, so moving across is a
+deliberate export/import rather than a drop-in binary swap — and for a shared
+repository it is a step the whole team plans together, not a personal upgrade.
+[Upgrading](upgrading.md) is the full procedure: export with `spelunk-export`,
+`inkentry import` the dump, re-set the credentials that do not carry over, and
+the sequence a team follows to cut over together.
 
 ## 2. Cold start: index and get your first answer
 

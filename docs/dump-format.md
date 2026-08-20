@@ -7,8 +7,8 @@ per line, diffable, re-importable with `inkentry import`.
 
 This is the reader-side spec for `inkentry import`. Its only writer today is
 `spelunk-export`, which ships with the predecessor product so that a
-`memory.db` written before 1.0.0 can cross into inkentry (see [upgrading from
-spelunk](getting-started.md#upgrading-from-spelunk-098-or-earlier)). There is
+`memory.db` written before 1.0.0 can cross into inkentry (see
+[Upgrading](upgrading.md)). There is
 no `inkentry export`. If your project started at 1.0.0, nothing on your
 machine writes one of these files, and you have no reason to read further.
 

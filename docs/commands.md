@@ -434,7 +434,7 @@ A memory entry. These fields are always present:
 
 | Field | Type |
 |---|---|
-| `id` | string. A **UUID**, not an integer: the numeric ids used before 1.0.0 are gone and do not map onto these |
+| `id` | string. A **UUID**, not an integer |
 | `kind` | string, for example `decision`, `requirement`, `handoff` |
 | `title`, `body` | string |
 | `tags`, `linked_files` | array of strings, possibly empty |
@@ -528,21 +528,21 @@ determines which payload keys you will see:
 `--only-code` and `--only-memory` are mutually exclusive; either one composes
 with `--only-text`.
 
-**`--mode` was removed in 1.0.0.** There is no ranking mode to choose any more:
-`search` always uses the best ranking available. Passing it exits `2` with a
-migration hint rather than being ignored.
+**`search` has no `--mode` flag.** There is no ranking mode to choose:
+`search` always uses the best ranking available. Passing `--mode` exits `2` with
+a migration hint rather than being ignored.
 
-| Removed | Use instead |
+| Instead of | Use |
 |---|---|
 | `--mode text` | `--only-text` |
 | `--mode semantic`, `--mode hybrid`, `--mode auto` | no flag; that is the default |
-| `--mode ast-grep` | no replacement; structural search was removed |
+| `--mode ast-grep` | no structural search; `--only-text` is the nearest |
 
-Two sibling surfaces went the same way and exit `2` with their own hints:
-`inkentry memory search "<q>"` is now `inkentry search "<q>" --only-memory`, and
-the top-level `inkentry graph <symbol>` is now `inkentry search "<symbol>"
---graph` or `inkentry plumbing graph-edges --symbol <symbol>`. Because a removed
-flag exits non-zero in milliseconds, a harness that swallows the exit code
+Two sibling surfaces behave the same way and exit `2` with their own hints:
+`inkentry memory search "<q>"` is `inkentry search "<q>" --only-memory`, and
+the top-level `inkentry graph <symbol>` is `inkentry search "<symbol>"
+--graph` or `inkentry plumbing graph-edges --symbol <symbol>`. Because such a
+call exits non-zero in milliseconds, a harness that swallows the exit code
 records zero results and reads it as "no matches" rather than as a broken
 invocation.
 
@@ -1175,10 +1175,10 @@ local content, same as `memory add`.
 
 **Backfilling missing embeddings:** a note's semantic vector is minted at
 `memory add` time, and again by `inkentry sync` / `inkentry plumbing push` for
-any entry in the set they are about to push that still lacks one. A note that misses both, added
-while the embedder was down and never pushed, or carried
-through the 768→896 embedding-dimension upgrade (which drops the old vectors),
-stays present-but-unembedded: still listed by `memory list` and `context`, but
+any entry in the set they are about to push that still lacks one. A note that
+misses both — added while the embedder was down and never pushed, or arrived
+from an `inkentry import` (a portable dump carries no vectors) — stays
+present-but-unembedded: still listed by `memory list` and `context`, but
 absent from the semantic ranking of `inkentry search`. Text search is not a
 dependable fallback for it — the memory text matcher requires the query as a
 contiguous phrase (see [`inkentry search`](#inkentry-search)).

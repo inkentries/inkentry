@@ -196,13 +196,14 @@ the first five minutes to running a shared memory server for a team.
 
 ## Repository structure
 
-This is a Cargo workspace with three crates:
+This is a Cargo workspace with four crates:
 
 | Crate | Path | Purpose |
 |---|---|---|
 | `inkentry-core` | `crates/inkentry-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
 | `inkentry-cli` | `crates/inkentry-cli` | `inkentry` binary — CLI commands; depends on `inkentry-core` |
-| `inkentry-server` | `crates/inkentry-server` | `inkentry-server` binary + lib — shared memory server; depends on `inkentry-core` |
+| `inkentry-embed` | `crates/inkentry-embed` | Library — native F2LLM-v2-330M embedder (candle); depends on `inkentry-core` |
+| `inkentry-server` | `crates/inkentry-server` | `inkentry-server` binary + lib — shared memory server; depends on `inkentry-core` + `inkentry-embed` |
 
 ```bash
 cargo build -p inkentry-cli    # build the CLI
