@@ -415,7 +415,7 @@ rest of the API" settles nothing here.
 | Malicious or broken team server floods the daemon over SSE | D | Low | Medium | **Bounded.** The unresolved SSE receive buffer is capped and a frame without a terminator errors rather than growing (`oversized_sse_frame_without_terminator_errors_instead_of_growing_forever`); the frame is only ever a wake-up signal, never the note payload |
 | One project's relay failure affects another's | D | Low | Low | Per-session isolation: errors are caught and recorded, never propagated as a panic, and hold no lock a request handler needs |
 | Pulled entries leak across projects on one team server | I | Low | Medium | Sessions are keyed on (server, project); covered by `pulled_rows_never_leak_across_projects_on_the_same_team_server` |
-| A local process holds the recorded port and receives the outbox and the team bearer | I | Low | High | **Closed on the CLI side.** `probe_local_relay_port` sends nothing until the responder matches the pid and `instance_id` this CLI recorded at daemon start, and a refusal returns nothing rather than trying another port (ADR-091) |
+| A local process holds the recorded port and receives the outbox and the team bearer | I | Low | High | **Closed on the CLI side.** `probe_local_relay_port` sends nothing until the responder matches the pid and `instance_id` this CLI recorded at daemon start, and a refusal returns nothing rather than trying another port (ADR-091). Closed against a process that only holds the port; a caller who also controls the CLI's environment is a residual, see [Whoever sets the environment decides who is trusted](#whoever-sets-the-environment-decides-who-is-trusted) |
 
 ### Residual risks (open, deliberate)
 
@@ -467,8 +467,22 @@ therefore point it at a directory it owns, record a port at its own listener, an
 `instance_id` its listener reports, and a pid naming any process whose argv
 contains `inkentry-server`, and receive the outbox and the team bearer.
 
-That path uses no test-only variable at all, and it is the shortest one. The two
-below weaken individual checks; the state directory replaces all three at once.
+That path uses no test-only variable: the state directory replaces all three
+recorded facts at once, where the two overrides below weaken one check each.
+
+**It is not the cheapest environment attack, though.** Discovery requires a live
+process the pid names (`ps -p` must succeed) and a live listener on the port
+(`probe_health`), so setting the variable is not sufficient on its own. A
+shorter path skips discovery entirely: `cloud_origin()` reads
+`INKENTRY_CLOUD_URL` (`config/server_keys.rs:53`), and `bearer_for` returns the
+cloud access token whenever the requested origin equals it (`:110-117`). Point
+`INKENTRY_CLOUD_URL` and `INKENTRY_SERVER_URL` at the same host you control and
+a logged-in CLI resolves that host **as** cloud and sends the token outbound. No
+listener, no pid, no state directory.
+
+That path reaches cloud sessions only. A self-hosted key is looked up per
+origin with no global fallback, so an attacker origin resolves to no bearer.
+It predates this section and is recorded here rather than fixed here.
 
 **This is a residual, not a closed threat.** Recorded state has to live somewhere
 the process is told about, and a caller who controls the environment controls
@@ -476,15 +490,23 @@ that. Closing it needs an identity the loopback posture does not provide, the
 same conclusion the relay residuals above reach.
 
 **Where the boundary actually is.** For a process already running as the user,
-this grants little: it is inside the trust domain by ADR-056 and can read
-`memory.db` directly. But that argument does **not** extend to the bearer, which
-lives in the OS keychain rather than in a file, and which ADR-091 records as the
-asset whose disclosure is not recoverable. The case worth naming is
-**workspace-scoped environment**: `direnv`'s `.envrc`, a devcontainer's
-`remoteEnv`. There a checked-out repository supplies the CLI's environment, and
-the attacker needs no local code execution at all, only for someone to trust the
-repo far enough to open it. A shared host where another account can influence a
-profile or `PATH` is the same shape.
+this grants little on its own: it is inside the trust domain by ADR-056 and can
+read `memory.db` directly. But that argument does **not** extend to the bearer,
+which lives in the OS keychain rather than in a file, and which ADR-091 records
+as the asset whose disclosure is not recoverable. Code execution as the user
+does not by itself yield a keychain-resident credential, so the escalation is
+real.
+
+**Workspace-scoped environment** is the case worth naming: `direnv`'s `.envrc`,
+a devcontainer's `remoteEnv`, a shared host where another account influences a
+profile. There a checked-out repository or another user supplies the CLI's
+environment. The two paths above differ in what that buys:
+
+- The **cloud-origin** path completes on static environment alone, so a
+  devcontainer's `remoteEnv` reaches it with no execution anywhere.
+- The **state-directory** path additionally needs a process and a listener, so
+  static environment cannot finish it. `direnv` reaches it only because
+  `.envrc` is executed shell, which is already local code execution.
 
 ### Test-only overrides that relax discovery
 
