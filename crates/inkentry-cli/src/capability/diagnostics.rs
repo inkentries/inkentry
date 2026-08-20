@@ -197,6 +197,26 @@ pub(crate) const ALL_OFFLINE_REASONS: [OfflineReason; 7] = [
     OfflineReason::ExplicitServerUnavailable,
 ];
 
+impl OfflineReason {
+    /// True when the user asked for offline outright, rather than the probe
+    /// failing to find a server it was allowed to look for.
+    ///
+    /// These three are the reasons `explicit_offline_reason` returns before
+    /// any socket is opened, so they cannot change while the process runs: a
+    /// poller waiting for a server to appear can stop on the first one instead
+    /// of retrying a decision no retry can reverse. The other four come from a
+    /// probe that did run and may well answer differently a second later.
+    pub fn is_explicit_opt_out(self) -> bool {
+        match self {
+            Self::KillSwitch | Self::ModeOfflineEnv | Self::ModeOfflineConfig => true,
+            Self::NoLocalServer
+            | Self::LocalServerUnusable
+            | Self::RecordedServerUnreachable
+            | Self::ExplicitServerUnavailable => false,
+        }
+    }
+}
+
 /// The bracketed suffix `status` appends to its offline `search` line,
 /// including the two spaces that separate it from `text`.
 ///
@@ -666,5 +686,30 @@ mod tests {
         let chain = error_chain(err.as_ref());
         assert_eq!(chain.matches(" -> ").count(), DEPTH);
         assert!(find_rustls_cause(err.as_ref()).is_none());
+    }
+
+    // ── is_explicit_opt_out: which reasons a retry can never change ──────────
+
+    // Pollers skip their backoff entirely on an opt-out, so a reason
+    // misfiled as one would make them give up on a server that was only
+    // momentarily unreachable. Pinned by exact membership over `REASONS`, not
+    // by spot-checking a variant or two, so a seventh reason added later has
+    // to be classified deliberately rather than inheriting whichever answer
+    // the match arm order happens to give it.
+    #[test]
+    fn only_the_pre_socket_reasons_are_explicit_opt_outs() {
+        let opt_outs: Vec<OfflineReason> = REASONS
+            .into_iter()
+            .filter(|r| r.is_explicit_opt_out())
+            .collect();
+        assert_eq!(
+            opt_outs,
+            vec![
+                OfflineReason::KillSwitch,
+                OfflineReason::ModeOfflineEnv,
+                OfflineReason::ModeOfflineConfig,
+            ],
+            "an opt-out is a setting read before any probe; a failed probe is not one"
+        );
     }
 }

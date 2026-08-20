@@ -345,6 +345,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The background embed worker no longer stalls for two and a half minutes
+  when you have opted out of a server.** Under `INKENTRY_NO_SERVER=1`,
+  `INKENTRY_MODE=offline` or `mode = "offline"`, its readiness wait spent the
+  full ten-probe backoff on a decision that was settled before the first
+  probe. It now returns at once and prints the skip notice.
+
 - **Entries arriving from `inkentry sync` or `inkentry plumbing pull` are now
   embedded locally**, so a teammate's entry is findable by semantic
   `inkentry memory search` on your machine. They previously landed with no
