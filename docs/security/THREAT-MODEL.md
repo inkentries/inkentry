@@ -459,10 +459,15 @@ does not currently provide; that is a post-v1.0 decision, not a v1.0 gate.
 
 ### Test-only overrides that relax discovery
 
-Two environment variables weaken loopback discovery, and a shipped binary reads
-both: neither is behind `#[cfg(test)]`. They are listed together because the pair
-is the fact worth knowing. Either alone is a narrow testing affordance; two of
-them is a documented way to influence which local process the CLI will talk to.
+The shipped binary honours environment variables that relax discovery trust.
+**These two are the complete list**, and neither is behind `#[cfg(test)]`. They
+are listed together because the pair is the fact worth knowing: either alone is a
+narrow testing affordance, while two is a documented way to influence which local
+process the CLI will talk to.
+
+Other `INKENTRY_TEST_*` variables exist (crash injection and a page cap, in
+`inkentry-core`'s storage layer) and are out of scope here: none of them affects
+which responder is trusted.
 
 | Variable | What it relaxes | What it still cannot do |
 |----------|-----------------|-------------------------|
