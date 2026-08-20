@@ -28,6 +28,8 @@ const EMBED_WAIT_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::fro
 const EMBED_WAIT_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 /// Consecutive offline probes tolerated before the worker concludes the server
 /// is gone (crashed after spawning us) rather than momentarily unreachable.
+/// Counted only for offline reasons a retry could actually change; an explicit
+/// opt-out returns on the first probe (see [`wait_for_embedder`]).
 const EMBED_WAIT_MAX_OFFLINE_PROBES: u32 = 10;
 
 /// Wait until the server's embedder can serve, polling `/v1/health` with a
@@ -40,7 +42,9 @@ const EMBED_WAIT_MAX_OFFLINE_PROBES: u32 = 10;
 /// reaches the worker with the embedder still `loading`. Only `unavailable`
 /// and `disabled` (or a server with no embedder at all) are terminal; each
 /// keeps its distinct notice via `eprint_embed_skipped_notice`. `loading` is
-/// never a reason to abandon durable queued work.
+/// never a reason to abandon durable queued work. An explicit offline opt-out
+/// is terminal on the first probe: it is settled before any socket is opened,
+/// so the offline-probe tolerance below cannot apply to it.
 ///
 /// `get_inference_tier_fresh` (not `probe_tier_fresh`): local_first always
 /// prefers the local loopback embedder, even with an explicit server_url set
@@ -75,7 +79,15 @@ async fn wait_for_embedder(
                     announced = true;
                 }
             }
-            capability::Tier::Offline(_) => {
+            capability::Tier::Offline(reason) => {
+                // An explicit opt-out is decided before any socket is opened
+                // and holds for the life of the process, so every remaining
+                // probe would return this same tier. Sleeping the backoff out
+                // buys nothing and costs the user two and a half minutes of a
+                // run that has already been told not to reach a server.
+                if reason.is_explicit_opt_out() {
+                    return tier;
+                }
                 offline_probes += 1;
                 if offline_probes >= EMBED_WAIT_MAX_OFFLINE_PROBES {
                     return tier;
@@ -820,6 +832,52 @@ mod tests {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
             "the offline give-up must be bounded"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_embedder_explicit_opt_out_costs_no_backoff() {
+        // Driven with the REAL constants, not TEST_BACKOFF: the claim is that
+        // an explicit opt-out costs no wait at all, and only the production
+        // backoff can demonstrate it. One consumed sleep is already 1s and the
+        // full ten-probe give-up is 151s, so a regression here fails on the
+        // clock rather than merely being slow in the field.
+        //
+        // `mode = offline` decides the tier before any socket is opened, so
+        // the reason is an explicit opt-out whatever the ambient environment
+        // is (`INKENTRY_NO_SERVER` would only swap which of the three fires).
+        // `server_url` points at a mock advertising a READY embedder, so a
+        // loop that probed instead of short-circuiting would come back
+        // Server/ready and fail on the tier too, not just on elapsed time.
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("ready")))
+            .mount(&mock)
+            .await;
+        let cfg = Config {
+            mode: Some(crate::config::SyncMode::Offline),
+            ..cfg_for(mock.uri())
+        };
+
+        let started = std::time::Instant::now();
+        let tier =
+            wait_for_embedder(&cfg, EMBED_WAIT_INITIAL_BACKOFF, EMBED_WAIT_MAX_BACKOFF).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(&tier, capability::Tier::Offline(r) if r.is_explicit_opt_out()),
+            "an offline opt-out must resolve to one of the explicit reasons; got {tier:?}"
+        );
+        assert!(
+            elapsed < EMBED_WAIT_INITIAL_BACKOFF,
+            "the opt-out must return before even the first backoff sleep, let alone all \
+             {EMBED_WAIT_MAX_OFFLINE_PROBES} probes; took {elapsed:?}"
+        );
+        assert_eq!(
+            mock.received_requests().await.map(|r| r.len()),
+            Some(0),
+            "an explicit opt-out must not reach the network at all"
         );
     }
 

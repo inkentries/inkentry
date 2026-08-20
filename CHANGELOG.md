@@ -345,6 +345,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The background embed worker no longer stalls for two and a half minutes
+  when you have opted out of a server.** Under `INKENTRY_NO_SERVER=1`,
+  `INKENTRY_MODE=offline` or `mode = "offline"`, its readiness wait spent the
+  full ten-probe backoff on a decision that was settled before the first
+  probe. It now returns at once and prints the skip notice.
+
 - **A piped `inkentry init` or `inkentry server start` returns on Windows**
   instead of blocking until the background worker exits. The command printed
   everything and its own process ended, but the reader saw no end of output:
