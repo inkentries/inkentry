@@ -106,6 +106,7 @@ pub(super) fn spawn_embed_subprocess<'a>(
     let mut cmd = build_detached_child_command(&std::env::current_exe()?, "--_embed-phases", args);
     cmd.args(["--batch-size", &args.batch_size.to_string()]);
     let in_use = redirect_to_background_log(&mut cmd, log);
+    let _std_handles = super::super::helpers::StdHandlesNotInherited::for_spawn();
     match cmd.spawn() {
         Ok(child) => Ok(EmbedSpawn::Detached {
             log_in_use: in_use,

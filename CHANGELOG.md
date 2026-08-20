@@ -351,6 +351,13 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   full ten-probe backoff on a decision that was settled before the first
   probe. It now returns at once and prints the skip notice.
 
+- **A piped `inkentry init` or `inkentry server start` returns on Windows**
+  instead of blocking until the background worker exits. The command printed
+  everything and its own process ended, but the reader saw no end of output:
+  for `init` that was the whole embed pass, for `server start` the daemon's
+  lifetime. Only pipes were affected, so CI, agent harnesses, `| tee` and
+  `$(...)` capture always hit it and a terminal never did. macOS and Linux
+  were never affected.
 - **Entries arriving from `inkentry sync` or `inkentry plumbing pull` are now
   embedded locally**, so a teammate's entry is findable by semantic
   `inkentry memory search` on your machine. They previously landed with no
