@@ -489,21 +489,35 @@ the process is told about, and a caller who controls the environment controls
 that. Closing it needs an identity the loopback posture does not provide, the
 same conclusion the relay residuals above reach.
 
-**Where the boundary actually is.** For a process already running as the user,
-this grants little on its own: it is inside the trust domain by ADR-056 and can
-read `memory.db` directly. But that argument does **not** extend to the bearer,
-which lives in the OS keychain rather than in a file, and which ADR-091 records
-as the asset whose disclosure is not recoverable. Code execution as the user
-does not by itself yield a keychain-resident credential, so the escalation is
-real.
+**Where the boundary actually is, and it depends on the host.** For a process
+already running as the user, this grants little on its own: it is inside the
+trust domain by ADR-056 and can read `memory.db` directly. Whether it also gets
+the bearer depends on where the bearer is, and that is not one place:
+`default_store` prefers the OS keychain but **falls back to a plaintext
+`secrets.toml`** when no keychain backend is present, `INKENTRY_SECRET_STORE=file`
+forces that fallback, and `INKENTRY_SERVER_KEY` bypasses the store entirely as an
+environment variable (`config/secret_store.rs`).
+
+So there are two hosts, and this residual means different things on each:
+
+- **Keychain present** (an ordinary desktop). Reading `memory.db` does not yield
+  the bearer, and ADR-091 records a disclosed bearer as the asset whose loss is
+  not recoverable. Hijacking discovery is a genuine escalation, and this
+  residual is the interesting part of the picture.
+- **Container, CI or headless Linux**, where the file store is the norm. The
+  bearer already sits in a file the same user can read, or in an environment
+  variable. There, whoever controls the environment has a broader problem than
+  discovery, and this residual is a small part of it.
 
 **Workspace-scoped environment** is the case worth naming: `direnv`'s `.envrc`,
 a devcontainer's `remoteEnv`, a shared host where another account influences a
-profile. There a checked-out repository or another user supplies the CLI's
-environment. The two paths above differ in what that buys:
+profile. Note a devcontainer is the second host above, so an attacker who
+supplies `remoteEnv` there can set or read `INKENTRY_SERVER_KEY` directly and
+never touch discovery at all. Where the distinction between the two paths above
+still matters is the first host:
 
-- The **cloud-origin** path completes on static environment alone, so a
-  devcontainer's `remoteEnv` reaches it with no execution on the machine.
+- The **cloud-origin** path completes on static environment alone, with no
+  execution on the machine.
 - The **state-directory** path additionally needs a process and a listener, so
   static environment cannot finish it. `direnv` reaches it only because
   `.envrc` is executed shell, which is already local code execution.
@@ -523,7 +537,9 @@ testing affordance while the pair is a documented category.
 These two are every **test-only** variable that relaxes discovery trust. They are
 not every way to influence it: see the section above. Other
 `INKENTRY_TEST_*` variables exist (crash injection and a page cap, in
-`inkentry-core`'s storage layer) and affect no trust decision. Neither list is a
+`inkentry-core`'s storage layer, plus one crash hook in the CLI gated on
+`debug_assertions` and so absent from a release build) and affect no trust
+decision. Neither list is a
 claim about the environment as a whole: see above.
 
 ### Why this surface is not in `docs/openapi.json` — decided
