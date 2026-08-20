@@ -1297,9 +1297,7 @@ spent. The same handling covers `inkentry memory add` against a server.
 
 For a one-directional transfer (seeding, CI), use the plumbing forms
 `inkentry plumbing push` (local → server) or `inkentry plumbing pull`
-(server → local); each emits a single JSONL report. The former porcelain
-`inkentry memory push` / `inkentry memory pull` have been removed; there is no
-alias, so invoking them errors as an unknown subcommand.
+(server → local); each emits a single JSONL report.
 
 **The push embeds what it pushes.** Before the batch is built, both `inkentry
 sync` and `inkentry plumbing push` embed every entry in the push set that has no
