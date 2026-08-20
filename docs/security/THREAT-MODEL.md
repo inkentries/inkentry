@@ -503,7 +503,7 @@ profile. There a checked-out repository or another user supplies the CLI's
 environment. The two paths above differ in what that buys:
 
 - The **cloud-origin** path completes on static environment alone, so a
-  devcontainer's `remoteEnv` reaches it with no execution anywhere.
+  devcontainer's `remoteEnv` reaches it with no execution on the machine.
 - The **state-directory** path additionally needs a process and a listener, so
   static environment cannot finish it. `direnv` reaches it only because
   `.envrc` is executed shell, which is already local code execution.
@@ -520,7 +520,8 @@ testing affordance while the pair is a documented category.
 | `INKENTRY_TEST_DISCOVERY_PORT` | Replaces `DEFAULT_SERVER_PORT` for the fixed-port fallback, so discovery probes a port of the caller's choosing | Reach the fallback at all when a usable state file exists, and any non-numeric value is refused rather than ignored |
 | `INKENTRY_TEST_TRUST_RECORDED_RESPONDER` | Answers "the recorded pid is an `inkentry-server`" without running the OS process query | Supply a pid, or skip the `instance_id` match: a pid must still be recorded and the responder's reported id must still equal the recorded one. Read only on the discovery-trust path, never by `classify_running_server`, so it cannot widen what a lifecycle command will signal (ADR-085) |
 
-These two are every variable that relaxes **discovery trust** specifically. Other
+These two are every **test-only** variable that relaxes discovery trust. They are
+not every way to influence it: see the section above. Other
 `INKENTRY_TEST_*` variables exist (crash injection and a page cap, in
 `inkentry-core`'s storage layer) and affect no trust decision. Neither list is a
 claim about the environment as a whole: see above.
