@@ -18,6 +18,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The agent skill installs as a plugin**, from
+  [inkentries/agent-plugin](https://github.com/inkentries/agent-plugin). In
+  Claude Code: `/plugin marketplace add inkentries/agent-plugin`, then
+  `/plugin install inkentry@inkentry`. It is packaged to the
+  [Agent Plugins](https://agent-plugins.org/) standard, so clients implementing
+  that standard can consume it too. The skill was previously a file in this
+  repository with no way to obtain it. Installing the plugin does not install
+  the CLI.
 - **Releases ship checksums and a signed build-provenance attestation.** Every
   release publishes a `SHA256SUMS` asset, and each archive and package carries an
   attestation binding it to this repository and commit. Verify with

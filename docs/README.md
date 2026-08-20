@@ -44,15 +44,15 @@ now accumulate on their own, and every later `inkentry context` or `inkentry
 search` hands them back.
 
 The mechanism is the agent itself. Wired to inkentry through a skill (the Claude
-Code skill, or a drop-in `AGENT.md`), it records each decision as it makes it, so
+Code skill, or a drop-in `AGENTS.md`), it records each decision as it makes it, so
 the why-layer accrues as a by-product of the work rather than from anyone stopping
 to document it. A git hook complements this: a post-commit step runs
 `inkentry harvest` to catch any reasoning left in commit messages, so
 nothing slips through. Nothing else about how you work has to change.
 
 - [Agent Guide](agent-guide.md): how a session should use inkentry, plus automatic capture and JSON output
-- [AGENT.md template](examples/AGENT.md): a drop-in file that tells your agent to reach for inkentry first
-- [Claude Code skill](../SKILL.md): inkentry packaged as an agent skill
+- [AGENTS.md template](examples/AGENTS.md): a project-convention file that tells your agent to reach for inkentry first
+- [Installing the agent skill](plugin.md): inkentry as an Agent Plugins plugin, for Claude Code and other clients
 - Automatic capture: [`inkentry hooks install`](commands.md#inkentry-hooks) plus [`inkentry harvest`](commands.md#inkentry-harvest)
 
 ## 4. Reference
