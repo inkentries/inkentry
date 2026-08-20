@@ -415,6 +415,7 @@ rest of the API" settles nothing here.
 | Malicious or broken team server floods the daemon over SSE | D | Low | Medium | **Bounded.** The unresolved SSE receive buffer is capped and a frame without a terminator errors rather than growing (`oversized_sse_frame_without_terminator_errors_instead_of_growing_forever`); the frame is only ever a wake-up signal, never the note payload |
 | One project's relay failure affects another's | D | Low | Low | Per-session isolation: errors are caught and recorded, never propagated as a panic, and hold no lock a request handler needs |
 | Pulled entries leak across projects on one team server | I | Low | Medium | Sessions are keyed on (server, project); covered by `pulled_rows_never_leak_across_projects_on_the_same_team_server` |
+| A local process holds the recorded port and receives the outbox and the team bearer | I | Low | High | **Closed on the CLI side.** `probe_local_relay_port` sends nothing until the responder matches the pid and `instance_id` this CLI recorded at daemon start, and a refusal returns nothing rather than trying another port (ADR-091). Closed against a process that only holds the port; a caller who also controls the CLI's environment is a residual, see [Whoever sets the environment decides who is trusted](#whoever-sets-the-environment-decides-who-is-trusted) |
 
 ### Residual risks (open, deliberate)
 
@@ -443,7 +444,9 @@ each is a real capability granted to any process running locally on the machine.
    session can have arbitrary entries written into the **team** server's memory,
    authenticated by a credential it never had to read. This is a confused-deputy
    *use* of the credential, not disclosure of it: no route returns the bearer, and
-   `last_error` is fixed text.
+   `last_error` is fixed text. Read that as a claim about the daemon's **routes**.
+   It says nothing about a process that is not answering a route but holding the
+   port instead, which is the case ADR-091 closes from the CLI side.
 
 All three sit under the deliberate no-key local posture of
 [ADR-056](../adr/056-oss-server-tenancy-model.md): the loopback daemon is
@@ -453,6 +456,91 @@ argument, which is why the residuals are listed rather than dismissed — it let
 local process act *against the team server*, over the network, with a credential it
 does not hold. Closing 1 and 3 needs a local caller identity the loopback posture
 does not currently provide; that is a post-v1.0 decision, not a v1.0 gate.
+
+### Whoever sets the environment decides who is trusted
+
+Discovery trust rests on three facts recorded in the state directory: a port, a
+pid, and an `instance_id`. **`INKENTRY_STATE_DIR` names that directory**
+(`capability/probe.rs:48`), is read by the shipped binary, and is documented as
+safe to redirect wholesale. A process that can set the CLI's environment can
+therefore point it at a directory it owns, record a port at its own listener, an
+`instance_id` its listener reports, and a pid naming any process whose argv
+contains `inkentry-server`, and receive the outbox and the team bearer.
+
+That path uses no test-only variable: the state directory replaces all three
+recorded facts at once, where the two overrides below weaken one check each.
+
+**It is not the cheapest environment attack, though.** Discovery requires a live
+process the pid names (`ps -p` must succeed) and a live listener on the port
+(`probe_health`), so setting the variable is not sufficient on its own. A
+shorter path skips discovery entirely: `cloud_origin()` reads
+`INKENTRY_CLOUD_URL` (`config/server_keys.rs:53`), and `bearer_for` returns the
+cloud access token whenever the requested origin equals it (`:110-117`). Point
+`INKENTRY_CLOUD_URL` and `INKENTRY_SERVER_URL` at the same host you control and
+a logged-in CLI resolves that host **as** cloud and sends the token outbound. No
+listener, no pid, no state directory.
+
+That path reaches cloud sessions only. A self-hosted key is looked up per
+origin with no global fallback, so an attacker origin resolves to no bearer.
+It predates this section and is recorded here rather than fixed here.
+
+**This is a residual, not a closed threat.** Recorded state has to live somewhere
+the process is told about, and a caller who controls the environment controls
+that. Closing it needs an identity the loopback posture does not provide, the
+same conclusion the relay residuals above reach.
+
+**Where the boundary actually is, and it depends on the host.** For a process
+already running as the user, this grants little on its own: it is inside the
+trust domain by ADR-056 and can read `memory.db` directly. Whether it also gets
+the bearer depends on where the bearer is, and that is not one place:
+`default_store` prefers the OS keychain but **falls back to a plaintext
+`secrets.toml`** when no keychain backend is present, `INKENTRY_SECRET_STORE=file`
+forces that fallback, and `INKENTRY_SERVER_KEY` bypasses the store entirely as an
+environment variable (`config/secret_store.rs`).
+
+So there are two hosts, and this residual means different things on each:
+
+- **Keychain present** (an ordinary desktop). Reading `memory.db` does not yield
+  the bearer, and ADR-091 records a disclosed bearer as the asset whose loss is
+  not recoverable. Hijacking discovery is a genuine escalation, and this
+  residual is the interesting part of the picture.
+- **Container, CI or headless Linux**, where the file store is the norm. The
+  bearer already sits in a file the same user can read, or in an environment
+  variable. There, whoever controls the environment has a broader problem than
+  discovery, and this residual is a small part of it.
+
+**Workspace-scoped environment** is the case worth naming: `direnv`'s `.envrc`,
+a devcontainer's `remoteEnv`, a shared host where another account influences a
+profile. Note a devcontainer is the second host above, so an attacker who
+supplies `remoteEnv` there can set or read `INKENTRY_SERVER_KEY` directly and
+never touch discovery at all. Where the distinction between the two paths above
+still matters is the first host:
+
+- The **cloud-origin** path completes on static environment alone, with no
+  execution on the machine.
+- The **state-directory** path additionally needs a process and a listener, so
+  static environment cannot finish it. `direnv` reaches it only because
+  `.envrc` is executed shell, which is already local code execution.
+
+### Test-only overrides that relax discovery
+
+Two further variables weaken discovery specifically. Both are read by the shipped
+binary, neither is behind `#[cfg(test)]`, and both are fail-safe on any
+unrecognised value. They are listed together because either alone reads as a local
+testing affordance while the pair is a documented category.
+
+| Variable | What it relaxes | What it still cannot do |
+|----------|-----------------|-------------------------|
+| `INKENTRY_TEST_DISCOVERY_PORT` | Replaces `DEFAULT_SERVER_PORT` for the fixed-port fallback, so discovery probes a port of the caller's choosing | Reach the fallback at all when a usable state file exists, and any non-numeric value is refused rather than ignored |
+| `INKENTRY_TEST_TRUST_RECORDED_RESPONDER` | Answers "the recorded pid is an `inkentry-server`" without running the OS process query | Supply a pid, or skip the `instance_id` match: a pid must still be recorded and the responder's reported id must still equal the recorded one. Read only on the discovery-trust path, never by `classify_running_server`, so it cannot widen what a lifecycle command will signal (ADR-085) |
+
+These two are every **test-only** variable that relaxes discovery trust. They are
+not every way to influence it: see the section above. Other
+`INKENTRY_TEST_*` variables exist (crash injection and a page cap, in
+`inkentry-core`'s storage layer, plus one crash hook in the CLI gated on
+`debug_assertions` and so absent from a release build) and affect no trust
+decision. Neither list is a
+claim about the environment as a whole: see above.
 
 ### Why this surface is not in `docs/openapi.json` — decided
 

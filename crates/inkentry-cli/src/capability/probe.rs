@@ -69,7 +69,8 @@ fn read_server_port_file() -> Option<u16> {
 /// it likes, `instance_id` and `started_by` included, so a self-reported value
 /// only ever confirms itself. What the recorded PID and the recorded id add is
 /// a second, independent source.
-enum Untrusted {
+#[derive(Debug, PartialEq)]
+pub(crate) enum Untrusted {
     NoStateDir,
     NoRecordedPid,
     PidIsNotTheServer(u32),
@@ -119,22 +120,76 @@ fn state_dir_for_message() -> String {
 /// Both files are read through `cli/cmd/server.rs`, which writes them: the
 /// state directory's layout has one owner, and a second spelling of these
 /// names here is how a reader and a writer drift apart.
-fn untrusted_responder(reported: Option<&str>) -> Option<Untrusted> {
-    use crate::cli::cmd::server::{process_matches_server, read_instance_id, read_pid};
+///
+/// Gathers the recorded facts, then hands the decision to [`classify_responder`],
+/// which is where the policy lives so it can be tested on a host that cannot
+/// stand up a process named `inkentry-server`. Also reached by
+/// `server::probe_local_relay_port` through the `capability` re-export, so the
+/// relay-reuse gate and step 3a apply the identical check.
+pub(crate) fn untrusted_responder(reported: Option<&str>) -> Option<Untrusted> {
+    use crate::cli::cmd::server::{read_instance_id, read_pid};
 
     let Ok(state_dir) = inkentry_state_dir() else {
         return Some(Untrusted::NoStateDir);
     };
-    let Some(pid) = read_pid(&state_dir) else {
+    let recorded_pid = read_pid(&state_dir);
+    let pid_matches = recorded_pid.map(recorded_pid_is_server).unwrap_or(false);
+    classify_responder(
+        recorded_pid,
+        pid_matches,
+        read_instance_id(&state_dir).as_deref(),
+        reported,
+    )
+}
+
+/// The recorded pid still names an `inkentry-server`, per the OS process query.
+///
+/// `INKENTRY_TEST_TRUST_RECORDED_RESPONDER=1` (or `=true`) answers "yes" without
+/// running that query. It exists because the discovery-trust integration tests
+/// stand up an in-process server, which has no separate `inkentry-server`
+/// process to point a recorded pid at, and because the query's positive case
+/// cannot be staged on Windows at all, where the match is against an image name
+/// a test cannot forge. It relaxes only this one un-fakeable signal: a pid must
+/// still be recorded, and the recorded `instance_id` must still match, so a test
+/// using it still exercises every check it can. It is read only on the
+/// discovery-trust path and never by `classify_running_server`, so no value of
+/// it can widen the set of processes a lifecycle command will signal (ADR-085).
+/// A no-op for every real user: unset outside the test harness, and any value
+/// other than the two above runs the real query.
+fn recorded_pid_is_server(pid: u32) -> bool {
+    if let Ok(raw) = std::env::var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER") {
+        let v = raw.trim();
+        if v == "1" || v.eq_ignore_ascii_case("true") {
+            return true;
+        }
+    }
+    crate::cli::cmd::server::process_matches_server(pid)
+}
+
+/// Classify a responder against the facts `inkentry server start` recorded, with
+/// the OS process query supplied as `pid_matches_server` rather than run here.
+///
+/// Splitting the policy from the two disk reads and the `ps`/`tasklist` call is
+/// what lets the decision be unit-tested on every platform, including the happy
+/// path (`None`) that every command travels when a daemon is running: a test can
+/// pass `pid_matches_server` directly instead of fabricating a process the OS
+/// query would accept, which is impossible to stage on Windows.
+fn classify_responder(
+    recorded_pid: Option<u32>,
+    pid_matches_server: bool,
+    recorded_instance_id: Option<&str>,
+    reported_instance_id: Option<&str>,
+) -> Option<Untrusted> {
+    let Some(pid) = recorded_pid else {
         return Some(Untrusted::NoRecordedPid);
     };
-    if !process_matches_server(pid) {
+    if !pid_matches_server {
         return Some(Untrusted::PidIsNotTheServer(pid));
     }
-    let Some(recorded) = read_instance_id(&state_dir) else {
+    let Some(recorded) = recorded_instance_id else {
         return Some(Untrusted::NoRecordedInstanceId);
     };
-    (reported != Some(recorded.as_str())).then_some(Untrusted::InstanceIdMismatch)
+    (reported_instance_id != Some(recorded)).then_some(Untrusted::InstanceIdMismatch)
 }
 
 static TIER: OnceCell<Tier> = OnceCell::const_new();
@@ -2749,19 +2804,127 @@ mod tests {
         }
     }
 
-    // ── Loopback discovery trust checks ──────────────────────────────────────
+    // ── classify_responder (the trust policy, on every platform) ─────────────
+    //
+    // The decision itself, with the OS process query supplied as a bool rather
+    // than run. This is the coverage the live-process tests below cannot give on
+    // Windows, and it includes the happy path every command travels when a
+    // daemon is running (`None`).
+
+    #[test]
+    fn classify_responder_refuses_when_no_pid_recorded() {
+        assert_eq!(
+            classify_responder(None, false, Some("id"), Some("id")),
+            Some(Untrusted::NoRecordedPid)
+        );
+    }
+
+    #[test]
+    fn classify_responder_refuses_a_pid_that_is_not_the_server() {
+        assert_eq!(
+            classify_responder(Some(4711), false, Some("id"), Some("id")),
+            Some(Untrusted::PidIsNotTheServer(4711))
+        );
+    }
+
+    #[test]
+    fn classify_responder_refuses_when_no_instance_id_recorded() {
+        assert_eq!(
+            classify_responder(Some(4711), true, None, Some("id")),
+            Some(Untrusted::NoRecordedInstanceId)
+        );
+    }
+
+    #[test]
+    fn classify_responder_refuses_a_mismatched_instance_id() {
+        assert_eq!(
+            classify_responder(Some(4711), true, Some("recorded"), Some("other")),
+            Some(Untrusted::InstanceIdMismatch)
+        );
+    }
+
+    // A responder that reports no instance_id at all cannot match the recorded
+    // one, so it is refused just like a wrong id.
+    #[test]
+    fn classify_responder_refuses_a_responder_that_reports_no_instance_id() {
+        assert_eq!(
+            classify_responder(Some(4711), true, Some("recorded"), None),
+            Some(Untrusted::InstanceIdMismatch)
+        );
+    }
+
+    // The happy path: a recorded pid the OS query accepts and a reported
+    // instance_id equal to the recorded one. This is what every command sees
+    // when a daemon is running, and the one branch that must stay trusted so the
+    // check cannot be satisfied by refusing everything.
+    #[test]
+    fn classify_responder_trusts_a_fully_matching_daemon() {
+        assert_eq!(
+            classify_responder(Some(4711), true, Some("id"), Some("id")),
+            None
+        );
+    }
+
+    // The discovery-trust test seam bypasses only the un-fakeable OS process
+    // query, and only for `1`/`true`. Every other value, and an unset variable,
+    // runs the real query (here a ghost pid, so a definite `false`). In both
+    // serial groups: the discovery tests below read the same variable through
+    // `untrusted_responder`, and the outbox and status relay tests set it
+    // through their own state-dir guards, which use `server_state_dir_env`.
+    #[test]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
+    fn recorded_pid_is_server_seam_is_fail_safe() {
+        let ghost = u32::MAX;
+        let case = |value: Option<&str>| -> bool {
+            // SAFETY: the `inkentry_no_server_env` serial group makes this the
+            // only test touching this variable at a time.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", v),
+                    None => std::env::remove_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
+                }
+            }
+            recorded_pid_is_server(ghost)
+        };
+
+        let enables = ["1", "true", "TRUE", " true "].map(|v| case(Some(v)));
+        let real_query = [
+            case(Some("0")),
+            case(Some("yes")),
+            case(Some("2")),
+            case(Some("")),
+            case(None),
+        ];
+
+        // Unset before asserting, so a failing assert cannot leak `trust = true`
+        // into the discovery tests sharing this serial group.
+        unsafe { std::env::remove_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER") };
+
+        assert!(
+            enables.iter().all(|&t| t),
+            "1/true (any case, trimmed) must force trust"
+        );
+        assert!(
+            real_query.iter().all(|&t| !t),
+            "any other value must fall back to the real query, which is false for a ghost pid"
+        );
+    }
+
+    // ── Loopback discovery trust checks (live process, Unix only) ────────────
     //
     // Step 3a hands every indexed source chunk to whoever answers the recorded
     // loopback port, so "something answered" is not enough to make it the
-    // embedding backend. These pin the two recorded facts the probe checks
-    // before trusting a responder: the state file's PID must still be an
-    // `inkentry-server` process, and the health body's `instance_id` must be
-    // the one recorded at start.
+    // embedding backend. These drive the whole of `probe_loopback` against a
+    // real recorded process, complementing the platform-independent
+    // `classify_responder` tests above.
     //
     // Unix only: the positive PID case needs a live process whose command line
     // reads as `inkentry-server`, which `process_matches_server` finds via
     // `ps`. The Windows side of that check matches an image name, which a test
-    // cannot fabricate without shipping a second binary.
+    // cannot fabricate without shipping a second binary, so the live-process
+    // path stays unix-only and the cross-platform coverage is the pure policy
+    // tests above plus the subprocess test in
+    // `security_tests/loopback_discovery_trust.rs`.
 
     #[cfg(unix)]
     const RECORDED_INSTANCE_ID: &str = "00000000-0000-0000-0000-000000000001";
@@ -2823,9 +2986,11 @@ mod tests {
                 .iter()
                 .map(|(k, v)| {
                     let prev = std::env::var_os(k);
-                    // SAFETY: every test using this guard is in the
-                    // `inkentry_no_server_env` serial group, so no other test
-                    // reads or writes these variables concurrently.
+                    // SAFETY: every test using this guard is in both the
+                    // `inkentry_no_server_env` and `server_state_dir_env`
+                    // serial groups, so no other test reads or writes these
+                    // variables concurrently. The second group matters: the
+                    // outbox and status relay tests set the same trust seam.
                     unsafe { std::env::set_var(k, v) };
                     (*k, prev)
                 })
@@ -2880,7 +3045,7 @@ mod tests {
     // refusing everything.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial_test::serial(inkentry_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn a_recorded_daemon_that_still_matches_is_discovered() {
         let (_server, port) = mock_daemon(RECORDED_INSTANCE_ID).await;
         let daemon = Placeholder::spawn(true);
@@ -2910,7 +3075,7 @@ mod tests {
     // so falling through to it would re-discover the squatter and fail here.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial_test::serial(inkentry_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn a_squatter_on_the_recorded_port_is_not_the_embedding_backend() {
         let (_server, port) = mock_daemon(RECORDED_INSTANCE_ID).await;
         let squatter = Placeholder::spawn(false);
@@ -2938,7 +3103,7 @@ mod tests {
     // check passes, and only the recorded instance_id separates the two.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial_test::serial(inkentry_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn a_responder_with_a_different_instance_id_is_not_the_recorded_daemon() {
         let (_server, port) = mock_daemon("00000000-0000-0000-0000-00000000beef").await;
         let daemon = Placeholder::spawn(true);

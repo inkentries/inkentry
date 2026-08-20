@@ -239,7 +239,7 @@ pub(crate) fn process_matches_server(pid: u32) -> bool {
             .output()
         {
             Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout).contains("inkentry-server")
+                listing_names_server(&String::from_utf8_lossy(&out.stdout))
             }
             _ => false,
         }
@@ -250,9 +250,9 @@ pub(crate) fn process_matches_server(pid: u32) -> bool {
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .output()
         {
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-                .to_lowercase()
-                .contains("inkentry-server"),
+            Ok(out) if out.status.success() => {
+                listing_names_server(&String::from_utf8_lossy(&out.stdout))
+            }
             _ => false,
         }
     }
@@ -261,6 +261,25 @@ pub(crate) fn process_matches_server(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// The whole of the command-line identity signal: the process listing contains
+/// the literal `inkentry-server`.
+///
+/// Extracted from [`process_matches_server`] so its exact, deliberately weak
+/// semantics can be pinned by a unit test without spawning a process. ADR-085
+/// records that this substring match is wrong in both directions (a pre-rename
+/// `spelunk-server` fails it; any process whose argv contains the string passes
+/// it). Tests pin that, so a later attempt to strengthen it starts from a
+/// known baseline. `tasklist` output is matched case-insensitively,
+/// mirroring how Windows renders the image name; `ps` argv is matched as-is.
+#[cfg(unix)]
+fn listing_names_server(listing: &str) -> bool {
+    listing.contains("inkentry-server")
+}
+#[cfg(windows)]
+fn listing_names_server(listing: &str) -> bool {
+    listing.to_lowercase().contains("inkentry-server")
 }
 
 /// Classification of a live PID recorded in the state dir.
@@ -463,16 +482,36 @@ pub async fn server(args: ServerArgs, cfg: Config) -> Result<()> {
 
 /// Probe for an already-running local inkentry-server daemon (the one
 /// `inkentry server start`/[`ensure_server_running`] manages), without
-/// starting one. Returns its port if `/v1/health` responds.
+/// starting one. Returns its port only when `/v1/health` responds **and** the
+/// responder is the daemon this CLI recorded beside the port.
 ///
 /// This is the non-starting half of ADR-037 P2's D6 auto-start gate: a
 /// `local_first` write nudges the reconciler only if this returns `Some`, or
-/// (when interactive) after first calling [`ensure_server_running`] itself —
-/// this function never spawns anything on its own.
+/// (when interactive) after first calling [`ensure_server_running`] itself.
+/// This function never spawns anything on its own.
+///
+/// A healthy answer on the recorded port is not on its own proof that the
+/// answerer is the daemon we started: any local process can hold the port and
+/// reply. So this applies the same recorded-pid + recorded-`instance_id` check
+/// loopback discovery's step 3a does before routing indexed work to a
+/// responder. ADR-085 left this gate trusting the port alone and tracked the
+/// question as future work; ADR-091 settles it by tightening here too.
 pub(crate) async fn probe_local_relay_port() -> Option<u16> {
     let state_dir = inkentry_state_dir().ok()?;
     let port = read_port(&state_dir)?;
-    probe_health(port).await?;
+    let health = probe_health(port).await?;
+    if let Some(why) = crate::capability::untrusted_responder(health.instance_id.as_deref()) {
+        // Loud on purpose. Something answered and could not be verified, which
+        // is the case worth telling the user about rather than the ordinary
+        // "no daemon" one, which returns above without a word.
+        eprintln!(
+            "warning: the process answering 127.0.0.1:{port} is not the server recorded in \
+             {}: {why}. No memory entries or credentials were sent to it. If that is your \
+             own daemon, run `inkentry server stop && inkentry server start`.",
+            state_dir.display()
+        );
+        return None;
+    }
     Some(port)
 }
 
@@ -2026,9 +2065,16 @@ mod tests {
         assert_eq!(probe_local_relay_port().await, None);
     }
 
+    // A healthy responder on the recorded port is no longer enough on its own:
+    // with only a `server.port` file and no recorded pid, the responder is not
+    // verifiable as the recorded daemon, so the relay is refused (ADR-091). The
+    // accept path needs a recorded pid the OS query would match, which cannot be
+    // staged in-process without leaking the discovery-trust seam into the
+    // discovery tests in this same binary; it is covered by the subprocess
+    // tests in `security_tests/loopback_discovery_trust.rs` instead.
     #[tokio::test]
     #[serial(server_state_dir_env)]
-    async fn probe_local_relay_port_some_when_health_responds() {
+    async fn probe_local_relay_port_none_when_responder_is_not_the_recorded_daemon() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2044,9 +2090,63 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let _guard = StateDirGuard::set(tmp.path());
         let port = server.address().port();
+        // A port file with no `server.pid` beside it: healthy, but unverifiable.
         std::fs::write(port_path(tmp.path()), format!("{port}\n")).unwrap();
 
-        assert_eq!(probe_local_relay_port().await, Some(port));
+        assert_eq!(probe_local_relay_port().await, None);
+    }
+
+    // ── listing_names_server (the process-identity substring) ────────────────
+    //
+    // These pin the exact, deliberately weak semantics of the command-line
+    // check ADR-085 describes: it is wrong in both directions. Pinning it means
+    // a later attempt to strengthen it (resolved path, start time, inode)
+    // starts from a recorded baseline rather than a guess about today's rule.
+    // Run on the host platform, which is where the substring semantics differ:
+    // `tasklist` output is folded to lowercase, `ps` argv is not.
+
+    #[test]
+    fn listing_names_a_real_server_process() {
+        assert!(listing_names_server(
+            "/usr/local/bin/inkentry-server --port 4655"
+        ));
+    }
+
+    // ADR-085's false negative: a daemon still running from a pre-rename install
+    // presents as `spelunk-server` and is not recognised as ours.
+    #[test]
+    fn listing_does_not_name_a_pre_rename_server() {
+        assert!(!listing_names_server(
+            "/usr/local/bin/spelunk-server --port 4655"
+        ));
+    }
+
+    // ADR-085's false positive: any process whose argv merely contains the
+    // string passes, server or not.
+    #[test]
+    fn listing_names_an_unrelated_process_carrying_the_string() {
+        assert!(listing_names_server(
+            "python3 -c import time; time.sleep(8) inkentry-server"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn listing_names_server_case_insensitively_on_windows() {
+        // `tasklist` renders the image name in its own case; the Windows match
+        // folds case, so the uppercase image name still counts as ours.
+        assert!(listing_names_server(
+            "\"INKENTRY-SERVER.EXE\",\"4711\",\"Console\",\"1\",\"12,345 K\""
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_is_case_sensitive_on_unix() {
+        // `ps` argv is matched as-is, so an uppercased name is not a match. This
+        // pins the platform difference so a future refactor cannot erase it by
+        // accident.
+        assert!(!listing_names_server("/usr/local/bin/INKENTRY-SERVER"));
     }
 
     // ── classify_running_server (PID-reuse + hung-server handling) ───────────

@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_SERVER_PORT};
 use crate::storage::{MemoryStore, NoteId};
 
 /// Bound on both the nudge and poll HTTP calls to the local relay: high
@@ -135,7 +135,9 @@ pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) 
     };
 
     if std::io::stdin().is_terminal() {
-        let _ = super::super::server::ensure_server_running(4655, cfg).await;
+        // One line on purpose: `daemon_spawn_call_sites` pins the config
+        // argument lexically, and it reads a single line at a time.
+        let _ = super::super::server::ensure_server_running(DEFAULT_SERVER_PORT, cfg).await;
     }
 
     let Some(port) = super::super::server::probe_local_relay_port().await else {
@@ -389,13 +391,14 @@ mod tests {
     /// for a real `inkentry server start`-ed daemon) — callers pick which
     /// role they're using it for by whether they write a state-dir port file
     /// (see [`spawn_local_relay`]) or pass the address as `server_url`.
-    async fn spawn_inkentry_server(declared: &DeclaredTargets) -> SocketAddr {
+    async fn spawn_inkentry_server(declared: &DeclaredTargets) -> (SocketAddr, String) {
         register_sqlite_vec();
         let db_dir = TempDir::new().unwrap();
         let db =
             inkentry_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
                 .unwrap();
         let instance_id = db.get_or_create_instance_id().unwrap();
+        let reported_id = instance_id.clone();
         let state = inkentry_server::AppState {
             db: std::sync::Arc::new(tokio::sync::Mutex::new(db)),
             auth: std::sync::Arc::new(inkentry_server::auth::ApiKeyAuth::new(None)),
@@ -423,7 +426,7 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        addr
+        (addr, reported_id)
     }
 
     /// Like [`spawn_inkentry_server`], but also writes the port into
@@ -432,36 +435,69 @@ mod tests {
     /// `inkentry server start`-ed daemon — the *local relay* role.
     async fn spawn_local_relay(state_dir: &std::path::Path) -> (SocketAddr, DeclaredTargets) {
         let declared = DeclaredTargets::default();
-        let addr = spawn_inkentry_server(&declared).await;
+        let (addr, instance_id) = spawn_inkentry_server(&declared).await;
         std::fs::create_dir_all(state_dir).unwrap();
         std::fs::write(state_dir.join("server.port"), format!("{}\n", addr.port())).unwrap();
+        // The relay gate wants what a real start recorded, so record all three.
+        // The pid is this process: there is no separate `inkentry-server` to
+        // point at, which is what the trust seam on the guard exists to cover.
+        std::fs::write(
+            state_dir.join("server.pid"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+        std::fs::write(
+            state_dir.join("server.instance_id"),
+            format!("{instance_id}\n"),
+        )
+        .unwrap();
         (addr, declared)
     }
 
     /// Sets `INKENTRY_STATE_DIR` to a fresh temp dir for the test's duration,
     /// restoring the previous value on drop. Mirrors the guard in
     /// `server.rs`'s own tests.
-    struct StateDirGuard(Option<std::ffi::OsString>, TempDir);
+    struct StateDirGuard {
+        prev_state_dir: Option<std::ffi::OsString>,
+        prev_trust: Option<std::ffi::OsString>,
+        tmp: TempDir,
+    }
     impl StateDirGuard {
         fn new() -> Self {
-            let prev = std::env::var_os("INKENTRY_STATE_DIR");
+            let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+            let prev_trust = std::env::var_os("INKENTRY_TEST_TRUST_RECORDED_RESPONDER");
             let tmp = TempDir::new().unwrap();
-            unsafe { std::env::set_var("INKENTRY_STATE_DIR", tmp.path()) };
-            Self(prev, tmp)
+            unsafe {
+                std::env::set_var("INKENTRY_STATE_DIR", tmp.path());
+                // The relay these tests stand up is in-process, so the recorded
+                // pid is this test binary and the OS query cannot match it. The
+                // seam relaxes only that: the pid must still be recorded and the
+                // reported instance id must still match what was written.
+                std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1");
+            }
+            Self {
+                prev_state_dir,
+                prev_trust,
+                tmp,
+            }
         }
         fn path(&self) -> &std::path::Path {
-            self.1.path()
+            self.tmp.path()
         }
     }
     impl Drop for StateDirGuard {
         fn drop(&mut self) {
             // SAFETY: `#[serial(server_state_dir_env)]` on every test using
-            // this guard serialises against every other test touching the var
-            // (this crate's `server.rs` tests use the same group name).
+            // this guard serialises against every other test touching these
+            // vars (this crate's `server.rs` tests use the same group name).
             unsafe {
-                match &self.0 {
+                match &self.prev_state_dir {
                     Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                     None => std::env::remove_var("INKENTRY_STATE_DIR"),
+                }
+                match &self.prev_trust {
+                    Some(v) => std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", v),
+                    None => std::env::remove_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
                 }
             }
         }
@@ -713,7 +749,7 @@ mod tests {
 
     /// Point `INKENTRY_STATE_DIR` at `dir` for the remainder of the current
     /// scope. Caller must hold `#[serial(server_state_dir_env)]` AND keep a
-    /// [`RestoreStateDirOnDrop`] alive for the test's duration, or the
+    /// [`RelayEnvGuard`] alive for the test's duration, or the
     /// mutated value leaks into whichever test in the same serial group runs
     /// next.
     fn point_state_dir_at(dir: &std::path::Path) {
@@ -724,19 +760,33 @@ mod tests {
     /// it on drop. Tests that call [`point_state_dir_at`] more than once (so
     /// [`StateDirGuard`] alone won't do, since it only knows the value it
     /// itself set) must hold one of these for the whole test body.
-    struct RestoreStateDirOnDrop(Option<std::ffi::OsString>);
-    impl RestoreStateDirOnDrop {
-        fn capture() -> Self {
-            Self(std::env::var_os("INKENTRY_STATE_DIR"))
+    struct RelayEnvGuard {
+        prev_state_dir: Option<std::ffi::OsString>,
+        prev_trust: Option<std::ffi::OsString>,
+    }
+    impl RelayEnvGuard {
+        fn install() -> Self {
+            let me = Self {
+                prev_state_dir: std::env::var_os("INKENTRY_STATE_DIR"),
+                prev_trust: std::env::var_os("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
+            };
+            // Same reason as `StateDirGuard`: the relays these tests point at
+            // are in-process, so the recorded pid is this test binary.
+            unsafe { std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1") };
+            me
         }
     }
-    impl Drop for RestoreStateDirOnDrop {
+    impl Drop for RelayEnvGuard {
         fn drop(&mut self) {
             // SAFETY: see `StateDirGuard::drop` above; same serial group.
             unsafe {
-                match &self.0 {
+                match &self.prev_state_dir {
                     Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                     None => std::env::remove_var("INKENTRY_STATE_DIR"),
+                }
+                match &self.prev_trust {
+                    Some(v) => std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", v),
+                    None => std::env::remove_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
                 }
             }
         }
@@ -795,11 +845,11 @@ mod tests {
     #[tokio::test]
     #[serial(server_state_dir_env, process_cwd)]
     async fn entry_added_on_instance_a_becomes_visible_on_instance_b_via_live_pull() {
-        let _restore_state_dir = RestoreStateDirOnDrop::capture();
+        let _restore_state_dir = RelayEnvGuard::install();
         // Held for the whole body: this test drives a real `memory list`, whose
         // git-notes import is keyed off the CWD.
         let _cwd = CwdOutsideAnyRepo::enter();
-        let team_addr = spawn_inkentry_server(&DeclaredTargets::default()).await;
+        let (team_addr, _) = spawn_inkentry_server(&DeclaredTargets::default()).await;
         let team_uri = format!("http://{}", team_addr);
 
         let state_a = TempDir::new().unwrap();
@@ -905,8 +955,8 @@ mod tests {
     #[tokio::test]
     #[serial(server_state_dir_env)]
     async fn kill_and_restart_the_local_relay_mid_drain_loses_nothing_and_dedupes() {
-        let _restore_state_dir = RestoreStateDirOnDrop::capture();
-        let team_addr = spawn_inkentry_server(&DeclaredTargets::default()).await;
+        let _restore_state_dir = RelayEnvGuard::install();
+        let (team_addr, _) = spawn_inkentry_server(&DeclaredTargets::default()).await;
         let team_uri = format!("http://{}", team_addr);
         let cfg = local_first_cfg(&team_uri);
 
@@ -1048,7 +1098,7 @@ mod tests {
     #[serial(server_state_dir_env)]
     async fn a_pull_apply_failure_without_a_restart_does_not_lose_the_row() {
         let state_guard = StateDirGuard::new();
-        let team_addr = spawn_inkentry_server(&DeclaredTargets::default()).await;
+        let (team_addr, _) = spawn_inkentry_server(&DeclaredTargets::default()).await;
         let (_, declared) = spawn_local_relay(state_guard.path()).await;
         let team_uri = format!("http://{}", team_addr);
         declared.declare(&team_uri, "proj");

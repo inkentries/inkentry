@@ -744,23 +744,31 @@ fn memory_warmup_notice(missing: i64) -> String {
 /// the search fell back to full-text. Pure so it can be unit-tested without
 /// capturing stderr.
 ///
-/// `remote_url` is `Some` when the probed server came from an explicit
-/// `server_url` (not loopback auto-discovery); the unavailable-embedder notice
-/// then names that server instead of the local daemon's logs. `server_url` is
-/// `cfg.server_url`, used only for the offline case. `is_windows` is injected so
-/// the platform-gated hint stays unit-testable on any host.
-fn semantic_unavailable_message(
-    embedder_state: Option<capability::EmbedderState>,
+/// The whole tier is the input rather than fields derived from it: an offline
+/// tier carries the reason the probe recorded, and only that reason can say
+/// which server was contacted and what would change the outcome. `server_url`
+/// is `cfg.server_url`, read only where the notice names it. `is_windows` is
+/// injected so the platform-gated hint stays unit-testable on any host.
+///
+/// Visible to `index::phases` for the cross-surface agreement test, which pins
+/// this notice and the index one to the same remedy per reason.
+pub(in crate::cli::cmd) fn semantic_unavailable_message(
+    tier: &capability::Tier,
     server_url: Option<&str>,
-    remote_url: Option<&str>,
     is_windows: bool,
 ) -> String {
-    use capability::EmbedderState;
-    match embedder_state {
-        Some(EmbedderState::Loading) => "[semantic ranking unavailable: model still warming up — \
+    use capability::{EmbedderState, Tier};
+    match tier {
+        Tier::Server {
+            embedder_state: EmbedderState::Loading,
+            ..
+        } => "[semantic ranking unavailable: model still warming up — \
              retry shortly (`inkentry server status`); using full-text search]"
             .to_string(),
-        Some(EmbedderState::Unavailable) => match remote_url {
+        Tier::Server {
+            embedder_state: EmbedderState::Unavailable,
+            ..
+        } => match tier.explicit_remote_url() {
             Some(url) => format!(
                 "[semantic ranking unavailable: embedder failed to load on team server {url}; \
                  check that server's own logs; using full-text search]"
@@ -769,26 +777,49 @@ fn semantic_unavailable_message(
                  see `inkentry server logs`; using full-text search]"
                 .to_string(),
         },
-        Some(_) => {
+        Tier::Server { .. } => {
             "[semantic ranking unavailable on this server; using full-text search]".to_string()
         }
-        None => {
-            if let Some(url) = server_url {
-                let windows_hint = if is_windows {
-                    " On Windows, allow the loopback listener through Defender Firewall."
-                } else {
-                    ""
-                };
-                format!(
-                    "[no server reachable at {url} (the configured server_url, overriding the \
-                     auto-discovered local daemon);{windows_hint} using full-text search]"
-                )
+        Tier::Offline(reason) => offline_semantic_notice(*reason, server_url, is_windows),
+    }
+}
+
+/// The offline half of [`semantic_unavailable_message`], keyed to the reason the
+/// probe recorded rather than to whether a `server_url` happens to be set.
+///
+/// `search` runs on the inference tier, which under `local_first` is a loopback
+/// probe even when `server_url` points elsewhere. Derived from the config, this
+/// notice named a server the run never contacted, and reported a daemon that
+/// discovery had just refused out loud as no server at all.
+fn offline_semantic_notice(
+    reason: capability::OfflineReason,
+    server_url: Option<&str>,
+    is_windows: bool,
+) -> String {
+    use capability::OfflineReason;
+    if let Some(advice) = capability::shared_offline_advice(reason) {
+        return format!("[{advice}; using full-text search]");
+    }
+    match reason {
+        OfflineReason::ExplicitServerUnavailable => {
+            let windows_hint = if is_windows {
+                " On Windows, allow the loopback listener through Defender Firewall."
             } else {
-                "[no server running — start one with `inkentry server start` to enable \
-                 semantic ranking; using full-text search]"
-                    .to_string()
-            }
+                ""
+            };
+            let target = match server_url {
+                Some(url) => format!(
+                    "at {url} (the configured server_url, overriding the auto-discovered \
+                     local daemon)"
+                ),
+                None => "at the configured server_url".to_string(),
+            };
+            format!("[no server reachable {target};{windows_hint} using full-text search]")
         }
+        // The only other reason `shared_offline_advice` declines.
+        _ => "[no server running — start one with `inkentry server start` to enable \
+             semantic ranking; using full-text search]"
+            .to_string(),
     }
 }
 
@@ -797,12 +828,7 @@ fn semantic_unavailable_message(
 fn eprint_semantic_unavailable_notice(tier: &capability::Tier, cfg: &Config) {
     eprintln!(
         "{}",
-        semantic_unavailable_message(
-            tier.embedder_state(),
-            cfg.server_url.as_deref(),
-            tier.explicit_remote_url(),
-            cfg!(windows),
-        )
+        semantic_unavailable_message(tier, cfg.server_url.as_deref(), cfg!(windows))
     );
 }
 
@@ -937,15 +963,37 @@ mod tests {
 
     // ── semantic_unavailable_message: full-text degrade, never ast-grep ────────
 
+    // A reachable server whose embedder is in `state`. `auto_discovered`
+    // decides whether the notice may point at `inkentry server logs`, which
+    // only ever reads the local daemon's log.
+    fn server_tier(state: EmbedderState, auto_discovered: bool, url: &str) -> capability::Tier {
+        capability::Tier::Server {
+            url: url.to_string(),
+            caps: capability::Capabilities::all(),
+            auto_discovered,
+            embedder_state: state,
+            server_limits: None,
+        }
+    }
+
     #[test]
     fn unavailable_notice_degrades_to_full_text_never_ast_grep() {
-        for state in [
-            Some(EmbedderState::Loading),
-            Some(EmbedderState::Unavailable),
-            Some(EmbedderState::Ready),
-            None,
-        ] {
-            let msg = semantic_unavailable_message(state, Some("http://x:1"), None, false);
+        let mut tiers: Vec<capability::Tier> = [
+            EmbedderState::Loading,
+            EmbedderState::Unavailable,
+            EmbedderState::Ready,
+        ]
+        .into_iter()
+        .map(|s| server_tier(s, true, "http://127.0.0.1:4655"))
+        .collect();
+        tiers.extend(
+            capability::ALL_OFFLINE_REASONS
+                .into_iter()
+                .map(capability::Tier::Offline),
+        );
+
+        for tier in &tiers {
+            let msg = semantic_unavailable_message(tier, Some("http://x:1"), false);
             assert!(!msg.is_empty());
             assert!(
                 !msg.contains("ast-grep"),
@@ -956,24 +1004,20 @@ mod tests {
 
     #[test]
     fn unavailable_loopback_points_at_local_logs() {
-        let msg = semantic_unavailable_message(
-            Some(EmbedderState::Unavailable),
-            Some("http://x:1"),
-            None,
-            false,
-        );
+        let tier = server_tier(EmbedderState::Unavailable, true, "http://127.0.0.1:4655");
+        let msg = semantic_unavailable_message(&tier, Some("http://x:1"), false);
         assert!(msg.contains("failed to load"));
         assert!(msg.contains("inkentry server logs"));
     }
 
     #[test]
     fn unavailable_remote_names_that_server_never_local_logs() {
-        let msg = semantic_unavailable_message(
-            Some(EmbedderState::Unavailable),
-            Some("http://x:1"),
-            Some("https://team.example:4655"),
+        let tier = server_tier(
+            EmbedderState::Unavailable,
             false,
+            "https://team.example:4655",
         );
+        let msg = semantic_unavailable_message(&tier, Some("http://x:1"), false);
         assert!(msg.contains("https://team.example:4655"), "got: {msg}");
         assert!(
             !msg.contains("inkentry server logs"),
@@ -983,19 +1027,114 @@ mod tests {
 
     #[test]
     fn no_server_with_configured_url_names_it_and_windows_hint_only_on_windows() {
-        let win = semantic_unavailable_message(None, Some("https://team.example:4655"), None, true);
+        let tier = capability::Tier::Offline(capability::OfflineReason::ExplicitServerUnavailable);
+        let win = semantic_unavailable_message(&tier, Some("https://team.example:4655"), true);
         assert!(win.contains("https://team.example:4655"));
         assert!(win.contains("no server reachable"));
         assert!(win.contains("Firewall"));
         assert!(win.contains("overriding"));
-        let unix =
-            semantic_unavailable_message(None, Some("https://team.example:4655"), None, false);
+        let unix = semantic_unavailable_message(&tier, Some("https://team.example:4655"), false);
         assert!(!unix.contains("Firewall"));
     }
 
     #[test]
     fn no_server_no_url_suggests_starting_one() {
-        let msg = semantic_unavailable_message(None, None, None, false);
+        let tier = capability::Tier::Offline(capability::OfflineReason::NoLocalServer);
+        let msg = semantic_unavailable_message(&tier, None, false);
         assert!(msg.contains("inkentry server start"));
+    }
+
+    // Spelled as an escape so this file contributes no literal em-dash; the
+    // byte asserted is the one the notice has always carried.
+    const NO_LOCAL_SERVER_NOTICE: &str = "[no server running \u{2014} start one with \
+         `inkentry server start` to enable semantic ranking; using full-text search]";
+
+    // A daemon started by an earlier build records no instance_id, so discovery
+    // refuses it and prints a warning naming that cause and the stop/start
+    // remedy. This notice prints directly underneath. A server IS running; it
+    // was simply not used, and saying otherwise contradicts the line above.
+    #[test]
+    fn recorded_daemon_refused_by_discovery_is_not_reported_as_no_server_running() {
+        let tier = capability::Tier::Offline(capability::OfflineReason::RecordedServerUnreachable);
+        for server_url in [None, Some("https://team.example:4655")] {
+            let msg = semantic_unavailable_message(&tier, server_url, false);
+            assert!(
+                !msg.contains("no server running"),
+                "contradicts the discovery warning printed above it: {msg}"
+            );
+            assert!(
+                msg.contains("could not be identified"),
+                "must name the cause the warning above named: {msg}"
+            );
+            assert!(
+                msg.contains("inkentry server stop") && msg.contains("inkentry server start"),
+                "must carry the same stop/start remedy: {msg}"
+            );
+        }
+    }
+
+    // A local daemon whose embeddings this build cannot read answered the
+    // probe. It is running, and starting another one changes nothing.
+    #[test]
+    fn local_server_unusable_notice_names_the_dimension_mismatch() {
+        let tier = capability::Tier::Offline(capability::OfflineReason::LocalServerUnusable);
+        for server_url in [None, Some("https://team.example:4655")] {
+            let msg = semantic_unavailable_message(&tier, server_url, false);
+            assert!(!msg.contains("no server running"), "{msg}");
+            assert!(msg.contains("different dimension"), "{msg}");
+            assert!(
+                msg.contains("inkentry server stop") && msg.contains("inkentry server start"),
+                "{msg}"
+            );
+        }
+    }
+
+    // The one offline case where "no server running" is the truth. Its text is
+    // the pre-existing one and stays byte-identical.
+    #[test]
+    fn genuinely_no_server_and_no_server_url_keeps_its_existing_text() {
+        let tier = capability::Tier::Offline(capability::OfflineReason::NoLocalServer);
+        assert_eq!(
+            semantic_unavailable_message(&tier, None, false),
+            NO_LOCAL_SERVER_NOTICE
+        );
+    }
+
+    // An explicit `server_url` is a memory replica in local_first, and `search`
+    // runs on the inference tier, which probed loopback. Naming the configured
+    // URL there describes a server this run never contacted.
+    #[test]
+    fn a_loopback_offline_reason_never_names_the_configured_server_url() {
+        for reason in [
+            capability::OfflineReason::NoLocalServer,
+            capability::OfflineReason::LocalServerUnusable,
+            capability::OfflineReason::RecordedServerUnreachable,
+        ] {
+            let tier = capability::Tier::Offline(reason);
+            let msg = semantic_unavailable_message(&tier, Some("https://team.example:4655"), false);
+            assert!(
+                !msg.contains("https://team.example:4655"),
+                "{reason:?} names a server the inference probe never contacted: {msg}"
+            );
+        }
+    }
+
+    // Under an explicit opt-out no URL is read and no probe is made, so
+    // offering to start a server is advice that provably changes nothing.
+    #[test]
+    fn an_explicit_offline_opt_out_names_the_switch_and_never_a_server_to_start() {
+        for reason in [
+            capability::OfflineReason::KillSwitch,
+            capability::OfflineReason::ModeOfflineEnv,
+            capability::OfflineReason::ModeOfflineConfig,
+        ] {
+            let tier = capability::Tier::Offline(reason);
+            let msg = semantic_unavailable_message(&tier, Some("https://team.example:4655"), false);
+            assert!(!msg.contains("no server running"), "{reason:?}: {msg}");
+            assert!(
+                !msg.contains("inkentry server start"),
+                "{reason:?} offers a server start that cannot take effect: {msg}"
+            );
+        }
     }
 }

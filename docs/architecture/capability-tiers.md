@@ -255,6 +255,13 @@ because a text answer over the index is still a useful answer:
 [no server running — start one with `inkentry server start` to enable semantic ranking; using full-text search]
 ```
 
+That is the wording for one offline reason: no local daemon and no configured
+`server_url`. The notice is keyed to the reason the probe recorded, so an
+explicit offline opt-out, a daemon this build cannot read from, and a recorded
+daemon discovery declined to use each name their own cause and remedy. `index`
+prints the same set of causes in its embed-skipped notice, and `inkentry status`
+prints them in its `search` row.
+
 ---
 
 ## inkentry index — two-phase behaviour

@@ -357,6 +357,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `server_url`, which could not help under `INKENTRY_NO_SERVER` or
   `mode = "offline"` and is the wrong advice for a solo user anyway. It names
   whichever setting is in force, or points at `inkentry server start`.
+- **`inkentry search` and `inkentry index` now say why semantic ranking is off**
+  instead of reporting every case as "no server running". They name the reason
+  `inkentry status` names and give the same remedy: unset the switch you set, or
+  restart a daemon that is running but unusable.
 - **`plumbing push`, `plumbing pull` and `plumbing read-memory` now act on the
   same memory store the `memory` commands do.** In a project that was
   configured but never indexed they acted on the machine-global store instead,
@@ -556,6 +560,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   (`inkentry server stop`, then `inkentry server start`): one started by an
   earlier build recorded no instance id, and a stale port file no longer falls
   back to the default port, so neither is discovered until you restart.
+- **The local relay no longer hands memory entries or your team credential to
+  an unverified local listener.** It now checks the responder is the daemon this
+  CLI recorded, the same check loopback discovery makes. **Restart your daemon
+  after upgrading** so its instance id is recorded; until then the relay refuses
+  it and says so.
 - **`inkentry harvest`'s git-commit walk now secret-scans each commit message**,
   skipping a matching commit (warning with its SHA only) and continuing the walk,
   instead of promoting it into memory and on to `refs/notes/inkentry` unchecked.

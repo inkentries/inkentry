@@ -267,9 +267,10 @@ async fn no_server_url_configured_embeds_via_loopback_auto_discovery() {
     );
 }
 
-// Test 4 (unchanged): explicit offline (`INKENTRY_NO_SERVER=1`) skips the
-// embed phase with the existing differentiated notice; no server is
-// contacted.
+// Test 4: explicit offline (`INKENTRY_NO_SERVER=1`) skips the embed phase and
+// names the switch. It used to assert `inkentry server start` while setting the
+// switch that makes starting one pointless; it now asserts that advice is
+// absent. No server is contacted either way.
 #[tokio::test]
 async fn explicit_offline_skips_embed_phase_with_no_server_configured() {
     let home = TempDir::new().unwrap();
@@ -284,8 +285,12 @@ async fn explicit_offline_skips_embed_phase_with_no_server_configured() {
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
 
     assert!(
-        stderr.contains("inkentry server start"),
-        "explicit offline must still print the no-server skip notice: {stderr}"
+        stderr.contains("INKENTRY_NO_SERVER is set"),
+        "explicit offline must still print a skip notice, naming the switch in force: {stderr}"
+    );
+    assert!(
+        !stderr.contains("inkentry server start"),
+        "the kill-switch makes a server start inert, so the notice must not offer one: {stderr}"
     );
     assert_eq!(
         count_embeddings(&db),
