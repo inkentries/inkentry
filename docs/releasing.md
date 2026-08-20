@@ -220,7 +220,22 @@ https://github.com/inkentries/inkentry/releases/download/<version>/inkentry-<ver
 
 # Debian package (amd64)
 https://github.com/inkentries/inkentry/releases/download/<version>/inkentry_<version-no-v>_amd64.deb
+
+# Checksums for every archive and package above
+https://github.com/inkentries/inkentry/releases/download/<version>/SHA256SUMS
 ```
+
+The release job also signs a build-provenance attestation for every archive and
+package, so a download can be traced back to this repository and the commit it
+was built from:
+
+```bash
+gh attestation verify inkentry-<version>-<target>.tar.gz --repo inkentries/inkentry
+```
+
+Worth running once by hand after a release, alongside checking the assets are
+all present — it is the only step of the release that fails silently from a
+user's point of view, because nothing downstream reads it.
 
 Examples for `v0.9.8`:
 
