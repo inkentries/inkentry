@@ -130,8 +130,8 @@ idempotent by construction.
 ## Consequences
 
 - **`docs/stability.md`** describes what crosses on the ref and needs updating.
-  So does whatever `^43`'s docs pass wrote about two of three kinds not
-  travelling, which becomes wrong the moment this ships.
+  So does the public documentation that now says two of the three edge kinds
+  do not travel, which becomes wrong the moment this ships.
 - **The dump path is prior art, not a duplicate.** `dump/import.rs` already
   decided how these edges serialise and which re-project onto the carrier. Read
   it before inventing a shape; where the two can share code they should, since

@@ -92,9 +92,10 @@ codebase can check.
 - **The four ADRs naming 7777 get a pointer here rather than a rewrite.** See
   below: two of them are copy-paste hazards, one is already superseded, and one
   is a transcript that must not be edited.
-- **`^5` is not addressed by this.** Integration tests co-opting whatever
-  answers on the well-known port is loopback auto-discovery, not the port
-  number, and renumbering moves that problem without changing it.
+- **This does not address integration tests co-opting a developer's own
+  daemon.** Tests reaching whatever answers on the well-known port is loopback
+  auto-discovery, not the port number, and renumbering moves that problem
+  without changing it.
 
 ## On amending the four ADRs, which are not alike
 
