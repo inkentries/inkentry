@@ -101,7 +101,7 @@ pub struct BatchPushResponse {
     post,
     path = "/v1/projects/{project_id}/memory/batch",
     params(
-        ("project_id" = String, Path, description = "Project slug (e.g. `usercise/inkentry`)")
+        ("project_id" = String, Path, description = "Project slug (e.g. `inkentries/inkentry`)")
     ),
     request_body = BatchPushRequest,
     responses(
