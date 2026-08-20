@@ -359,19 +359,22 @@ fn local_first_with_server_url_still_embeds_via_loopback() {
     let (_rt, mock) = start_mock();
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).expect("create state dir");
-    let port: u16 = mock
+    // Discovery reaches the mock through the fixed-port fallback's test
+    // override. Step 3a's `server.port` file is not usable here: it now honours
+    // a responder only when the pid recorded beside it is a live
+    // `inkentry-server` process reporting the recorded instance id.
+    let discovery_port = mock
         .uri()
         .rsplit(':')
         .next()
         .expect("uri has a port")
         .trim_end_matches('/')
-        .parse()
-        .expect("uri port is numeric");
-    std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+        .to_string();
 
     let output = reconcile_cmd(&config_path, &server_db)
         .env_remove("INKENTRY_NO_SERVER")
         .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
         // Deliberately unroutable: local_first must never fall back to this,
         // an accidental fallback surfaces as a connection error, not a
         // silent unembedded import.

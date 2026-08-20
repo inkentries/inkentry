@@ -263,18 +263,21 @@ fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
     cmd
 }
 
-// Point loopback auto-discovery at `url` so harvest resolves both inference
-// routes to the mock without a team `server_url`.
-fn write_loopback_state(state_dir: &Path, url: &str) {
+// Point loopback auto-discovery at `url` and return the port to hand its
+// fixed-port fallback (step 3b) through `INKENTRY_TEST_DISCOVERY_PORT`.
+//
+// Not the `server.port` file (step 3a): that step now uses a responder only
+// when the pid recorded beside the port is a live `inkentry-server` process and
+// the instance id it reports is the recorded one, neither of which a wiremock
+// stand-in can be. The state dir is still created and still redirected, so
+// nothing here reaches the developer's own daemon or state.
+fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).expect("create state dir");
-    let port: u16 = url
-        .rsplit(':')
+    url.rsplit(':')
         .next()
         .expect("uri has a port")
         .trim_end_matches('/')
-        .parse()
-        .expect("uri port is numeric");
-    std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+        .to_string()
 }
 
 // `inkentry index` offline, so the project has the `.inkentry/` directory
@@ -319,6 +322,7 @@ struct Harness {
     _home: TempDir,
     project: TempDir,
     state_dir: std::path::PathBuf,
+    discovery_port: String,
     mem_db: std::path::PathBuf,
     home_path: std::path::PathBuf,
 }
@@ -329,7 +333,7 @@ async fn harness() -> (Harness, MockServer) {
     let project = TempDir::new().unwrap();
     init_project(project.path());
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &server.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &server.uri());
     let home_path = home.path().to_path_buf();
     let mem_db = project.path().join("memory.db");
     (
@@ -337,6 +341,7 @@ async fn harness() -> (Harness, MockServer) {
             _home: home,
             project,
             state_dir,
+            discovery_port,
             mem_db,
             home_path,
         },
@@ -348,6 +353,7 @@ impl Harness {
     fn harvest(&self, extra: &[&str]) -> std::process::Output {
         let mut cmd = base_cmd(&self.home_path, self.project.path());
         cmd.env("INKENTRY_STATE_DIR", &self.state_dir)
+            .env("INKENTRY_TEST_DISCOVERY_PORT", &self.discovery_port)
             .arg("harvest")
             .arg("--db")
             .arg(&self.mem_db)

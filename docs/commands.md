@@ -811,7 +811,8 @@ only your own clone.
 ## inkentry server
 
 Manage the local `inkentry-server` daemon. Runtime state lives under
-`~/.local/state/inkentry/` (`server.pid`, `server.port`, `server.log`).
+`~/.local/state/inkentry/` (`server.pid`, `server.port`, `server.instance_id`,
+`server.log`).
 
 ```
 inkentry server start [--port <n>] [--bin <path>] [--db <path>]

@@ -550,6 +550,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Loopback auto-discovery verifies a responder before making it the embedding
+  backend**, so a local process squatting the recorded port can no longer
+  receive your indexed code. **Restart your daemon after upgrading**
+  (`inkentry server stop`, then `inkentry server start`): one started by an
+  earlier build recorded no instance id, and a stale port file no longer falls
+  back to the default port, so neither is discovered until you restart.
 - **`inkentry harvest`'s git-commit walk now secret-scans each commit message**,
   skipping a matching commit (warning with its SHA only) and continuing the walk,
   instead of promoting it into memory and on to `refs/notes/inkentry` unchecked.

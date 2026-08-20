@@ -15,11 +15,16 @@
 //! single resolver every reader and writer of this directory shares):
 //! - `server.pid`  — PID of the running daemon process
 //! - `server.port`: TCP port the daemon is listening on (read by `capability/probe.rs`)
+//! - `server.instance_id`: the daemon's `instance_id`, as its own `/v1/health` reported it
 //! - `server.log`  — stdout + stderr of the daemon process
 //!
 //! The port file is read by `capability/probe.rs` for loopback auto-discovery
 //! (spelunk-cloud/spelunk#316).  The writer here **must** use the same path, enforced by
 //! both going through the shared resolver rather than each defining their own.
+//!
+//! The pid and instance-id files are read there too, and for the same reason:
+//! discovery has to tell the daemon this CLI started from anything else that
+//! got to the port first.
 //!
 //! ## Spawned-binary resolution (PATH vs. sibling/absolute)
 //!
@@ -63,6 +68,22 @@ fn port_path(state_dir: &Path) -> PathBuf {
 }
 fn log_path(state_dir: &Path) -> PathBuf {
     state_dir.join("server.log")
+}
+/// The `instance_id` the daemon reported once it answered `/v1/health`.
+///
+/// Recorded so loopback auto-discovery has something to compare a later health
+/// body against. The id in that body is self-reported, so on its own it proves
+/// nothing: only a value written down at start, by us, distinguishes our daemon
+/// from a process that read the same field name out of the docs.
+fn instance_id_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("server.instance_id")
+}
+
+/// Read the recorded `instance_id`. `None` when absent, unreadable or blank.
+pub(crate) fn read_instance_id(state_dir: &Path) -> Option<String> {
+    let recorded = std::fs::read_to_string(instance_id_path(state_dir)).ok()?;
+    let id = recorded.trim();
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 /// Create `dir` (and parents) with `0700` permissions on Unix so only the
@@ -116,7 +137,7 @@ fn open_log_file_for_append(path: &Path) -> Result<std::fs::File> {
 }
 
 /// Read PID from the state file. Returns `None` if absent or unparseable.
-fn read_pid(state_dir: &Path) -> Option<u32> {
+pub(crate) fn read_pid(state_dir: &Path) -> Option<u32> {
     std::fs::read_to_string(pid_path(state_dir))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
@@ -206,7 +227,11 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// wedged/hung daemon still exists as a `inkentry-server` process, so we can
 /// safely terminate it, whereas a PID reused by an unrelated process after a
 /// crash must not be killed. Uses `ps` (Unix) / `tasklist` (Windows).
-fn process_matches_server(pid: u32) -> bool {
+///
+/// Loopback auto-discovery (`capability/probe.rs`) reads it for the mirror
+/// question: whether the PID recorded next to the port still belongs to a
+/// server, before handing whoever answers that port the indexed source.
+pub(crate) fn process_matches_server(pid: u32) -> bool {
     #[cfg(unix)]
     {
         match std::process::Command::new("ps")
@@ -505,6 +530,10 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
         .context("writing server.port")?;
     write_state_file(&db_path_file(&state_dir), &format!("{}\n", db.display()))
         .context("writing server.db-path")?;
+    // The id belongs to the daemon this pid names, so a leftover from the
+    // previous one must not outlive it even for the seconds before this one
+    // answers.
+    let _ = std::fs::remove_file(instance_id_path(&state_dir));
 
     // Wait for *liveness* (the port binds, /v1/health responds) — not model
     // readiness. Health now goes live at bind, before the model download, so
@@ -512,7 +541,7 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
     // bounds the give-up time and is free in the happy path (200 ms poll,
     // returns on first success).
     match wait_for_health(port, Duration::from_secs(30), &mut child).await {
-        StartOutcome::Ready => {}
+        StartOutcome::Ready { instance_id } => record_instance_id(&state_dir, instance_id),
         StartOutcome::Exited(status) => {
             tracing::warn!(
                 "inkentry-server (pid={pid}) exited immediately ({status}) instead of serving \
@@ -635,11 +664,13 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
         .context("writing server.port")?;
     write_state_file(&db_path_file(&state_dir), &format!("{}\n", db.display()))
         .context("writing server.db-path")?;
+    let _ = std::fs::remove_file(instance_id_path(&state_dir));
 
     // Wait up to 30 s for the server to become reachable (liveness, not model
     // readiness — /v1/health is live at bind, before any model download).
     match wait_for_health(port, Duration::from_secs(30), &mut child).await {
-        StartOutcome::Ready => {
+        StartOutcome::Ready { instance_id } => {
+            record_instance_id(&state_dir, instance_id);
             println!("inkentry-server started (pid={pid}, port={port}).");
             println!("  Log: {}", log_path(&state_dir).display());
         }
@@ -891,8 +922,8 @@ fn spawn_daemon_windows(
 
 /// Why a freshly spawned daemon did or did not become reachable.
 enum StartOutcome {
-    /// `/v1/health` responded.
-    Ready,
+    /// `/v1/health` responded, carrying whatever `instance_id` it reported.
+    Ready { instance_id: Option<String> },
     /// The process is gone. Whatever went wrong, it is not the network.
     Exited(std::process::ExitStatus),
     /// Still running, but never answered within the timeout.
@@ -913,8 +944,10 @@ async fn wait_for_health(
 ) -> StartOutcome {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        if probe_health(port).await.is_some() {
-            return StartOutcome::Ready;
+        if let Some(health) = probe_health(port).await {
+            return StartOutcome::Ready {
+                instance_id: health.instance_id,
+            };
         }
         // Checked after the probe so a daemon that answers and then exits in
         // the same tick still counts as having started.
@@ -926,8 +959,17 @@ async fn wait_for_health(
     StartOutcome::TimedOut
 }
 
-/// Single non-retrying health probe. Returns the `instance_id` on success.
-async fn probe_health(port: u16) -> Option<String> {
+/// What a single `/v1/health` answer tells us about the daemon behind it.
+///
+/// `instance_id` stays `Option` inside a `Some`: a server that answered but
+/// named no instance is alive (every liveness caller only asks whether this is
+/// `Some`) and still has nothing worth recording.
+struct HealthIdentity {
+    instance_id: Option<String>,
+}
+
+/// Single non-retrying health probe. `None` when nothing usable answered.
+async fn probe_health(port: u16) -> Option<HealthIdentity> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(500))
         .build()
@@ -942,7 +984,9 @@ async fn probe_health(port: u16) -> Option<String> {
         instance_id: Option<String>,
     }
     let body: H = resp.json().await.ok()?;
-    body.instance_id.or_else(|| Some("unknown".into()))
+    Some(HealthIdentity {
+        instance_id: body.instance_id.filter(|id| !id.trim().is_empty()),
+    })
 }
 
 // ── stop ──────────────────────────────────────────────────────────────────────
@@ -1030,10 +1074,37 @@ fn terminate_process(pid: u32) -> Result<()> {
     }
 }
 
+/// Record the `instance_id` a freshly started daemon reported.
+///
+/// A daemon that named no instance leaves no file, and loopback discovery then
+/// has nothing to compare against and declines to use it. That is the intended
+/// end of this path: an unidentifiable local server is one this CLI cannot tell
+/// apart from anything else holding the port.
+///
+/// Failing to write is not fatal to `server start`: the daemon is up and every
+/// other way of reaching it still works. It costs auto-discovery, which the
+/// warning says.
+fn record_instance_id(state_dir: &Path, instance_id: Option<String>) {
+    let Some(id) = instance_id else {
+        tracing::warn!(
+            "inkentry-server did not report an instance_id, so nothing was recorded to \
+             identify it by; loopback auto-discovery will not use this server"
+        );
+        return;
+    };
+    if let Err(e) = write_state_file(&instance_id_path(state_dir), &format!("{id}\n")) {
+        tracing::warn!(
+            "could not record the server's instance_id ({e}); loopback auto-discovery \
+             will not use this server"
+        );
+    }
+}
+
 fn cleanup_state_files(state_dir: &Path) {
     let _ = std::fs::remove_file(pid_path(state_dir));
     let _ = std::fs::remove_file(port_path(state_dir));
     let _ = std::fs::remove_file(db_path_file(state_dir));
+    let _ = std::fs::remove_file(instance_id_path(state_dir));
 }
 
 // ── status ────────────────────────────────────────────────────────────────────
@@ -1152,6 +1223,32 @@ mod tests {
             dir.to_string_lossy().contains("inkentry"),
             "state dir should contain 'inkentry', got {dir:?}"
         );
+    }
+
+    // ── cleanup_state_files ──────────────────────────────────────────────────
+
+    // A leaked instance-id file outlives the daemon it names, and the next
+    // probe then compares a live server against a dead one's id and refuses
+    // it. Stop is the only thing that clears it, so nothing else would catch
+    // the file being forgotten here.
+    #[test]
+    fn cleanup_removes_every_recorded_state_file() {
+        let dir = TempDir::new().expect("state dir");
+        let files = [
+            pid_path(dir.path()),
+            port_path(dir.path()),
+            db_path_file(dir.path()),
+            instance_id_path(dir.path()),
+        ];
+        for f in &files {
+            std::fs::write(f, "stale").expect("seed state file");
+        }
+
+        cleanup_state_files(dir.path());
+
+        for f in &files {
+            assert!(!f.exists(), "{} survived cleanup", f.display());
+        }
     }
 
     // ── find_available_port ──────────────────────────────────────────────────

@@ -57,19 +57,20 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
     addr
 }
 
-// A mocked local inkentry-server standing in for the loopback embedder, wired
-// up the way auto-discovery actually finds one: a `server.port` file under
-// `INKENTRY_STATE_DIR` pointing at the mock. Going through the real discovery
-// path (rather than injecting an `inference_url`) is what makes the
-// "embed never reaches the team server_url" tests meaningful, and pins the
-// probe to this mock instead of whatever happens to listen on port 4655 on the
-// machine running the tests.
+// A mocked local inkentry-server standing in for the loopback embedder, found
+// through auto-discovery's fixed-port fallback pointed at the mock. Going
+// through the real discovery path (rather than injecting an `inference_url`) is
+// what makes the "embed never reaches the team server_url" tests meaningful,
+// and pointing the fallback at this mock pins the probe to it instead of
+// whatever happens to listen on the default port on the machine running the
+// tests.
 //
 // Mutates process-global env, so every test using it must be `#[serial]`.
 pub(super) struct LoopbackEmbedder {
     pub(super) server: wiremock::MockServer,
     _state_dir: tempfile::TempDir,
     prev_state_dir: Option<std::ffi::OsString>,
+    prev_discovery_port: Option<std::ffi::OsString>,
     prev_no_server: Option<std::ffi::OsString>,
 }
 
@@ -79,6 +80,10 @@ impl Drop for LoopbackEmbedder {
             match self.prev_state_dir.take() {
                 Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                 None => std::env::remove_var("INKENTRY_STATE_DIR"),
+            }
+            match self.prev_discovery_port.take() {
+                Some(v) => std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", v),
+                None => std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT"),
             }
             match self.prev_no_server.take() {
                 Some(v) => std::env::set_var("INKENTRY_NO_SERVER", v),
@@ -106,8 +111,8 @@ pub(super) fn stub_vector() -> Vec<f32> {
 // those are the keys the rest of the crate guards these two variables under,
 // and serial_test's unnamed key is a *separate* lock, so a bare `#[serial]`
 // leaves a caller racing the probe and daemon tests. A concurrent probe then
-// reads this test's `server.port` and hits this test's mock, which is exactly
-// what breaks the "no embed calls" assertions.
+// reads this test's discovery override and hits this test's mock, which is
+// exactly what breaks the "no embed calls" assertions.
 pub(super) async fn spawn_loopback_embedder(
     project_id: &str,
     failing_title_marker: Option<&str>,
@@ -231,20 +236,27 @@ async fn mount_health(server: &wiremock::MockServer) {
         .await;
 }
 
+// Through the fixed-port fallback (step 3b), not the `server.port` file: step
+// 3a now uses a responder only when the pid recorded beside the port is a live
+// `inkentry-server` process reporting the recorded instance id, and a wiremock
+// stand-in is neither. The state dir is still redirected at an empty temp dir,
+// so nothing here reads the developer's own state.
 fn point_discovery_at(server: wiremock::MockServer) -> LoopbackEmbedder {
     let port = server.address().port();
     let state_dir = tempfile::TempDir::new().unwrap();
-    std::fs::write(state_dir.path().join("server.port"), format!("{port}\n")).unwrap();
     let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
+    let prev_discovery_port = std::env::var_os("INKENTRY_TEST_DISCOVERY_PORT");
     let prev_no_server = std::env::var_os("INKENTRY_NO_SERVER");
     unsafe {
         std::env::set_var("INKENTRY_STATE_DIR", state_dir.path());
+        std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", port.to_string());
         std::env::remove_var("INKENTRY_NO_SERVER");
     }
     LoopbackEmbedder {
         server,
         _state_dir: state_dir,
         prev_state_dir,
+        prev_discovery_port,
         prev_no_server,
     }
 }

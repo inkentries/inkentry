@@ -222,16 +222,16 @@ for _ in $(seq 1 40); do
 done
 [ -n "$HEALTH" ] || { cat "$WORK/server.log" >&2; fail "server never answered /v1/health"; }
 
-# The state-dir port file is deliberately NOT written yet. It is what makes
-# this server discoverable both for loopback inference routing (needed by the
-# search step below) and, as an unavoidable side effect, as an ADR-037 "local
-# relay": under the default local_first mode, `memory add`'s post-write nudge
-# and `memory list`/`search`'s poll_and_apply both probe that same file, and
-# either would silently push+ack these entries to the server ahead of the
-# explicit push/repush/sync assertions below, making them report "already
-# synced" for a reason that has nothing to do with version skew. Push/sync
-# only need `INKENTRY_SERVER_URL` (already exported above), so the port file is
-# written further down, right before the one step that actually needs it.
+# The state-dir discovery files are deliberately NOT written yet. They are what
+# makes this server discoverable both for loopback inference routing (needed by
+# the search step below) and, as an unavoidable side effect, as an ADR-037
+# "local relay": under the default local_first mode, `memory add`'s post-write
+# nudge and `memory list`/`search`'s poll_and_apply both probe the recorded
+# port, and either would silently push+ack these entries to the server ahead of
+# the explicit push/repush/sync assertions below, making them report "already
+# synced" for a reason that has nothing to do with version skew. Push/sync only
+# need `INKENTRY_SERVER_URL` (already exported above), so those files are
+# written further down, right before the one step that actually needs them.
 
 SERVER_VERSION="$(printf '%s' "$HEALTH" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
 CLI_VERSION="$("$CLI_BIN" --version | awk '{print $NF}')"
@@ -340,12 +340,27 @@ run sync "$CLI_BIN" memory sync
 # assertions above are done. INKENTRY_SERVER_URL does not do this: in the
 # default local_first mode an explicit server_url is a memory sync replica
 # only, and inference resolves through loopback auto-discovery, which reads
-# this file (`capability/probe.rs` step 3a). Without it the search step below
-# fails outright in CI, and on a developer box fails worse: auto-discovery
-# falls through to the default port 4655, embeds against whatever
-# current-version server is listening there, and reports success having
-# crossed no skew boundary at all.
+# these files (`capability/probe.rs` step 3a). Without them the search step
+# below fails outright in CI, and on a developer box fails worse:
+# auto-discovery falls through to the default port 4655, embeds against
+# whatever current-version server is listening there, and reports success
+# having crossed no skew boundary at all.
+#
+# All three files, not just the port: a current CLI uses the recorded port only
+# when the recorded pid is a live `inkentry-server` and the responder reports
+# the recorded instance id, and it does not fall back to 4655 when they fail.
+# Both are facts this script already holds about the server it launched itself,
+# so recording them is what `inkentry server start` would have done. A peer CLI
+# that pre-dates those checks reads the port file exactly as before and ignores
+# the other two, so one shape serves both directions of the skew matrix.
+SERVER_INSTANCE_ID="$(printf '%s' "$HEALTH" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("instance_id") or "")')"
 printf '%s\n' "$PORT" >"$INKENTRY_STATE_DIR/server.port"
+printf '%s\n' "$SERVER_PID" >"$INKENTRY_STATE_DIR/server.pid"
+# A peer too old to report an instance id leaves this empty, which a current
+# CLI reads as "nothing recorded to check against" and declines to use. That
+# lands on the loud `skipped_search` failure below rather than a quiet pass.
+printf '%s\n' "$SERVER_INSTANCE_ID" >"$INKENTRY_STATE_DIR/server.instance_id"
 
 # Search is the one step whose outcome depends on something other than the
 # wire contract: the server embeds the query, so it needs the model loaded.

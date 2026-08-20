@@ -6,8 +6,8 @@
 // none of them depend on the in-process native embedder (the `--no-default-
 // features` gate stays valid). The no-embedder case uses `INKENTRY_NO_SERVER=1`.
 //
-// The mock embedder is wired in via **loopback auto-discovery**
-// (`INKENTRY_STATE_DIR`/`server.port`), not `server_url`, since the
+// The mock embedder is wired in via **loopback auto-discovery**, not
+// `server_url`, since the
 // 2026-07-23 ADR-004 revision: `reindex` runs in the
 // default `local_first` mode here (no explicit `mode` is set), and
 // `local_first` never routes inference through an explicit `server_url` —
@@ -161,9 +161,12 @@ struct Fixture {
     project_dir: PathBuf,
     mem_path: PathBuf,
     global_config: PathBuf,
-    // Isolated `INKENTRY_STATE_DIR` for this fixture's loopback auto-discovery
-    // (`server.port`, step 3a). Never the hard-coded default port 4655.
+    // Isolated `INKENTRY_STATE_DIR`, so nothing here reads or writes the
+    // developer's own daemon state.
     state_dir: PathBuf,
+    // The port loopback auto-discovery's fixed-port fallback is pointed at,
+    // or "0" while no mock is configured. Never the real default port.
+    discovery_port: std::cell::RefCell<String>,
 }
 
 // A temp project with a global `--config` (no server_url; `store_in_git_notes =
@@ -193,6 +196,7 @@ fn fixture() -> Fixture {
         mem_path,
         global_config,
         state_dir,
+        discovery_port: std::cell::RefCell::new("0".to_string()),
     }
 }
 
@@ -219,32 +223,32 @@ fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
         .success();
 }
 
-// Write `<state_dir>/server.port` so loopback auto-discovery (step 3a) finds
-// the mock embedder at `url`, mirroring the file `inkentry server start`
-// writes. `local_first` (the mode every test in this file runs under) never
-// routes inference through `server_url`, only the local loopback embedder.
+// Point loopback auto-discovery's fixed-port fallback (step 3b) at the mock
+// embedder on `url`. `local_first` (the mode every test in this file runs
+// under) never routes inference through `server_url`, only the local loopback
+// embedder.
+//
+// Not step 3a's `server.port` file: that step now uses a responder only when
+// the pid recorded beside the port is a live `inkentry-server` process and the
+// instance id it reports is the recorded one, and a wiremock stand-in is
+// neither.
 fn set_server(f: &Fixture, url: &str) {
-    let port: u16 = url
+    let port = url
         .rsplit(':')
         .next()
         .expect("uri has a port")
         .trim_end_matches('/')
-        .parse()
-        .expect("uri port is numeric");
-    std::fs::write(f.state_dir.join("server.port"), format!("{port}\n"))
-        .expect("write server.port");
+        .to_string();
+    *f.discovery_port.borrow_mut() = port;
 }
 
-// Remove the port file so `seed` stores notes unembedded: loopback
-// auto-discovery is honored even under `INKENTRY_NO_SERVER=0` (unset), so
-// seeding an unembedded note after a server has been configured requires
-// clearing it. `seed`/`archive_note` set `INKENTRY_NO_SERVER=1` themselves, so
-// in practice this is defensive; kept for symmetry with `set_server`.
+// Take the mock away again so `seed` stores notes unembedded: discovery is
+// honored even under `INKENTRY_NO_SERVER=0` (unset), so seeding an unembedded
+// note after a server has been configured requires clearing it.
+// `seed`/`archive_note` set `INKENTRY_NO_SERVER=1` themselves, so in practice
+// this is defensive; kept for symmetry with `set_server`.
 fn clear_server(f: &Fixture) {
-    let p = f.state_dir.join("server.port");
-    if p.exists() {
-        std::fs::remove_file(&p).expect("remove server.port");
-    }
+    *f.discovery_port.borrow_mut() = "0".to_string();
 }
 
 // Build a `inkentry memory reindex` command against the fixture.
@@ -252,6 +256,10 @@ fn reindex_cmd(f: &Fixture) -> Command {
     let mut cmd = inkentry_bin();
     cmd.current_dir(&f.project_dir)
         .env("INKENTRY_STATE_DIR", &f.state_dir)
+        .env(
+            "INKENTRY_TEST_DISCOVERY_PORT",
+            f.discovery_port.borrow().as_str(),
+        )
         .arg("--config")
         .arg(&f.global_config)
         .arg("memory")

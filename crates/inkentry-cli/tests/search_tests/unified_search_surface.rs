@@ -410,16 +410,17 @@ async fn mount_search(server: &MockServer) {
         .await;
 }
 
-fn write_loopback_state(state_dir: &Path, url: &str) {
+// Point loopback auto-discovery's fixed-port fallback (step 3b) at the mock.
+// Step 3a's `server.port` file is not usable from a test: it now honours a
+// responder only when the pid recorded beside it is a live `inkentry-server`
+// process reporting the recorded instance id.
+fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).unwrap();
-    let port: u16 = url
-        .rsplit(':')
+    url.rsplit(':')
         .next()
         .unwrap()
         .trim_end_matches('/')
-        .parse()
-        .unwrap();
-    std::fs::write(state_dir.join("server.port"), format!("{port}\n")).unwrap();
+        .to_string()
 }
 
 #[tokio::test]
@@ -446,7 +447,7 @@ async fn corpus_filters_elide_the_redundant_query_embed() {
         .success();
 
     let state_dir = TempDir::new().unwrap();
-    write_loopback_state(state_dir.path(), &mock.uri());
+    let discovery_port = loopback_discovery_port(state_dir.path(), &mock.uri());
 
     // (args, expected /search embeds, expected /index/embed embeds)
     let cases: &[(&[&str], usize, usize)] = &[
@@ -463,6 +464,7 @@ async fn corpus_filters_elide_the_redundant_query_embed() {
             .env_remove("INKENTRY_SERVER_URL")
             .env_remove("INKENTRY_MODE")
             .env("INKENTRY_STATE_DIR", state_dir.path())
+            .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
             .current_dir(proj.path())
             .args(*args)
             .args(["--no-stale-check"])

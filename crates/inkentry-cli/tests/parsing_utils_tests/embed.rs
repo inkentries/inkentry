@@ -16,20 +16,21 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// Point loopback auto-discovery (`INKENTRY_STATE_DIR`/`server.port`, step 3a of
-// `capability::probe`) at `url`, so a mock `MockServer` on a random port stands
-// in for a locally-running `inkentry-server` the CLI discovers on its own —
-// exactly as `index_embed_tier_routing.rs` does.
-fn write_loopback_state(state_dir: &Path, url: &str) {
+// Point loopback auto-discovery at `url` and return the port to hand its
+// fixed-port fallback (step 3b) through `INKENTRY_TEST_DISCOVERY_PORT`.
+//
+// Not the `server.port` file (step 3a): that step now uses a responder only
+// when the pid recorded beside the port is a live `inkentry-server` process and
+// the instance id it reports is the recorded one, neither of which a wiremock
+// stand-in can be. The state dir is still created and still redirected, so
+// nothing here reaches the developer's own daemon or state.
+fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).expect("create state dir");
-    let port: u16 = url
-        .rsplit(':')
+    url.rsplit(':')
         .next()
         .expect("uri has a port")
         .trim_end_matches('/')
-        .parse()
-        .expect("uri port is numeric");
-    std::fs::write(state_dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+        .to_string()
 }
 
 // Build a `inkentry plumbing embed` command that auto-discovers the loopback
@@ -40,6 +41,7 @@ fn embed_loopback_cmd(
     home: &Path,
     project: &Path,
     state_dir: &Path,
+    discovery_port: &str,
     config: &Path,
 ) -> assert_cmd::Command {
     let mut cmd = inkentry_bin_in(home);
@@ -49,6 +51,7 @@ fn embed_loopback_cmd(
         .env_remove("INKENTRY_PROJECT_ID")
         .env_remove("INKENTRY_NO_SERVER")
         .env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
         .arg("--config")
         .arg(config)
         .arg("plumbing")
@@ -260,7 +263,7 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
 // ── happy path: auto-discovered loopback server (no server_url configured) ────
 
 // The reported bug: a healthy local `inkentry-server` discovered via loopback
-// auto-discovery (`INKENTRY_STATE_DIR`/`server.port`) — with NO explicit
+// auto-discovery, with NO explicit
 // `server_url` and the default `local_first` mode — must be found by `plumbing
 // embed`, exactly as `search --mode semantic` / `memory search` already find
 // it. Before the fix, `embed` skipped the capability-tier / `effective_config`
@@ -277,18 +280,24 @@ async fn embed_finds_auto_discovered_loopback_server() {
     // No `.inkentry/config.toml` at all: no server_url, no project_id — pure
     // loopback auto-discovery, the default no-team-server case.
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &mock.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &mock.uri());
 
     let config = project.path().join("config.toml");
     std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
 
-    let output = embed_loopback_cmd(home.path(), project.path(), &state_dir, &config)
-        .write_stdin("hello world\n")
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
+    let output = embed_loopback_cmd(
+        home.path(),
+        project.path(),
+        &state_dir,
+        &discovery_port,
+        &config,
+    )
+    .write_stdin("hello world\n")
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
 
     let rows = plumbing_helpers::parse_jsonl(&output);
     assert_eq!(rows.len(), 1, "one stdin line → one embedding");
@@ -311,19 +320,25 @@ async fn embed_query_finds_auto_discovered_loopback_server() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     let state_dir = home.path().join("state");
-    write_loopback_state(&state_dir, &mock.uri());
+    let discovery_port = loopback_discovery_port(&state_dir, &mock.uri());
 
     let config = project.path().join("config.toml");
     std::fs::write(&config, "embedding_model = \"test-model\"\n").unwrap();
 
-    let output = embed_loopback_cmd(home.path(), project.path(), &state_dir, &config)
-        .arg("--query")
-        .write_stdin("how does greet work?\n")
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
+    let output = embed_loopback_cmd(
+        home.path(),
+        project.path(),
+        &state_dir,
+        &discovery_port,
+        &config,
+    )
+    .arg("--query")
+    .write_stdin("how does greet work?\n")
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
 
     let rows = plumbing_helpers::parse_jsonl(&output);
     assert_eq!(rows.len(), 1);

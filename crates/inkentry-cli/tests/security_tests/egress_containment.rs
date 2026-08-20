@@ -39,7 +39,7 @@
 use crate::egress_trap;
 use crate::plumbing_helpers;
 
-use egress_trap::{EgressTrap, write_loopback_state};
+use egress_trap::{EgressTrap, loopback_discovery_port};
 use plumbing_helpers::{init_git_repo, inkentry_bin_in, mount_health, mount_index_embed};
 use predicates::prelude::*;
 use std::path::Path;
@@ -91,6 +91,25 @@ async fn mount_search(server: &MockServer) {
 
 // Build a `inkentry` command isolated from ambient `INKENTRY_*` env, wired
 // against `project` as CWD and `state_dir` for loopback auto-discovery.
+// A command that never parsed cannot have leaked, so a clean trap over one
+// proves nothing. Argument-parsing failures are the way these invocations go
+// stale: a renamed or removed subcommand still exits, still touches no socket,
+// and still passes every egress assertion.
+fn assert_ran(out: &std::process::Output, label: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for marker in [
+        "unrecognized subcommand",
+        "unexpected argument",
+        "invalid value",
+    ] {
+        assert!(
+            !stderr.contains(marker),
+            "`plumbing {label}` did not parse ({marker}), so its clean trap says \
+             nothing about egress: {stderr}"
+        );
+    }
+}
+
 fn local_tier_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
@@ -101,6 +120,38 @@ fn local_tier_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::
         .env_remove("INKENTRY_NO_SERVER")
         .env("INKENTRY_STATE_DIR", state_dir);
     cmd
+}
+
+// [`local_tier_cmd`] with loopback auto-discovery pointed at a mock inference
+// server on `url`, for the commands that are supposed to find one. The rest of
+// this file keeps `local_tier_cmd`, whose `inkentry_bin_in` already disables
+// discovery outright.
+fn loopback_tier_cmd(
+    home: &Path,
+    project: &Path,
+    state_dir: &Path,
+    url: &str,
+) -> assert_cmd::Command {
+    let mut cmd = local_tier_cmd(home, project, state_dir);
+    cmd.env("INKENTRY_TEST_DISCOVERY_PORT", loopback_discovery_port(url));
+    cmd
+}
+
+// How many requests the mock inference server has served whose path ends with
+// `suffix`.
+//
+// Every test here asserts an absence (nothing reached the egress trap), which a
+// run that did nothing at all satisfies just as well as a run that stayed
+// local. Counting what the sanctioned loopback server actually served is what
+// separates the two.
+async fn served(server: &MockServer, suffix: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("wiremock request journaling must stay enabled")
+        .iter()
+        .filter(|r| r.url.path().ends_with(suffix))
+        .count()
 }
 
 // ── init ─────────────────────────────────────────────────────────────────
@@ -136,14 +187,23 @@ async fn index_local_tier_zero_egress() {
     let inference = MockServer::start().await;
     mount_health(&inference).await;
     mount_index_embed(&inference).await;
-    write_loopback_state(state_dir.path(), &inference.uri());
 
     let trap = EgressTrap::start().await;
-    let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    let mut cmd = loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    );
     trap.wire(&mut cmd);
     cmd.arg("index").arg(".");
     cmd.assert().success();
 
+    assert!(
+        served(&inference, "/index/embed").await > 0,
+        "the index never embedded anything, so a clean trap says only that \
+         nothing ran"
+    );
     trap.assert_clean().await;
 }
 
@@ -165,12 +225,21 @@ async fn search_text_mode_zero_egress() {
         let inference = MockServer::start().await;
         mount_health(&inference).await;
         mount_index_embed(&inference).await;
-        write_loopback_state(state_dir.path(), &inference.uri());
-        local_tier_cmd(home.path(), project.path(), state_dir.path())
-            .arg("index")
-            .arg(".")
-            .assert()
-            .success();
+        loopback_tier_cmd(
+            home.path(),
+            project.path(),
+            state_dir.path(),
+            &inference.uri(),
+        )
+        .arg("index")
+        .arg(".")
+        .assert()
+        .success();
+        assert!(
+            served(&inference, "/index/embed").await > 0,
+            "the corpus the search under test reads was never embedded, so a \
+             clean trap below would say only that nothing ran"
+        );
     }
 
     // No inference server at all for the search itself: text mode must not
@@ -201,16 +270,25 @@ async fn search_semantic_zero_egress() {
     mount_health(&inference).await;
     mount_index_embed(&inference).await;
     mount_search(&inference).await;
-    write_loopback_state(state_dir.path(), &inference.uri());
 
-    local_tier_cmd(home.path(), project.path(), state_dir.path())
-        .arg("index")
-        .arg(".")
-        .assert()
-        .success();
+    loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    )
+    .arg("index")
+    .arg(".")
+    .assert()
+    .success();
 
     let trap = EgressTrap::start().await;
-    let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    let mut cmd = loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    );
     trap.wire(&mut cmd);
     // Default best-available ranking over the code corpus: the query embed goes
     // to the loopback server, never off-box. --only-code keeps this to the one
@@ -218,6 +296,11 @@ async fn search_semantic_zero_egress() {
     cmd.arg("search").arg("greet").arg("--only-code");
     cmd.assert().success();
 
+    assert!(
+        served(&inference, "/search").await > 0,
+        "the query was never embedded against the loopback server, so this \
+         proves only that a search which did nothing sent nothing"
+    );
     trap.assert_clean().await;
 }
 
@@ -275,33 +358,53 @@ async fn memory_search_zero_egress() {
     let inference = MockServer::start().await;
     mount_health(&inference).await;
     mount_index_embed(&inference).await;
-    write_loopback_state(state_dir.path(), &inference.uri());
 
-    local_tier_cmd(home.path(), project.path(), state_dir.path())
-        .arg("init")
-        .arg("--no-index")
-        .assert()
-        .success();
-    local_tier_cmd(home.path(), project.path(), state_dir.path())
-        .arg("memory")
-        .arg("add")
-        .arg("--kind")
-        .arg("note")
-        .arg("--title")
-        .arg("egress test note")
-        .arg("--body")
-        .arg("written by egress_containment.rs")
-        .assert()
-        .success();
+    loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    )
+    .arg("init")
+    .arg("--no-index")
+    .assert()
+    .success();
+    loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    )
+    .arg("memory")
+    .arg("add")
+    .arg("--kind")
+    .arg("note")
+    .arg("--title")
+    .arg("egress test note")
+    .arg("--body")
+    .arg("written by egress_containment.rs")
+    .assert()
+    .success();
 
+    let embeds_before = served(&inference, "/index/embed").await;
     let trap = EgressTrap::start().await;
-    let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    let mut cmd = loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    );
     trap.wire(&mut cmd);
     // Memory-only unified search: the QA query embed goes to the loopback server,
     // the note KNN runs locally, and no index.db is required for `--only-memory`.
     cmd.arg("search").arg("egress").arg("--only-memory");
     cmd.assert().success();
 
+    assert!(
+        served(&inference, "/index/embed").await > embeds_before,
+        "the search embedded no query against the loopback server, so a clean \
+         trap says only that nothing ran"
+    );
     trap.assert_clean().await;
 }
 
@@ -356,12 +459,23 @@ async fn plumbing_local_reads_zero_egress() {
     let inference = MockServer::start().await;
     mount_health(&inference).await;
     mount_index_embed(&inference).await;
-    write_loopback_state(state_dir.path(), &inference.uri());
-    local_tier_cmd(home.path(), project.path(), state_dir.path())
-        .arg("index")
-        .arg(".")
-        .assert()
-        .success();
+    loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    )
+    .arg("index")
+    .arg(".")
+    .assert()
+    .success();
+
+    let embeds_after_index = served(&inference, "/index/embed").await;
+    assert!(
+        embeds_after_index > 0,
+        "the corpus these reads run over was never embedded, so a clean trap \
+         would say only that nothing ran"
+    );
 
     let db_path = project.path().join(".inkentry").join("index.db");
     let trap = EgressTrap::start().await;
@@ -377,21 +491,34 @@ async fn plumbing_local_reads_zero_egress() {
         vec!["graph-edges"],
         vec!["read-memory"],
     ] {
-        let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+        let mut cmd = loopback_tier_cmd(
+            home.path(),
+            project.path(),
+            state_dir.path(),
+            &inference.uri(),
+        );
         trap.wire(&mut cmd);
         cmd.arg("plumbing").arg("--db").arg(&db_path);
         for a in &args {
             cmd.arg(a);
         }
         // Exit code varies by subcommand semantics (e.g. `ls-files` exits 1
-        // on an empty result); only egress cleanliness is asserted here.
-        let _ = cmd.assert();
+        // on an empty result), so the outcome is not asserted. What is
+        // asserted is that the subcommand still parses: renaming one would
+        // otherwise leave this green having run nothing at all.
+        let out = cmd.output().expect("run plumbing subcommand");
+        assert_ran(&out, &args.join(" "));
     }
 
     // `knn` takes its query vector pre-embedded on stdin (unlike `embed`, it
     // never calls the inference server itself), so it gets its own
     // invocation instead of joining the no-stdin loop above.
-    let mut knn_cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    let mut knn_cmd = loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    );
     trap.wire(&mut knn_cmd);
     knn_cmd
         .arg("plumbing")
@@ -400,8 +527,17 @@ async fn plumbing_local_reads_zero_egress() {
         .arg("knn")
         .write_stdin(serde_json::json!({"vector": vec![0.1f32; 896]}).to_string());
     // Exits 1 on an empty result set, same caveat as the loop above.
-    let _ = knn_cmd.assert();
+    let knn_out = knn_cmd.output().expect("run plumbing knn");
+    assert_ran(&knn_out, "knn");
 
+    // A discoverable loopback server was available to every one of those
+    // commands and none of them used it: that is the claim, and it is not the
+    // same claim as "no server was reachable".
+    assert_eq!(
+        served(&inference, "/index/embed").await,
+        embeds_after_index,
+        "a plumbing local read embedded against the inference server"
+    );
     trap.assert_clean().await;
 }
 
@@ -417,15 +553,19 @@ async fn plumbing_embed_zero_egress() {
     let inference = MockServer::start().await;
     mount_health(&inference).await;
     mount_index_embed(&inference).await;
-    write_loopback_state(state_dir.path(), &inference.uri());
     let project_id = "test/plumbing-embed";
-    local_tier_cmd(home.path(), project.path(), state_dir.path())
-        .arg("init")
-        .arg("--no-index")
-        .arg("--name")
-        .arg(project_id)
-        .assert()
-        .success();
+    loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    )
+    .arg("init")
+    .arg("--no-index")
+    .arg("--name")
+    .arg(project_id)
+    .assert()
+    .success();
 
     // `plumbing`'s dispatch (`cli/cmd/plumbing/mod.rs`) hands `embed_cmd` the
     // raw `Config` without first running the tier-probe/`effective_config`
@@ -447,8 +587,14 @@ async fn plumbing_embed_zero_egress() {
     plumbing_helpers::write_project_server_config(project.path(), &inference.uri(), project_id);
 
     let db_path = project.path().join(".inkentry").join("index.db");
+    let embeds_before = served(&inference, "/index/embed").await;
     let trap = EgressTrap::start().await;
-    let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    let mut cmd = loopback_tier_cmd(
+        home.path(),
+        project.path(),
+        state_dir.path(),
+        &inference.uri(),
+    );
     trap.wire(&mut cmd);
     cmd.env("INKENTRY_MODE", "cloud_first");
     // `plumbing embed` reads lines from stdin (`--query` only toggles which
@@ -461,6 +607,11 @@ async fn plumbing_embed_zero_egress() {
         .write_stdin("hello world\n");
     cmd.assert().success();
 
+    assert!(
+        served(&inference, "/index/embed").await > embeds_before,
+        "`plumbing embed` embedded nothing, so a clean trap says only that \
+         nothing ran"
+    );
     trap.assert_clean().await;
 }
 

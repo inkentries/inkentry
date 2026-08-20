@@ -62,6 +62,81 @@ fn read_server_port_file() -> Option<u16> {
     content.trim().parse::<u16>().ok()
 }
 
+/// Why a loopback responder is not the daemon `inkentry server start` recorded.
+///
+/// Both checks read state this CLI wrote itself. The health body cannot supply
+/// either one: a process that holds the port answers `/v1/health` with whatever
+/// it likes, `instance_id` and `started_by` included, so a self-reported value
+/// only ever confirms itself. What the recorded PID and the recorded id add is
+/// a second, independent source.
+enum Untrusted {
+    NoStateDir,
+    NoRecordedPid,
+    PidIsNotTheServer(u32),
+    NoRecordedInstanceId,
+    InstanceIdMismatch,
+}
+
+impl std::fmt::Display for Untrusted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Untrusted::NoStateDir => write!(
+                f,
+                "the state directory holding what this CLI recorded could not be resolved"
+            ),
+            Untrusted::NoRecordedPid => write!(f, "no server.pid was recorded next to the port"),
+            Untrusted::PidIsNotTheServer(pid) => {
+                write!(
+                    f,
+                    "the recorded pid={pid} is not an inkentry-server process"
+                )
+            }
+            Untrusted::NoRecordedInstanceId => write!(
+                f,
+                "no server.instance_id was recorded, so the instance it reports \
+                 cannot be checked against anything"
+            ),
+            Untrusted::InstanceIdMismatch => write!(
+                f,
+                "it reports a different instance_id than the one recorded at start"
+            ),
+        }
+    }
+}
+
+/// The state directory to name when telling the user which recording is in
+/// force. Falls back to the documented default path, which is what the reader
+/// would go looking for anyway, rather than saying nothing.
+fn state_dir_for_message() -> String {
+    inkentry_state_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "~/.local/state/inkentry".to_string())
+}
+
+/// Check a loopback responder against what `inkentry server start` recorded.
+///
+/// `reported` is the `instance_id` from the health body just received.
+/// Both files are read through `cli/cmd/server.rs`, which writes them: the
+/// state directory's layout has one owner, and a second spelling of these
+/// names here is how a reader and a writer drift apart.
+fn untrusted_responder(reported: Option<&str>) -> Option<Untrusted> {
+    use crate::cli::cmd::server::{process_matches_server, read_instance_id, read_pid};
+
+    let Ok(state_dir) = inkentry_state_dir() else {
+        return Some(Untrusted::NoStateDir);
+    };
+    let Some(pid) = read_pid(&state_dir) else {
+        return Some(Untrusted::NoRecordedPid);
+    };
+    if !process_matches_server(pid) {
+        return Some(Untrusted::PidIsNotTheServer(pid));
+    }
+    let Some(recorded) = read_instance_id(&state_dir) else {
+        return Some(Untrusted::NoRecordedInstanceId);
+    };
+    (reported != Some(recorded.as_str())).then_some(Untrusted::InstanceIdMismatch)
+}
+
 static TIER: OnceCell<Tier> = OnceCell::const_new();
 
 /// The reason an *explicit* offline mode is in force, or `None` when the tier
@@ -104,8 +179,9 @@ fn explicit_offline_reason(cfg: &Config) -> Option<OfflineReason> {
 /// 2. If `cfg.server_url` is set → probe that URL with a **2 s** timeout
 ///    (`auto_discovered = false`).
 /// 3. If `cfg.server_url` is `None` → loopback auto-discovery:
-///    a. Read `~/.local/state/inkentry/server.port`; probe `127.0.0.1:<port>`.
-///    b. Fallback: probe `127.0.0.1:<DEFAULT_SERVER_PORT>`.
+///    a. Read `~/.local/state/inkentry/server.port`; probe `127.0.0.1:<port>`,
+///    and use it only if the recorded pid and instance id still match.
+///    b. Only when nothing was recorded: probe `127.0.0.1:<DEFAULT_SERVER_PORT>`.
 ///    Both loopback probes use a **250 ms** timeout.
 ///    On success: `auto_discovered = true`. On failure: `Tier::Offline`.
 ///
@@ -215,21 +291,24 @@ fn discovery_fallback_port() -> Option<u16> {
 
 /// Loopback auto-discovery only: never consults `cfg.server_url`.
 ///
-/// Step 3a: port file written by `inkentry server start`. Step 3b: fall back to
-/// [`DEFAULT_SERVER_PORT`]. Both steps use the 250 ms loopback timeout and treat
-/// any probe failure as `Tier::Offline` (never a hard error: loopback
+/// Step 3a: the port file written by `inkentry server start`, whose responder is
+/// used only when the recorded pid and instance id still identify it as that
+/// daemon. Step 3b: [`DEFAULT_SERVER_PORT`], reached only when nothing was
+/// recorded at all. Both steps use the 250 ms loopback timeout and treat any
+/// probe failure as `Tier::Offline` (never a hard error: loopback
 /// auto-discovery finding nothing is the normal "no local server" case, not a
 /// misconfiguration).
+///
+/// Once a port is recorded, that recording decides the answer: a responder on
+/// it that fails the identity checks does not fall through to step 3b. Falling
+/// through was how the check could be walked around, since a process holding
+/// the recorded port is usually holding the default one too, and 3b asks it
+/// nothing.
 ///
 /// Split out of [`probe`] so [`get_inference_tier`] can run the identical
 /// discovery independent of an explicit `server_url`: `local_first` always
 /// prefers the local embedder, even when `server_url` targets a remote.
 async fn probe_loopback() -> Tier {
-    // A daemon that answered but cannot be used (`LocalServerUnusable`) is a
-    // restart, not a missing install, so it must survive the fall-through to
-    // step 3b rather than be flattened into "no local server".
-    let mut reason = OfflineReason::NoLocalServer;
-
     // Step 3a: port file written by `inkentry server start`
     if let Some(port) = read_server_port_file() {
         let loopback_url = format!("http://127.0.0.1:{port}");
@@ -238,50 +317,53 @@ async fn probe_loopback() -> Tier {
         );
         // Loopback probes never produce hard errors (auto_discovered=true), so unwrap is safe.
         // Loopback is plaintext http: a custom CA is irrelevant here.
-        let tier = probe_url(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true, None)
-            .await
-            .unwrap_or(Tier::Offline(OfflineReason::NoLocalServer));
-        if let Some(tier) = keep_offline_reason(tier, &mut reason) {
-            return tier;
-        }
-        tracing::debug!("loopback probe on port {port} failed: falling back to default port");
+        let (tier, reported_instance_id) =
+            probe_url_reporting_instance_id(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true, None)
+                .await
+                .unwrap_or((Tier::Offline(OfflineReason::NoLocalServer), None));
+
+        // Both refusals below are announced, and for the same reason: the user
+        // started a local server, this run is not using it, and a `tracing`
+        // line the default log level drops tells them neither fact. They share
+        // one remedy, so the arms carry what happened and the tail carries what
+        // to do.
+        let refused = match tier {
+            // A dimension mismatch keeps its own reason and its own advice:
+            // that daemon answered and said what is wrong with it.
+            Tier::Offline(OfflineReason::LocalServerUnusable) => return tier,
+            Tier::Offline(_) => format!(
+                "the local server recorded in {} did not answer on 127.0.0.1:{port}",
+                state_dir_for_message()
+            ),
+            Tier::Server { .. } => match untrusted_responder(reported_instance_id.as_deref()) {
+                Some(why) => format!(
+                    "the process answering 127.0.0.1:{port} is not the server recorded in \
+                     {}: {why}. Nothing was sent to it",
+                    state_dir_for_message()
+                ),
+                None => return tier,
+            },
+        };
+
+        eprintln!(
+            "warning: {refused}. Embeddings are offline for this run: run \
+             `inkentry server stop`, then `inkentry server start`."
+        );
+        return Tier::Offline(OfflineReason::RecordedServerUnreachable);
     }
 
-    // Step 3b: the default port
+    // Step 3b: the default port, for a machine that never started a server.
+    // There is nothing recorded to check a responder against here, which is
+    // why the step above refuses to hand this one its leftovers.
     let Some(port) = discovery_fallback_port() else {
         tracing::debug!("loopback auto-discovery: fallback disabled: offline mode");
-        return Tier::Offline(reason);
+        return Tier::Offline(OfflineReason::NoLocalServer);
     };
     let default_url = format!("http://127.0.0.1:{port}");
     tracing::debug!("loopback auto-discovery: probing default {default_url}");
-    let tier = probe_url(&default_url, LOOPBACK_PROBE_TIMEOUT, true, None)
+    probe_url(&default_url, LOOPBACK_PROBE_TIMEOUT, true, None)
         .await
-        .unwrap_or(Tier::Offline(OfflineReason::NoLocalServer));
-    if let Some(tier) = keep_offline_reason(tier, &mut reason) {
-        return tier;
-    }
-
-    tracing::debug!("loopback auto-discovery: no local server found: offline mode");
-    Tier::Offline(reason)
-}
-
-/// Pass a `Server` tier through; otherwise fold its offline reason into
-/// `reason` and report that discovery must continue.
-///
-/// Only [`OfflineReason::LocalServerUnusable`] is kept: it says a daemon
-/// answered and needs restarting, which no later step can rediscover once the
-/// probe has moved on. Every other loopback miss is the ordinary "nothing
-/// listening", already the starting value.
-fn keep_offline_reason(tier: Tier, reason: &mut OfflineReason) -> Option<Tier> {
-    match tier {
-        Tier::Server { .. } => Some(tier),
-        Tier::Offline(r) => {
-            if r == OfflineReason::LocalServerUnusable {
-                *reason = r;
-            }
-            None
-        }
-    }
+        .unwrap_or(Tier::Offline(OfflineReason::NoLocalServer))
 }
 
 /// Resolve the tier used specifically to route **inference** (embeddings +
@@ -359,6 +441,22 @@ async fn probe_url(
     auto_discovered: bool,
     server_ca: Option<&std::path::Path>,
 ) -> Result<Tier, String> {
+    probe_url_reporting_instance_id(url, timeout, auto_discovered, server_ca)
+        .await
+        .map(|(tier, _)| tier)
+}
+
+/// [`probe_url`], also returning the `instance_id` the health body reported.
+///
+/// Only loopback auto-discovery reads that id, and only to compare it against
+/// the one recorded at start: it is a claim by the peer, never an identity on
+/// its own.
+async fn probe_url_reporting_instance_id(
+    url: &str,
+    timeout: std::time::Duration,
+    auto_discovered: bool,
+    server_ca: Option<&std::path::Path>,
+) -> Result<(Tier, Option<String>), String> {
     // Non-loopback plaintext http:// is invalid config: reject before sending
     // anything. No opt-out: the fix is always "use https, or loopback".
     inkentry_core::config::validate_transport_url(url)?;
@@ -376,14 +474,14 @@ async fn probe_url(
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!("could not load custom CA for server probe: {e}");
-                return Ok(Tier::Offline(unreached));
+                return Ok((Tier::Offline(unreached), None));
             }
         };
     let client = match builder.timeout(timeout).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("could not build HTTP client for server probe: {e}");
-            return Ok(Tier::Offline(unreached));
+            return Ok((Tier::Offline(unreached), None));
         }
     };
 
@@ -392,10 +490,11 @@ async fn probe_url(
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
-            let (caps, server_dim, embedder_state, server_limits) = parse_health(url, resp).await;
+            let health = parse_health(url, resp).await;
 
             // If the server advertises index.embed, its embedding dimension must match ours.
-            if caps.index_embed && server_dim != 0 {
+            let server_dim = health.embedding_dim;
+            if health.caps.index_embed && server_dim != 0 {
                 let expected = inkentry_core::embeddings::EMBEDDING_DIM;
                 if server_dim != expected {
                     if auto_discovered {
@@ -407,7 +506,7 @@ async fn probe_url(
                              Restart the server (`inkentry server start`) or set \
                              INKENTRY_NO_SERVER=1 to suppress this probe."
                         );
-                        return Ok(Tier::Offline(OfflineReason::LocalServerUnusable));
+                        return Ok((Tier::Offline(OfflineReason::LocalServerUnusable), None));
                     } else {
                         // Explicit server_url: surface as a hard error so the user
                         // gets actionable guidance before any command runs.
@@ -421,13 +520,16 @@ async fn probe_url(
                 }
             }
 
-            Ok(Tier::Server {
-                url: url.to_string(),
-                caps,
-                auto_discovered,
-                embedder_state,
-                server_limits,
-            })
+            Ok((
+                Tier::Server {
+                    url: url.to_string(),
+                    caps: health.caps,
+                    auto_discovered,
+                    embedder_state: health.embedder_state,
+                    server_limits: health.server_limits,
+                },
+                health.instance_id,
+            ))
         }
         Ok(resp) => {
             if !auto_discovered {
@@ -436,7 +538,7 @@ async fn probe_url(
                     resp.status()
                 );
             }
-            Ok(Tier::Offline(unreached))
+            Ok((Tier::Offline(unreached), None))
         }
         Err(e) => {
             if !auto_discovered {
@@ -462,7 +564,7 @@ async fn probe_url(
                     }
                 }
             }
-            Ok(Tier::Offline(unreached))
+            Ok((Tier::Offline(unreached), None))
         }
     }
 }
@@ -672,16 +774,29 @@ struct HealthBody {
     accepts_pushed_vectors: bool,
 }
 
+/// What one `/v1/health` answer told us.
+struct HealthFacts {
+    caps: Capabilities,
+    /// `0` when the field is absent (a server pre-dating it) or no embedder is
+    /// loaded, which skips the dimension check in `probe_url`.
+    embedding_dim: usize,
+    embedder_state: EmbedderState,
+    server_limits: Option<ServerLimits>,
+    /// As reported by the peer, so it identifies nothing on its own; loopback
+    /// discovery compares it against the id recorded at start.
+    instance_id: Option<String>,
+}
+
 /// Conservative reading assumed for a server whose `/v1/health` body is not a
 /// readable JSON object at all: the legacy plain-text `ok` responder.
-/// `embedding_dim = 0` skips the dimension check in `probe_url`.
-fn legacy_plain_text_health() -> (Capabilities, usize, EmbedderState, Option<ServerLimits>) {
-    (
-        Capabilities::legacy_memory_only(),
-        0,
-        EmbedderState::Unknown,
-        None,
-    )
+fn legacy_plain_text_health() -> HealthFacts {
+    HealthFacts {
+        caps: Capabilities::legacy_memory_only(),
+        embedding_dim: 0,
+        embedder_state: EmbedderState::Unknown,
+        server_limits: None,
+        instance_id: None,
+    }
 }
 
 /// Bounded rendering of peer-controlled text for a log line. Cuts on a
@@ -700,8 +815,7 @@ fn health_body_snippet(raw: &[u8]) -> String {
     bounded_for_log(&String::from_utf8_lossy(raw))
 }
 
-/// Parse the health response body and return `(Capabilities, embedding_dim,
-/// embedder_state, server_limits)`.
+/// Parse the health response body into the facts the probe acts on.
 ///
 /// `embedding_dim` is `0` when the field is absent (old server without the field)
 /// or when no embedder is loaded. A `0` dim skips the dimension check in `probe_url`
@@ -716,10 +830,7 @@ fn health_body_snippet(raw: &[u8]) -> String {
 /// it still enforces the old blanket 30s `/index/embed` budget with no
 /// exemption, regardless of what the CLI's own calibration would otherwise
 /// target.
-async fn parse_health(
-    url: &str,
-    resp: reqwest::Response,
-) -> (Capabilities, usize, EmbedderState, Option<ServerLimits>) {
+async fn parse_health(url: &str, resp: reqwest::Response) -> HealthFacts {
     let raw = match resp.bytes().await {
         Ok(raw) => raw,
         Err(e) => {
@@ -760,17 +871,22 @@ async fn parse_health(
                 .as_ref()
                 .map(|e| e.state)
                 .unwrap_or(EmbedderState::Unknown);
-            // Warn if the server was started by a different user on this host.
+            // A server started by another account on this host is the one
+            // thing the health body says that the user has to act on, and
+            // `tracing::warn!` is off at the default log level, so for years it
+            // said it to nobody.
             if let Some(server_uid) = body.started_by {
                 let my_uid = current_uid();
                 if let Some(my_uid) = my_uid
                     && my_uid != server_uid
                 {
-                    tracing::warn!(
+                    let warning = format!(
                         "inkentry-server at {url} was started by UID {server_uid} \
                          but you are UID {my_uid}; on a multi-user host this may \
                          expose another user's memory: consider running your own server"
                     );
+                    eprintln!("warning: {warning}");
+                    tracing::warn!("{warning}");
                 }
             }
             if let Some(ref id) = body.instance_id {
@@ -781,12 +897,13 @@ async fn parse_health(
             // `accepts_pushed_vectors` is a top-level health bool, not a
             // `capabilities` array entry, so it is applied after the array parse.
             caps.accepts_pushed_vectors = body.accepts_pushed_vectors;
-            (
+            HealthFacts {
                 caps,
-                body.embedding_dim,
+                embedding_dim: body.embedding_dim,
                 embedder_state,
-                body.limits.map(ServerLimits::from),
-            )
+                server_limits: body.limits.map(ServerLimits::from),
+                instance_id: body.instance_id,
+            }
         }
         Err(_) => {
             // Silence here is what let a single strict field discard whole
@@ -1686,7 +1803,9 @@ mod tests {
     // `local_first` (the default reached once `server_url` is set, with no
     // explicit `mode`) must probe the LOCAL loopback embedder for inference,
     // never the configured `server_url`. The loopback mock is discovered via
-    // the `server.port` file (step 3a); `server_url` is left pointed at an
+    // the fixed-port fallback (step 3b), the step a mock can satisfy: step 3a
+    // additionally requires the recorded pid to be a live `inkentry-server`,
+    // which is pinned separately below. `server_url` is left pointed at an
     // address nothing mounts anything on, so the test would fail loudly
     // (connection error, not a silent pass) if the code ever tried it.
     #[tokio::test]
@@ -1716,10 +1835,13 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
-        std::fs::write(state_dir.join("server.port"), format!("{loopback_port}\n")).unwrap();
 
         let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
-        unsafe { std::env::set_var("INKENTRY_STATE_DIR", &state_dir) };
+        let prev_discovery_port = std::env::var_os("INKENTRY_TEST_DISCOVERY_PORT");
+        unsafe {
+            std::env::set_var("INKENTRY_STATE_DIR", &state_dir);
+            std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", loopback_port.to_string());
+        }
 
         let cfg = Config {
             // Deliberately never mocked: any accidental fallback to this
@@ -1741,6 +1863,10 @@ mod tests {
             match prev_state_dir {
                 Some(v) => std::env::set_var("INKENTRY_STATE_DIR", v),
                 None => std::env::remove_var("INKENTRY_STATE_DIR"),
+            }
+            match prev_discovery_port {
+                Some(v) => std::env::set_var("INKENTRY_TEST_DISCOVERY_PORT", v),
+                None => std::env::remove_var("INKENTRY_TEST_DISCOVERY_PORT"),
             }
         }
 
@@ -2621,5 +2747,215 @@ mod tests {
                 .expect_err("a host that only looks like loopback must be rejected");
             assert!(err.contains("loopback"), "{url}: {err}");
         }
+    }
+
+    // ── Loopback discovery trust checks ──────────────────────────────────────
+    //
+    // Step 3a hands every indexed source chunk to whoever answers the recorded
+    // loopback port, so "something answered" is not enough to make it the
+    // embedding backend. These pin the two recorded facts the probe checks
+    // before trusting a responder: the state file's PID must still be an
+    // `inkentry-server` process, and the health body's `instance_id` must be
+    // the one recorded at start.
+    //
+    // Unix only: the positive PID case needs a live process whose command line
+    // reads as `inkentry-server`, which `process_matches_server` finds via
+    // `ps`. The Windows side of that check matches an image name, which a test
+    // cannot fabricate without shipping a second binary.
+
+    #[cfg(unix)]
+    const RECORDED_INSTANCE_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+    // A live placeholder process, optionally named so `process_matches_server`
+    // accepts it. The symlink is what puts the name in `ps -o args=`; the shell
+    // loop is what keeps the shell itself alive, since a shell running a single
+    // command execs it and loses that name.
+    #[cfg(unix)]
+    struct Placeholder {
+        child: std::process::Child,
+        _dir: tempfile::TempDir,
+    }
+
+    #[cfg(unix)]
+    impl Placeholder {
+        fn spawn(named_like_the_server: bool) -> Self {
+            let dir = tempfile::TempDir::new().expect("temp dir for the placeholder process");
+            let exe = dir.path().join(if named_like_the_server {
+                "inkentry-server"
+            } else {
+                "unrelated-process"
+            });
+            std::os::unix::fs::symlink("/bin/sh", &exe).expect("symlink /bin/sh");
+            let child = std::process::Command::new(&exe)
+                .arg("-c")
+                .arg("while :; do sleep 1; done")
+                // The shell's own `sleep` children inherit whatever the test
+                // harness handed this process, and nextest reports a test whose
+                // output handles outlive it as leaky.
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn the placeholder process");
+            Self { child, _dir: dir }
+        }
+
+        fn pid(&self) -> u32 {
+            self.child.id()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Placeholder {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    struct EnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    #[cfg(unix)]
+    impl EnvGuard {
+        fn set(pairs: &[(&'static str, std::ffi::OsString)]) -> Self {
+            let saved = pairs
+                .iter()
+                .map(|(k, v)| {
+                    let prev = std::env::var_os(k);
+                    // SAFETY: every test using this guard is in the
+                    // `inkentry_no_server_env` serial group, so no other test
+                    // reads or writes these variables concurrently.
+                    unsafe { std::env::set_var(k, v) };
+                    (*k, prev)
+                })
+                .collect();
+            Self(saved)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, prev) in &self.0 {
+                unsafe {
+                    match prev {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_discovery_state(dir: &std::path::Path, port: u16, pid: u32, instance_id: &str) {
+        std::fs::create_dir_all(dir).expect("create the state dir");
+        std::fs::write(dir.join("server.port"), format!("{port}\n")).expect("write server.port");
+        std::fs::write(dir.join("server.pid"), format!("{pid}\n")).expect("write server.pid");
+        std::fs::write(dir.join("server.instance_id"), format!("{instance_id}\n"))
+            .expect("write server.instance_id");
+    }
+
+    #[cfg(unix)]
+    async fn mock_daemon(instance_id: &str) -> (wiremock::MockServer, u16) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let mut body = health_body(&["memory"], 0);
+        body["instance_id"] = serde_json::json!(instance_id);
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let port = server.address().port();
+        (server, port)
+    }
+
+    // Today's happy path: the recorded PID is still the server and the health
+    // body reports the recorded instance. A regression guard, not a RED test:
+    // it must keep passing, so the new verification cannot be satisfied by
+    // refusing everything.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial(inkentry_no_server_env)]
+    async fn a_recorded_daemon_that_still_matches_is_discovered() {
+        let (_server, port) = mock_daemon(RECORDED_INSTANCE_ID).await;
+        let daemon = Placeholder::spawn(true);
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_discovery_state(tmp.path(), port, daemon.pid(), RECORDED_INSTANCE_ID);
+
+        let _env = EnvGuard::set(&[
+            ("INKENTRY_STATE_DIR", tmp.path().into()),
+            // Step 3b would probe a fixed port on the developer's own machine;
+            // the state file is the only thing this test wants exercised.
+            ("INKENTRY_TEST_DISCOVERY_PORT", "0".into()),
+        ]);
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
+
+        let tier = probe_loopback().await;
+        assert_eq!(
+            tier.server_url(),
+            Some(format!("http://127.0.0.1:{port}")).as_deref(),
+            "a daemon whose recorded PID and instance_id both still match must \
+             stay discoverable; got {tier:?}"
+        );
+    }
+
+    // A process that squats the recorded port and answers `/v1/health` is not
+    // the recorded daemon: the recorded PID belongs to something that is not an
+    // `inkentry-server`. The fixed-port fallback is pointed at the squatter too,
+    // so falling through to it would re-discover the squatter and fail here.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial(inkentry_no_server_env)]
+    async fn a_squatter_on_the_recorded_port_is_not_the_embedding_backend() {
+        let (_server, port) = mock_daemon(RECORDED_INSTANCE_ID).await;
+        let squatter = Placeholder::spawn(false);
+        let tmp = tempfile::TempDir::new().unwrap();
+        // The instance_id matches, so the PID check is the only thing that can
+        // refuse this responder.
+        write_discovery_state(tmp.path(), port, squatter.pid(), RECORDED_INSTANCE_ID);
+
+        let _env = EnvGuard::set(&[
+            ("INKENTRY_STATE_DIR", tmp.path().into()),
+            ("INKENTRY_TEST_DISCOVERY_PORT", port.to_string().into()),
+        ]);
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
+
+        let tier = probe_loopback().await;
+        assert!(
+            !tier.is_server(),
+            "the recorded PID is a live process that is not an inkentry-server, \
+             so the responder on that port must not become the embedding \
+             backend; got {tier:?}"
+        );
+    }
+
+    // A stale state file next to a different daemon on the same port: the PID
+    // check passes, and only the recorded instance_id separates the two.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial(inkentry_no_server_env)]
+    async fn a_responder_with_a_different_instance_id_is_not_the_recorded_daemon() {
+        let (_server, port) = mock_daemon("00000000-0000-0000-0000-00000000beef").await;
+        let daemon = Placeholder::spawn(true);
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_discovery_state(tmp.path(), port, daemon.pid(), RECORDED_INSTANCE_ID);
+
+        let _env = EnvGuard::set(&[
+            ("INKENTRY_STATE_DIR", tmp.path().into()),
+            ("INKENTRY_TEST_DISCOVERY_PORT", port.to_string().into()),
+        ]);
+        unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
+
+        let tier = probe_loopback().await;
+        assert!(
+            !tier.is_server(),
+            "the responder reports an instance_id other than the one recorded at \
+             start, so it is not the recorded daemon; got {tier:?}"
+        );
     }
 }

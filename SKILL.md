@@ -111,7 +111,7 @@ inkentry server logs            # last 50 lines of the server log
 inkentry server stop            # stop the daemon (SIGTERM)
 ```
 
-State lives under `~/.local/state/inkentry/` (`server.pid`, `server.port`, `server.log`).
+State lives under `~/.local/state/inkentry/` (`server.pid`, `server.port`, `server.instance_id`, `server.log`).
 
 ---
 
