@@ -133,7 +133,7 @@ pub struct SupersedeRequest {
     post,
     path = "/v1/projects/{project_id}/memory",
     params(
-        ("project_id" = String, Path, description = "Project slug (e.g. `usercise/spelunk`)")
+        ("project_id" = String, Path, description = "Project slug (e.g. `usercise/inkentry`)")
     ),
     request_body = AddNoteRequest,
     responses(

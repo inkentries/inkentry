@@ -341,7 +341,7 @@
           {
             "name": "project_id",
             "in": "path",
-            "description": "Project slug (e.g. `usercise/spelunk`)",
+            "description": "Project slug (e.g. `usercise/inkentry`)",
             "required": true,
             "schema": {
               "type": "string"
@@ -432,7 +432,7 @@
           {
             "name": "project_id",
             "in": "path",
-            "description": "Project slug (e.g. `usercise/spelunk`)",
+            "description": "Project slug (e.g. `usercise/inkentry`)",
             "required": true,
             "schema": {
               "type": "string"
