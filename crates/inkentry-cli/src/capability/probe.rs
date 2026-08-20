@@ -2809,7 +2809,7 @@ mod tests {
     // The decision itself, with the OS process query supplied as a bool rather
     // than run. This is the coverage the live-process tests below cannot give on
     // Windows, and it includes the happy path every command travels when a
-    // daemon is running (`None`). See ADR-091.
+    // daemon is running (`None`).
 
     #[test]
     fn classify_responder_refuses_when_no_pid_recorded() {
@@ -2867,11 +2867,12 @@ mod tests {
 
     // The discovery-trust test seam bypasses only the un-fakeable OS process
     // query, and only for `1`/`true`. Every other value, and an unset variable,
-    // runs the real query (here a ghost pid, so a definite `false`). Serialised
-    // against the discovery tests below, which read the same variable through
-    // `untrusted_responder`.
+    // runs the real query (here a ghost pid, so a definite `false`). In both
+    // serial groups: the discovery tests below read the same variable through
+    // `untrusted_responder`, and the outbox and status relay tests set it
+    // through their own state-dir guards, which use `server_state_dir_env`.
     #[test]
-    #[serial_test::serial(inkentry_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     fn recorded_pid_is_server_seam_is_fail_safe() {
         let ghost = u32::MAX;
         let case = |value: Option<&str>| -> bool {
@@ -2985,9 +2986,11 @@ mod tests {
                 .iter()
                 .map(|(k, v)| {
                     let prev = std::env::var_os(k);
-                    // SAFETY: every test using this guard is in the
-                    // `inkentry_no_server_env` serial group, so no other test
-                    // reads or writes these variables concurrently.
+                    // SAFETY: every test using this guard is in both the
+                    // `inkentry_no_server_env` and `server_state_dir_env`
+                    // serial groups, so no other test reads or writes these
+                    // variables concurrently. The second group matters: the
+                    // outbox and status relay tests set the same trust seam.
                     unsafe { std::env::set_var(k, v) };
                     (*k, prev)
                 })
@@ -3042,7 +3045,7 @@ mod tests {
     // refusing everything.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial_test::serial(inkentry_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn a_recorded_daemon_that_still_matches_is_discovered() {
         let (_server, port) = mock_daemon(RECORDED_INSTANCE_ID).await;
         let daemon = Placeholder::spawn(true);
@@ -3072,7 +3075,7 @@ mod tests {
     // so falling through to it would re-discover the squatter and fail here.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial_test::serial(inkentry_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn a_squatter_on_the_recorded_port_is_not_the_embedding_backend() {
         let (_server, port) = mock_daemon(RECORDED_INSTANCE_ID).await;
         let squatter = Placeholder::spawn(false);
@@ -3100,7 +3103,7 @@ mod tests {
     // check passes, and only the recorded instance_id separates the two.
     #[cfg(unix)]
     #[tokio::test]
-    #[serial_test::serial(inkentry_no_server_env)]
+    #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
     async fn a_responder_with_a_different_instance_id_is_not_the_recorded_daemon() {
         let (_server, port) = mock_daemon("00000000-0000-0000-0000-00000000beef").await;
         let daemon = Placeholder::spawn(true);

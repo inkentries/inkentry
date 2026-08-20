@@ -749,7 +749,7 @@ mod tests {
 
     /// Point `INKENTRY_STATE_DIR` at `dir` for the remainder of the current
     /// scope. Caller must hold `#[serial(server_state_dir_env)]` AND keep a
-    /// [`RestoreStateDirOnDrop`] alive for the test's duration, or the
+    /// [`RelayEnvGuard`] alive for the test's duration, or the
     /// mutated value leaks into whichever test in the same serial group runs
     /// next.
     fn point_state_dir_at(dir: &std::path::Path) {
@@ -760,12 +760,12 @@ mod tests {
     /// it on drop. Tests that call [`point_state_dir_at`] more than once (so
     /// [`StateDirGuard`] alone won't do, since it only knows the value it
     /// itself set) must hold one of these for the whole test body.
-    struct RestoreStateDirOnDrop {
+    struct RelayEnvGuard {
         prev_state_dir: Option<std::ffi::OsString>,
         prev_trust: Option<std::ffi::OsString>,
     }
-    impl RestoreStateDirOnDrop {
-        fn capture() -> Self {
+    impl RelayEnvGuard {
+        fn install() -> Self {
             let me = Self {
                 prev_state_dir: std::env::var_os("INKENTRY_STATE_DIR"),
                 prev_trust: std::env::var_os("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
@@ -776,7 +776,7 @@ mod tests {
             me
         }
     }
-    impl Drop for RestoreStateDirOnDrop {
+    impl Drop for RelayEnvGuard {
         fn drop(&mut self) {
             // SAFETY: see `StateDirGuard::drop` above; same serial group.
             unsafe {
@@ -845,7 +845,7 @@ mod tests {
     #[tokio::test]
     #[serial(server_state_dir_env, process_cwd)]
     async fn entry_added_on_instance_a_becomes_visible_on_instance_b_via_live_pull() {
-        let _restore_state_dir = RestoreStateDirOnDrop::capture();
+        let _restore_state_dir = RelayEnvGuard::install();
         // Held for the whole body: this test drives a real `memory list`, whose
         // git-notes import is keyed off the CWD.
         let _cwd = CwdOutsideAnyRepo::enter();
@@ -955,7 +955,7 @@ mod tests {
     #[tokio::test]
     #[serial(server_state_dir_env)]
     async fn kill_and_restart_the_local_relay_mid_drain_loses_nothing_and_dedupes() {
-        let _restore_state_dir = RestoreStateDirOnDrop::capture();
+        let _restore_state_dir = RelayEnvGuard::install();
         let (team_addr, _) = spawn_inkentry_server(&DeclaredTargets::default()).await;
         let team_uri = format!("http://{}", team_addr);
         let cfg = local_first_cfg(&team_uri);

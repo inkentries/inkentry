@@ -46,6 +46,9 @@ fn run_stderr(home: &Path, state: &Path, project: &Path, team_url: &str, args: &
         .env("INKENTRY_MODE", "local_first")
         .env("INKENTRY_SERVER_URL", team_url)
         .env("INKENTRY_PROJECT_ID", "proj")
+        // Past the pid check, so the refusal below is the instance-id mismatch
+        // this test is about rather than the fabricated pid.
+        .env("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1")
         .env_remove("INKENTRY_NO_SERVER");
     let out = cmd.args(args).output().expect("run the inkentry binary");
     String::from_utf8_lossy(&out.stderr).into_owned()

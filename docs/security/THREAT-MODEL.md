@@ -457,31 +457,51 @@ local process act *against the team server*, over the network, with a credential
 does not hold. Closing 1 and 3 needs a local caller identity the loopback posture
 does not currently provide; that is a post-v1.0 decision, not a v1.0 gate.
 
+### Whoever sets the environment decides who is trusted
+
+Discovery trust rests on three facts recorded in the state directory: a port, a
+pid, and an `instance_id`. **`INKENTRY_STATE_DIR` names that directory**
+(`capability/probe.rs:48`), is read by the shipped binary, and is documented as
+safe to redirect wholesale. A process that can set the CLI's environment can
+therefore point it at a directory it owns, record a port at its own listener, an
+`instance_id` its listener reports, and a pid naming any process whose argv
+contains `inkentry-server`, and receive the outbox and the team bearer.
+
+That path uses no test-only variable at all, and it is the shortest one. The two
+below weaken individual checks; the state directory replaces all three at once.
+
+**This is a residual, not a closed threat.** Recorded state has to live somewhere
+the process is told about, and a caller who controls the environment controls
+that. Closing it needs an identity the loopback posture does not provide, the
+same conclusion the relay residuals above reach.
+
+**Where the boundary actually is.** For a process already running as the user,
+this grants little: it is inside the trust domain by ADR-056 and can read
+`memory.db` directly. But that argument does **not** extend to the bearer, which
+lives in the OS keychain rather than in a file, and which ADR-091 records as the
+asset whose disclosure is not recoverable. The case worth naming is
+**workspace-scoped environment**: `direnv`'s `.envrc`, a devcontainer's
+`remoteEnv`. There a checked-out repository supplies the CLI's environment, and
+the attacker needs no local code execution at all, only for someone to trust the
+repo far enough to open it. A shared host where another account can influence a
+profile or `PATH` is the same shape.
+
 ### Test-only overrides that relax discovery
 
-The shipped binary honours environment variables that relax discovery trust.
-**These two are the complete list**, and neither is behind `#[cfg(test)]`. They
-are listed together because the pair is the fact worth knowing: either alone is a
-narrow testing affordance, while two is a documented way to influence which local
-process the CLI will talk to.
-
-Other `INKENTRY_TEST_*` variables exist (crash injection and a page cap, in
-`inkentry-core`'s storage layer) and are out of scope here: none of them affects
-which responder is trusted.
+Two further variables weaken discovery specifically. Both are read by the shipped
+binary, neither is behind `#[cfg(test)]`, and both are fail-safe on any
+unrecognised value. They are listed together because either alone reads as a local
+testing affordance while the pair is a documented category.
 
 | Variable | What it relaxes | What it still cannot do |
 |----------|-----------------|-------------------------|
 | `INKENTRY_TEST_DISCOVERY_PORT` | Replaces `DEFAULT_SERVER_PORT` for the fixed-port fallback, so discovery probes a port of the caller's choosing | Reach the fallback at all when a usable state file exists, and any non-numeric value is refused rather than ignored |
 | `INKENTRY_TEST_TRUST_RECORDED_RESPONDER` | Answers "the recorded pid is an `inkentry-server`" without running the OS process query | Supply a pid, or skip the `instance_id` match: a pid must still be recorded and the responder's reported id must still equal the recorded one. Read only on the discovery-trust path, never by `classify_running_server`, so it cannot widen what a lifecycle command will signal (ADR-085) |
 
-Both are fail-safe by construction and unset for every real user, and setting
-either requires the ability to control the CLI's environment, which is a position
-from which a local attacker already has better options: the loopback daemon is
-unauthenticated by design (ADR-056) and `memory.db` is readable directly. So
-neither raises the ceiling on what a local process can do. They are recorded here
-because a reader auditing discovery should find them in one place, and because two
-is the number at which this stops being an isolated affordance and starts being a
-pattern that wants a rule.
+These two are every variable that relaxes **discovery trust** specifically. Other
+`INKENTRY_TEST_*` variables exist (crash injection and a page cap, in
+`inkentry-core`'s storage layer) and affect no trust decision. Neither list is a
+claim about the environment as a whole: see above.
 
 ### Why this surface is not in `docs/openapi.json` — decided
 
