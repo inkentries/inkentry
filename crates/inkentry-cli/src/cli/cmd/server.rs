@@ -948,6 +948,7 @@ fn spawn_daemon_windows(
         cmd.arg(arg);
     }
     apply_llm_child_env(&mut cmd, llm);
+    let _std_handles = super::helpers::StdHandlesNotInherited::for_spawn();
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(log_file.try_clone()?)

@@ -337,6 +337,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         // alone does not guarantee the child specifically wins the reacquire).
         drop(run_lock.take());
         crash_test_hook::pause_at("after_run_lock_drop", "background_phases");
+        let _std_handles = super::helpers::StdHandlesNotInherited::for_spawn();
         match cmd.spawn() {
             Ok(child) => {
                 if run_lock::wait_for_holder_pid(
