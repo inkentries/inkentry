@@ -4,15 +4,25 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition 2024](https://img.shields.io/badge/rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
-**Code intelligence for AI agents — zero infrastructure required.** Persistent memory, code graph, and search that work straight from the CLI.
+**git tracks what changed. inkentry remembers why.**
+
+inkentry is cross-harness memory for AI coding agents. One `search` spans two
+layers at once: the code that does something, and the decision that made it that
+way. Ask where the retry logic lives and the function comes back next to the
+reasoning that shaped it, because the why is not a string in the current code.
 
 ```bash
-inkentry search "validate_token" --graph            # ranked results plus callers and callees
-inkentry search "error handling" --only-text        # full-text search, no server needed
-inkentry memory add --kind decision --title "Chose sqlite-vec" --body "..."  # persistent across sessions
+inkentry search "why does retry wait 800ms"         # the code and the decision behind it, one ranked list
+inkentry search "validate_token" --graph            # a result plus its callers and callees
+inkentry memory add --kind decision \
+  --title "Chose sqlite-vec" --body "..."           # a decision, written down as it is made
 ```
 
-Semantic search works out of the box: `inkentry` autostarts a local `inkentry-server` that bundles a native embedder — no external inference server to run. Point everyone at a shared `inkentry-server` to share memory across a team.
+Memory is stored in git notes, so it clones with the repository and travels with
+your code. Semantic search runs from a local `inkentry-server` that inkentry
+starts on demand and that bundles a native embedder, so there is no external
+inference server to run. Point a team at a shared server to share decisions
+across everyone's clones.
 
 ## Quick start
 
@@ -55,13 +65,16 @@ inkentry context                                    # agent session entry point
 
 ## Why inkentry?
 
-AI coding agents lose context between sessions and can't trace how code connects across files. inkentry solves both with zero infrastructure.
+AI coding agents lose context between sessions. The reasoning behind a piece of
+code, why the retry waits 800ms, why sqlite-vec over pgvector, is rarely written
+in the code itself, so it gets re-derived every session or lost for good.
+inkentry keeps that why-layer beside the code and hands it back on demand.
 
-- **Persistent memory** — store decisions, requirements, and context in git notes. Retrieve them next session, or share them via a server with your team.
-- **Code graph** — trace callers, callees, and imports across file boundaries without reading every file.
-- **Works without any server** — memory, code graph, and full-text search work with just the binary and a local index (`inkentry init`). No API keys, no configuration.
-- **Semantic search built in** — a local `inkentry-server` is autostarted on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS); no external inference server required. You can still point inkentry at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
-- **100% local** — your code never leaves your machine. The server is self-hosted (local by default). This claim is enforced, not just asserted: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
+- **Memory that travels with the repo** — decisions, requirements, and context are stored in git notes, so they clone with the repository and reach your teammates the way code already does. Retrieve them next session with `inkentry context` or `inkentry search`.
+- **One search, both layers** — a single `search` interleaves code chunks and the decisions behind them into one ranked list. Add `--graph` and each result brings its callers and callees, so you trace how code connects without opening every file.
+- **Runs on your machine** — full-text search, memory, and the call graph work with just the binary and a local index (`inkentry init`). No API keys, no configuration, no server to stand up.
+- **Semantic search built in** — a local `inkentry-server` starts on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS), so there is no external inference server to run. You can still point inkentry at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
+- **Your code stays local** — your code never leaves your machine; only memory does, and only when you point at a team server. The server is self-hosted and binds to loopback by default. This is enforced, not just asserted: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.
 
 ### When to use inkentry vs grep
@@ -98,6 +111,10 @@ automatically, but your own stay local until you run `inkentry hooks install
 through a team server.
 
 ### Code graph
+
+The call graph rides on search rather than standing alone: `--graph` expands a
+result with its 1-hop neighbours, and `plumbing graph-edges` exposes the exact
+edges underneath for scripts and agents.
 
 ```bash
 inkentry search linearrag_search --graph                 # the symbol's chunk + its 1-hop neighbours

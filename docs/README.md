@@ -10,11 +10,12 @@ reference (stage 4) for lookup afterwards.
 
 ## 1. On-ramp (first five minutes)
 
-Understand how an unfamiliar codebase fits together, with zero infrastructure.
-Install the binary, run `inkentry init`, and the first `graph` / `search` /
-`context` already trace how a symbol connects, find the code behind a concept,
-and assemble the context around a change. This is fast understanding (how,
-where, what), not a faster grep, and it needs no server.
+Understand how an unfamiliar codebase fits together, with nothing to stand up.
+Install the binary, run `inkentry init`, and the first `inkentry search` (add
+`--graph` for callers and callees) and `inkentry context` already find the code
+behind a concept, trace how a symbol connects, and assemble the context around a
+change. This is fast understanding (how, where, what), not a faster grep, and it
+needs no server.
 
 - [README quick start](../README.md#quick-start): the install one-liner and three commands that work immediately
 - [Getting Started → install](getting-started.md#1-install-inkentry): script, Homebrew, `.deb`, or tarball
@@ -92,7 +93,7 @@ the hosted inkentry cloud service is the managed alternative.
 
 | Tier | What it adds | Where memory lives |
 |---|---|---|
-| Built-in (zero infra) | git-notes memory, full-text search, code graph | local `memory.db` |
+| Built-in (no server) | git-notes memory, full-text search, code graph | local `memory.db` |
 | Local semantic server (auto-started on loopback) | faster semantic search, summaries | still local `memory.db`: inference only, never a memory store |
 | Team memory server (explicit `server_url`) | one shared memory index for the team | the shared server: the only path off the local machine |
 
