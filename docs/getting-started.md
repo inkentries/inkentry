@@ -2,9 +2,9 @@
 
 `inkentry` is a single binary that helps you understand an unfamiliar codebase
 fast: trace how a symbol connects across files, find the code behind a concept,
-and assemble the context around a change, all from the CLI with no infrastructure
-to stand up. Install it, run `inkentry init` inside a git repository, and the first
-`search` and `context` already tell you how the code fits together.
+and assemble the context around a change, all from the CLI with no server or
+service to operate. Install it, run `inkentry init` in your project root, and the
+first `search` and `context` already tell you how the code fits together.
 
 That is the starting point. As you keep working, `inkentry` also remembers the
 decisions behind the code, so a later session (yours or a teammate's) does not
@@ -401,7 +401,7 @@ the managed inkentry cloud.
 
 | Tier | What runs it | What it adds | Where memory lives |
 |---|---|---|---|
-| **Built-in** (zero infra) | just the `inkentry` binary | git-notes memory, full-text search, code graph | local `memory.db` |
+| **Built-in** (no server) | just the `inkentry` binary | git-notes memory, full-text search, code graph | local `memory.db` |
 | **Local semantic server** | a loopback `inkentry-server`, auto-started on demand | semantic / hybrid `search` | still local `memory.db`: the server is **inference only, never a memory store** |
 | **Team memory server** | a shared `inkentry-server` you deploy, set via an explicit `server_url` | shared memory across the team | the shared server you run: memory leaves your machine, your code stays local |
 | **inkentry cloud** (hosted) | a managed service: nothing to deploy or maintain | the same shared-team memory as a self-hosted server, without running one | the hosted service: memory leaves your machine, your code stays local |

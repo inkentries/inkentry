@@ -2,19 +2,22 @@
 
 > git tracks what changed. inkentry remembers why.
 
-inkentry helps you understand an unfamiliar codebase fast, then remembers the
-decisions behind it so the next session does not re-derive them. These docs
-follow the path a new user takes, from the first five minutes to running a
-shared memory server for a team. Read them in order the first time; use the
-reference (stage 4) for lookup afterwards.
+inkentry is your project's memory. It works in the background, keeping the
+decisions that shape your codebase next to the code they shaped, and hands them
+back at the moment they matter. Built for people and for the agents working
+alongside them. These docs follow the path a new user takes, from the first five
+minutes to running a shared memory server for a team. Read them in order the
+first time; use the reference (stage 4) for lookup afterwards.
 
 ## 1. On-ramp (first five minutes)
 
-Understand how an unfamiliar codebase fits together, with zero infrastructure.
-Install the binary, run `inkentry init`, and the first `graph` / `search` /
-`context` already trace how a symbol connects, find the code behind a concept,
-and assemble the context around a change. This is fast understanding (how,
-where, what), not a faster grep, and it needs no server.
+Understand how an unfamiliar codebase fits together, with no server or service
+to operate. Install the binary and run `inkentry init` in your project root: a
+quick one-time local setup that indexes the repository. From there the first
+`inkentry search` (add `--graph` for callers and callees) and `inkentry context`
+find the code behind a concept, trace how a symbol connects, and assemble the
+context around a change. This is fast understanding (how, where, what), not a
+faster grep, and it all runs on your machine.
 
 - [README quick start](../README.md#quick-start): the install one-liner and three commands that work immediately
 - [Getting Started → install](getting-started.md#1-install-inkentry): script, Homebrew, `.deb`, or tarball
@@ -92,7 +95,7 @@ the hosted inkentry cloud service is the managed alternative.
 
 | Tier | What it adds | Where memory lives |
 |---|---|---|
-| Built-in (zero infra) | git-notes memory, full-text search, code graph | local `memory.db` |
+| Built-in (no server) | git-notes memory, full-text search, code graph | local `memory.db` |
 | Local semantic server (auto-started on loopback) | faster semantic search, summaries | still local `memory.db`: inference only, never a memory store |
 | Team memory server (explicit `server_url`) | one shared memory index for the team | the shared server: the only path off the local machine |
 
