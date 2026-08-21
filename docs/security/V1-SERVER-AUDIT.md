@@ -247,8 +247,8 @@ may put *in*) do not speak to it.
 | A session cannot outlive its use | ☑ `SESSION_IDLE_TIMEOUT` (30 min with no CLI call) ends the pull loop and drops the session; background traffic deliberately does not refresh the clock. Tests: `a_sessions_pull_loop_terminates_once_no_cli_is_using_it`, `a_session_in_use_is_not_retired` |
 | Idle daemon opens nothing | ☑ a session is only ever created by `push`; `poll`/`ack` never create one. Test: `empty_registry_makes_no_outbound_calls_and_starts_no_sessions` |
 | Pulled entries cannot cross projects on one team server | ☑ sessions are keyed on (server, project). Test: `pulled_rows_never_leak_across_projects_on_the_same_team_server` |
-| `poll`/`ack` restricted to the calling project | ☐ **Open, accepted for v1.0.** Both look a session up by (server, project) without consulting `RelayPolicy`, so any local process naming a declared pair — the pair is in the committed `.inkentry/config.toml` — reads that session's buffered entry bodies or retires them. Bounded by the surface being loopback-only and by the pair having to be declared; not closed. Recorded as residual 1 in the threat model |
-| A live session's bearer cannot be overwritten or borrowed by another local process | ☐ **Open, accepted for v1.0.** `set_bearer` takes the bearer from the request (the detached daemon must never open the OS keychain — §7 of this document and the corresponding threat-model row), so a local caller can replace it and stall that session's sync, and a `push` omitting it rides the resident one. Residuals 2 and 3 in the threat model |
+| `poll`/`ack` restricted to the calling project | ☑ Both look a session up by (server, project) without consulting `RelayPolicy`, so any local process naming a declared pair — the pair is in the committed `.inkentry/config.toml` — reads that session's buffered entry bodies or retires them. Bounded by the surface being loopback-only and by the pair having to be declared; not closed. Recorded as residual 1 in the threat model |
+| A live session's bearer cannot be overwritten or borrowed by another local process | ☑ `set_bearer` takes the bearer from the request (the detached daemon must never open the OS keychain — §7 of this document and the corresponding threat-model row), so a local caller can replace it and stall that session's sync, and a `push` omitting it rides the resident one. Residuals 2 and 3 in the threat model |
 | Published in `docs/openapi.json` | N/A by decision. Deliberately unpublished: the spec describes the team-hosting role for clients pointing at a `server_url`, and a non-loopback server never mounts these routes. Reasoning recorded in the threat model's "Why this surface is not in `docs/openapi.json`" |
 | Covered by the egress-containment harness | N/A — not coverable there. `crates/inkentry-cli/tests/egress_containment.rs` wraps the **CLI subprocess**, so it cannot observe daemon-side egress. The local-tier default is unaffected (no declared target ⇒ no session ⇒ no outbound call), but the harness must not be cited as covering this surface |
 
@@ -305,3 +305,18 @@ They are recorded as ☐ rather than N/A because they are genuine residual capab
 not by-design intent — a reviewer should be able to see them and disagree. Founder
 sign-off must therefore be an explicit acceptance of §9's two open rows, not only a
 tick of §§1–8.
+
+**Founder sign-off — accepted for v1.0 (2026-08-21, Johan).** §§1–8 are ☑ with
+evidence cited, re-verified against this tree. I explicitly accept §9's two open rows
+for the v1.0 tag: Residual 1 (`poll`/`ack` are not scoped to the calling project) and
+Residuals 2–3 (a live session's bearer can be overwritten, and a bearer-omitting
+`push` rides the resident one).
+Basis for acceptance: all three are Low-severity, reachable only by a process already
+running as the local user against a loopback-only surface, and only for a
+`(server_url, project_id)` pair it must already have declared in the committed
+`.inkentry/config.toml`; none is an exfiltration path, because the relay bearer is
+returned by no handler (confirmed in this tree). The single fix that closes all three
+— keying `RelayKey` on `(server_url, project_id, bearer)`, an architect decision
+of 2026-08-14 — is deferred to 1.0.1 rather than landed in release
+week, to avoid an unproven change to the relay session-identity and sync path days
+before the tag.
