@@ -2,11 +2,12 @@
 
 > git tracks what changed. inkentry remembers why.
 
-inkentry helps you understand an unfamiliar codebase fast, then remembers the
-decisions behind it so the next session does not re-derive them. These docs
-follow the path a new user takes, from the first five minutes to running a
-shared memory server for a team. Read them in order the first time; use the
-reference (stage 4) for lookup afterwards.
+inkentry is your project's memory. It works in the background, keeping the
+decisions that shape your codebase next to the code they shaped, and hands them
+back at the moment they matter. Built for people and for the agents working
+alongside them. These docs follow the path a new user takes, from the first five
+minutes to running a shared memory server for a team. Read them in order the
+first time; use the reference (stage 4) for lookup afterwards.
 
 ## 1. On-ramp (first five minutes)
 

@@ -6,13 +6,13 @@
 
 **git tracks what changed. inkentry remembers why.**
 
-inkentry is cross-harness memory for AI coding agents. One `search` spans two
-layers at once: the code that does something, and the decision that made it that
-way. Ask where the retry logic lives and the function comes back next to the
-reasoning that shaped it, because the why is not a string in the current code.
+inkentry is your project's memory. It works in the background, keeping the
+decisions that shape your codebase next to the code they shaped, and hands them
+back at the moment they matter. Built for people and for the agents working
+alongside them.
 
 ```bash
-inkentry search "why does retry wait 800ms"         # the code and the decision behind it, one ranked list
+inkentry search "why does retry wait 800ms"         # the code, and the decision behind it
 inkentry search "validate_token" --graph            # a result plus its callers and callees
 inkentry memory add --kind decision \
   --title "Chose sqlite-vec" --body "..."           # a decision, written down as it is made
