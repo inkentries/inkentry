@@ -11,12 +11,13 @@ first time; use the reference (stage 4) for lookup afterwards.
 
 ## 1. On-ramp (first five minutes)
 
-Understand how an unfamiliar codebase fits together, with nothing to stand up.
-Install the binary, run `inkentry init`, and the first `inkentry search` (add
-`--graph` for callers and callees) and `inkentry context` already find the code
-behind a concept, trace how a symbol connects, and assemble the context around a
-change. This is fast understanding (how, where, what), not a faster grep, and it
-needs no server.
+Understand how an unfamiliar codebase fits together, with no server or service
+to operate. Install the binary and run `inkentry init` in your project root: a
+quick one-time local setup that indexes the repository. From there the first
+`inkentry search` (add `--graph` for callers and callees) and `inkentry context`
+find the code behind a concept, trace how a symbol connects, and assemble the
+context around a change. This is fast understanding (how, where, what), not a
+faster grep, and it all runs on your machine.
 
 - [README quick start](../README.md#quick-start): the install one-liner and three commands that work immediately
 - [Getting Started → install](getting-started.md#1-install-inkentry): script, Homebrew, `.deb`, or tarball

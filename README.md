@@ -40,7 +40,7 @@ curl -fsSL https://get.inkentry.com/install.sh | sh
 
 **2. Initialise the project**
 
-From inside any git repository:
+From the root of your git repository:
 
 ```bash
 inkentry init                                       # index + autostart server in one step
@@ -72,7 +72,7 @@ inkentry keeps that why-layer beside the code and hands it back on demand.
 
 - **Memory that travels with the repo** — decisions, requirements, and context are stored in git notes, so they clone with the repository and reach your teammates the way code already does. Retrieve them next session with `inkentry context` or `inkentry search`.
 - **One search, both layers** — a single `search` interleaves code chunks and the decisions behind them into one ranked list. Add `--graph` and each result brings its callers and callees, so you trace how code connects without opening every file.
-- **Runs on your machine** — full-text search, memory, and the call graph work with just the binary and a local index (`inkentry init`). No API keys, no configuration, no server to stand up.
+- **Runs on your machine** — full-text search, memory, and the call graph work with just the binary and a local index (`inkentry init`). No API keys, no configuration, no server to operate.
 - **Semantic search built in** — a local `inkentry-server` starts on demand with a bundled native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS), so there is no external inference server to run. You can still point inkentry at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
 - **Your code stays local** — your code never leaves your machine; only memory does, and only when you point at a team server. The server is self-hosted and binds to loopback by default. This is enforced, not just asserted: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.
