@@ -1,6 +1,6 @@
 [package]
 name = "inkentry-server"
-version = "1.0.0-rc3"
+version = "1.0.0"
 edition = "2024"
 description = "inkentry shared memory server"
 license = "MIT"
