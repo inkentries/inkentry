@@ -133,7 +133,7 @@ The version lives in each crate's own manifest, and all four move together:
 ```toml
 [package]
 name = "inkentry-cli"
-version = "0.9.8"   # <-- update this, in all four manifests
+version = "1.0.0"   # <-- update this, in all four manifests
 ```
 
 Then regenerate `Cargo.lock` with cargo — never hand-edit it. The workspace
@@ -174,15 +174,15 @@ Fix anything that pins a specific old version (use `<version>` or point at
 
 ```bash
 git add crates/*/Cargo.toml Cargo.lock CHANGELOG.md docs/
-git commit -m "chore: bump version to 0.9.8"
+git commit -m "chore: bump version to 1.0.0"
 git push origin main
 ```
 
 ### 2. Tag and push
 
 ```bash
-git tag v0.9.8
-git push origin v0.9.8
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 That's it. The release workflow triggers automatically on the pushed tag.
@@ -193,7 +193,7 @@ Watch progress at:
 `https://github.com/inkentries/inkentry/actions/workflows/release.yml`
 
 Once all jobs pass, the release appears at:
-`https://github.com/inkentries/inkentry/releases/tag/v0.9.8`
+`https://github.com/inkentries/inkentry/releases/tag/v1.0.0`
 
 ## Pre-releases
 
@@ -202,14 +202,14 @@ GitHub Release as a pre-release when the tag contains `-rc`, `-beta`, or
 `-alpha`:
 
 ```bash
-git tag v0.9.8-rc.1
-git push origin v0.9.8-rc.1
+git tag v1.0.0-rc.1
+git push origin v1.0.0-rc.1
 ```
 
 ## Download URLs
 
 After a release is published, assets follow these patterns (the `<version>`
-segment is the full tag, e.g. `v0.9.8`):
+segment is the full tag, e.g. `v1.0.0`):
 
 ```
 # Unix tarballs
@@ -237,23 +237,23 @@ Worth running once by hand after a release, alongside checking the assets are
 all present — it is the only step of the release that fails silently from a
 user's point of view, because nothing downstream reads it.
 
-Examples for `v0.9.8`:
+Examples for `v1.0.0`:
 
 ```bash
 # macOS Apple Silicon
-https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-apple-darwin.tar.gz
+https://github.com/inkentries/inkentry/releases/download/v1.0.0/inkentry-v1.0.0-aarch64-apple-darwin.tar.gz
 
 # Linux x86_64
-https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-unknown-linux-gnu.tar.gz
+https://github.com/inkentries/inkentry/releases/download/v1.0.0/inkentry-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
 
 # Linux ARM64
-https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-aarch64-unknown-linux-gnu.tar.gz
+https://github.com/inkentries/inkentry/releases/download/v1.0.0/inkentry-v1.0.0-aarch64-unknown-linux-gnu.tar.gz
 
 # Windows x86_64
-https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry-v0.9.8-x86_64-pc-windows-msvc.zip
+https://github.com/inkentries/inkentry/releases/download/v1.0.0/inkentry-v1.0.0-x86_64-pc-windows-msvc.zip
 
 # Debian (amd64)
-https://github.com/inkentries/inkentry/releases/download/v0.9.8/inkentry_0.9.8_amd64.deb
+https://github.com/inkentries/inkentry/releases/download/v1.0.0/inkentry_1.0.0_amd64.deb
 ```
 
 > `releases/latest/download/<asset>` also works when the asset name is exact,
@@ -267,11 +267,11 @@ If a release needs to be pulled:
 
 ```bash
 # Delete the tag locally and on remote
-git tag -d v0.9.8
-git push origin :refs/tags/v0.9.8
+git tag -d v1.0.0
+git push origin :refs/tags/v1.0.0
 
 # Delete the GitHub Release (requires gh CLI)
-gh release delete v0.9.8 --yes
+gh release delete v1.0.0 --yes
 ```
 
 Then fix the issue, re-commit, and re-tag.
