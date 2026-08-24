@@ -102,7 +102,7 @@ All four unit tests live in `crates/inkentry-server/src/main.rs`.
 
 ## 4. Input validation
 
-Path params in the OSS server are **project slugs** (e.g. `usercise/spelunk`), not
+Path params in the OSS server are **project slugs** (e.g. `inkentries/inkentry`), not
 UUIDs, so the "malformed UUID" row is reframed as a slug length/sanity cap.
 
 | Check | Status |

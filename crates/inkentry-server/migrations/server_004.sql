@@ -1,4 +1,4 @@
--- spelunk-server migration 004
+-- inkentry-server migration 004
 -- Additive cross-machine identity for server-stored memory entries.
 --
 -- `remote_id` is the canonical cross-machine id (a uuid string). It is nullable

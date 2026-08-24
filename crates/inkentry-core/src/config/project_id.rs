@@ -129,7 +129,7 @@ mod tests {
         std::fs::create_dir_all(repo_dir.join(".git")).unwrap();
         std::fs::write(
             repo_dir.join(".git").join("config"),
-            "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://github.com/spelunk-cloud/spelunk.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+            "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://github.com/inkentries/inkentry.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
         )
         .unwrap();
         // derive_project_id falls back to local/ when gix::discover fails on
@@ -137,6 +137,6 @@ mod tests {
         // We test the git-config parser directly instead:
         let config = std::fs::read_to_string(repo_dir.join(".git").join("config")).unwrap();
         let url = extract_origin_url_from_git_config(&config).unwrap();
-        assert_eq!(normalise_git_url(&url), "github.com/spelunk-cloud/spelunk");
+        assert_eq!(normalise_git_url(&url), "github.com/inkentries/inkentry");
     }
 }

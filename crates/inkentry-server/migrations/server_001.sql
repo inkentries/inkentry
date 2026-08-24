@@ -1,4 +1,4 @@
--- spelunk-server schema
+-- inkentry-server schema
 -- One server instance can host multiple projects.
 
 CREATE TABLE IF NOT EXISTS projects (
