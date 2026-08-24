@@ -2044,10 +2044,10 @@ project_id = "team/new"
         .unwrap();
 
         let store = MemoryStore::default();
-        server_keys::set_key_for_origin("http://team:4655", "sk-sp-new", &store).unwrap();
+        server_keys::set_key_for_origin("http://team:4655", "sk-ink-new", &store).unwrap();
 
         let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(!on_disk.contains("sk-sp-new"));
+        assert!(!on_disk.contains("sk-ink-new"));
         assert!(!on_disk.contains("server_key"));
 
         let cfg = Config::load_with_store(Some(&path), &store).unwrap();
@@ -2055,7 +2055,7 @@ project_id = "team/new"
             cfg.bearer_for_with_store("http://team:4655", &store)
                 .unwrap()
                 .as_deref(),
-            Some("sk-sp-new")
+            Some("sk-ink-new")
         );
     }
 

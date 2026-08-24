@@ -1,7 +1,7 @@
 //! Credential-format-agnostic secret storage for the CLI.
 //!
 //! The CLI's bearer credential used to live as plaintext in
-//! `~/.config/inkentry/config.toml` (`server_key = "sk-sp-…"`). Any process
+//! `~/.config/inkentry/config.toml` (`server_key = "sk-ink-…"`). Any process
 //! running as the user could read it, and the common real-world leak is users
 //! syncing `~/.config` into a dotfiles git repo or a backup. That file is read
 //! for no credential at all any more (ADR-088 D1); secrets live in the OS
@@ -16,7 +16,7 @@
 //! ## Format-agnostic
 //!
 //! The store holds **opaque string secrets keyed by name** — it does not know
-//! or care whether a value is today's `sk-sp-…` bearer key or a future WorkOS
+//! or care whether a value is today's `sk-ink-…` bearer key or a future WorkOS
 //! access/refresh token. Callers pick the key name; this module
 //! just persists and retrieves the bytes. That keeps the storage layer reusable
 //! when the credential format changes.
@@ -371,17 +371,17 @@ mod tests {
         let store = FileStore::new(tmp.path().join("secrets.toml"));
 
         assert_eq!(store.get(TEST_KEY).unwrap(), None);
-        store.set(TEST_KEY, "sk-sp-secret").unwrap();
+        store.set(TEST_KEY, "sk-ink-secret").unwrap();
         assert_eq!(
             store.get(TEST_KEY).unwrap().as_deref(),
-            Some("sk-sp-secret")
+            Some("sk-ink-secret")
         );
 
         // Overwrite.
-        store.set(TEST_KEY, "sk-sp-rotated").unwrap();
+        store.set(TEST_KEY, "sk-ink-rotated").unwrap();
         assert_eq!(
             store.get(TEST_KEY).unwrap().as_deref(),
-            Some("sk-sp-rotated")
+            Some("sk-ink-rotated")
         );
 
         store.delete(TEST_KEY).unwrap();
