@@ -9,7 +9,7 @@
 The CLI threat model ([`THREAT-MODEL.md`](THREAT-MODEL.md)) remains valid for the CLI crate. This document covers threats introduced by the HTTP server.
 
 **On this retarget.** The original draft was written against a cloud-shaped server
-(Postgres, `org_id` row-level security, `JWT_SECRET`, `sk-sp-` prefixed keys). The
+(Postgres, `org_id` row-level security, `JWT_SECRET`, `sk-ink-` prefixed keys). The
 OSS `inkentry-server` is a single-file SQLite service with one shared bearer key and
 no identity, org, or role model. Items that assume the cloud shape are relabelled
 below as **N/A (cloud-only)** or **N/A by design (ADR-056)**; they are not
@@ -47,7 +47,7 @@ keys-table / scoped-key model are relabelled accordingly.
 |---|---|
 | Configured key never held or compared as plaintext | ☑ `auth.rs::ApiKeyAuth::new` hashes the key with BLAKE3 into a 32-byte digest at construction; the plaintext is not retained |
 | Key comparison uses constant-time equality (not `==` on strings) | ☑ `auth.rs` hashes the provided token and compares digests with `constant_time_eq::constant_time_eq_32` |
-| `sk-sp-` prefix format validated before any DB lookup | N/A (cloud-only). The OSS server has no `sk-sp-` prefix and no per-key DB lookup; the key is opaque and matched by digest. |
+| `sk-ink-` prefix format validated before any DB lookup | N/A (cloud-only). The OSS server has no `sk-ink-` prefix and no per-key DB lookup; the key is opaque and matched by digest. |
 | Revoked/deleted keys rejected immediately (no cache window) | N/A (cloud-only). There is no key store to revoke from; a single shared key is rotated by restarting the server with a new value (ADR-056). |
 | Key scope enforced: project-scoped key cannot write to other projects | N/A by design (ADR-056). The shared key grants full access to every project on the instance; isolation is by running separate instances. |
 
