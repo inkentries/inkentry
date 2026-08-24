@@ -1,4 +1,4 @@
--- spelunk-server migration 007
+-- inkentry-server migration 007
 -- Server-minted, arrival-ordered identity for the delta-pull cursor
 -- (`/memory/since?since_id=`). Distinct from `remote_id` (a pushing client's
 -- own external_id, used only for push idempotency): `sync_id` is minted by

@@ -1,4 +1,4 @@
--- spelunk-server migration 006
+-- inkentry-server migration 006
 -- Narrow `remote_id` uniqueness to per-project, matching cloud-api's
 -- `(project_id, external_id)` partial unique index (006_memory_entries_additions.sql
 -- there). Migration 004 indexed `remote_id` alone (global): two different
