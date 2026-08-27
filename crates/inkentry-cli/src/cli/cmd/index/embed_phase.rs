@@ -313,16 +313,50 @@ struct ReqChunk {
     content: String,
 }
 
+/// Which persistent-failure hint `report_embed_failure` prints as its final
+/// line: the two failure families need different remedies, and the wrong one
+/// sends the operator chasing a fix that cannot help.
+#[derive(Clone, Copy)]
+enum StopHint {
+    /// The batch may have exceeded the server's per-request budget: the remedy
+    /// is on the request-size axis. Used for 408/timeout, connect-failure and
+    /// saturation exhaustion, and other unclassified failures.
+    RequestBudget,
+    /// The server's embedder lost its GPU device (see the `embedder_device_lost`
+    /// signal): no request size fixes that, only a server restart does.
+    EmbedderDeviceLost,
+}
+
+/// The final, persistent-failure hint line for a given [`StopHint`]. Split out
+/// from `report_embed_failure` so the remedy each failure family points at is
+/// unit-testable without capturing stderr.
+fn persistent_failure_hint(server_url: &str, hint: StopHint) -> String {
+    match hint {
+        StopHint::RequestBudget => format!(
+            "If this keeps happening: the inkentry-server at {server_url} may be enforcing a \
+             smaller request budget than this batch needs."
+        ),
+        StopHint::EmbedderDeviceLost => format!(
+            "The inkentry-server at {server_url} lost its embedder's GPU device (this can happen \
+             after the machine has been idle or asleep for a long time). Restart it to \
+             re-establish the device: `inkentry server stop && inkentry server start`, then \
+             re-run `inkentry index`."
+        ),
+    }
+}
+
 /// Report an unrecoverable embed-phase failure: abandon the progress bar and
-/// print an actionable message to stderr (naming the server request budget).
-/// Does NOT return `Err` — callers report the
-/// count embedded so far via `Ok(embedded)`.
+/// print an actionable message to stderr. The final line depends on `hint`: a
+/// request-budget/size failure and an upstream embedder device loss need
+/// different remedies. Does NOT return `Err` — callers report the count
+/// embedded so far via `Ok(embedded)`.
 fn report_embed_failure(
     bar: &ProgressBar,
     embedded: u64,
     total: u64,
     server_url: &str,
     err: anyhow::Error,
+    hint: StopHint,
 ) {
     bar.abandon_with_message(format!(
         "batch failed after {embedded}/{total} embedded; re-run `inkentry index` to finish the rest",
@@ -333,10 +367,7 @@ fn report_embed_failure(
          are skipped.",
         total - embedded,
     );
-    eprintln!(
-        "If this keeps happening: the inkentry-server at {server_url} may be enforcing a \
-         smaller request budget than this batch needs."
-    );
+    eprintln!("{}", persistent_failure_hint(server_url, hint));
 }
 
 /// Send pending chunks to `inkentry-server` for embedding and write the returned
@@ -588,7 +619,14 @@ async fn run_embed_phase_with_backoff(
                     // and a re-run backfills the rest. Return the count so far —
                     // an `Err` would unwind before `stats()` and discard the
                     // visible progress.
-                    report_embed_failure(&bar, embedded, total, &server_url, e);
+                    report_embed_failure(
+                        &bar,
+                        embedded,
+                        total,
+                        &server_url,
+                        e,
+                        StopHint::RequestBudget,
+                    );
                     return Ok(embedded);
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) => {
@@ -599,7 +637,14 @@ async fn run_embed_phase_with_backoff(
                         // Already at the floor and still failing (the batch-of-1
                         // branch above handles this; guards against an infinite
                         // loop otherwise).
-                        report_embed_failure(&bar, embedded, total, &server_url, e);
+                        report_embed_failure(
+                            &bar,
+                            embedded,
+                            total,
+                            &server_url,
+                            e,
+                            StopHint::RequestBudget,
+                        );
                         return Ok(embedded);
                     }
                     tracing::warn!(
@@ -621,7 +666,14 @@ async fn run_embed_phase_with_backoff(
                     // about embedding throughput. Retry the same size with
                     // backoff instead of shrinking.
                     if connect_failures >= connect_failure_backoffs.len() {
-                        report_embed_failure(&bar, embedded, total, &server_url, e);
+                        report_embed_failure(
+                            &bar,
+                            embedded,
+                            total,
+                            &server_url,
+                            e,
+                            StopHint::RequestBudget,
+                        );
                         return Ok(embedded);
                     }
                     let backoff = connect_failure_backoffs[connect_failures];
@@ -652,6 +704,7 @@ async fn run_embed_phase_with_backoff(
                                 "server embed admission queue stayed saturated after \
                                  {MAX_SATURATION_RETRIES} retries"
                             ),
+                            StopHint::RequestBudget,
                         );
                         return Ok(embedded);
                     }
@@ -664,11 +717,33 @@ async fn run_embed_phase_with_backoff(
                     tokio::time::sleep(retry_after).await;
                     continue 'retry;
                 }
+                Err(EmbedBatchError::EmbedderDeviceLost(e)) => {
+                    // The server told us its embedder lost its GPU device and
+                    // self-heal failed: an upstream inference failure, not a
+                    // batch-size problem. No retry or shrink can fix it, so stop
+                    // and point the user at a server restart (see the hint).
+                    report_embed_failure(
+                        &bar,
+                        embedded,
+                        total,
+                        &server_url,
+                        e,
+                        StopHint::EmbedderDeviceLost,
+                    );
+                    return Ok(embedded);
+                }
                 Err(EmbedBatchError::Other(e)) => {
                     // Any other failure: prior batches stay committed and a
                     // re-run backfills the rest. Report and stop rather than
                     // propagating an `Err` that would discard the visible progress.
-                    report_embed_failure(&bar, embedded, total, &server_url, e);
+                    report_embed_failure(
+                        &bar,
+                        embedded,
+                        total,
+                        &server_url,
+                        e,
+                        StopHint::RequestBudget,
+                    );
                     return Ok(embedded);
                 }
             }
@@ -737,8 +812,29 @@ enum EmbedBatchError {
     /// nothing about this batch's size, and unlike `ConnectFailure`, the
     /// server itself names the wait via `Retry-After`.
     Saturated(Duration),
+    /// Server returned the `embedder_device_lost` signal (a `503` whose body
+    /// carries that code): its embedder lost its GPU device and self-heal
+    /// failed. An upstream inference failure, not a batch-size problem — no
+    /// shrink or retry helps, only a server restart, so it is reported with a
+    /// distinct hint (see `StopHint::EmbedderDeviceLost`).
+    EmbedderDeviceLost(anyhow::Error),
     /// Any other failure (network error, non-408 status, malformed body).
     Other(anyhow::Error),
+}
+
+/// True when an error response body carries the server's stable
+/// `embedder_device_lost` code (`{"error": {"code": "embedder_device_lost", …}}`).
+/// A non-JSON or differently-shaped body (e.g. the warming-up `{"state": …}`
+/// shape, or a generic `internal_error`) is not a device loss.
+fn response_signals_device_lost(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    value
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_str())
+        == Some("embedder_device_lost")
 }
 
 /// Parse a `Retry-After` header value as whole seconds, falling back to
@@ -807,6 +903,27 @@ async fn embed_one_batch(
 
     if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(EmbedBatchError::Saturated(parse_retry_after(&resp)));
+    }
+
+    // A 503 whose body carries the `embedder_device_lost` code is the server
+    // reporting that its embedder lost its GPU device and self-heal failed (see
+    // inkentry-server's `AppError`). That is an upstream inference failure, not
+    // a batch-size rejection, so classify it distinctly here rather than letting
+    // it fall through to the generic `Other` path that prints a batch-size hint.
+    // Any other 503 (e.g. the embedder still warming up) keeps the generic
+    // treatment.
+    if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        let body = resp.text().await.unwrap_or_default();
+        if response_signals_device_lost(&body) {
+            return Err(EmbedBatchError::EmbedderDeviceLost(anyhow::anyhow!(
+                "the inkentry-server's embedder lost its GPU device (upstream inference \
+                 failure), not a request-budget or batch-size rejection"
+            )));
+        }
+        return Err(EmbedBatchError::Other(anyhow::anyhow!(
+            "server returned 503 Service Unavailable for index/embed: {}",
+            body.trim(),
+        )));
     }
 
     // This path carries the same per-origin bearer the memory and sync paths
@@ -1521,6 +1638,9 @@ mod tests {
             Err(EmbedBatchError::Other(e)) => {
                 panic!("a refused connection must classify as ConnectFailure, not Other: {e:#}")
             }
+            Err(EmbedBatchError::EmbedderDeviceLost(e)) => panic!(
+                "a refused connection must classify as ConnectFailure, not EmbedderDeviceLost: {e:#}"
+            ),
             Ok(_) => panic!("connecting to a released, unlistened port must fail"),
         }
     }
@@ -1562,6 +1682,10 @@ mod tests {
             }
             Err(EmbedBatchError::Other(e)) => panic!(
                 "a slow-but-connected server must classify as BudgetExceeded, not Other: {e:#}"
+            ),
+            Err(EmbedBatchError::EmbedderDeviceLost(e)) => panic!(
+                "a slow-but-connected server must classify as BudgetExceeded, not \
+                 EmbedderDeviceLost: {e:#}"
             ),
             Ok(_) => panic!("a response delayed past the timeout must fail"),
         }
@@ -1612,6 +1736,10 @@ mod tests {
             Err(EmbedBatchError::Other(e)) => {
                 panic!("a connect-phase timeout must classify as ConnectFailure, not Other: {e:#}")
             }
+            Err(EmbedBatchError::EmbedderDeviceLost(e)) => panic!(
+                "a connect-phase timeout must classify as ConnectFailure, not \
+                 EmbedderDeviceLost: {e:#}"
+            ),
             Ok(_) => panic!("192.0.2.1 must never actually accept a connection"),
         }
     }
@@ -1646,6 +1774,9 @@ mod tests {
                 panic!("a 401 must surface as Other: {e:#}")
             }
             Err(EmbedBatchError::Saturated(_)) => panic!("a 401 must not classify as Saturated"),
+            Err(EmbedBatchError::EmbedderDeviceLost(e)) => {
+                panic!("a 401 must surface as Other, not EmbedderDeviceLost: {e:#}")
+            }
             Ok(_) => panic!("a 401 must not succeed"),
         };
         let rendered = format!("{e:#}");
@@ -1711,6 +1842,9 @@ mod tests {
             Err(EmbedBatchError::Other(e)) => {
                 panic!("a 429 must classify as Saturated, not Other: {e:#}")
             }
+            Err(EmbedBatchError::EmbedderDeviceLost(e)) => {
+                panic!("a 429 must classify as Saturated, not EmbedderDeviceLost: {e:#}")
+            }
             Ok(_) => panic!("a 429 response must not classify as success"),
         }
     }
@@ -1753,7 +1887,99 @@ mod tests {
             Err(EmbedBatchError::Other(e)) => {
                 panic!("a 429 must classify as Saturated, not Other: {e:#}")
             }
+            Err(EmbedBatchError::EmbedderDeviceLost(e)) => {
+                panic!("a 429 must classify as Saturated, not EmbedderDeviceLost: {e:#}")
+            }
             Ok(_) => panic!("a 429 response must not classify as success"),
+        }
+    }
+
+    // ── embed_one_batch: 503 embedder device loss vs generic 503 ────────────
+
+    #[tokio::test]
+    async fn embed_one_batch_classifies_device_lost_503_distinctly_from_a_budget_rejection() {
+        // A 503 whose body carries the `embedder_device_lost` code is an
+        // upstream inference failure (the server's embedder lost its GPU
+        // device), which must classify as EmbedderDeviceLost so the run prints a
+        // server-restart hint, not the batch-size hint a 408 gets.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "error": {"code": "embedder_device_lost", "message": "restart to recover"}
+            })))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/projects/x/index/embed", mock.uri());
+        let result = embed_one_batch(
+            &client,
+            &url,
+            None,
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        match result {
+            Err(EmbedBatchError::EmbedderDeviceLost(_)) => {}
+            Err(EmbedBatchError::BudgetExceeded(e)) => {
+                panic!("a device loss must not read as a request-budget rejection: {e:#}")
+            }
+            Err(EmbedBatchError::Other(e)) => {
+                panic!("a device loss must be classified distinctly, not Other: {e:#}")
+            }
+            Err(EmbedBatchError::ConnectFailure(e)) => {
+                panic!("a device loss is not a connect failure: {e:#}")
+            }
+            Err(EmbedBatchError::Saturated(_)) => panic!("a device loss is not saturation"),
+            Ok(_) => panic!("a 503 must not classify as success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn embed_one_batch_treats_a_non_device_lost_503_as_a_generic_failure() {
+        // Any other 503 (e.g. the embedder still warming up, a different shape
+        // with no `error.code`) must NOT be mistaken for a device loss: it keeps
+        // the generic `Other` treatment so only the real signal flips the hint.
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "state": "loading"
+            })))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/projects/x/index/embed", mock.uri());
+        let result = embed_one_batch(
+            &client,
+            &url,
+            None,
+            EmbedRequest { chunks: vec![] },
+            0,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        match result {
+            Err(EmbedBatchError::Other(_)) => {}
+            Err(EmbedBatchError::EmbedderDeviceLost(e)) => {
+                panic!("a warming-up 503 with no device-lost code must not read as a loss: {e:#}")
+            }
+            Err(EmbedBatchError::BudgetExceeded(e)) => {
+                panic!("a generic 503 must classify as Other, not BudgetExceeded: {e:#}")
+            }
+            Err(EmbedBatchError::ConnectFailure(e)) => {
+                panic!("a generic 503 must classify as Other, not ConnectFailure: {e:#}")
+            }
+            Err(EmbedBatchError::Saturated(_)) => {
+                panic!("a generic 503 must classify as Other, not Saturated")
+            }
+            Ok(_) => panic!("a 503 must not classify as success"),
         }
     }
 
@@ -2558,6 +2784,59 @@ mod tests {
             db.stats().unwrap().embedding_count,
             6,
             "all six chunks embedded exactly once — no duplicate row, no lost chunk"
+        );
+    }
+
+    // ── device-loss vs request-budget: distinct diagnosis and remedy ────────
+
+    #[test]
+    fn device_lost_body_is_recognised_by_its_code() {
+        let body = r#"{"error":{"code":"embedder_device_lost","message":"restart to recover"}}"#;
+        assert!(
+            response_signals_device_lost(body),
+            "the stable code the server sends must be recognised"
+        );
+    }
+
+    #[test]
+    fn budget_generic_and_warmup_bodies_are_not_device_lost() {
+        // A generic internal error, the warming-up shape (no `error.code`), a
+        // bad-request code, non-JSON and an empty body must all read as "not a
+        // device loss", so the CLI keeps its normal batch-size diagnosis.
+        assert!(!response_signals_device_lost(
+            r#"{"error":{"code":"internal_error","message":"Internal server error"}}"#
+        ));
+        assert!(!response_signals_device_lost(r#"{"state":"loading"}"#));
+        assert!(!response_signals_device_lost(
+            r#"{"error":{"code":"bad_request","message":"too big"}}"#
+        ));
+        assert!(!response_signals_device_lost("not json at all"));
+        assert!(!response_signals_device_lost(""));
+    }
+
+    #[test]
+    fn request_budget_hint_points_at_batch_size_not_a_restart() {
+        let hint = persistent_failure_hint("http://127.0.0.1:4655", StopHint::RequestBudget);
+        assert!(
+            hint.contains("request budget"),
+            "the budget hint must still name the request budget: {hint}"
+        );
+        assert!(
+            !hint.contains("server stop"),
+            "the budget hint must not advise a restart: {hint}"
+        );
+    }
+
+    #[test]
+    fn device_lost_hint_points_at_a_server_restart_not_batch_size() {
+        let hint = persistent_failure_hint("http://127.0.0.1:4655", StopHint::EmbedderDeviceLost);
+        assert!(
+            hint.contains("inkentry server stop && inkentry server start"),
+            "the device-loss hint must point at a server restart: {hint}"
+        );
+        assert!(
+            !hint.contains("request budget"),
+            "the device-loss hint must NOT send the user chasing batch size: {hint}"
         );
     }
 }
