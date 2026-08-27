@@ -35,11 +35,16 @@ pub use inkentry_core::config::server_keys::DEFAULT_CLOUD_URL;
 /// Default WorkOS User Management API base URL.
 pub const DEFAULT_WORKOS_URL: &str = "https://api.workos.com";
 
-/// Embedded PUBLIC-CLIENT `client_id` for the **production** WorkOS environment.
-pub const WORKOS_CLIENT_ID_PROD: &str = "client_01KTY5G1EK45Y93B0RB9Q1D2Q2";
+/// Embedded PUBLIC-CLIENT `client_id` for the **production** WorkOS environment
+/// (inkentry project, "Production" env → `obedient-paradise-94.authkit.app`).
+/// Must match cloud-api's `workos_client_id` in `terraform/prod.tfvars`, since
+/// cloud-api validates every access token's issuer against this client.
+pub const WORKOS_CLIENT_ID_PROD: &str = "client_01M0K17J4JW69SMCQCYGZS566G";
 
-/// Embedded PUBLIC-CLIENT `client_id` for the **dev / staging** WorkOS environment.
-pub const WORKOS_CLIENT_ID_DEV: &str = "client_01KTY5JEJSZQD6R3QBXZS19WVF";
+/// Embedded PUBLIC-CLIENT `client_id` for the **dev / staging** WorkOS environment
+/// (inkentry project, "Staging" env → `animated-petal-54-staging.authkit.app`).
+/// Must match cloud-api's `workos_client_id` in `terraform/dev.tfvars`.
+pub const WORKOS_CLIENT_ID_DEV: &str = "client_01M0K17HRZTY5F13BC0N5ZEJVE";
 
 /// RFC 8628 device-code grant type.
 const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -668,13 +673,15 @@ mod tests {
         }
     }
 
-    /// Guard the embedded prod `client_id` against an accidental revert to a
-    /// stale WorkOS environment (prod rotated on 2026-06-30).
+    // Guard the embedded prod `client_id` against an accidental revert to the
+    // retired "Spelunk Config" WorkOS project (client_01KTY5G1EK45Y93B0RB9Q1D2Q2
+    // → complete-cake-68.authkit.app). Production moved to the inkentry WorkOS
+    // project on 2026-08-27; this value must match terraform/prod.tfvars.
     #[test]
-    fn prod_client_id_is_current_rotated_value() {
+    fn prod_client_id_is_current_inkentry_prod_value() {
         assert_eq!(
-            WORKOS_CLIENT_ID_PROD, "client_01KTY5G1EK45Y93B0RB9Q1D2Q2",
-            "prod client_id must track the rotated WorkOS prod environment"
+            WORKOS_CLIENT_ID_PROD, "client_01M0K17J4JW69SMCQCYGZS566G",
+            "prod client_id must track the inkentry WorkOS prod environment"
         );
     }
 
