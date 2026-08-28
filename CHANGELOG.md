@@ -9,6 +9,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`inkentry plumbing push --force` recovers a team server that lost its
+  database.** It re-offers every active memory entry, ignoring the local
+  proof-of-sync, and restores each under its original identity; a healthy server
+  skips whatever it still holds, so there are no duplicates. Use it to rebuild a
+  self-hosted team server after a crash or dropped database. Other machines then
+  pick the recovered entries up on their next `inkentry sync`, which now re-pulls
+  the full dataset whenever the server reports more entries than it holds locally.
+
 ## [1.0.0] — 2026-08-24
 
 ### Internal

@@ -81,19 +81,73 @@ pub(in crate::cli::cmd) async fn pull_and_apply(
 /// The local-embedding pass runs once, after the last page has landed, so a
 /// multi-page pull pays for one embedder probe rather than one per page and a
 /// single failing embed can never unwind a page that was already applied.
+///
+/// Total-based divergence recovery (ADR-092): the `since_id` response now
+/// carries the server's active-note `total`. A forward `id > since_id` scan can
+/// never reach a row whose id sorts *behind* the cursor — exactly what a
+/// `plumbing push --force` restore produces, since it puts rows back under their
+/// original (older) ids. After draining the feed, this compares the local active
+/// total to the server's; when the server holds more, the cursor cannot be
+/// trusted, so it re-pulls the whole dataset once from the beginning to pick up
+/// the rows behind the cursor. This is what carries a `--force` restoration to
+/// the rest of the fleet.
 pub(super) async fn pull_and_apply_since(
     local: &MemoryStore,
     client: &CloudSyncClient,
     cursor: Option<&str>,
     local_embed: &LocalEmbedPolicy<'_>,
 ) -> Result<PullSummary> {
+    let (mut applied, server_total) = drain_pages_since(local, client, cursor).await?;
+
+    // `apply_remote_note` dedupes on `remote_id`, so a full re-pull re-applies
+    // rows we already have as no-ops and only the rows behind the cursor are
+    // newly applied. The re-pull's own `total` is ignored: it starts from nil
+    // and therefore reaches every row in one pass, so a single re-pull always
+    // suffices and a persistent count skew can never spin this into a loop.
+    if let Some(total) = server_total
+        && total > local.count()?
+    {
+        let (re_applied, _) = drain_pages_since(local, client, None).await?;
+        applied += re_applied;
+    }
+
+    let repair = embed_synced_rows(local, local_embed).await?;
+    Ok(PullSummary {
+        applied,
+        embedded_locally: repair.embedded,
+        without_local_vector: repair.without_vector,
+    })
+}
+
+/// Drain every page of the `since_id` feed starting from `cursor`, applying each
+/// entry idempotently, and return the count of newly-applied rows together with
+/// the server's active-note `total`.
+///
+/// `total` is the most recent value any page carried, or `None` when the server
+/// predates the field or the project does not exist yet (a 404, which
+/// [`CloudSyncClient::pull_since`] reports as an empty page with no total). The
+/// loop terminates on the first page shorter than
+/// [`CloudSyncClient::MEMORY_SINCE_PULL_LIMIT`] — the definitive "nothing left"
+/// signal — driven by the actual number of entries returned, never the wire
+/// `count`.
+async fn drain_pages_since(
+    local: &MemoryStore,
+    client: &CloudSyncClient,
+    cursor: Option<&str>,
+) -> Result<(usize, Option<i64>)> {
     let mut cursor = cursor.map(str::to_string);
     let mut applied = 0usize;
+    let mut total = None;
     loop {
-        let entries = client.pull_since(cursor.as_deref()).await?;
-        let page_len = entries.len();
+        let page = client.pull_since(cursor.as_deref()).await?;
+        // `total` is a project-wide snapshot repeated on each page; keep the
+        // most recent one that carried it (an older server sends none).
+        if page.total.is_some() {
+            total = page.total;
+        }
+        let page_len = page.entries.len();
 
-        for e in &entries {
+        for e in &page.entries {
             let created_secs = parse_iso_to_secs(&e.created_at);
             let inserted = local.apply_remote_note(
                 &e.id,
@@ -116,15 +170,10 @@ pub(super) async fn pull_and_apply_since(
         // returns more than the limit even when more remain), so always
         // follow up: entries is non-empty here (page_len == the limit, which
         // is > 0), so `last()` is always `Some`.
-        cursor = entries.last().map(|e| e.id.clone());
+        cursor = page.entries.last().map(|e| e.id.clone());
     }
 
-    let repair = embed_synced_rows(local, local_embed).await?;
-    Ok(PullSummary {
-        applied,
-        embedded_locally: repair.embedded,
-        without_local_vector: repair.without_vector,
-    })
+    Ok((applied, total))
 }
 
 /// Mint the missing local vectors for every synced row.
@@ -1064,6 +1113,184 @@ mod tests {
             1,
             "a lying count must not trigger a second request past the real \
              short page"
+        );
+    }
+
+    // ── total-based divergence recovery (ADR-092) ──────────────────────────
+    // The `since_id` response carries the server's active-note `total`. A
+    // forward `id > since_id` scan can never reach a row whose id sorts BEHIND
+    // the cursor — exactly what a `--force` restore produces. When the server's
+    // `total` exceeds the local active count, the cursor is untrustworthy and
+    // the whole dataset is re-pulled from the beginning to pick those rows up.
+
+    fn entries_json_with_total(ids: &[String], total: i64) -> serde_json::Value {
+        let mut v = entries_json(ids);
+        v["total"] = serde_json::json!(total);
+        v
+    }
+
+    fn empty_json_with_total(total: i64) -> serde_json::Value {
+        serde_json::json!({ "entries": [], "count": 0, "total": total })
+    }
+
+    // A client whose cursor sits ahead of `--force`-restored rows: the forward
+    // pull from its cursor returns nothing, but the server's `total` (3) exceeds
+    // the local active count (1), so a full re-pull from nil recovers the two
+    // rows sitting behind the cursor. `apply_remote_note` dedupes the one already
+    // held, so only the two behind-cursor rows are newly applied.
+    #[tokio::test]
+    async fn higher_server_total_triggers_a_full_re_pull_of_rows_behind_the_cursor() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let ids = page_ids(1, 9); // ...001 .. ...009, lexically ordered
+        let (low1, low2, high) = (ids[0].clone(), ids[1].clone(), ids[8].clone());
+
+        let (_tmp, store) = fresh_store();
+        // The client already holds the newest row and its cursor is that id.
+        store
+            .apply_remote_note(
+                &high,
+                "note",
+                "high",
+                "b",
+                None,
+                crate::storage::now_secs(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(store.count().unwrap(), 1);
+
+        let server = wiremock::MockServer::start().await;
+        // Forward pull from the client's cursor: nothing after it, but total=3.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param("since_id", high.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_json_with_total(3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The full re-pull from nil returns all three (the two behind the cursor
+        // plus the one already held).
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param("since_id", NIL_UUID))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(entries_json_with_total(&[low1, low2, high], 3)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply(&store, &client, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
+
+        assert_eq!(applied, 2, "only the two rows behind the cursor are new");
+        assert_eq!(store.count().unwrap(), 3, "no duplicate of the held row");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "one forward pull, then exactly one full re-pull"
+        );
+    }
+
+    // When the server's `total` matches the local active count, the cursor is
+    // trusted and no re-pull happens: exactly one forward request is made.
+    #[tokio::test]
+    async fn matching_total_does_not_trigger_a_re_pull() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let ids = page_ids(1, 9);
+        let high = ids[8].clone();
+
+        let (_tmp, store) = fresh_store();
+        store
+            .apply_remote_note(
+                &high,
+                "note",
+                "high",
+                "b",
+                None,
+                crate::storage::now_secs(),
+                false,
+            )
+            .unwrap();
+
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param("since_id", high))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_json_with_total(1)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply(&store, &client, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
+
+        assert_eq!(applied, 0);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a matching total must not trigger a second, full re-pull"
+        );
+    }
+
+    // An older server omits `total` entirely: the client must never re-pull off
+    // a missing signal, staying backward-compatible (a single forward request).
+    #[tokio::test]
+    async fn absent_total_never_triggers_a_re_pull() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let ids = page_ids(1, 9);
+        let high = ids[8].clone();
+
+        let (_tmp, store) = fresh_store();
+        store
+            .apply_remote_note(
+                &high,
+                "note",
+                "high",
+                "b",
+                None,
+                crate::storage::now_secs(),
+                false,
+            )
+            .unwrap();
+
+        let server = wiremock::MockServer::start().await;
+        // No `total` field, as an older server would send.
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .and(query_param("since_id", high))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let applied = pull_and_apply(&store, &client, &LocalEmbedPolicy::Skip)
+            .await
+            .unwrap()
+            .applied;
+
+        assert_eq!(applied, 0);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "an absent total is not a divergence signal and must not re-pull"
         );
     }
 }

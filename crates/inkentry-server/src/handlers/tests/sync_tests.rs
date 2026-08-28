@@ -134,3 +134,82 @@ async fn memory_since_id_cursor_advances_and_is_exclusive() {
         "re-querying with the last-seen cursor must return nothing further: {body}"
     );
 }
+
+// ── `since_id` active-note `total` (ADR-092) ──
+
+// The `since_id` response carries the project's active-note `total` alongside
+// the page `count`. With three active notes seeded and a full pull from the nil
+// cursor, `total` and `count` both read 3.
+#[tokio::test]
+async fn memory_since_id_mode_reports_the_active_note_total() {
+    let (app, _dim) = make_app(0.92);
+    // Orthogonal vectors so the near-duplicate conflict guard does not 409 the
+    // second and third seeds.
+    let vectors = [
+        vec![1.0, 0.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0, 0.0],
+        vec![0.0, 0.0, 1.0, 0.0],
+    ];
+    for (t, v) in ["A", "B", "C"].iter().zip(vectors) {
+        let (status, body) = post_note(app.clone(), "total-proj", t, v).await;
+        assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
+    }
+
+    let (status, body) = get_status_and_json(
+        app,
+        "/v1/projects/total-proj/memory/since?since_id=00000000-0000-0000-0000-000000000000",
+    )
+    .await;
+    assert_eq!(status, http::StatusCode::OK, "body: {body}");
+    assert_eq!(
+        body["total"],
+        json!(3),
+        "total must be the project's active-note count: {body}"
+    );
+    assert_eq!(
+        body["count"],
+        json!(3),
+        "count keeps its meaning (page length): {body}"
+    );
+}
+
+// `total` is project-wide, not cursor-relative: a client already advanced past
+// every row sees `count == 0` but `total` still reflects all active rows. This
+// is the load-bearing case — it is what lets a client whose cursor sits ahead
+// of `--force`-restored rows notice the server holds more and fall back to a
+// full pull.
+#[tokio::test]
+async fn memory_since_id_total_is_project_wide_not_cursor_relative() {
+    let (app, _dim) = make_app(0.92);
+    let vectors = [vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]];
+    for (t, v) in ["A", "B"].iter().zip(vectors) {
+        let (status, body) = post_note(app.clone(), "total-cursor-proj", t, v).await;
+        assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
+    }
+
+    let nil =
+        "/v1/projects/total-cursor-proj/memory/since?since_id=00000000-0000-0000-0000-000000000000";
+    let (_, body) = get_status_and_json(app.clone(), nil).await;
+    let cursor = body["entries"]
+        .as_array()
+        .expect("entries")
+        .last()
+        .expect("a last entry")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let uri = format!("/v1/projects/total-cursor-proj/memory/since?since_id={cursor}");
+    let (status, body) = get_status_and_json(app, &uri).await;
+    assert_eq!(status, http::StatusCode::OK, "body: {body}");
+    assert_eq!(
+        body["count"],
+        json!(0),
+        "the page beyond the cursor is empty: {body}"
+    );
+    assert_eq!(
+        body["total"],
+        json!(2),
+        "total stays the project-wide active count even when the page is empty: {body}"
+    );
+}

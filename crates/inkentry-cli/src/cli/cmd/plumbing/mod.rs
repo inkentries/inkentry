@@ -128,6 +128,14 @@ pub struct PlumbingPushArgs {
     /// Push archived entries too (propagates tombstones)
     #[arg(long)]
     pub include_archived: bool,
+
+    /// Recovery: re-offer every active entry, ignoring the local `remote_id`
+    /// proof-of-sync, and hand each already-synced entry's existing `remote_id`
+    /// back to the server as its identity. Use after a team server lost or reset
+    /// its database; the server restores each row under its original id and
+    /// skips whatever it still holds (no duplicates against a healthy server).
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]

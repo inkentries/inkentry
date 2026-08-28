@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::support::{
-    app_with_recording_embedder, list_notes_via_http, make_app, make_app_with_auth_key, note_item,
-    post_batch, post_note,
+    app_with_recording_embedder, get_status_and_json, list_notes_via_http, make_app,
+    make_app_with_auth_key, note_item, post_batch, post_note,
 };
 
 // ── POST /memory/batch ────────────────────────────────────────────────
@@ -616,5 +616,113 @@ async fn a_dedupe_hit_is_not_given_the_pushed_payloads_vector() {
         again["results"][0]["embedded"],
         json!(false),
         "and it must not have been adopted behind the response either: {again}"
+    );
+}
+
+// ── Client-supplied `id` on create (ADR-092 force-restore) ─────────────
+
+const NIL_CURSOR: &str = "00000000-0000-0000-0000-000000000000";
+
+// A `--force` restore re-sends each entry's own prior server id. On the create
+// branch (a new `(project_id, external_id)`) the row must be inserted under that
+// id rather than a freshly minted one, so it keeps its original identity across
+// the fleet. Proven both in the create ack and in the `since_id` feed the whole
+// fleet cursors on.
+#[tokio::test]
+async fn batch_ingest_restores_a_row_under_a_supplied_uuidv7_id_on_create() {
+    let (app, _dim) = make_app(0.92);
+    let restored = "01890000-0000-7000-8000-000000000abc";
+    let entries = json!([{
+        "kind": "decision", "title": "restored", "external_id": "ext-r1", "id": restored,
+    }]);
+    let (status, body) = post_batch(app.clone(), "restore-proj", entries).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(body["created"], json!(1));
+    assert_eq!(body["results"][0]["status"], json!("created"));
+    assert_eq!(
+        body["results"][0]["id"],
+        json!(restored),
+        "the row must be inserted under the supplied id, not a minted one: {body}"
+    );
+
+    let uri = format!("/v1/projects/restore-proj/memory/since?since_id={NIL_CURSOR}");
+    let (status, since) = get_status_and_json(app, &uri).await;
+    assert_eq!(status, http::StatusCode::OK, "body: {since}");
+    assert_eq!(
+        since["entries"][0]["id"],
+        json!(restored),
+        "the restored id must be the identity the since feed exports: {since}"
+    );
+}
+
+// A malformed `id` rejects the whole batch with a 400 and writes nothing —
+// never silently ignored-and-minted. A valid entry ahead of the bad one proves
+// the atomicity (even the good entry is not written).
+#[tokio::test]
+async fn batch_ingest_malformed_id_rejects_whole_batch_and_writes_nothing() {
+    let (app, _dim) = make_app(0.92);
+    let entries = json!([
+        note_item("good", "ext-ok"),
+        {"kind": "note", "title": "bad id", "external_id": "ext-bad", "id": "not-a-uuid"},
+    ]);
+    let (status, body) = post_batch(app.clone(), "badid-proj", entries).await;
+    assert_eq!(status, http::StatusCode::BAD_REQUEST, "body: {body}");
+    let notes = list_notes_via_http(app, "badid-proj").await;
+    assert!(
+        notes.is_empty(),
+        "a malformed id must reject the whole batch before any write: {notes:?}"
+    );
+}
+
+// A well-formed UUID of the wrong version (v4) is still rejected: entry identity
+// is UUIDv7 (ADR-078), so a non-v7 id must surface loudly rather than be minted
+// over.
+#[tokio::test]
+async fn batch_ingest_non_v7_uuid_id_is_rejected() {
+    let (app, _dim) = make_app(0.92);
+    let v4 = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+    let entries = json!([{"kind": "note", "title": "v4", "external_id": "ext-v4", "id": v4}]);
+    let (status, body) = post_batch(app.clone(), "v4-proj", entries).await;
+    assert_eq!(
+        status,
+        http::StatusCode::BAD_REQUEST,
+        "a non-v7 UUID must be refused: {body}"
+    );
+    let notes = list_notes_via_http(app, "v4-proj").await;
+    assert!(notes.is_empty(), "nothing may be written: {notes:?}");
+}
+
+// Idempotency is unchanged: a duplicate `(project_id, external_id)` skips, and
+// the supplied `id` is ignored entirely — the stored row keeps its original
+// identity and is never re-keyed.
+#[tokio::test]
+async fn batch_ingest_ignores_a_supplied_id_on_a_duplicate_external_id() {
+    let (app, _dim) = make_app(0.92);
+    let (_, first) = post_batch(
+        app.clone(),
+        "dupe-proj",
+        json!([note_item("orig", "ext-d1")]),
+    )
+    .await;
+    let minted = first["results"][0]["id"]
+        .as_str()
+        .expect("minted id")
+        .to_string();
+
+    let other = "01890000-0000-7000-8000-000000000fff";
+    assert_ne!(other, minted, "the re-push must supply a different id");
+    let entries = json!([{"kind": "note", "title": "orig", "external_id": "ext-d1", "id": other}]);
+    let (status, body) = post_batch(app, "dupe-proj", entries).await;
+    assert_eq!(status, http::StatusCode::MULTI_STATUS, "body: {body}");
+    assert_eq!(
+        body["skipped"],
+        json!(1),
+        "a duplicate external_id skips: {body}"
+    );
+    assert_eq!(body["results"][0]["status"], json!("skipped"));
+    assert_eq!(
+        body["results"][0]["id"],
+        json!(minted),
+        "the stored row keeps its original minted id; a supplied id never re-keys it: {body}"
     );
 }

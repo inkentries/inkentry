@@ -519,6 +519,7 @@ async fn multi_chunk_push_reports_cumulative_progress_after_each_chunk() {
         &client,
         false,
         false,
+        false,
         &LocalEmbedPolicy::Skip,
         |done, total| {
             progress.push((done, total));
@@ -569,6 +570,7 @@ async fn single_chunk_push_is_one_request_and_emits_no_progress() {
     let s = push_local_reporting(
         &store,
         &client,
+        false,
         false,
         false,
         &LocalEmbedPolicy::Skip,

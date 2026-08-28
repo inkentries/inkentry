@@ -1319,6 +1319,7 @@ mod tests {
             inkentry_core::storage::CloudSyncClient::new(&base_url, "acme-widget", None, None)
                 .expect("build push client");
         let item = inkentry_core::storage::BatchPushItem {
+            id: None,
             kind: "decision".into(),
             title: "pushed with its own vector".into(),
             body: Some("b".into()),

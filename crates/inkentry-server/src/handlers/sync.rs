@@ -94,7 +94,13 @@ pub struct SinceIdEntry {
 #[derive(Serialize, ToSchema)]
 pub struct SinceIdResponse {
     pub entries: Vec<SinceIdEntry>,
+    /// Length of this response page.
     pub count: usize,
+    /// The project's active-note total (ADR-092): an additive divergence
+    /// signal, not a cursor change. Always present in `since_id` mode. The CLI
+    /// compares its local active total after applying a pull and re-pulls the
+    /// whole dataset when the server's is higher (rows exist behind the cursor).
+    pub total: i64,
 }
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
@@ -140,6 +146,10 @@ pub async fn memory_since(
 
     if let Some(cursor) = params.since_id.as_deref() {
         let rows = db.notes_since_id(project.id, cursor, params.limit)?;
+        // Counted before the page is consumed, over the same active set the
+        // client materialises locally, so the two totals are directly
+        // comparable (ADR-092).
+        let total = db.active_note_count(project.id)?;
         let entries: Vec<SinceIdEntry> = rows
             .into_iter()
             .map(|r| SinceIdEntry {
@@ -154,7 +164,12 @@ pub async fn memory_since(
             })
             .collect();
         let count = entries.len();
-        return Ok(Json(SinceIdResponse { entries, count }).into_response());
+        return Ok(Json(SinceIdResponse {
+            entries,
+            count,
+            total,
+        })
+        .into_response());
     }
 
     let t = params

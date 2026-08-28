@@ -72,21 +72,36 @@ pub(in crate::cli::cmd) struct PushSummary {
 /// capability: when true, each entry that has a local embedding
 /// carries its fp32/896 vector so the server stores it as-is; when false the
 /// push is text-only and the server re-embeds.
+///
+/// `force` is the `plumbing push --force` recovery path (ADR-092): it re-offers
+/// every active entry rather than only `remote_id IS NULL` rows, and each
+/// already-synced entry carries its existing `remote_id` (the server's own prior
+/// id) as the ingest `id`, so a server that lost its database restores each row
+/// under its original identity. The normal (non-force) push is unchanged.
 pub(in crate::cli::cmd) async fn push_local_oneway(
     local: &MemoryStore,
     client: &CloudSyncClient,
     include_archived: bool,
     accepts_pushed_vectors: bool,
+    force: bool,
     local_embed: &LocalEmbedPolicy<'_>,
 ) -> Result<PushSummary> {
-    push_local(
+    push_local_reporting(
         local,
         client,
         include_archived,
         accepts_pushed_vectors,
+        force,
         local_embed,
+        stderr_progress,
     )
     .await
+}
+
+/// The per-chunk progress line both push entry points emit on stderr; the final
+/// one-line summary stays on stdout in the command layer.
+fn stderr_progress(done: usize, total: usize) {
+    eprintln!("Pushed {done}/{total}…");
 }
 
 /// Push local entries to the cloud in batches, then propagate tombstones for any
@@ -118,12 +133,9 @@ pub(super) async fn push_local(
         client,
         include_archived,
         accepts_pushed_vectors,
+        false,
         local_embed,
-        |done, total| {
-            // Transient cumulative status on stderr; the final one-line summary
-            // stays on stdout in the command layer.
-            eprintln!("Pushed {done}/{total}…");
-        },
+        stderr_progress,
     )
     .await
 }
@@ -137,6 +149,7 @@ async fn push_local_reporting(
     client: &CloudSyncClient,
     include_archived: bool,
     accepts_pushed_vectors: bool,
+    force: bool,
     local_embed: &LocalEmbedPolicy<'_>,
     mut on_progress: impl FnMut(usize, usize),
 ) -> Result<PushSummary> {
@@ -172,14 +185,25 @@ async fn push_local_reporting(
     // `WHERE remote_id IS NULL`. Already-synced rows carry a `remote_id` and are
     // skipped here (the cloud already has them; re-pushing would only earn a 207
     // `skipped`). Archived rows are handled by the tombstone pass below.
+    //
+    // `--force` (ADR-092) overrides that skip: it re-offers *every* active
+    // entry, already-synced or not, so a server that lost its database is
+    // restored. `remote_id` is then no longer trusted as proof-of-sync — it is
+    // instead sent back to the server as the ingest `id`, which restores each
+    // row under its original identity (see the item build below).
     let live: Vec<&_> = rows
         .iter()
-        .filter(|r| !r.archived && r.remote_id.is_none())
+        .filter(|r| !r.archived && (force || r.remote_id.is_none()))
         .collect();
-    let already_synced = rows
-        .iter()
-        .filter(|r| !r.archived && r.remote_id.is_some())
-        .count();
+    // Under `--force` nothing is treated as already-synced: every active row is
+    // re-offered and reported as created/skipped, never `already_synced`.
+    let already_synced = if force {
+        0
+    } else {
+        rows.iter()
+            .filter(|r| !r.archived && r.remote_id.is_some())
+            .count()
+    };
     let attempted = live.len();
     // Repair the local store BEFORE the batch is built, so a freshly-minted
     // vector is available to `maybe_attach_vector` below and the pushed rows
@@ -205,6 +229,12 @@ async fn push_local_reporting(
             };
             items.push(
                 BatchPushItem {
+                    // Only `--force` restores identity: hand the server back its
+                    // own previously-minted id (this row's `remote_id`) so a
+                    // reset server re-inserts the row under it instead of minting
+                    // a new one. Never the CLI's local id, and never sent on the
+                    // normal path (where live rows have no `remote_id` anyway).
+                    id: if force { r.remote_id.clone() } else { None },
                     kind: r.kind.clone(),
                     title: r.title.clone(),
                     body: if r.body.is_empty() {
@@ -388,5 +418,7 @@ mod embed_routing_tests;
 mod embed_scope_tests;
 #[cfg(test)]
 mod embed_tests;
+#[cfg(test)]
+mod force_tests;
 #[cfg(test)]
 mod vector_tests;

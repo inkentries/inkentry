@@ -1356,6 +1356,13 @@
             "type": "string",
             "description": "Stable cross-machine identity: the server's idempotency key. Stored as\n`notes.remote_id` (unique). A re-push of the same `external_id` against\na live note is skipped, not duplicated."
           },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional client-supplied server identity, a well-formed UUIDv7 (ADR-092\nforce-restore). Absent on every normal write, where the server mints its\nown `sync_id`. Present only from `plumbing push --force`: on the create\nbranch (a new `(project_id, external_id)`) the row is inserted under this\nid instead of a minted one, restoring its original identity; on a dedupe\nhit it is ignored entirely. A malformed value rejects the whole batch\nwith a 400 before anything is written."
+          },
           "kind": {
             "type": "string"
           },
@@ -2046,11 +2053,13 @@
         "description": "Response body for the `since_id`-cursor mode of `/memory/since`.",
         "required": [
           "entries",
-          "count"
+          "count",
+          "total"
         ],
         "properties": {
           "count": {
             "type": "integer",
+            "description": "Length of this response page.",
             "minimum": 0
           },
           "entries": {
@@ -2058,6 +2067,11 @@
             "items": {
               "$ref": "#/components/schemas/SinceIdEntry"
             }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project's active-note total (ADR-092): an additive divergence\nsignal, not a cursor change. Always present in `since_id` mode. The CLI\ncompares its local active total after applying a pull and re-pulls the\nwhole dataset when the server's is higher (rows exist behind the cursor)."
           }
         }
       },
