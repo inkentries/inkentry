@@ -115,3 +115,57 @@ async fn embed_while_ready_returns_200() {
         "embed while ready must return 200"
     );
 }
+
+// A ready embedder that fails every request with a Metal device-loss error,
+// standing in for the native embedder after its one in-place device rebuild has
+// already failed.
+#[cfg(feature = "embed-native")]
+struct DeviceLostEmbedder {
+    dim: usize,
+}
+
+#[cfg(feature = "embed-native")]
+#[async_trait::async_trait]
+impl inkentry_core::embeddings::EmbeddingBackend for DeviceLostEmbedder {
+    async fn embed(&self, _texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        Err(inkentry_embed::EmbedError::DeviceLost(
+            "Unable to reach MTLCompilerService; the compiler is no longer active".to_string(),
+        )
+        .into())
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+}
+
+// A device-loss inference failure must surface as a distinct 503 carrying the
+// stable `embedder_device_lost` code, not a generic 500 — so the CLI can point
+// the user at a server restart instead of at batch-size tuning. The raw Metal
+// error text must not leak into the client body.
+#[cfg(feature = "embed-native")]
+#[tokio::test]
+async fn embed_device_lost_returns_503_with_actionable_code() {
+    let slot = crate::EmbedderSlot::ready(std::sync::Arc::new(DeviceLostEmbedder { dim: 4 }));
+    let app = make_app_with_slot(4, slot);
+    let resp = post_embed(app).await;
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        "a Metal device-loss inference failure must be a 503, not a generic 500"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        json["error"]["code"],
+        json!("embedder_device_lost"),
+        "the body must carry the stable code the CLI keys on for its restart hint"
+    );
+    let message = json["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("MTLCompilerService"),
+        "the raw Metal error text must not leak into the client body, got: {message}"
+    );
+}

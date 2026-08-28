@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -212,6 +212,14 @@ pub struct NativeEmbedder {
     /// forward-pass batch and takes the whole server down with it. Written once
     /// at load and never mutated, so it needs no synchronisation at all.
     token_cap: usize,
+    /// The Q8_0 GGUF this embedder was loaded from, retained so the weights can
+    /// be rebuilt on a fresh device after a Metal device loss (see
+    /// `reload_weights`). Reloading re-reads the same on-disk artifact with no
+    /// network access.
+    gguf_path: PathBuf,
+    /// The parsed model config, retained for the same device-rebuild path so a
+    /// reload needs no fresh disk read or re-validation of `config.json`.
+    config: Config,
 }
 
 struct EmbedderInner {
@@ -672,8 +680,117 @@ impl NativeEmbedder {
         Ok(Self {
             inner: Arc::new(Mutex::new(EmbedderInner { weights, tokenizer })),
             token_cap,
+            gguf_path: gguf_path.to_path_buf(),
+            config,
         })
     }
+}
+
+/// Rebuild the quantized weights on a freshly-selected device, re-reading the
+/// same on-disk GGUF with no network access. Called after a Metal device loss
+/// to re-establish the device/context in place (see `is_metal_device_lost` and
+/// the reload path in `embed_with_cancel`).
+fn reload_weights(gguf_path: &Path, config: &Config) -> Result<Qwen3EmbedWeights> {
+    let device = select_device();
+    tracing::info!(
+        "rebuilding F2LLM-v2-330M weights on a fresh {} device after Metal device loss",
+        if matches!(device, Device::Cpu) {
+            "CPU"
+        } else {
+            "Metal/GPU"
+        },
+    );
+    Qwen3EmbedWeights::from_gguf(gguf_path, config, &device)
+        .context("rebuilding embedder weights on a fresh device")
+}
+
+/// True when a candle inference error message indicates the process's Metal
+/// device / `MTLCompilerService` connection has been torn down, as opposed to
+/// an ordinary inference failure. macOS drops the compiler XPC connection after
+/// a long idle/sleep; the next kernel (re)compilation then fails with one of
+/// these signatures and never recovers until the device is rebuilt. Matched
+/// case-insensitively against the stable Metal/Apple strings.
+fn is_metal_device_lost(msg: &str) -> bool {
+    const SIGNATURES: [&str; 3] = [
+        "mtlcompilerservice",
+        "compiler is no longer active",
+        "invalidation reason",
+    ];
+    let lower = msg.to_ascii_lowercase();
+    SIGNATURES.iter().any(|sig| lower.contains(sig))
+}
+
+/// Outcome of a failed sub-batch forward loop, classified so the caller can
+/// tell a self-healable Metal device loss from an ordinary inference failure
+/// and from a cooperative cancellation.
+enum BatchRunError {
+    /// The caller's cancel flag was observed set; `completed` sub-batches ran.
+    Cancelled { completed: usize },
+    /// The Metal device / compiler connection was torn down (see
+    /// [`is_metal_device_lost`]): recoverable by rebuilding the device once.
+    DeviceLost(String),
+    /// Any other inference failure.
+    Inference(String),
+}
+
+/// Forward every pre-tokenized, length-sorted sub-batch through `weights`,
+/// writing each result back to its original position. Returns the assembled
+/// vectors, or a classified [`BatchRunError`]. `cancel` is polled between
+/// sub-batches and inside `embed_batch`'s sequential path. `total` is the whole
+/// request's chunk count, used only for the abandonment log lines.
+fn run_sub_batches(
+    weights: &Qwen3EmbedWeights,
+    indexed: &[(usize, Vec<u32>)],
+    out_len: usize,
+    cancel: &AtomicBool,
+    total: usize,
+) -> Result<Vec<Vec<f32>>, BatchRunError> {
+    let mut results: Vec<Vec<f32>> = vec![Vec::new(); out_len];
+    let mut completed = 0usize;
+    for sub_batch in indexed.chunks(EMBED_BATCH_SIZE) {
+        let sub_batch_started = std::time::Instant::now();
+        if cancel.load(Ordering::Relaxed) {
+            tracing::info!(
+                "embed batch abandoned between sub-batches \
+                 ({completed}/{total} chunks completed)  -  client disconnected or \
+                 server timed out"
+            );
+            return Err(BatchRunError::Cancelled { completed });
+        }
+        let batch_ids: Vec<&[u32]> = sub_batch.iter().map(|(_, ids)| ids.as_slice()).collect();
+        let vecs = match weights.embed_batch(&batch_ids, Some(cancel)) {
+            Ok(v) => v,
+            Err(e) => {
+                if cancel.load(Ordering::Relaxed) {
+                    tracing::info!(
+                        "embed batch abandoned mid sub-batch \
+                         ({completed}/{total} chunks completed, current sub-batch of \
+                         {} interrupted)  -  client disconnected or server timed out",
+                        sub_batch.len()
+                    );
+                    return Err(BatchRunError::Cancelled { completed });
+                }
+                let msg = e.to_string();
+                if is_metal_device_lost(&msg) {
+                    return Err(BatchRunError::DeviceLost(msg));
+                }
+                return Err(BatchRunError::Inference(msg));
+            }
+        };
+        for ((orig_idx, _), vec) in sub_batch.iter().zip(vecs) {
+            results[*orig_idx] = vec;
+        }
+        completed += sub_batch.len();
+        // Pure observability: a trail for diagnosing a wedged vs.
+        // steadily-progressing embed from the server side, without relying
+        // entirely on the client's post-hoc symptoms.
+        tracing::debug!(
+            "embed sub-batch of {} chunk(s) done in {:?} ({completed}/{total} total)",
+            sub_batch.len(),
+            sub_batch_started.elapsed(),
+        );
+    }
+    Ok(results)
 }
 
 /// Choose the inference device.
@@ -736,9 +853,11 @@ impl crate::EmbeddingBackend for NativeEmbedder {
         let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
         let inner = Arc::clone(&self.inner);
         let effective_cap = effective_token_cap(self.token_cap);
+        let gguf_path = self.gguf_path.clone();
+        let config = self.config.clone();
 
         tokio::task::spawn_blocking(move || {
-            let guard = inner
+            let mut guard = inner
                 .lock()
                 .map_err(|_| anyhow::anyhow!("native embedder lock poisoned"))?;
 
@@ -789,52 +908,46 @@ impl crate::EmbeddingBackend for NativeEmbedder {
             let mut indexed: Vec<(usize, Vec<u32>)> = id_vecs.into_iter().enumerate().collect();
             indexed.sort_unstable_by_key(|(_, ids)| ids.len());
 
-            // 3. Process in sub-batches; reassemble into original order.
-            let mut results: Vec<Vec<f32>> = vec![Vec::new(); owned.len()];
-            let mut completed = 0usize;
-            for sub_batch in indexed.chunks(EMBED_BATCH_SIZE) {
-                let sub_batch_started = std::time::Instant::now();
-                if cancel.load(Ordering::Relaxed) {
-                    tracing::info!(
-                        "embed batch abandoned between sub-batches \
-                         ({completed}/{total} chunks completed)  -  client disconnected or \
-                         server timed out"
-                    );
-                    return Err(EmbedError::Cancelled { completed, total }.into());
-                }
-                let batch_ids: Vec<&[u32]> =
-                    sub_batch.iter().map(|(_, ids)| ids.as_slice()).collect();
-                let vecs = guard
-                    .weights
-                    .embed_batch(&batch_ids, Some(&cancel))
-                    .map_err(|e| {
-                        if cancel.load(Ordering::Relaxed) {
-                            tracing::info!(
-                                "embed batch abandoned mid sub-batch \
-                             ({completed}/{total} chunks completed, current sub-batch of \
-                             {} interrupted)  -  client disconnected or server timed out",
-                                sub_batch.len()
-                            );
-                            EmbedError::Cancelled { completed, total }
-                        } else {
-                            EmbedError::Inference(e.to_string())
+            // 3. Forward every sub-batch, self-healing once on a Metal device
+            //    loss: rebuild the device/weights in place and retry, rather
+            //    than returning an error that 500s every request until a manual
+            //    server restart. A second device loss (or a failed rebuild) is
+            //    surfaced as `EmbedError::DeviceLost` so the server can return an
+            //    actionable error. Tokenization above is not repeated on retry.
+            let mut reloaded = false;
+            loop {
+                match run_sub_batches(&guard.weights, &indexed, owned.len(), &cancel, total) {
+                    Ok(results) => return Ok(results),
+                    Err(BatchRunError::Cancelled { completed }) => {
+                        return Err(EmbedError::Cancelled { completed, total }.into());
+                    }
+                    Err(BatchRunError::DeviceLost(msg)) if !reloaded => {
+                        tracing::warn!(
+                            "native embedder lost its Metal device ({msg}); rebuilding the \
+                             device once and retrying the batch"
+                        );
+                        match reload_weights(&gguf_path, &config) {
+                            Ok(fresh) => {
+                                guard.weights = fresh;
+                                reloaded = true;
+                                continue;
+                            }
+                            Err(e) => {
+                                return Err(EmbedError::DeviceLost(format!(
+                                    "{msg}; in-place device rebuild also failed: {e:#}"
+                                ))
+                                .into());
+                            }
                         }
-                    })?;
-                for ((orig_idx, _), vec) in sub_batch.iter().zip(vecs) {
-                    results[*orig_idx] = vec;
+                    }
+                    Err(BatchRunError::DeviceLost(msg)) => {
+                        return Err(EmbedError::DeviceLost(msg).into());
+                    }
+                    Err(BatchRunError::Inference(msg)) => {
+                        return Err(EmbedError::Inference(msg).into());
+                    }
                 }
-                completed += sub_batch.len();
-                // Pure observability: a trail for diagnosing a wedged vs.
-                // steadily-progressing embed from the server side, without
-                // relying entirely on the client's post-hoc symptoms.
-                tracing::debug!(
-                    "embed sub-batch of {} chunk(s) done in {:?} ({completed}/{total} total)",
-                    sub_batch.len(),
-                    sub_batch_started.elapsed(),
-                );
             }
-
-            Ok(results)
         })
         .await
         .context("spawn_blocking panicked in native embedder")?
@@ -1180,6 +1293,27 @@ mod tests {
         }
     }
 
+    fn dummy_config() -> Config {
+        Config {
+            vocab_size: 2,
+            hidden_size: 2,
+            intermediate_size: 2,
+            num_hidden_layers: 0,
+            num_attention_heads: N_HEAD,
+            head_dim: 64,
+            attention_bias: false,
+            num_key_value_heads: 8,
+            max_position_embeddings: MAX_SEQ_LEN,
+            sliding_window: None,
+            max_window_layers: 0,
+            tie_word_embeddings: false,
+            rope_theta: 1_000_000.0,
+            rms_norm_eps: 1e-6,
+            use_sliding_window: false,
+            hidden_act: Activation::Silu,
+        }
+    }
+
     fn embedder_with_cap(token_cap: usize) -> NativeEmbedder {
         NativeEmbedder {
             inner: Arc::new(Mutex::new(EmbedderInner {
@@ -1187,7 +1321,50 @@ mod tests {
                 tokenizer: Tokenizer::new(tokenizers::models::bpe::BPE::default()),
             })),
             token_cap,
+            gguf_path: PathBuf::from("/nonexistent/model.gguf"),
+            config: dummy_config(),
         }
+    }
+
+    // ── Metal device-loss classification ──────────────────────────────────────
+
+    #[test]
+    fn is_metal_device_lost_matches_the_compiler_teardown_signature() {
+        // The exact multi-line candle/Metal error seen after an overnight idle:
+        // an inference that had to recompile a kernel against a torn-down
+        // MTLCompilerService.
+        let msg = "Metal error Error while loading function: Unable to reach \
+                   MTLCompilerService. The process is unavailable because the compiler \
+                   is no longer active. Latest invalidation reason: Connection init \
+                   failed at lookup with error 32 - Broken pipe";
+        assert!(
+            is_metal_device_lost(msg),
+            "the documented MTLCompilerService teardown must classify as device-lost"
+        );
+    }
+
+    #[test]
+    fn is_metal_device_lost_is_case_insensitive_per_signature() {
+        assert!(is_metal_device_lost("mtlcompilerservice is unreachable"));
+        assert!(is_metal_device_lost("The compiler is no longer active"));
+        assert!(is_metal_device_lost(
+            "Latest INVALIDATION Reason: broken pipe"
+        ));
+    }
+
+    #[test]
+    fn is_metal_device_lost_ignores_ordinary_inference_failures() {
+        // These are real, recoverable-by-retry-or-not failures that must NOT be
+        // treated as a device loss (which would trigger a needless full weight
+        // rebuild, and on the server a restart hint the user can't act on).
+        assert!(!is_metal_device_lost(
+            "embedding vector contains NaN/inf - check model weights or sequence length"
+        ));
+        assert!(!is_metal_device_lost(
+            "empty token sequence after tokenization"
+        ));
+        assert!(!is_metal_device_lost("connection refused"));
+        assert!(!is_metal_device_lost(""));
     }
 
     // Hold the forward-pass mutex on a separate thread until the returned
