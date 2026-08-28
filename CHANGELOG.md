@@ -9,6 +9,8 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-08-28
+
 ### Added
 
 - **`inkentry plumbing push --force` recovers a team server that lost its
@@ -18,8 +20,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   self-hosted team server after a crash or dropped database. Other machines then
   pick the recovered entries up on their next `inkentry sync`, which now re-pulls
   the full dataset whenever the server reports more entries than it holds locally.
+
 ### Fixed
 
+- **`inkentry login` now opens the correct hosted sign-in.** In 1.0.0 it pointed
+  at a retired sign-in project, so logging in to inkentry cloud could not
+  complete.
 - **The embedder self-heals when macOS drops the Metal compiler service.** A
   long-running server no longer needs a restart to embed again. A request that
   hits the failure window gets a stable `embedder_device_lost` error, and
