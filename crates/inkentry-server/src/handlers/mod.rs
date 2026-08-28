@@ -137,12 +137,11 @@ fn validate_pushed_vector(
 
 /// Validate an optional client-supplied entry `id` (ADR-092).
 ///
-/// `None` (every normal write) always passes; the server mints its own id. A
-/// present value must be a well-formed UUIDv7 — it parses as a UUID and its
-/// version field is 7 (the entry-identity scheme, ADR-078). A malformed id is
-/// rejected `400` rather than silently ignored-and-minted, so a client bug
-/// surfaces loudly instead of producing a divergent identity. Only
-/// `plumbing push --force` ever sends this field.
+/// `None` always passes; the server mints its own id. A present value must be a
+/// well-formed UUIDv7 — it parses as a UUID and its version field is 7 (the
+/// entry-identity scheme, ADR-078). A malformed id is rejected `400` rather than
+/// coerced, so a bad id surfaces loudly instead of producing a divergent
+/// identity.
 fn validate_optional_uuid_v7(id: Option<&str>) -> Result<(), AppError> {
     let Some(id) = id else {
         return Ok(());

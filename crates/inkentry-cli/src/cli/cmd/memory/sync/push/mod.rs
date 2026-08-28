@@ -77,7 +77,8 @@ pub(in crate::cli::cmd) struct PushSummary {
 /// every active entry rather than only `remote_id IS NULL` rows, and each
 /// already-synced entry carries its existing `remote_id` (the server's own prior
 /// id) as the ingest `id`, so a server that lost its database restores each row
-/// under its original identity. The normal (non-force) push is unchanged.
+/// under its original identity. Without `force`, the push offers only unstamped
+/// rows and omits `id`.
 pub(in crate::cli::cmd) async fn push_local_oneway(
     local: &MemoryStore,
     client: &CloudSyncClient,
@@ -188,9 +189,9 @@ async fn push_local_reporting(
     //
     // `--force` (ADR-092) overrides that skip: it re-offers *every* active
     // entry, already-synced or not, so a server that lost its database is
-    // restored. `remote_id` is then no longer trusted as proof-of-sync — it is
-    // instead sent back to the server as the ingest `id`, which restores each
-    // row under its original identity (see the item build below).
+    // restored. Under `--force`, `remote_id` is not a skip signal but is sent
+    // back to the server as the ingest `id`, which restores each row under its
+    // original identity (see the item build below).
     let live: Vec<&_> = rows
         .iter()
         .filter(|r| !r.archived && (force || r.remote_id.is_none()))

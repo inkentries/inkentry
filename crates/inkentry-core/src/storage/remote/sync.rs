@@ -58,9 +58,9 @@ pub struct BatchPushItem {
     /// Optional client-supplied server identity, a well-formed UUIDv7
     /// (ADR-092). Sent **only** by `plumbing push --force`, which re-offers
     /// already-synced entries carrying the server's own previously-minted id
-    /// (the entry's `remote_id`) so the server restores the row under that id
-    /// instead of minting a new one. Omitted on every normal push, where the
-    /// server mints as before. Never the CLI's local-only identity.
+    /// (the entry's `remote_id`) so the server restores the row under that id.
+    /// Omitted on a normal push, where the server mints its own. Never the
+    /// CLI's local-only identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub kind: String,

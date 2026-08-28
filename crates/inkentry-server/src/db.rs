@@ -461,10 +461,10 @@ impl ServerDb {
     ///
     /// The override must be a well-formed UUIDv7 the caller has already
     /// validated (the batch handler rejects a malformed one with a 400 before
-    /// any write); `None` mints a fresh `Uuid::now_v7()` exactly as every normal
-    /// insert does. `sync_id` is globally UNIQUE (migration 008), so a supplied
-    /// id that collides with a different row fails the insert through that
-    /// existing constraint — this path adds no override of a stored row.
+    /// any write); `None` mints a fresh `Uuid::now_v7()`. `sync_id` is globally
+    /// UNIQUE (migration 008), so a supplied id that collides with a different
+    /// row fails the insert through that existing constraint — this path adds no
+    /// override of a stored row.
     #[allow(clippy::too_many_arguments)]
     pub fn add_note_with_sync_id(
         &self,

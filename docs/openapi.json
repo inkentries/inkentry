@@ -1361,7 +1361,7 @@
               "string",
               "null"
             ],
-            "description": "Optional client-supplied server identity, a well-formed UUIDv7 (ADR-092\nforce-restore). Absent on every normal write, where the server mints its\nown `sync_id`. Present only from `plumbing push --force`: on the create\nbranch (a new `(project_id, external_id)`) the row is inserted under this\nid instead of a minted one, restoring its original identity; on a dedupe\nhit it is ignored entirely. A malformed value rejects the whole batch\nwith a 400 before anything is written."
+            "description": "Optional entry identity, a well-formed UUIDv7. When creating a new entry\nthe row is stored under it; on a dedupe hit it is ignored and the stored\nentry keeps its own id. A malformed value rejects the whole batch with a\n400 before anything is written."
           },
           "kind": {
             "type": "string"
@@ -2059,7 +2059,7 @@
         "properties": {
           "count": {
             "type": "integer",
-            "description": "Length of this response page.",
+            "description": "Number of entries in this response page.",
             "minimum": 0
           },
           "entries": {
@@ -2071,7 +2071,7 @@
           "total": {
             "type": "integer",
             "format": "int64",
-            "description": "The project's active-note total (ADR-092): an additive divergence\nsignal, not a cursor change. Always present in `since_id` mode. The CLI\ncompares its local active total after applying a pull and re-pulls the\nwhole dataset when the server's is higher (rows exist behind the cursor)."
+            "description": "Total active (non-archived, trust-visible) entries for the project."
           }
         }
       },

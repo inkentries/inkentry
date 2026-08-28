@@ -22,13 +22,10 @@ use super::{
 /// wherever it is sent.
 #[derive(Deserialize, ToSchema)]
 pub struct BatchNoteItem {
-    /// Optional client-supplied server identity, a well-formed UUIDv7 (ADR-092
-    /// force-restore). Absent on every normal write, where the server mints its
-    /// own `sync_id`. Present only from `plumbing push --force`: on the create
-    /// branch (a new `(project_id, external_id)`) the row is inserted under this
-    /// id instead of a minted one, restoring its original identity; on a dedupe
-    /// hit it is ignored entirely. A malformed value rejects the whole batch
-    /// with a 400 before anything is written.
+    /// Optional entry identity, a well-formed UUIDv7. When creating a new entry
+    /// the row is stored under it; on a dedupe hit it is ignored and the stored
+    /// entry keeps its own id. A malformed value rejects the whole batch with a
+    /// 400 before anything is written.
     #[serde(default)]
     pub id: Option<String>,
     pub kind: String,

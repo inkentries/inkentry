@@ -1,8 +1,8 @@
 // `plumbing push --force` recovery path (ADR-092): the force push re-offers
 // every active entry, hands each already-synced entry's existing `remote_id`
 // back to the server as the ingest `id`, and reports the outcomes as
-// created/skipped rather than already_synced. The normal (non-force) push is
-// unchanged: it pushes only unstamped rows and never sends an `id`.
+// created/skipped rather than already_synced. The normal (non-force) push
+// pushes only unstamped rows and never sends an `id`.
 
 use super::super::test_support::register_sqlite_vec;
 use super::*;
@@ -159,8 +159,8 @@ async fn force_against_a_healthy_server_reports_skipped_not_already_synced() {
     );
 }
 
-// The normal (non-force) push is unchanged: it pushes only unstamped rows and
-// its request never carries an `id` field (the server mints).
+// The normal (non-force) push pushes only unstamped rows and its request never
+// carries an `id` field (the server mints).
 #[tokio::test]
 async fn normal_push_never_sends_an_id_field() {
     register_sqlite_vec();

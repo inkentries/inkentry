@@ -692,9 +692,9 @@ async fn batch_ingest_non_v7_uuid_id_is_rejected() {
     assert!(notes.is_empty(), "nothing may be written: {notes:?}");
 }
 
-// Idempotency is unchanged: a duplicate `(project_id, external_id)` skips, and
-// the supplied `id` is ignored entirely — the stored row keeps its original
-// identity and is never re-keyed.
+// Idempotency: a duplicate `(project_id, external_id)` skips, and the supplied
+// `id` is ignored entirely — the stored row keeps its original identity and is
+// never re-keyed.
 #[tokio::test]
 async fn batch_ingest_ignores_a_supplied_id_on_a_duplicate_external_id() {
     let (app, _dim) = make_app(0.92);

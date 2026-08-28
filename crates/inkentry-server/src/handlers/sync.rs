@@ -94,12 +94,9 @@ pub struct SinceIdEntry {
 #[derive(Serialize, ToSchema)]
 pub struct SinceIdResponse {
     pub entries: Vec<SinceIdEntry>,
-    /// Length of this response page.
+    /// Number of entries in this response page.
     pub count: usize,
-    /// The project's active-note total (ADR-092): an additive divergence
-    /// signal, not a cursor change. Always present in `since_id` mode. The CLI
-    /// compares its local active total after applying a pull and re-pulls the
-    /// whole dataset when the server's is higher (rows exist behind the cursor).
+    /// Total active (non-archived, trust-visible) entries for the project.
     pub total: i64,
 }
 
