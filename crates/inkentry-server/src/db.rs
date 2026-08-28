@@ -442,6 +442,42 @@ impl ServerDb {
         embedding: Option<&[f32]>,
         remote_id: Option<&str>,
     ) -> Result<(i64, String)> {
+        self.add_note_with_sync_id(
+            project_id,
+            kind,
+            title,
+            body,
+            tags,
+            linked_files,
+            embedding,
+            remote_id,
+            None,
+        )
+    }
+
+    /// [`Self::add_note`], but the row's `sync_id` (the exported note identity /
+    /// `since_id` cursor) is restored from `sync_id_override` when supplied
+    /// rather than minted (ADR-092 force-restore).
+    ///
+    /// The override must be a well-formed UUIDv7 the caller has already
+    /// validated (the batch handler rejects a malformed one with a 400 before
+    /// any write); `None` mints a fresh `Uuid::now_v7()`. `sync_id` is globally
+    /// UNIQUE (migration 008), so a supplied id that collides with a different
+    /// row fails the insert through that existing constraint — this path adds no
+    /// override of a stored row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_note_with_sync_id(
+        &self,
+        project_id: i64,
+        kind: &str,
+        title: &str,
+        body: &str,
+        tags: &[String],
+        linked_files: &[String],
+        embedding: Option<&[f32]>,
+        remote_id: Option<&str>,
+        sync_id_override: Option<&str>,
+    ) -> Result<(i64, String)> {
         let tags_csv = if tags.is_empty() {
             None
         } else {
@@ -452,12 +488,17 @@ impl ServerDb {
         } else {
             Some(linked_files.join(","))
         };
-        // `sync_id` is minted here unconditionally (server-side, arrival
-        // order), independent of the caller-supplied `remote_id` (a pushing
-        // client's own external_id, used only for push idempotency) — see
-        // migration 007. Every insert path (single-note POST and batch push)
-        // goes through this one function, so every new row gets one.
-        let sync_id = Uuid::now_v7().to_string();
+        // `sync_id` is minted here (server-side, arrival order), independent of
+        // the caller-supplied `remote_id` (a pushing client's own external_id,
+        // used only for push idempotency) — see migration 007. Every insert path
+        // (single-note POST and batch push) goes through this one function, so
+        // every new row gets one. A `--force` restore instead supplies the
+        // server's own previously-minted id here so the row keeps its original
+        // identity across the fleet (ADR-092).
+        let sync_id = match sync_id_override {
+            Some(id) => id.to_string(),
+            None => Uuid::now_v7().to_string(),
+        };
         self.conn.execute(
             "INSERT INTO notes (project_id, kind, title, body, tags, linked_files, remote_id, sync_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -882,6 +923,20 @@ impl ServerDb {
             rusqlite::params![rowid, project_id],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Count of active (non-archived) notes for a project — the `total` the
+    /// `since_id` delta-pull returns (ADR-092), counted the same way the client
+    /// counts its local active set so the two are directly comparable. Matches
+    /// the `since` feed's own `status != 'archived'` filter (only `active` and
+    /// `archived` statuses exist), so `total` is the true size of what a full
+    /// pull would deliver.
+    pub fn active_note_count(&self, project_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM notes WHERE project_id = ?1 AND status = 'active'",
+            rusqlite::params![project_id],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn stats(&self, project_id: i64) -> Result<ProjectStats> {

@@ -71,6 +71,7 @@ pub(super) async fn push(
         &client,
         args.include_archived,
         accepts_pushed_vectors,
+        args.force,
         &local_embed,
     )
     .await?;

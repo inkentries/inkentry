@@ -1356,6 +1356,13 @@
             "type": "string",
             "description": "Stable cross-machine identity: the server's idempotency key. Stored as\n`notes.remote_id` (unique). A re-push of the same `external_id` against\na live note is skipped, not duplicated."
           },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional entry identity, a well-formed UUIDv7. When creating a new entry\nthe row is stored under it; on a dedupe hit it is ignored and the stored\nentry keeps its own id. A malformed value rejects the whole batch with a\n400 before anything is written."
+          },
           "kind": {
             "type": "string"
           },
@@ -2046,11 +2053,13 @@
         "description": "Response body for the `since_id`-cursor mode of `/memory/since`.",
         "required": [
           "entries",
-          "count"
+          "count",
+          "total"
         ],
         "properties": {
           "count": {
             "type": "integer",
+            "description": "Number of entries in this response page.",
             "minimum": 0
           },
           "entries": {
@@ -2058,6 +2067,11 @@
             "items": {
               "$ref": "#/components/schemas/SinceIdEntry"
             }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total active (non-archived, trust-visible) entries for the project."
           }
         }
       },

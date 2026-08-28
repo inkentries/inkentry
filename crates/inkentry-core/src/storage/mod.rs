@@ -38,7 +38,7 @@ pub use note_record::{NoteRecord, carrier_token, now_millis, now_secs};
 pub use remote::credential_hint;
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
-    RemoteMemoryBackend, SyncEdgePush,
+    RemoteMemoryBackend, SincePage, SyncEdgePush,
 };
 pub use specs::{SpecRecord, StaleSpec};
 pub use stats::{

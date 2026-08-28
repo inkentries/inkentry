@@ -104,6 +104,7 @@ async fn cli_push_then_repush_is_idempotent_then_since_roundtrips() {
     let items = |suffix: &str| {
         vec![
             BatchPushItem {
+                id: None,
                 kind: "decision".into(),
                 title: format!("Decision {suffix}"),
                 body: Some("why we did it".into()),
@@ -114,6 +115,7 @@ async fn cli_push_then_repush_is_idempotent_then_since_roundtrips() {
                 vector_precision: None,
             },
             BatchPushItem {
+                id: None,
                 kind: "note".into(),
                 title: format!("Note {suffix}"),
                 body: None,
@@ -209,6 +211,7 @@ async fn cli_push_lazily_creates_the_project() {
     let client = CloudSyncClient::new(&base_url, "brand-new/project", None, None).unwrap();
     let res = client
         .push_batch(vec![BatchPushItem {
+            id: None,
             kind: "note".into(),
             title: "First ever entry".into(),
             body: None,
@@ -239,6 +242,7 @@ async fn concurrent_identical_batches_settle_without_duplicates_or_500s() {
 
     let items = || {
         vec![BatchPushItem {
+            id: None,
             kind: "note".into(),
             title: "Racer".into(),
             body: None,
@@ -331,6 +335,7 @@ async fn cli_pull_since_retrieves_pushed_and_legacy_entries_then_cursor_advances
     let push_client = CloudSyncClient::new(&base_url, project, None, None).unwrap();
     let res = push_client
         .push_batch(vec![BatchPushItem {
+            id: None,
             kind: "decision".into(),
             title: "Pushed decision".into(),
             body: Some("why we did it".into()),
@@ -349,7 +354,8 @@ async fn cli_pull_since_retrieves_pushed_and_legacy_entries_then_cursor_advances
     let entries = pull_client
         .pull_since(None)
         .await
-        .expect("pull_since must succeed against the OSS server");
+        .expect("pull_since must succeed against the OSS server")
+        .entries;
     assert_eq!(
         entries.len(),
         2,
@@ -381,7 +387,8 @@ async fn cli_pull_since_retrieves_pushed_and_legacy_entries_then_cursor_advances
     let further = pull_client
         .pull_since(Some(max_id))
         .await
-        .expect("second pull_since must succeed");
+        .expect("second pull_since must succeed")
+        .entries;
     assert!(
         further.is_empty(),
         "re-pulling from the max already-seen id must return nothing further: {further:?}"

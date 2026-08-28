@@ -334,6 +334,7 @@ mod tests {
         let client = CloudSyncClient::new(&server.uri(), &slug, None, None).unwrap();
         let res = client
             .push_batch(vec![BatchPushItem {
+                id: None,
                 kind: "decision".into(),
                 title: "T".into(),
                 body: Some("B".into()),

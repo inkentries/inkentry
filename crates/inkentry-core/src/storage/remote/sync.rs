@@ -55,6 +55,14 @@ const SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 /// via [`BatchPushItem::maybe_attach_vector`].
 #[derive(Debug, Serialize)]
 pub struct BatchPushItem {
+    /// Optional client-supplied server identity, a well-formed UUIDv7
+    /// (ADR-092). Sent **only** by `plumbing push --force`, which re-offers
+    /// already-synced entries carrying the server's own previously-minted id
+    /// (the entry's `remote_id`) so the server restores the row under that id.
+    /// Omitted on a normal push, where the server mints its own. Never the
+    /// CLI's local-only identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub kind: String,
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,6 +223,24 @@ impl RemoteEntry {
 struct SinceBody {
     #[serde(default)]
     entries: Vec<RemoteEntry>,
+    /// The project's active-note total (ADR-092): a divergence signal, not a
+    /// cursor. Additive, so a server that predates the field omits it and this
+    /// deserializes to `None` — an older server never triggers the total-based
+    /// re-pull, keeping the client backward-compatible.
+    #[serde(default)]
+    total: Option<i64>,
+}
+
+/// One page of a `since_id` delta-pull: the entries plus the server's active-note
+/// `total` for the project (ADR-092).
+///
+/// `total` is `None` when the server predates the field (an older team server),
+/// which the caller treats as "no divergence signal available" and never as a
+/// mismatch.
+#[derive(Debug)]
+pub struct SincePage {
+    pub entries: Vec<RemoteEntry>,
+    pub total: Option<i64>,
 }
 
 /// HTTP client for the cloud two-way sync endpoints.
@@ -463,7 +489,7 @@ impl CloudSyncClient {
     /// pull that runs before any push has ever landed for a brand new project
     /// (e.g. `sync`'s own first pull pass, ahead of its own push) must not
     /// fail the whole sync just because nobody has pushed yet.
-    pub async fn pull_since(&self, since_id: Option<&str>) -> Result<Vec<RemoteEntry>> {
+    pub async fn pull_since(&self, since_id: Option<&str>) -> Result<SincePage> {
         // The all-zero UUID precedes every UUIDv7 in `id > $cursor` order, so it
         // is the natural "from the beginning" cursor for a first sync.
         let cursor = since_id.unwrap_or("00000000-0000-0000-0000-000000000000");
@@ -475,7 +501,10 @@ impl CloudSyncClient {
             .await
             .context("GET /memory/since")?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(vec![]);
+            return Ok(SincePage {
+                entries: vec![],
+                total: None,
+            });
         }
         let body = resp
             .checked(&self.base_url)
@@ -483,7 +512,10 @@ impl CloudSyncClient {
             .json::<SinceBody>()
             .await
             .context("parsing /memory/since response")?;
-        Ok(body.entries)
+        Ok(SincePage {
+            entries: body.entries,
+            total: body.total,
+        })
     }
 }
 
@@ -495,6 +527,7 @@ mod tests {
 
     fn item(ext: &str) -> BatchPushItem {
         BatchPushItem {
+            id: None,
             kind: "decision".into(),
             title: "T".into(),
             body: Some("B".into()),
@@ -869,13 +902,55 @@ mod tests {
             .await;
 
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let entries = client
+        let page = client
             .pull_since(Some("01890000-0000-7000-8000-000000000000"))
             .await
             .unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "01890000-0000-7000-8000-000000000001");
-        assert!(!entries[0].is_archived());
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].id, "01890000-0000-7000-8000-000000000001");
+        assert!(!page.entries[0].is_archived());
+    }
+
+    // The additive `total` on the `since_id` response (ADR-092) is parsed and
+    // surfaced to the caller, which compares it against the local active count.
+    #[tokio::test]
+    async fn pull_since_parses_the_active_note_total_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entries": [{
+                    "id": "01890000-0000-7000-8000-000000000001",
+                    "kind": "decision", "title": "Remote",
+                    "created_at": "2026-06-19T01:00:00Z"
+                }],
+                "count": 1,
+                "total": 7
+            })))
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let page = client.pull_since(None).await.unwrap();
+        assert_eq!(page.total, Some(7));
+    }
+
+    // A server that predates the field omits `total`; it must deserialize to
+    // `None` (never an error), so an older team server never trips the
+    // total-based re-pull.
+    #[tokio::test]
+    async fn pull_since_absent_total_is_none_for_backward_compat() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/projects/proj/memory/since"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "entries": [], "count": 0 })),
+            )
+            .mount(&server)
+            .await;
+        let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
+        let page = client.pull_since(None).await.unwrap();
+        assert_eq!(page.total, None);
     }
 
     /// A project not yet created server-side (nobody has ever pushed to it)
@@ -892,8 +967,8 @@ mod tests {
             .mount(&server)
             .await;
         let client = CloudSyncClient::new(&server.uri(), "brand-new-proj", None, None).unwrap();
-        let entries = client.pull_since(None).await.unwrap();
-        assert!(entries.is_empty());
+        let page = client.pull_since(None).await.unwrap();
+        assert!(page.entries.is_empty());
     }
 
     #[test]
@@ -966,8 +1041,8 @@ mod tests {
             .mount(&server)
             .await;
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let entries = client.pull_since(None).await.unwrap();
-        assert!(entries.is_empty());
+        let page = client.pull_since(None).await.unwrap();
+        assert!(page.entries.is_empty());
     }
 
     /// Only 404 (project not yet created) reads as "nothing to pull". A real
@@ -1008,8 +1083,8 @@ mod tests {
             .mount(&server)
             .await;
         let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
-        let entries = client.pull_since(None).await.unwrap();
-        assert!(entries[0].is_archived());
+        let page = client.pull_since(None).await.unwrap();
+        assert!(page.entries[0].is_archived());
     }
 
     #[tokio::test]

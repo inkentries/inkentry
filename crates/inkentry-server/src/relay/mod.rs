@@ -98,6 +98,9 @@ pub struct RelayPushEntry {
 impl From<RelayPushEntry> for BatchPushItem {
     fn from(e: RelayPushEntry) -> Self {
         BatchPushItem {
+            // The P2 relay push never restores identity: only `plumbing push
+            // --force` sends a client id, and that goes direct, not via relay.
+            id: None,
             kind: e.kind,
             title: e.title,
             body: e.body,
@@ -468,13 +471,16 @@ impl RelaySession {
             }
         };
         match client.pull_since(cursor.as_deref()).await {
-            Ok(entries) => {
-                if entries.is_empty() {
+            Ok(page) => {
+                // The relay buffers one page at a time for the CLI to drain; the
+                // active-note `total` is a client-side divergence signal (ADR-092)
+                // with no role in this SSE relay path.
+                if page.entries.is_empty() {
                     return;
                 }
                 let mut inner = self.inner.lock().await;
                 let mut buffer_full = false;
-                for e in entries {
+                for e in page.entries {
                     let id = e.id.clone();
                     let already_buffered = inner.pulled.contains_key(&id);
                     if !already_buffered {

@@ -11,7 +11,7 @@ use crate::{AppError, AppState, ErrorBody};
 
 use super::{
     MAX_BATCH_ENTRIES, StorageEmbedding, embed_for_storage, storage_embedding_text,
-    validate_project_slug, validate_pushed_vector, validate_title_body,
+    validate_optional_uuid_v7, validate_project_slug, validate_pushed_vector, validate_title_body,
 };
 
 // ── Batch push (wire parity with cloud-api's POST /memory/batch) ────────────
@@ -22,6 +22,12 @@ use super::{
 /// wherever it is sent.
 #[derive(Deserialize, ToSchema)]
 pub struct BatchNoteItem {
+    /// Optional entry identity, a well-formed UUIDv7. When creating a new entry
+    /// the row is stored under it; on a dedupe hit it is ignored and the stored
+    /// entry keeps its own id. A malformed value rejects the whole batch with a
+    /// 400 before anything is written.
+    #[serde(default)]
+    pub id: Option<String>,
     pub kind: String,
     pub title: String,
     #[serde(default)]
@@ -146,6 +152,9 @@ pub async fn push_memory_batch(
                 "entry {i}: external_id must not be empty"
             )));
         }
+        // A malformed client-supplied id rejects the whole batch here, before
+        // any write, rather than being silently ignored and minted (ADR-092).
+        validate_optional_uuid_v7(entry.id.as_deref()).map_err(|e| prefix_batch_error(e, i))?;
         if let Some(m) =
             crate::security::scan_for_injection(&entry.title, entry.body.as_deref().unwrap_or(""))
         {
@@ -255,7 +264,12 @@ pub async fn push_memory_batch(
             .map(|sha| vec![format!("git:{sha}")])
             .unwrap_or_default();
 
-        let (_rowid, note_id) = db.add_note(
+        // On this create branch the `(project_id, external_id)` is new, so an
+        // id supplied by `--force` restores the row under its original
+        // identity; absent (every normal write) the server mints one. A dedupe
+        // hit never reaches here, so a supplied id can never override a stored
+        // row (ADR-092). The value was validated up front.
+        let (_rowid, note_id) = db.add_note_with_sync_id(
             project.id,
             &entry.kind,
             &entry.title,
@@ -264,6 +278,7 @@ pub async fn push_memory_batch(
             &[],
             embedding,
             Some(&entry.external_id),
+            entry.id.as_deref(),
         )?;
         // Record it immediately so a later entry in this same batch sharing
         // the external_id is skipped instead of re-inserted (see the `mut`

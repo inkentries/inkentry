@@ -135,6 +135,28 @@ fn validate_pushed_vector(
     Ok(())
 }
 
+/// Validate an optional client-supplied entry `id` (ADR-092).
+///
+/// `None` always passes; the server mints its own id. A present value must be a
+/// well-formed UUIDv7 — it parses as a UUID and its version field is 7 (the
+/// entry-identity scheme, ADR-078). A malformed id is rejected `400` rather than
+/// coerced, so a bad id surfaces loudly instead of producing a divergent
+/// identity.
+fn validate_optional_uuid_v7(id: Option<&str>) -> Result<(), AppError> {
+    let Some(id) = id else {
+        return Ok(());
+    };
+    match uuid::Uuid::parse_str(id) {
+        Ok(u) if u.get_version() == Some(uuid::Version::SortRand) => Ok(()),
+        Ok(_) => Err(AppError::BadRequest(format!(
+            "id '{id}' must be a UUIDv7 (wrong version)"
+        ))),
+        Err(_) => Err(AppError::BadRequest(format!(
+            "id '{id}' is not a well-formed UUID"
+        ))),
+    }
+}
+
 /// Reject a `project_id` path parameter that is empty or unreasonably long.
 /// Project ids are human slugs (e.g. `inkentries/inkentry`), not UUIDs, so this
 /// is a length/sanity cap rather than a UUID-format check.
