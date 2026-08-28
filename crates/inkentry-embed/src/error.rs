@@ -12,6 +12,15 @@ pub enum EmbedError {
     #[error("inference failed: {0}")]
     Inference(String),
 
+    /// The process's Metal device / `MTLCompilerService` connection was torn
+    /// down (typically after a long macOS idle/sleep) and the embedder's one
+    /// in-place device rebuild did not recover it. Unlike [`Self::Inference`],
+    /// this never clears on its own: the server must be restarted. Kept a
+    /// distinct variant so `inkentry-server` can return an actionable error
+    /// rather than a generic 500 that the CLI misreads as a batch-size problem.
+    #[error("embedder Metal device lost and could not be rebuilt: {0}")]
+    DeviceLost(String),
+
     /// The caller's cancellation flag was observed set before or during the
     /// batch. Nobody reads this (the caller already gave up), but a real
     /// variant keeps the failure mode honest rather than silently discarding

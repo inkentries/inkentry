@@ -879,6 +879,56 @@ impl ErrorBody {
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
+/// Stable error `code` the CLI keys on to tell an upstream embedder device loss
+/// apart from a genuine request-budget/batch-size rejection, so it can print a
+/// server-restart hint instead of a batch-size one. The CLI carries the same
+/// literal in `response_signals_device_lost` (it cannot depend on this crate).
+#[cfg(feature = "embed-native")]
+pub(crate) const EMBEDDER_DEVICE_LOST_CODE: &str = "embedder_device_lost";
+
+/// Fixed, path-free client message for the Metal-device-lost case. The raw
+/// candle/Metal error is logged server-side (see `embedder_device_lost_response`)
+/// but never returned in the body, matching the no-raw-text rule the generic
+/// internal path follows.
+#[cfg(feature = "embed-native")]
+pub(crate) const EMBEDDER_DEVICE_LOST_MESSAGE: &str = "the server's embedder lost its GPU device and could not re-establish it; \
+     restart the server to recover";
+
+/// Map an embedder device-loss error to a distinct, actionable `503` rather
+/// than a generic `500` that reads as a server bug (and that the CLI misreads as
+/// a batch-size problem). Recognised via the typed `EmbedError::DeviceLost` the
+/// native embedder returns once its one in-place device rebuild has failed.
+#[cfg(feature = "embed-native")]
+fn embedder_device_lost_response(e: &anyhow::Error) -> Option<Response> {
+    match e.downcast_ref::<inkentry_embed::EmbedError>() {
+        Some(inkentry_embed::EmbedError::DeviceLost(detail)) => {
+            tracing::error!(
+                "embedder Metal device lost and self-heal failed: {detail}; restart the \
+                 server (`inkentry server stop && inkentry server start`) to re-establish \
+                 the device"
+            );
+            Some(
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ErrorBody::new(
+                        EMBEDDER_DEVICE_LOST_CODE,
+                        EMBEDDER_DEVICE_LOST_MESSAGE,
+                    )),
+                )
+                    .into_response(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Without the native embedder there is no in-process device to lose, so no
+/// error can be a device loss.
+#[cfg(not(feature = "embed-native"))]
+fn embedder_device_lost_response(_e: &anyhow::Error) -> Option<Response> {
+    None
+}
+
 /// Map anyhow errors to HTTP responses using the standard error body format.
 pub enum AppError {
     NotFound,
@@ -972,6 +1022,8 @@ impl IntoResponse for AppError {
                         Json(ErrorBody::new("bad_request", &mismatch.to_string())),
                     )
                         .into_response()
+                } else if let Some(resp) = embedder_device_lost_response(&e) {
+                    resp
                 } else {
                     tracing::error!("internal error: {e:#}");
                     (

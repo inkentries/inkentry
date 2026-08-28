@@ -18,6 +18,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   self-hosted team server after a crash or dropped database. Other machines then
   pick the recovered entries up on their next `inkentry sync`, which now re-pulls
   the full dataset whenever the server reports more entries than it holds locally.
+### Fixed
+
+- **The embedder self-heals when macOS drops the Metal compiler service.** A
+  long-running server no longer needs a restart to embed again. A request that
+  hits the failure window gets a stable `embedder_device_lost` error, and
+  `inkentry index` now says to retry instead of misblaming the request budget.
 
 ## [1.0.0] — 2026-08-24
 
