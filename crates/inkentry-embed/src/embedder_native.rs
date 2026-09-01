@@ -9,6 +9,7 @@ use candle_nn::{Activation, Embedding, Module, RmsNorm, rotary_emb::rope};
 use tokenizers::Tokenizer;
 
 use crate::error::EmbedError;
+use crate::vector::l2_normalise;
 
 /// Embedding dimension produced by F2LLM-v2-330M (hidden_size = 896).
 pub const DIM: usize = 896;
@@ -806,13 +807,6 @@ fn select_device() -> Device {
         }
     }
     Device::Cpu
-}
-
-fn l2_normalise(v: &mut [f32]) {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        v.iter_mut().for_each(|x| *x /= norm);
-    }
 }
 
 #[async_trait::async_trait]

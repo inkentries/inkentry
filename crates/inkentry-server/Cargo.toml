@@ -26,6 +26,17 @@ embed-native = ["dep:inkentry-embed", "dep:candle-core", "dep:hf-hub", "dep:dirs
 # metal: enable Metal GPU acceleration on macOS. Add this when building the
 # macOS binary. Forwards to `inkentry-embed`'s `metal` feature.
 metal = ["inkentry-embed/metal"]
+# embed-llama: additionally bundle the llama.cpp engine (LlamaEmbedder) and its
+# hub acquisition path (canonical llama.cpp GGUF, same model repo). Implies
+# embed-native: candle stays in the same binary as the CPU/fallback engine.
+# Bare feature = llama on CPU only; add one of the two GPU flavors below.
+embed-llama = ["embed-native", "inkentry-embed/llama"]
+# llama-metal: llama.cpp Metal GPU — parity/bench builds on macOS (release
+# macOS binaries stay on candle `metal`).
+llama-metal = ["embed-llama", "inkentry-embed/llama-metal"]
+# llama-vulkan: llama.cpp Vulkan GPU + runtime-loaded backend modules — the
+# cross-vendor Windows/Linux release target.
+llama-vulkan = ["embed-llama", "inkentry-embed/llama-vulkan"]
 
 [dependencies]
 inkentry-core = { path = "../inkentry-core" }

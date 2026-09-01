@@ -292,7 +292,12 @@ async fn live_health_keys_match_the_recorded_peer_fixture() {
         "the live body",
         &["accepts_pushed_vectors"],
     );
-    assert_keys_match(&live["embedder"], &recorded["embedder"], "embedder", &[]);
+    assert_keys_match(
+        &live["embedder"],
+        &recorded["embedder"],
+        "embedder",
+        &["engine", "device"],
+    );
     assert_keys_match(
         &live["limits"],
         &recorded["limits"],
