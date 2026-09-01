@@ -298,6 +298,11 @@ struct EmbedderSlotInner {
     /// Optional human-readable detail (e.g. the load error) surfaced in the
     /// health body and warm-up responses.
     detail: Option<String>,
+    /// Inference engine identity (`"candle"`/`"llama"`) and configured device
+    /// (`"cpu"`/`"metal"`/`"vulkan"`) surfaced in the health body. `None` for
+    /// slots readied without them (test backends).
+    engine: Option<&'static str>,
+    device: Option<&'static str>,
 }
 
 /// Shared, mutable readiness cell for the server-side embedder.
@@ -317,6 +322,8 @@ impl EmbedderSlot {
             state: EmbedderState::Loading,
             backend: None,
             detail: Some("loading embedding model".to_string()),
+            engine: None,
+            device: None,
         })))
     }
 
@@ -327,6 +334,8 @@ impl EmbedderSlot {
             state: EmbedderState::Ready,
             backend: Some(backend),
             detail: None,
+            engine: None,
+            device: None,
         })))
     }
 
@@ -337,6 +346,8 @@ impl EmbedderSlot {
             state: EmbedderState::Disabled,
             backend: None,
             detail: None,
+            engine: None,
+            device: None,
         })))
     }
 
@@ -346,6 +357,25 @@ impl EmbedderSlot {
         inner.state = EmbedderState::Ready;
         inner.backend = Some(backend);
         inner.detail = None;
+        inner.engine = None;
+        inner.device = None;
+    }
+
+    /// [`Self::set_ready`] plus the engine/device identity `/v1/health`
+    /// reports — the production load path uses this; test slots readied
+    /// without an identity keep reporting `null`.
+    pub fn set_ready_with_engine(
+        &self,
+        backend: Arc<dyn inkentry_core::embeddings::EmbeddingBackend>,
+        engine: &'static str,
+        device: &'static str,
+    ) {
+        let mut inner = self.0.write().expect("embedder slot poisoned");
+        inner.state = EmbedderState::Ready;
+        inner.backend = Some(backend);
+        inner.detail = None;
+        inner.engine = Some(engine);
+        inner.device = Some(device);
     }
 
     /// Mark the background load as failed: state → `unavailable` (terminal).
@@ -377,6 +407,17 @@ impl EmbedderSlot {
             .expect("embedder slot poisoned")
             .backend
             .clone()
+    }
+
+    /// Engine identity (`"candle"`/`"llama"`), when the ready backend has one.
+    pub fn engine(&self) -> Option<&'static str> {
+        self.0.read().expect("embedder slot poisoned").engine
+    }
+
+    /// Configured device (`"cpu"`/`"metal"`/`"vulkan"`), when the ready
+    /// backend has one.
+    pub fn device(&self) -> Option<&'static str> {
+        self.0.read().expect("embedder slot poisoned").device
     }
 }
 

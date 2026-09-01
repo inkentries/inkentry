@@ -20,6 +20,15 @@ pub struct EmbedderStatus {
     /// Optional human-readable detail (e.g. the load-failure summary while
     /// `unavailable`). `null` when not useful.
     pub detail: Option<String>,
+    /// Inference engine serving embeddings: `"candle"` or `"llama"`. `null`
+    /// until the embedder is `ready` (and on older servers pre-dating the
+    /// field). Both engines produce the same vector space; this exists so a
+    /// field report can name the engine without reading server logs.
+    pub engine: Option<&'static str>,
+    /// Device the engine was configured for at load: `"cpu"`, `"metal"`, or
+    /// `"vulkan"`. `null` until the embedder is `ready` (and on older
+    /// servers pre-dating the field).
+    pub device: Option<&'static str>,
 }
 
 /// Server-enforced limits relevant to sizing an `/index/embed` request, so a
@@ -130,6 +139,8 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         embedder: EmbedderStatus {
             state: embedder_state,
             detail: state.embedder.detail(),
+            engine: state.embedder.engine(),
+            device: state.embedder.device(),
         },
         limits: ServerLimits {
             embed_request_timeout_secs: crate::EMBED_REQUEST_TIMEOUT.as_secs(),

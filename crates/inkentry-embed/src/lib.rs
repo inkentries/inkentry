@@ -44,7 +44,15 @@ mod embedder_native;
 #[cfg(feature = "native")]
 pub use embedder_native::{DIM, NativeEmbedder};
 
-#[cfg(feature = "native")]
+#[cfg(feature = "llama")]
+mod embedder_llama;
+#[cfg(feature = "llama")]
+pub use embedder_llama::{DeviceRequest, LlamaEmbedder};
+
+#[cfg(any(feature = "native", feature = "llama"))]
 mod error;
-#[cfg(feature = "native")]
+#[cfg(any(feature = "native", feature = "llama"))]
 pub use error::EmbedError;
+
+#[cfg(any(feature = "native", feature = "llama"))]
+mod vector;

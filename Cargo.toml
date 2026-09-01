@@ -42,6 +42,17 @@ dirs        = "6"
 candle-core = "0.11.0"
 candle-nn   = "0.11.0"
 tokenizers  = "0.23"
+# llama.cpp embedder backend (portable GPU: Vulkan on Windows/Linux, Metal on
+# macOS). Optional deps of `inkentry-embed`, gated behind its off-by-default
+# `llama` feature. Pinned exact: the crate tracks llama.cpp weekly and its
+# 0.1.x line makes no API-stability promise, so upgrades are deliberate and
+# re-verified against the vector-parity suite. The sys crate must be pinned
+# too — llama-cpp-2 only declares a caret requirement on it, and the pair
+# breaks across releases (0.1.154 + sys 0.1.155 fails to compile), so
+# inkentry-embed carries a direct sys dependency purely as a resolution
+# anchor. Bump both together.
+llama-cpp-2 = "=0.1.154"
+llama-cpp-sys-2 = "=0.1.154"
 # OS keychain for the CLI bearer credential (macOS Keychain, Linux Secret
 # Service via zbus, Windows Credential Manager). `v1` is keyring 4's
 # compatibility shim: same Entry::new/get_password/set_password/
