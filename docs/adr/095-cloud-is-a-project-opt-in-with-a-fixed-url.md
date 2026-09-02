@@ -37,14 +37,13 @@ the path.
 
 `.inkentry/config.toml` gains a `cloud` flag. When set, the CLI targets the
 hosted cloud for the remote memory and inference it would otherwise send to a
-`server_url`. `server_url` returns to meaning a self-hosted team server only.
-The two are mutually exclusive: a project is either on the hosted cloud or on a
-named team server, and a configuration that sets both is refused with a message
-that names the conflict.
+`server_url`. `server_url` returns to meaning a self-hosted team server only,
+and setting both `cloud` and `server_url` is a configuration error.
 
-Because cloud is now a flag rather than an address, `INKENTRY_SERVER_URL` can no
-longer turn a request into a cloud request. Pointed anywhere, it selects a team
-server, which resolves through the per-origin key map and never through `[auth]`.
+Because cloud is a flag rather than an address, `INKENTRY_SERVER_URL` no longer
+selects the hosted cloud. Whether a request carries the access token is decided
+by D3, the origin the token was issued for, not by pointing an address at the
+cloud.
 
 ### D2 - the cloud URL is fixed, with a development override that is not a user setting
 
@@ -77,19 +76,12 @@ issuing origin, not on an environment-derived cloud origin.
   closed from both directions: `server_url` can no longer be turned into cloud,
   and `INKENTRY_CLOUD_URL` can move where a request goes but not which origin a
   stored token is sent to.
-- **Migration.** A project that selected cloud by setting `server_url` to the
-  cloud address sets `cloud = true` instead. When `server_url` is the cloud
-  origin and `cloud` is unset, the CLI errors with that instruction rather than
-  treating the address as cloud. Recorded here so the change of setting is
-  expected. A production login keeps working; a login against a non-default
-  cloud re-authenticates once.
 - **Documentation.** `docs/config-reference.md` documents the `cloud` flag and
   reframes `INKENTRY_CLOUD_URL` as a development override, not a user URL.
   `docs/commands.md` follows. `docs/security/THREAT-MODEL.md` stops listing this
   path as an open residual and records it as closed.
 - **CHANGELOG.** An `### Added` entry for the `cloud` opt-in and a `### Security`
-  entry for the token now being sent only to the host it was issued for, with
-  the one-time re-login note for a non-default-cloud session.
+  entry for the token now being sent only to the host it was issued for.
 - **ADR-071.** D2 gains a line recording that cloud is a project opt-in and the
   cloud kind is keyed on the credential's issuing origin.
 - **Tests.** `bearer_for` gains coverage that a stored token is released only to
