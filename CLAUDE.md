@@ -454,15 +454,15 @@ Rust, Go, Python, TypeScript, JavaScript, JSX, TSX, Java, C, C++, PHP, Ruby,
 C#, Swift, Kotlin, JSON, HTML, CSS, HCL, Proto, SQL, Markdown, plain text,
 Jupyter notebooks (`notebook`, `.ipynb`).
 
-That is the set a default `cargo build` parses; `notebook` is in it and not
-behind a feature, being a custom JSON parser rather than a tree-sitter grammar
-or a binary-document reader. `SUPPORTED_LANGUAGES`
+That is the set every build parses; `notebook` is in it and not behind a
+feature, being a custom JSON parser rather than a tree-sitter grammar or a
+binary-document reader. `SUPPORTED_LANGUAGES`
 (`crates/inkentry-core/src/indexer/parser/mod.rs`) is `cfg`-gated, so the
-optional `rich-formats` feature adds `docx`, `spreadsheet` and `pdf` to it, and
+`rich-formats` feature adds `docx`, `spreadsheet` and `pdf` to it, and
 `inkentry languages` prints whichever set the running binary was built with.
-Release binaries are built with `rich-formats` (see `.github/workflows/release.yml`),
-so a released `inkentry languages` lists all three; a default source build does
-not. Compare output across builds accordingly.
+`rich-formats` is a default feature of `inkentry-cli`, so release binaries and
+a plain `cargo build` both list all three; only a `--no-default-features`
+build leaves them out.
 
 ---
 

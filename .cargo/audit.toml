@@ -2,7 +2,7 @@
 # Active vulnerability ignores.
 #
 # RUSTSEC-2026-0187 (lopdf: stack overflow via deeply nested PDF objects) was fixed by
-#   upgrading lopdf 0.41 -> 0.42 in crates/inkentry-core (optional `rich-formats` feature),
+#   upgrading lopdf 0.41 -> 0.42 in crates/inkentry-core (`rich-formats` feature, on by default),
 #   not by ignoring it.
 # RUSTSEC-2026-0097 (rand 0.10.0 pulled via the old lopdf) no longer applies after that bump
 #   — the tree now resolves rand 0.10.1 — so its previous ignore was removed.

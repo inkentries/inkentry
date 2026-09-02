@@ -374,9 +374,9 @@ file itself stays accurate.
 ### Ubuntu (`ubuntu-latest`) caveats
 
 - **`check` job disk pressure.** The `check`/lint job builds the full
-  workspace (`--lib --bins --tests --benches --features rich-formats`, which
-  pulls in the embedder dependency tree) and has intermittently exhausted the
-  runner's free disk space. The job sets `CARGO_PROFILE_DEV_DEBUG: 0` to drop
+  workspace (`--lib --bins --tests --benches`, which pulls in the embedder
+  dependency tree) and has intermittently exhausted the runner's free disk
+  space. The job sets `CARGO_PROFILE_DEV_DEBUG: 0` to drop
   dev-profile debug info to reduce that pressure.
 
 ---
