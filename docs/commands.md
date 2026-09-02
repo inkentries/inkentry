@@ -1203,11 +1203,11 @@ local content, same as `memory add`.
 `memory add` time, which waits only a few seconds for it and stores the note
 without one if the embedder is busy, and again by `inkentry sync` /
 `inkentry plumbing push` for any entry in the set they are about to push that
-still lacks one. A note that
-misses both — added while the embedder was down and never pushed, or arrived
-from an `inkentry import` (a portable dump carries no vectors) — stays
-present-but-unembedded: still listed by `memory list` and `context`, but
-absent from the semantic ranking of `inkentry search`. Text search is not a
+still lacks one. A note that misses both, added while no embedder was
+reachable and never pushed, or arrived from an `inkentry import` (a portable
+dump carries no vectors), stays present-but-unembedded: still listed by
+`memory list` and `context`, but absent from the semantic ranking of
+`inkentry search`. Text search is not a
 dependable fallback for it — the memory text matcher requires the query as a
 contiguous phrase (see [`inkentry search`](#inkentry-search)).
 `inkentry memory reindex` re-embeds those notes against the local
