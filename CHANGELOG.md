@@ -89,13 +89,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **`inkentry memory add` no longer waits on a busy embedder.** Adding an entry
-  while a bulk index pass was running could block for minutes, and the entry was
-  not saved until the embed came back, so a caller that gave up first lost it.
-  The entry is now saved first and the wait for its search vector is capped at a
-  few seconds. An entry that misses that window is saved without a vector and
-  says so: it is listed and readable straight away, and `inkentry memory reindex`
-  adds the vector semantic search needs (the next `inkentry sync` also does it
-  on its own).
+  during a bulk index pass could block for minutes, and the entry was not saved
+  until the embed came back, so a caller that gave up first lost it. The entry
+  is now saved first and the command returns in seconds. An entry saved before
+  its search vector arrives says so, and is listed and readable straight away;
+  `inkentry memory reindex` adds the vector, and the next `inkentry sync` does
+  it on its own.
 
 ## [1.0.1] — 2026-08-28
 

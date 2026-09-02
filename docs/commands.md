@@ -1200,8 +1200,10 @@ rows. Pre-promotion, a pull can still add a distinct row alongside matching
 local content, same as `memory add`.
 
 **Backfilling missing embeddings:** a note's semantic vector is minted at
-`memory add` time, and again by `inkentry sync` / `inkentry plumbing push` for
-any entry in the set they are about to push that still lacks one. A note that
+`memory add` time, which waits only a few seconds for it and stores the note
+without one if the embedder is busy, and again by `inkentry sync` /
+`inkentry plumbing push` for any entry in the set they are about to push that
+still lacks one. A note that
 misses both — added while the embedder was down and never pushed, or arrived
 from an `inkentry import` (a portable dump carries no vectors) — stays
 present-but-unembedded: still listed by `memory list` and `context`, but
