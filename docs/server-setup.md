@@ -375,9 +375,8 @@ nothing published reaches a loopback-only bind.
 and the native embedder's downloaded model cache (`/data/inkentry/models/`, a
 one-time ~339 MB pull, held twice on disk today; see
 [Sizing the host](#sizing-the-host)) live on the same named volume. Size it
-accordingly, and
-when backing it up, only the database needs your normal database backup
-process (per [Production deployment](#production-deployment) below); the model
+accordingly, and when backing it up, only the database needs your normal
+database backup process (per [Production deployment](#production-deployment) below); the model
 cache is a re-downloadable artifact, not project data.
 
 ## 5. Point a remote agent at it

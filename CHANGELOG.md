@@ -11,10 +11,8 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Server setup now says what self-hosting costs.** `docs/server-setup.md`
-  gains a sizing section: resident RAM and on-disk model figures for a team
-  server, and what co-locating one with a developer machine adds, so an
-  operator can size a host before deploying.
+- **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
+  a sizing section with the RAM and disk figures for a team server.
 
 ## [1.0.1] — 2026-08-28
 
