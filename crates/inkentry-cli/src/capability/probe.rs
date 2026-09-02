@@ -524,6 +524,13 @@ async fn probe_url_reporting_instance_id(
         OfflineReason::ExplicitServerUnavailable
     };
 
+    // Already known absent in this process: the probe would spend a connect
+    // timeout to return exactly this. Skipping is a latency shortcut only, and
+    // returns the same tier a failed probe returns.
+    if inkentry_core::reachability::connect_already_failed(url) {
+        return Ok((Tier::Offline(unreached), None));
+    }
+
     let builder =
         match inkentry_core::config::apply_server_ca(reqwest::Client::builder(), server_ca) {
             Ok(b) => b,
@@ -532,7 +539,17 @@ async fn probe_url_reporting_instance_id(
                 return Ok((Tier::Offline(unreached), None));
             }
         };
-    let client = match builder.timeout(timeout).build() {
+    // Connect gets half the liveness budget, leaving the rest to read the
+    // answer: a probe that spent its whole budget connecting would have nothing
+    // left to hear a reply with. Splitting them also makes the failure legible.
+    // With one budget for both, a host that never answers and a server that
+    // answers slowly both surface as the same undifferentiated timeout, and the
+    // difference decides whether the miss may be memoised as unreachable.
+    let client = match builder
+        .connect_timeout(timeout / 2)
+        .timeout(timeout)
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("could not build HTTP client for server probe: {e}");
@@ -596,6 +613,15 @@ async fn probe_url_reporting_instance_id(
             Ok((Tier::Offline(unreached), None))
         }
         Err(e) => {
+            // This probe is usually the first thing in a command to touch the
+            // server, so recording a genuine miss here is what lets everything
+            // after it skip straight to the same answer instead of each
+            // spending its own connect timeout. TLS failures are excluded on
+            // purpose: that server answered, and a later request has to run its
+            // own handshake to report the certificate cause.
+            if e.is_connect() && find_rustls_cause(&e).is_none() {
+                inkentry_core::reachability::record_connect_failure(url);
+            }
             if !auto_discovered {
                 let chain = error_chain(&e);
                 match find_rustls_cause(&e) {

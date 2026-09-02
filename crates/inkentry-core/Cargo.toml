@@ -36,6 +36,9 @@ tracing-subscriber = { workspace = true }
 rusqlite = { workspace = true }
 sqlite-vec = { workspace = true }
 reqwest = { workspace = true }
+# Named so a TLS handshake failure can be told apart from an unreachable host by
+# matching `rustls::Error` in the error chain rather than by string sniffing.
+rustls = { workspace = true }
 thiserror = { workspace = true }
 percent-encoding = "2.3"
 keyring = { workspace = true }

@@ -30,7 +30,7 @@ pub use predicates::{
 pub use project_id::derive_project_id;
 pub use sync_mode::SyncMode;
 pub use team_target::{TeamTarget, declared_team_targets};
-pub use tls::apply_server_ca;
+pub use tls::{apply_server_ca, find_rustls_cause};
 
 /// Default TCP port for `inkentry-server`.
 ///
@@ -45,13 +45,16 @@ pub const DEFAULT_SERVER_PORT: u16 = 4655;
 ///
 /// Short on purpose, and unrelated to the per-request budgets, which stay long
 /// because a real transfer or a server-side embed legitimately runs for
-/// minutes once the connection is up. Nothing legitimate happens between the
-/// SYN and the handshake completing: a reachable server answers in
-/// milliseconds, including over loopback. Without this bound an unreachable
-/// host instead burns the whole request budget, since a firewall that drops
-/// rather than refuses leaves the connect attempt with nothing to fail on.
-/// Matches the liveness probes, which settled on the same number for the same
-/// reason.
+/// minutes once the connection is up. Without this bound an unreachable host
+/// instead burns the whole request budget, since a firewall that drops rather
+/// than refuses leaves the connect attempt with nothing to fail on. Matches the
+/// liveness probes, which settled on the same number for the same reason.
+///
+/// Note this covers the TLS handshake as well as the TCP connect, so it is a
+/// budget for a round trip or two to the server rather than for a bare SYN. Two
+/// seconds is generous for that on a healthy link, including a distant one, but
+/// it is the number to revisit if a legitimately slow WAN server is ever
+/// reported as unreachable.
 pub const REMOTE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[cfg(test)]

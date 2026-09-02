@@ -5,6 +5,7 @@ pub mod embeddings;
 pub mod error;
 pub mod indexer;
 pub mod llm;
+pub mod reachability;
 pub mod registry;
 pub mod search;
 pub mod storage;

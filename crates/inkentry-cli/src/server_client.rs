@@ -212,22 +212,22 @@ impl ServerInferenceClient {
             std::process::exit(2);
         }
         let project_id = cfg.project_id.clone().unwrap_or_default();
-        let mut builder = inkentry_core::config::apply_server_ca(
+        // Loopback is bounded too. A closed loopback port usually refuses at
+        // once, but it does not always: a host firewall that drops rather than
+        // rejects leaves the SYN unanswered, and then nothing but this bound
+        // ends the attempt before the 300s request budget does. Under
+        // `cloud_first` this client's base URL is the configured team server,
+        // which is commonly on loopback, so that is the reported case rather
+        // than a hypothetical one.
+        let client = inkentry_core::config::apply_server_ca(
             reqwest::Client::builder(),
             cfg.server_ca.as_deref().map(std::path::Path::new),
         )
         .expect("applying custom CA for server inference")
-        .timeout(std::time::Duration::from_secs(300));
-        // A configured remote that is simply not there must not cost the whole
-        // 300s request budget before it says so. The loopback daemon is left as
-        // it was: it refuses instantly when it is not running, so it has
-        // nothing to gain from a connect bound.
-        if !inkentry_core::config::is_loopback_url(&base_url) {
-            builder = builder.connect_timeout(inkentry_core::config::REMOTE_CONNECT_TIMEOUT);
-        }
-        let client = builder
-            .build()
-            .expect("building HTTP client for server inference");
+        .connect_timeout(inkentry_core::config::REMOTE_CONNECT_TIMEOUT)
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("building HTTP client for server inference");
 
         // Carry WorkOS refresh state only when the resolved bearer came from
         // `[auth]`, i.e. `base_url`'s origin is the cloud kind (ADR-071 D2).
@@ -415,7 +415,25 @@ impl ServerInferenceClient {
             self.refresh_access_token().await?;
         }
 
-        let resp = self.authed(make_req()).send().await?;
+        // Skip the attempt when a connect to this origin already failed in this
+        // process: the inference call would spend another connect timeout to
+        // reach the same conclusion. Purely a latency shortcut; the caller's
+        // own fallback is what decides what happens next, exactly as it would
+        // have after a real failed attempt.
+        if inkentry_core::reachability::connect_already_failed(&self.base_url) {
+            anyhow::bail!(
+                "{} is unreachable (a connection attempt earlier in this command already failed)",
+                self.base_url
+            );
+        }
+        let resp = self.authed(make_req()).send().await.inspect_err(|err| {
+            // TLS failures are excluded: that server answered, and recording it
+            // as absent would make a later request skip its own handshake and
+            // report an outage instead of the certificate cause.
+            if err.is_connect() && inkentry_core::config::find_rustls_cause(err).is_none() {
+                inkentry_core::reachability::record_connect_failure(&self.base_url);
+            }
+        })?;
         if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
             return Ok(resp);
         }

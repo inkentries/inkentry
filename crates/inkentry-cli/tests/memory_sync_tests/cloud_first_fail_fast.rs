@@ -14,18 +14,17 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-// What is bounded is a single connection attempt, at 2s. A command makes a few
-// of them in sequence, each from a different subsystem that independently finds
-// the server absent: the capability probe, the embed of the new entry, the
-// dialect probe, then the request itself. A write against an unroutable host
-// measures about 9s locally and a read about 5s.
+// A command asks several independent subsystems to reach the same server: a
+// capability probe, an embed, a dialect probe, then the request itself. The
+// first to try records that the origin did not answer, and the rest skip
+// straight to that conclusion instead of each spending its own connect budget,
+// so the whole command costs about one connect timeout. Measured here: 2.9s for
+// a write, 2.0s for a read, against 81s and 33s before any of this.
 //
-// This ceiling is therefore loose on purpose. It is set to catch the failure it
-// exists for, an attempt that is not bounded at all and so runs to a request
-// budget or to the operating system's own connect budget, which measured 81s
-// and 33s for a write and a read before this was fixed. Tightening it to the
-// observed figures would buy nothing and would go flaky on a loaded machine.
-const FAIL_FAST_CEILING: Duration = Duration::from_secs(20);
+// Five seconds leaves room for a loaded machine without leaving room for a
+// regression: losing the memo puts a write back at roughly 9s, and losing the
+// connect bound puts it in the tens of seconds. Either is red here.
+const FAIL_FAST_CEILING: Duration = Duration::from_secs(5);
 
 // TEST-NET-1, reserved for documentation and guaranteed not to be routed, so a
 // connection attempt gets no answer at all rather than a refusal. That is the

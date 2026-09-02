@@ -209,12 +209,15 @@ configured `server_url`.
 | `local_first` | local | local, then async background sync | best-effort |
 | `cloud_first` | server (error if unreachable) | server (error if unreachable) | required |
 
-Under `cloud_first` an unreachable server is reported in a few seconds rather
-than after the full per-request timeout: each attempt to open a connection
-gives up after a couple of seconds. A single command can make more than one
-such attempt, so expect a failed write in under ten seconds rather than in two.
-The error names the server and states that there is no fallback to the local
-store.
+Under `cloud_first` an unreachable server is reported in about two seconds
+rather than after the full per-request timeout: opening a connection is given a
+couple of seconds, and once one attempt has found the server absent the rest of
+the command stops re-attempting it. The error names the server and states that
+there is no fallback to the local store.
+
+A server that is running but presents a certificate this machine does not trust
+is reported separately, as a TLS failure naming the certificate and pointing at
+`server_ca`, because restarting a server cannot fix that.
 
 When unset, the effective mode is derived: no `server_url` means `offline`; a
 configured `server_url` means `local_first`. `INKENTRY_NO_SERVER=1` forces

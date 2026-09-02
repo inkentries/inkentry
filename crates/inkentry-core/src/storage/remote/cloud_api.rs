@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use super::super::backend::{MemoryBackend, NoteInput};
 use super::super::memory::{MemoryEdge, Note, NoteId};
-use super::{encode_project_id, transport_error};
+use super::{already_unreachable, encode_project_id, transport_error};
 use wire::*;
 
 mod wire;
@@ -55,6 +55,24 @@ impl CloudApiMemoryBackend {
         }
     }
 
+    /// Send an authenticated request, classifying any transport failure once.
+    ///
+    /// When a connection to this origin already failed earlier in this process,
+    /// the attempt is skipped and the same failure is reported immediately,
+    /// rather than spending another connect timeout to reach a conclusion that
+    /// is already known. That is a latency shortcut and nothing more: the error
+    /// is the one an attempt would have produced, and which store this backend
+    /// talks to is decided before this is ever called.
+    async fn send(&self, req: reqwest::RequestBuilder, op: &str) -> Result<reqwest::Response> {
+        if crate::reachability::connect_already_failed(&self.base_url) {
+            return Err(already_unreachable(&self.base_url, op));
+        }
+        self.authed(req)
+            .send()
+            .await
+            .map_err(|err| transport_error(err, &self.base_url, op))
+    }
+
     /// One page of `GET /memory`, optionally narrowed by a search query.
     async fn page(
         &self,
@@ -73,10 +91,8 @@ impl CloudApiMemoryBackend {
         if include_archived {
             req = req.query(&[("archived", "true")]);
         }
-        self.authed(req)
-            .send()
-            .await
-            .map_err(|e| transport_error(e, &self.base_url, "GET /memory"))?
+        self.send(req, "GET /memory")
+            .await?
             .error_for_status()
             .context("server returned error for GET /memory")?
             .json::<EntryListResponse>()
@@ -139,13 +155,12 @@ impl CloudApiMemoryBackend {
 
     async fn fetch(&self, id: &NoteId) -> Result<Option<EntryResponse>> {
         let resp = self
-            .authed(
+            .send(
                 self.client
                     .get(self.url(&format!("memory/{}", super::encode_path_segment(id)))),
+                "GET /memory/{id}",
             )
-            .send()
-            .await
-            .map_err(|e| transport_error(e, &self.base_url, "GET /memory/{id}"))?;
+            .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -178,11 +193,11 @@ impl MemoryBackend for CloudApiMemoryBackend {
             source_commit: input.source_ref,
         };
         let resp = self
-            .authed(self.client.post(self.url("memory")))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| transport_error(e, &self.base_url, "POST /memory"))?;
+            .send(
+                self.client.post(self.url("memory")).json(&body),
+                "POST /memory",
+            )
+            .await?;
 
         // A 409 means "stored, but semantically close to an existing entry":
         // a warning on every other backend, so a warning here too.
@@ -270,10 +285,8 @@ impl MemoryBackend for CloudApiMemoryBackend {
             req = req.query(&[("archived", "true")]);
         }
         let resp = self
-            .authed(req)
-            .send()
-            .await
-            .map_err(|e| transport_error(e, &self.base_url, "GET /memory"))?
+            .send(req, "GET /memory")
+            .await?
             .error_for_status()
             .context("server returned error for GET /memory")?
             .json::<EntryListResponse>()
@@ -313,13 +326,12 @@ impl MemoryBackend for CloudApiMemoryBackend {
     /// caller asked for the entry to be gone and it is.
     async fn archive(&self, id: NoteId) -> Result<bool> {
         let resp = self
-            .authed(
+            .send(
                 self.client
                     .delete(self.url(&format!("memory/{}", super::encode_path_segment(&id)))),
+                "DELETE /memory/{id}",
             )
-            .send()
-            .await
-            .map_err(|e| transport_error(e, &self.base_url, "DELETE /memory/{id}"))?;
+            .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(false);
         }
@@ -348,11 +360,11 @@ impl MemoryBackend for CloudApiMemoryBackend {
             }],
         };
         let resp = self
-            .authed(self.client.post(self.url("memory/batch")))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| transport_error(e, &self.base_url, "POST /memory/batch"))?
+            .send(
+                self.client.post(self.url("memory/batch")).json(&body),
+                "POST /memory/batch",
+            )
+            .await?
             .error_for_status()
             .context("server returned error for POST /memory/batch")?
             .json::<BatchEdgeResult>()
