@@ -291,10 +291,11 @@ backup and sync exclusions expect to find it.
 
 Budget about **350 MB**: the ~339 MB GGUF, an ~8 MB tokenizer, and a 1 KB
 config file. The GGUF is stored once. It is linked into place rather than
-copied, so a cache filled by a fresh download does not hold it twice. A cache
-first filled by an earlier release keeps a second copy of the GGUF, about
-339 MB, until you delete the cache directory and let the next server start
-download the model again.
+copied, so a cache filled by a fresh download does not hold it twice; on a
+filesystem that cannot hard link, it is copied instead and the cache holds
+both. A cache first filled by an earlier release keeps a second copy of the
+GGUF, about 339 MB, until you delete the cache directory and let the next
+server start download the model again.
 
 ## 3. Start using it inside your project
 

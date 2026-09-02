@@ -266,42 +266,69 @@ fn fetch_note(blobs_dir: &Path) -> &'static str {
 }
 
 /// Put the downloaded GGUF at the stable flat path the loader reads from,
-/// storing the ~339 MB of bytes exactly once.
+/// storing the ~339 MB of bytes once.
 ///
 /// hf-hub materialises a download as `blobs/<etag>` plus a pointer under
 /// `snapshots/<rev>/`, and hands back the pointer. A hard link from that one
-/// file to the flat path is what keeps the cache at one copy: NTFS grants hard
-/// links without the elevation or Developer Mode a symlink needs, and macOS
-/// and Linux link across the same filesystem freely. Copying is the fallback
-/// for a cache spanning two filesystems, and it drops the hub-side file so the
-/// footprint is the same either way.
+/// file to the flat path is what keeps the cache at a single copy: NTFS grants
+/// hard links without the elevation or Developer Mode a symlink needs, and
+/// macOS and Linux link freely within a filesystem.
 ///
 /// The pointer is resolved to its target first. On Unix it is a symlink whose
-/// target is written relative to the snapshot directory, so linking or copying
-/// the link itself would leave a flat path resolving against the cache root,
-/// where that target does not exist.
+/// target is written relative to the snapshot directory, so linking the link
+/// itself would leave a flat path resolving against the cache root, where that
+/// target does not exist.
+///
+/// Two servers reach this concurrently on a cold cache: the flat path is
+/// absent for the whole of the first download, and hf-hub answers the second
+/// one from its cached pointer without taking a lock, handing back the very
+/// file the first one just linked. Identity is therefore decided by inode
+/// rather than by path, and the model is linked under a temporary name and
+/// renamed into place. A second start finds the file already linked and does
+/// nothing, or else replaces it atomically. Copying onto the destination in
+/// place is what must never happen: when the two names turn out to be one
+/// file, that truncates the model to nothing and the loader, seeing a file
+/// present, never fetches it again.
+///
+/// hf-hub's own cache is left exactly as it found it. When a hard link cannot
+/// be made the model is copied and the hub keeps its copy, so that case costs
+/// a second copy on disk. Deleting the blob to reclaim it is not an option:
+/// that leaves the snapshot pointer dangling, and hf-hub cannot recover from
+/// it, since a later fetch re-downloads the model and then fails to recreate
+/// a pointer that already exists.
 fn materialise_model(downloaded: &Path, gguf_path: &Path) -> Result<()> {
     let source = std::fs::canonicalize(downloaded)
         .with_context(|| format!("resolving downloaded model at {}", downloaded.display()))?;
-    if source == gguf_path {
+    if same_file::is_same_file(&source, gguf_path).unwrap_or(false) {
         return Ok(());
     }
 
-    if std::fs::hard_link(&source, gguf_path).is_ok() {
-        return Ok(());
+    let staging = staging_path(gguf_path);
+    let _ = std::fs::remove_file(&staging);
+
+    if std::fs::hard_link(&source, &staging).is_err()
+        && let Err(e) = std::fs::copy(&source, &staging)
+    {
+        let _ = std::fs::remove_file(&staging);
+        return Err(e)
+            .with_context(|| format!("caching {} -> {}", source.display(), gguf_path.display()));
     }
 
-    std::fs::copy(&source, gguf_path)
-        .with_context(|| format!("caching {} -> {}", source.display(), gguf_path.display()))?;
-    if let Err(e) = std::fs::remove_file(&source) {
-        tracing::warn!(
-            "model cached at {} but its download copy at {} could not be removed \
-             ({e}); the cache holds the model twice until that file is deleted",
-            gguf_path.display(),
-            source.display()
-        );
+    if let Err(e) = std::fs::rename(&staging, gguf_path) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(e)
+            .with_context(|| format!("moving the model into place at {}", gguf_path.display()));
     }
     Ok(())
+}
+
+/// A staging name beside the target, distinct per process so two servers
+/// materialising at once cannot collide, and so the real path only ever sees a
+/// rename.
+fn staging_path(gguf_path: &Path) -> PathBuf {
+    let mut name = gguf_path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp", std::process::id()));
+    gguf_path.with_file_name(name)
 }
 
 fn model_cache_dir() -> Result<PathBuf> {
@@ -484,27 +511,113 @@ mod tests {
         );
     }
 
-    // Hard-linking refuses when the destination already exists, the same shape
-    // of failure a cache split across filesystems produces. Either way the
-    // fallback must leave the bytes stored once.
+    // A file already sitting at the flat path is replaced by the link. Nothing
+    // is copied onto it in place, so there is no way to truncate it.
     #[test]
-    fn materialise_model_copy_fallback_keeps_one_copy() {
+    fn materialise_model_replaces_an_unrelated_file_at_the_flat_path() {
         let cache = tempfile::tempdir().unwrap();
         let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
         let blob = blobs.join("deadbeef");
         let flat = cache.path().join(QUANT_GGUF);
         std::fs::write(&flat, b"a partially written earlier attempt").unwrap();
 
-        materialise_model(&blob, &flat).expect("materialise without linking");
+        materialise_model(&blob, &flat).expect("materialise over an existing file");
+
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+        assert!(
+            blob.exists(),
+            "hf-hub's own cache must never be modified by this loader"
+        );
+    }
+
+    // Two servers starting on a cold cache: the first links the model into
+    // place, and the second is handed hf-hub's cached pointer, which resolves
+    // to the very inode the first one linked. Copying a file onto itself
+    // truncates it to nothing, so the second start must leave it alone.
+    #[test]
+    #[cfg(unix)]
+    fn materialise_model_leaves_a_model_already_linked_into_place_intact() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let blob = blobs.join("deadbeef");
+        let flat = cache.path().join(QUANT_GGUF);
+
+        let snapshot = cache
+            .path()
+            .join("models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF")
+            .join("snapshots")
+            .join("abc123");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        let pointer = snapshot.join(QUANT_GGUF);
+        std::os::unix::fs::symlink("../../blobs/deadbeef", &pointer).unwrap();
+
+        // The first server has already linked the model into place.
+        std::fs::hard_link(&blob, &flat).unwrap();
+
+        materialise_model(&pointer, &flat).expect("a second start must not fail");
 
         assert_eq!(
-            std::fs::read(&flat).unwrap(),
-            GGUF_BYTES,
-            "the flat path must end up holding the downloaded bytes"
+            std::fs::metadata(&flat).unwrap().len() as usize,
+            GGUF_BYTES.len(),
+            "the model must keep its size, not be truncated to nothing"
         );
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+        assert!(blob.exists(), "hf-hub's blob must survive a second start");
+
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(&flat).unwrap().ino(),
+            std::fs::metadata(&blob).unwrap().ino(),
+            "the flat path must still be the same file as the blob"
+        );
+    }
+
+    #[test]
+    fn materialise_model_is_idempotent_across_repeated_calls() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let blob = blobs.join("deadbeef");
+        let flat = cache.path().join(QUANT_GGUF);
+
+        materialise_model(&blob, &flat).expect("first materialise");
+        materialise_model(&blob, &flat).expect("second materialise");
+        materialise_model(&blob, &flat).expect("third materialise");
+
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+        assert!(blob.exists(), "repeated starts must not consume the blob");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let flat_meta = std::fs::metadata(&flat).unwrap();
+            assert_eq!(flat_meta.ino(), std::fs::metadata(&blob).unwrap().ino());
+            assert_eq!(
+                flat_meta.nlink(),
+                2,
+                "repeating must not accumulate extra links"
+            );
+        }
+    }
+
+    // No staging file may survive a materialise, or the cache grows a stray
+    // copy of the model on every start.
+    #[test]
+    fn materialise_model_leaves_no_staging_file_behind() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let flat = cache.path().join(QUANT_GGUF);
+
+        materialise_model(&blobs.join("deadbeef"), &flat).expect("materialise");
+
+        let strays: Vec<_> = std::fs::read_dir(cache.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != QUANT_GGUF && !n.starts_with("models--"))
+            .collect();
         assert!(
-            !blob.exists(),
-            "a copied model must not leave the hub-side copy behind"
+            strays.is_empty(),
+            "unexpected files in the cache: {strays:?}"
         );
     }
 
