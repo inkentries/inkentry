@@ -2314,6 +2314,91 @@ fn test_search_zero_coverage_degrades_to_full_text_with_warmup_notice() {
         .stderr(predicate::str::contains("ast-grep").not());
 }
 
+// The coverage and capability notices stay on stderr by default, and --quiet
+// is the opt-out for a caller that wants none of them. The default arm is a
+// regression guard: the warmup caveat is what keeps a missing hit from reading
+// as "not in the codebase", so it must survive the flag existing.
+#[test]
+fn test_search_quiet_suppresses_the_stderr_notices_and_leaves_results_intact() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    let loud = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(loud.status.success());
+    let loud_stderr = String::from_utf8_lossy(&loud.stderr);
+    assert!(
+        loud_stderr.contains("warmup"),
+        "the warmup caveat must still be printed by default: {loud_stderr}"
+    );
+    assert!(
+        loud_stderr.contains("full-text search"),
+        "the degraded-ranking notice must still be printed by default: {loud_stderr}"
+    );
+
+    let quiet = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        quiet_stderr.trim().is_empty(),
+        "--quiet must leave stderr clean, got: {quiet_stderr}"
+    );
+
+    let loud_json: serde_json::Value = serde_json::from_slice(&loud.stdout).unwrap();
+    let quiet_json: serde_json::Value = serde_json::from_slice(&quiet.stdout).unwrap();
+    assert_eq!(
+        loud_json, quiet_json,
+        "--quiet must change nothing about the results"
+    );
+}
+
+// A log line the CLI writes to a redirected stdout carries no colour escapes.
+// The post-commit hook captures this stream into a file, so escapes written
+// here outlive the run in a file nothing strips them from.
+#[test]
+fn test_cli_log_output_to_a_pipe_carries_no_escape_bytes() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    // A non-numeric discovery port is refused with a warning and disables the
+    // fixed-port fallback, which both triggers a log line deterministically and
+    // keeps the probe inside this test's world.
+    let output = inkentry_bin_in(home.path())
+        .env("INKENTRY_STATE_DIR", home.path().join("state"))
+        .env("INKENTRY_TEST_DISCOVERY_PORT", "notaport")
+        .env("RUST_LOG", "warn")
+        .env_remove("NO_COLOR")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--only-text"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("disabling loopback discovery"),
+        "the run should have logged a warning: {stdout}"
+    );
+    assert!(
+        !output.stdout.contains(&0x1b),
+        "log output to a pipe must be plain text: {stdout}"
+    );
+}
+
 // Partial-coverage cell, end to end: embed everything, then add a
 // file and re-index offline so coverage is partial. An auto search must emit
 // the one-line stderr warmup notice carrying the coverage AND its

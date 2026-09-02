@@ -61,6 +61,11 @@ pub struct SearchArgs {
     /// Expand memory results by 1 hop along relates_to edges
     #[arg(long)]
     pub expand_graph: bool,
+
+    /// Suppress the informational notices on stderr (semantic-ranking
+    /// availability and embedding coverage). Results and errors are unaffected.
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
 }
 
 use super::color::cprintln;
@@ -167,11 +172,13 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         }
     }
 
-    if embed_degraded {
+    if embed_degraded && !args.quiet {
         eprint_semantic_unavailable_notice(&tier, &cfg);
     }
 
     // ── Code-corpus coverage & freshness notices (stderr keeps stdout clean) ───
+    // The counts feed the no-results message either way, so `--quiet` silences
+    // the notices without skipping the reads behind them.
     let mut code_coverage: Option<(i64, i64)> = None;
     let mut code_refresh_pending: i64 = 0;
     if want_code && !args.only_text {
@@ -181,13 +188,15 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             }
             code_refresh_pending = db.refresh_pending_count().unwrap_or(0);
         }
-        match code_coverage {
-            Some((e, t)) if t > 0 && e <= 0 => eprintln!("{}", warmup_notice_zero(t)),
-            Some((e, t)) if e < t => eprintln!("{}", warmup_notice_partial(e, t)),
-            _ => {}
-        }
-        if code_refresh_pending > 0 {
-            eprintln!("{}", refresh_pending_notice(code_refresh_pending));
+        if !args.quiet {
+            match code_coverage {
+                Some((e, t)) if t > 0 && e <= 0 => eprintln!("{}", warmup_notice_zero(t)),
+                Some((e, t)) if e < t => eprintln!("{}", warmup_notice_partial(e, t)),
+                _ => {}
+            }
+            if code_refresh_pending > 0 {
+                eprintln!("{}", refresh_pending_notice(code_refresh_pending));
+            }
         }
     }
 
@@ -195,7 +204,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     let mut memory_missing: i64 = 0;
     if want_memory && !args.only_text {
         memory_missing = memory_missing_count(&mem_path);
-        if memory_missing > 0 {
+        if memory_missing > 0 && !args.quiet {
             eprintln!("{}", memory_warmup_notice(memory_missing));
         }
     }

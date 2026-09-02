@@ -23,14 +23,19 @@ async fn main() -> Result<()> {
         )));
     }
 
-    // Logging: RUST_LOG=debug inkentry ...
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse_or_exit();
     cli::cmd::set_color_choice(cli.color);
+
+    // Logging: RUST_LOG=debug inkentry ...
+    //
+    // The log layer writes to stdout, which a git hook or a shell redirect
+    // turns into a file, so it takes the same colour decision as the rest of
+    // stdout instead of colouring unconditionally. Parsing first is what makes
+    // `--color` available to that decision.
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_ansi(cli::cmd::color::color_enabled()))
+        .with(EnvFilter::from_default_env())
+        .init();
 
     // Config loads before dispatch, so `--best-effort` has to be honoured here
     // or a publish never reaches the arm that keeps a hook's push alive (D3).
