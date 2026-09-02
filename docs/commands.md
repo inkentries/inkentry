@@ -175,7 +175,10 @@ the worker waiting out a still-loading embedder rather than skipping. A plain
 to check a background pass; it shows an "Embedding in progress" line with
 searchable chunks and work percentage until every chunk is embedded. If the
 background pass is interrupted, re-running `inkentry index` resumes it
-(already-embedded chunks are skipped).
+(already-embedded chunks are skipped). The worker also reports to the log file
+whose path the command prints (`index-background.log`, beside the index): it
+records when the worker started, how far the embedding has got, and, if the
+worker stops before finishing, why.
 
 Add a `.inkentryignore` file (same syntax as `.gitignore`) to any directory to
 exclude files from indexing. It takes higher precedence than `.gitignore`.
