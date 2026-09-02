@@ -369,3 +369,113 @@ async fn local_first_detached_embed_routes_to_loopback_not_unroutable_server_url
          because the unreachable explicit server_url was polled instead"
     );
 }
+
+// ── background log contents (--detach-embed) ──────────────────────────────
+
+// `init` points the user at `index-background.log` when it hands the embed
+// pass to a detached worker. Detached from a terminal that worker used to say
+// nothing at all until it was done, so the file the product names sat empty
+// for the whole run and a working index read exactly like one that never
+// started. These two tests pin the content that tells them apart.
+
+// Poll `path` until it contains `needle`, returning the whole file. The
+// detached child outlives the command that spawned it, so the lines arrive
+// after the parent has already returned.
+fn wait_for_log_containing(path: &Path, needle: &str) -> String {
+    let deadline = Instant::now() + CHILD_TIMEOUT;
+    loop {
+        let body = std::fs::read_to_string(path).unwrap_or_default();
+        if body.contains(needle) {
+            return body;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {needle:?} in {path:?}; log so far:\n{body}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// Test 7: a detached embed leaves a start line, batch progress and a finish
+// line in the log, not an empty file.
+#[tokio::test]
+async fn detached_embed_worker_writes_start_progress_and_finish_to_the_log() {
+    let loopback = MockServer::start().await;
+    mount_health(&loopback).await;
+    mount_index_embed(&loopback).await;
+
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_project(project.path());
+    write_server_config(project.path(), &loopback.uri());
+    let state_dir = home.path().join("state");
+    let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
+
+    let db = project.path().join("index.db");
+    index_cmd(home.path(), project.path(), &db)
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
+        .arg("--detach-embed")
+        .assert()
+        .success();
+
+    let log = project.path().join("index-background.log");
+    let body = wait_for_log_containing(&log, "background embed finished");
+
+    assert!(
+        body.contains("=== inkentry index . --_embed-phases"),
+        "the header names the run that wrote the file:\n{body}"
+    );
+    assert!(
+        body.contains("background embed started (pid "),
+        "a started line with a pid is what says the worker exists:\n{body}"
+    );
+    assert!(
+        body.lines()
+            .any(|l| l.contains("embedding: ") && l.contains(" chunks (")),
+        "progress lines are what say it is still moving:\n{body}"
+    );
+    assert!(
+        !body.contains('\u{1b}'),
+        "a file sink gets no terminal escapes, on any platform:\n{body}"
+    );
+}
+
+// Test 8: when the worker stops early, the log carries the reason. This is
+// the moment a user actually opens the file, and the case where an empty one
+// was most misleading.
+#[test]
+fn a_continuation_worker_that_stops_early_reports_the_reason() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_project(project.path());
+    // A `server_url` with no `project_id` fails config validation, which is
+    // before any phase begins: the reason has to reach the log from the
+    // wrapper around the whole run, not from the embed pass.
+    let inkentry_dir = project.path().join(".inkentry");
+    std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
+    std::fs::write(
+        inkentry_dir.join("config.toml"),
+        "server_url = \"https://cloud.invalid.example:1\"\n",
+    )
+    .expect("write project config");
+
+    let db = project.path().join("index.db");
+    let out = index_cmd(home.path(), project.path(), &db)
+        .arg("--_embed-phases")
+        .output()
+        .expect("run the continuation mode directly");
+
+    // The child's stderr is the log file itself (see
+    // `continuation::redirect_to_background_log`), so its stderr is what the
+    // file would hold.
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the run failed: {err}");
+    assert!(
+        err.contains("background embed started (pid "),
+        "the start line lands before the work does:\n{err}"
+    );
+    assert!(
+        err.contains("background embed failed: server_url is set but project_id is missing"),
+        "the reason a user came looking for:\n{err}"
+    );
+}

@@ -14,6 +14,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
   a sizing section with the RAM and disk figures for a team server.
 
+### Fixed
+
+- **The background indexing log is no longer empty.** `inkentry init` and
+  `inkentry index --detach-embed` point at `index-background.log`, but the
+  detached worker wrote nothing to it, so a run in progress looked exactly like
+  one that never started. The worker now records when it started, how far the
+  embedding has got, and the reason if it stops early. A new run appends to the
+  log instead of overwriting what the last one reported.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added
