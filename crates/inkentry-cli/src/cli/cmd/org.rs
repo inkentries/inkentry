@@ -104,7 +104,11 @@ pub async fn switch_org(
         Some(&workos_org_id),
     )
     .await?;
-    Ok(success.into_auth_tokens())
+    Ok(
+        success.into_auth_tokens(inkentry_core::config::server_keys::normalize_origin(
+            cloud_url,
+        )?),
+    )
 }
 
 /// Resolve `arg` to a **WorkOS org id** (`org_…`).
@@ -244,6 +248,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
+        use crate::cli::cmd::auth_api::DEFAULT_CLOUD_URL;
         use crate::cli::cmd::org::switch_org;
         use inkentry_core::config::AuthTokens;
 
@@ -259,6 +264,7 @@ mod tests {
                 refresh_token: "rt-current".into(),
                 expires_at: 4_000_000_000,
                 org_id: "00000000-0000-0000-0000-000000000000".into(),
+                cloud_origin: DEFAULT_CLOUD_URL.to_string(),
             }
         }
 

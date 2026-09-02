@@ -9,6 +9,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A project can opt into inkentry cloud with `cloud = true` in `.inkentry/config.toml`.** Cloud is a fixed hosted service, so it is a flag rather than a URL; `server_url` is for a self-hosted team server and the two cannot both be set.
+
+### Security
+
+- **The cloud access token is sent only to the host you logged in against.** It is bound to that host at login, so a `server_url` or environment setting can no longer direct it to a different origin.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added

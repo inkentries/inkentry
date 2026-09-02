@@ -10,9 +10,10 @@
 //! rationale in ADR-071 D1).
 //!
 //! [`bearer_for`] is the resolution entry point: it decides the credential
-//! *kind* (cloud vs. self-hosted) from the target `server_url`'s origin
-//! before touching any store, so a given request only ever consults the tier
-//! its own kind uses (ADR-071 D2). The flat entry that predated the map is
+//! *kind* (cloud vs. self-hosted) from whether the target `server_url`'s origin
+//! is the one the cloud token was issued for (ADR-095), before touching any
+//! store, so a given request only ever consults the tier its own kind uses
+//! (ADR-071 D2). The flat entry that predated the map is
 //! gone, along with the migrate-on-read it was kept alive for (ADR-088 D2/D3):
 //! `inkentry auth set-key --server <url>` is the one way a key gets into the
 //! map.
@@ -27,11 +28,12 @@ use super::secret_store::SecretStore;
 /// every origin's key (ADR-071 D1).
 pub const KEY_SERVER_KEYS_MAP: &str = "server_keys";
 
-/// Default inkentry cloud API origin. Overridable via `INKENTRY_CLOUD_URL`,
-/// which is read directly here (and by every cloud-api call site) so bearer
-/// resolution, `/v1/me`, and WorkOS client-id selection all agree on the same
-/// value. Single source of truth for the constant: `inkentry-cli`'s
-/// `auth_api` module re-exports this rather than defining its own copy.
+/// The inkentry cloud API URL a `cloud = true` project targets, fixed at
+/// compile time. `INKENTRY_CLOUD_URL` overrides it for pointing a development
+/// build at a development cloud (see [`cloud_url`]); it is not a documented user
+/// setting and does not decide which origin a stored access token may be sent
+/// to. Single source of truth for the constant: `inkentry-cli`'s `auth_api`
+/// module re-exports this rather than defining its own copy.
 pub const DEFAULT_CLOUD_URL: &str = "https://api.inkentry.com";
 
 /// Normalize `url` to its origin: scheme, lowercased host, and explicit
@@ -49,13 +51,16 @@ pub fn normalize_origin(url: &str) -> Result<String> {
     Ok(origin.ascii_serialization())
 }
 
-/// The cloud origin bearer resolution branches against (D2).
-fn cloud_origin() -> Result<String> {
-    let raw = std::env::var("INKENTRY_CLOUD_URL")
+/// The hosted cloud URL a `cloud = true` project targets. `INKENTRY_CLOUD_URL`
+/// overrides it for pointing a development build at a development cloud; it is
+/// not a documented user setting. It selects which cloud a request reaches, not
+/// which origin a stored token may be sent to (that is the token's own issuing
+/// origin, see [`bearer_for`]), so an override cannot redirect a stored token.
+pub fn cloud_url() -> String {
+    std::env::var("INKENTRY_CLOUD_URL")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_CLOUD_URL.to_string());
-    normalize_origin(&raw)
+        .unwrap_or_else(|| DEFAULT_CLOUD_URL.to_string())
 }
 
 fn read_map(store: &dyn SecretStore) -> Result<HashMap<String, String>> {
@@ -88,14 +93,20 @@ fn server_key_for_origin(origin: &str, store: &dyn SecretStore) -> Result<Option
     Ok(read_map(store)?.remove(origin))
 }
 
-/// Resolve the effective bearer for a request to `server_url` (ADR-071 D2).
+/// Resolve the effective bearer for a request to `server_url` (ADR-071 D2,
+/// ADR-095 D3).
 ///
 /// Branches on credential kind by origin before touching any store:
-/// * **Cloud kind** (origin matches [`DEFAULT_CLOUD_URL`] /
-///   `INKENTRY_CLOUD_URL`): `INKENTRY_SERVER_KEY` env, then `[auth]`'s access
-///   token. The map is never consulted.
+/// * **Cloud kind** (the request origin equals the origin the `[auth]` token
+///   was issued for, [`AuthTokens::cloud_origin`]): `INKENTRY_SERVER_KEY` env,
+///   then that access token. The map is never consulted.
 /// * **Server-key kind** (any other origin): `INKENTRY_SERVER_KEY` env, then
 ///   the per-origin map. `[auth]` is never consulted.
+///
+/// The cloud kind is keyed on the credential's own issuing origin, not on an
+/// environment-derived cloud origin: `INKENTRY_CLOUD_URL` selects which cloud a
+/// request reaches (a development override, see [`cloud_url`]) but cannot make a
+/// stored token release to an origin it was not issued for.
 ///
 /// An origin the map has no entry for resolves to no bearer; the fix is
 /// `inkentry auth set-key --server <url>` (ADR-088 D3).
@@ -108,12 +119,15 @@ pub fn bearer_for(
         return Ok(Some(v));
     }
     let origin = normalize_origin(server_url)?;
-    if origin == cloud_origin()? {
-        // An empty (or absent) access token means "not logged in": resolve to
-        // no bearer rather than an empty-string `Some("")`.
-        return Ok(auth
-            .map(|a| a.access_token.clone())
-            .filter(|token| !token.is_empty()));
+    // The cloud access token is released only to the origin it was issued for
+    // (ADR-095). A credential recording no issuing origin matches nothing, so a
+    // hand-trimmed [auth] table resolves to no bearer rather than to the token.
+    if let Some(a) = auth
+        && !a.cloud_origin.trim().is_empty()
+        && origin == a.cloud_origin
+    {
+        // An empty (or absent) access token means "not logged in".
+        return Ok(Some(a.access_token.clone()).filter(|token| !token.is_empty()));
     }
     server_key_for_origin(&origin, store)
 }
@@ -193,6 +207,15 @@ mod tests {
             refresh_token: "rt".to_string(),
             expires_at: 4_000_000_000,
             org_id: "org_1".to_string(),
+            cloud_origin: normalize_origin(DEFAULT_CLOUD_URL).unwrap(),
+        }
+    }
+
+    // A token recorded as issued for a specific cloud origin.
+    fn tokens_issued_for(access_token: &str, cloud_origin: &str) -> AuthTokens {
+        AuthTokens {
+            cloud_origin: cloud_origin.to_string(),
+            ..tokens(access_token)
         }
     }
 
@@ -292,6 +315,58 @@ mod tests {
         assert_eq!(
             list_origins(&store).unwrap(),
             vec!["https://team.example:4655"]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn bearer_for_releases_the_token_only_to_its_issuing_origin() {
+        clear_env();
+        let store = MemoryStore::default();
+        let auth = tokens_issued_for("at-staging", "https://staging.example");
+
+        assert_eq!(
+            bearer_for(Some(&auth), "https://staging.example", &store)
+                .unwrap()
+                .as_deref(),
+            Some("at-staging")
+        );
+        // Not released to any other origin, including the production default.
+        assert_eq!(
+            bearer_for(Some(&auth), DEFAULT_CLOUD_URL, &store).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn bearer_for_ignores_inkentry_cloud_url_when_releasing_the_token() {
+        clear_env();
+        let store = MemoryStore::default();
+        // Issued for the production default.
+        let auth = tokens("at-cloud");
+
+        unsafe { std::env::set_var("INKENTRY_CLOUD_URL", "https://attacker.example") };
+        let to_prod = bearer_for(Some(&auth), DEFAULT_CLOUD_URL, &store).unwrap();
+        let to_attacker = bearer_for(Some(&auth), "https://attacker.example", &store).unwrap();
+        unsafe { std::env::remove_var("INKENTRY_CLOUD_URL") };
+
+        // The override redirects neither: the token still goes to its issuing
+        // origin and never to the attacker origin.
+        assert_eq!(to_prod.as_deref(), Some("at-cloud"));
+        assert_eq!(to_attacker, None);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn bearer_for_credential_without_issuing_origin_releases_no_token() {
+        clear_env();
+        let store = MemoryStore::default();
+        let auth = tokens_issued_for("at-cloud", "");
+
+        assert_eq!(
+            bearer_for(Some(&auth), DEFAULT_CLOUD_URL, &store).unwrap(),
+            None
         );
     }
 

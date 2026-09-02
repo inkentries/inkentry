@@ -173,13 +173,16 @@ pub struct TokenSuccess {
 }
 
 impl TokenSuccess {
-    /// Convert a normalised success body into the persisted [`AuthTokens`] shape.
-    pub fn into_auth_tokens(self) -> AuthTokens {
+    /// Convert a normalised success body into the persisted [`AuthTokens`]
+    /// shape, recording the origin of the cloud host the tokens were issued for
+    /// so the access token is later released only to that origin.
+    pub fn into_auth_tokens(self, cloud_origin: String) -> AuthTokens {
         AuthTokens {
             access_token: self.access_token,
             refresh_token: self.refresh_token,
             expires_at: self.expires_at,
             org_id: self.org_id,
+            cloud_origin,
         }
     }
 }
@@ -442,7 +445,7 @@ pub async fn ensure_fresh_token(
     )
     .await
     .map_err(|e| e.context("session expired and token refresh failed — run `inkentry login`"))?
-    .into_auth_tokens();
+    .into_auth_tokens(auth.cloud_origin.clone());
     persist(&rotated)?;
     Ok(rotated)
 }
@@ -651,6 +654,20 @@ mod tests {
         assert_eq!(s.expires_at, 1000);
     }
 
+    // The origin passed to `into_auth_tokens` is the one the access token is
+    // later released only to (ADR-095 D3), so it must be recorded verbatim.
+    #[test]
+    fn into_auth_tokens_records_the_supplied_origin() {
+        let success = TokenSuccess {
+            access_token: "at".into(),
+            refresh_token: "rt".into(),
+            expires_at: 5_000_000_000,
+            org_id: "org_1".into(),
+        };
+        let tokens = success.into_auth_tokens("https://dev.example".to_string());
+        assert_eq!(tokens.cloud_origin, "https://dev.example");
+    }
+
     #[test]
     fn workos_client_id_prod_for_canonical_host() {
         // No override env set in this case path.
@@ -720,6 +737,7 @@ mod tests {
             // Far in the future ⇒ not expired.
             expires_at: 5_000_000_000,
             org_id: "org_1".into(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
         let client = build_client().unwrap();
         // workos_url points nowhere reachable; it must never be hit.
@@ -759,6 +777,7 @@ mod tests {
             refresh_token: "rt-old".into(),
             expires_at: 0, // definitely past expiry
             org_id: "org_1".into(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
 
         let persisted: Arc<Mutex<Option<AuthTokens>>> = Arc::new(Mutex::new(None));
@@ -813,6 +832,7 @@ mod tests {
             refresh_token: "rt-old".into(),
             expires_at: 0,
             org_id: "org_switched".into(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
 
         let client = build_client().unwrap();
@@ -829,6 +849,47 @@ mod tests {
         assert_eq!(
             out.org_id, "org_switched",
             "the rotated token must stay scoped to the switched org, not revert to the default"
+        );
+    }
+
+    // A refresh changes the access token, not the host it was issued for, so
+    // the rotated tokens must carry the same `cloud_origin` (ADR-095 D3).
+    #[tokio::test]
+    async fn ensure_fresh_token_preserves_cloud_origin_across_refresh() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let fresh_jwt =
+            fake_jwt(&serde_json::json!({ "exp": 5_000_000_000_i64, "org_id": "org_1" }));
+        Mock::given(method("POST"))
+            .and(path("/user_management/authenticate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": fresh_jwt,
+                "refresh_token": "rt-rotated",
+                "organization_id": "org_1",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Issued for the production origin; the rotation must not drop it.
+        let expired = AuthTokens {
+            access_token: "at-expired".into(),
+            refresh_token: "rt-old".into(),
+            expires_at: 0,
+            org_id: "org_1".into(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
+        };
+
+        let client = build_client().unwrap();
+        let out = ensure_fresh_token(&client, &server.uri(), "client_test", &expired, |_| Ok(()))
+            .await
+            .expect("an expired token should refresh");
+
+        assert_eq!(
+            out.cloud_origin, DEFAULT_CLOUD_URL,
+            "the rotated token must keep the origin it was issued for"
         );
     }
 
@@ -868,6 +929,7 @@ mod tests {
             refresh_token: "rt-old".into(),
             expires_at: 0,
             org_id: String::new(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
 
         let client = build_client().unwrap();
@@ -904,6 +966,7 @@ mod tests {
             refresh_token: "rt-revoked".into(),
             expires_at: 0,
             org_id: "org_1".into(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
         let client = build_client().unwrap();
         let err = ensure_fresh_token(&client, &server.uri(), "client_test", &expired, |_| Ok(()))
@@ -1171,6 +1234,7 @@ mod tests {
             refresh_token: "rt-initial-acme".into(),
             expires_at: 5_000_000_000,
             org_id: "11111111-1111-1111-1111-111111111111".into(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
 
         let client = build_client().unwrap();
@@ -1234,6 +1298,7 @@ mod tests {
             refresh_token: "rt-initial".into(),
             expires_at: 5_000_000_000,
             org_id: "11111111-1111-1111-1111-111111111111".into(),
+            cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
 
         let client = build_client().unwrap();

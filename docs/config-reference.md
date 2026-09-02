@@ -25,9 +25,9 @@ Load order (later overrides earlier):
    discarded even if present here: a team server is a project-wide choice,
    never a single developer's.
 3. `.inkentry/config.toml`, discovered by walking up from the current
-   directory (project-level, team-wide). Only `server_url`, `project_id`,
-   `server_ca`, `mode`, `llm_url`, and `[index]` are read from this file; any
-   other key in it is named in a warning on stderr and ignored.
+   directory (project-level, team-wide). Only `server_url`, `cloud`,
+   `project_id`, `server_ca`, `mode`, `llm_url`, and `[index]` are read from
+   this file; any other key in it is named in a warning on stderr and ignored.
 4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_PROJECT_ID`,
    `INKENTRY_SERVER_CA`, `INKENTRY_LLM_URL`, `INKENTRY_LLM_MODEL`,
    `INKENTRY_MODE`.
@@ -193,6 +193,22 @@ An auto-discovered loopback `inkentry-server` is used for inference only and is
 never a memory store; it does not require this field to be set. See the
 [server setup guide](server-setup.md) for putting TLS in front of a deployed
 team server.
+
+### `cloud`
+
+- **Type:** boolean, optional
+- **Default:** `false`
+- **Env override:** none
+
+Opt this project into inkentry cloud, the hosted service. The cloud lives at a
+fixed address, so opting in is a flag rather than a URL: set `cloud = true` and
+the CLI targets the hosted cloud for the remote memory and inference it would
+otherwise send to a `server_url`.
+
+`cloud` and `server_url` are **mutually exclusive**: a project uses either the
+hosted cloud or a self-hosted team server, and setting both is a configuration
+error. Like `server_url`, this is a project-wide choice, so a value in the
+personal config is discarded on load; set it in `.inkentry/config.toml`.
 
 ### `mode`
 
@@ -379,8 +395,8 @@ value in place.
 
 ## `.inkentry/config.toml` (project-level)
 
-Safe to commit; contains no secrets by design. Six keys are read from this
-file - `server_url`, `project_id`, `server_ca`, `mode`, `llm_url`, and
+Safe to commit; contains no secrets by design. Seven keys are read from this
+file - `server_url`, `cloud`, `project_id`, `server_ca`, `mode`, `llm_url`, and
 `[index]` - and anything else (including any personal field documented above)
 is ignored, with one warning line per key naming it and this file.
 
@@ -479,7 +495,7 @@ effect.
 | `INKENTRY_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `inkentry auth set-key --llm`). Not a `config.toml` field. |
 | `INKENTRY_MODE` | `mode` (`offline` / `local_first` / `cloud_first`; an unrecognized value is a hard error) |
 | `INKENTRY_NO_SERVER=1` | Kill-switch: forces `offline` mode and disables server autostart, regardless of `mode` or `server_url` |
-| `INKENTRY_CLOUD_URL` | inkentry cloud API URL used by `login` / `org` (default `https://api.inkentry.com`) |
+| `INKENTRY_CLOUD_URL` | Development override that points a build at a development cloud instead of the fixed hosted URL. Not a user setting for choosing a cloud, and it does not decide which origin the access token is sent to (that is the origin the token was issued for). |
 | `INKENTRY_SECRET_STORE` | Secret-store backend: `auto` (default), `keychain`, or `file` |
 | `AGENT=true` | Forces JSON output for commands that support it (not a config field) |
 

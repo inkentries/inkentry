@@ -118,7 +118,9 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
 
         match auth_api::poll_token(&client, &workos_url, &client_id, &device.device_code).await {
-            PollOutcome::Success(token) => break token.into_auth_tokens(),
+            PollOutcome::Success(token) => {
+                break token.into_auth_tokens(config::server_keys::normalize_origin(&cloud_url)?);
+            }
             PollOutcome::Pending => {
                 print!(".");
                 let _ = std::io::stdout().flush();

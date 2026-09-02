@@ -859,7 +859,7 @@ inkentry login [--org <slug>] [--cloud-url <url>]
 | Flag | Notes |
 |------|-------|
 | `--org <slug>` | After the device login yields a token, silently re-scope the session to this org (login-then-switch). If you are already logged in with a stored refresh token, re-scopes without a new device login. Multi-org accounts choose their org on the browser-hosted approval page during the device flow itself. |
-| `--cloud-url <url>` | Override the cloud API URL (default `https://api.inkentry.com`; also settable via `INKENTRY_CLOUD_URL`). |
+| `--cloud-url <url>` | Development override that points `login` at a development cloud instead of the fixed hosted URL (also settable via `INKENTRY_CLOUD_URL`). A development aid, not a user setting for choosing a cloud. The access token is released only to the origin it was issued for, so this does not redirect a stored token to a different origin. |
 
 ```bash
 inkentry login
@@ -1379,7 +1379,7 @@ and publish on your next push.
 | `NO_COLOR` | Any non-empty value disables colored output, overriding the `auto` default (`--color=always` still overrides `NO_COLOR`) |
 | `INKENTRY_NO_SERVER=1` | Never autostart or use a server (fully offline / no-server mode) |
 | `INKENTRY_SERVER_URL` | Point the CLI at a specific server URL |
-| `INKENTRY_CLOUD_URL` | Override the inkentry cloud API URL used by `login` / `org` (default `https://api.inkentry.com`) |
+| `INKENTRY_CLOUD_URL` | Development override that points `login` / `org` at a development cloud instead of the fixed hosted URL. Not a user setting for choosing a cloud, and it does not decide which origin the access token is sent to (that is the origin the token was issued for). |
 | `INKENTRY_SERVER_KEY` | Static credential for a team/self-hosted server; takes precedence over the keychain-stored credential and `login` tokens (the non-interactive escape hatch for CI / headless) |
 | `INKENTRY_SERVER_CA` | Path to a PEM CA bundle to trust for a `INKENTRY_SERVER_URL` whose certificate is signed by an internal or self-signed CA. Added as a trust anchor on top of the built-in roots; TLS verification stays on (no insecure mode). Overrides `server_ca` in `config.toml`. |
 | `INKENTRY_LLM_URL` | Chat-completions endpoint a locally started daemon serves LLM features from; overrides `llm_url` in the personal config. Set but empty blanks the configured value rather than falling through to it. |
