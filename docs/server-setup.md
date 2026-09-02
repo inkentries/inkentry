@@ -55,6 +55,37 @@ network adds is that TLS becomes mandatory, and the server provides it.
 > retrieval* server so remote agents can use it as a peer. It is not an agent
 > runtime.
 
+## Sizing the host
+
+Figures below were measured on `inkentry-server` v1.0.0-rc1, at idle, before
+any database or request load. Treat them as the floor.
+
+- **RAM: about 523 MB resident.** Every published `inkentry-server` binary
+  bundles the native embedder (the `embed-native` build feature), and the
+  server loads it at startup. It does this whether or not `--llm-url` is set
+  and before any client asks for an embedding, because server-side semantic
+  search over memory needs the embeddings. A server run as nothing more than a
+  shared memory store (`--db` plus a key) still sits at this figure. There is
+  no switch to skip the load.
+- **Disk: about 339 MB for the model, held twice.** The embedder is a
+  pre-quantized Q8_0 GGUF (`f2llm-v2-330m-q8_0.gguf`, about 339 MB) fetched
+  once into the model cache. The cache currently keeps two copies of it, the
+  download cache's own blob and the file the loader reads, so budget about
+  700 MB for the model cache. The database is separate and grows with the
+  team's memory entries.
+- **Co-locating with a developer machine doubles the model.** The local
+  inference server that `inkentry` starts on demand loads the same embedder,
+  so a team server on a machine that also runs `inkentry` holds two resident
+  copies, roughly 1 GB together, plus a second model cache on disk when the
+  server runs as its own user or in a container. On a 7.9 GiB test host that
+  shape left about 1.7 GB free while `inkentry init` ran its embedding pass.
+  It works for an evaluation; it is not a comfortable steady state.
+
+**Recommendation:** give the team server its own host or VM with at least 2 GB
+of RAM and 1 GB of disk before the database; if it must share a developer's
+machine, count 1 GB of RAM for the two embedders together and keep that machine
+at 8 GB or more.
+
 ## 1. Get a certificate
 
 `inkentry-server` loads an operator-provided PEM certificate chain and private
@@ -342,9 +373,10 @@ nothing published reaches a loopback-only bind.
 
 **What's on the `/data` volume.** Both the SQLite database (`/data/inkentry.db`)
 and the native embedder's downloaded model cache (`/data/inkentry/models/`, a
-one-time ~339 MB pull) live on the same named volume. Size it accordingly, and
-when backing it up, only the database needs your normal database backup
-process (per [Production deployment](#production-deployment) below); the model
+one-time ~339 MB pull, held twice on disk today; see
+[Sizing the host](#sizing-the-host)) live on the same named volume. Size it
+accordingly, and when backing it up, only the database needs your normal
+database backup process (per [Production deployment](#production-deployment) below); the model
 cache is a re-downloadable artifact, not project data.
 
 ## 5. Point a remote agent at it
@@ -565,6 +597,10 @@ useful for local development or testing; its `team-server` profile is the
 routable-TLS shape.
 
 Key considerations for any deployment:
+- Size the host for the embedder the server always loads: about 523 MB
+  resident and about 700 MB of model cache on disk, more when it shares a
+  machine with a developer's local inference server (see
+  [Sizing the host](#sizing-the-host))
 - Putting the server behind a VPN or private subnet is still good
   defense-in-depth (the API key is the app-level guard; network-level access
   control is an additional layer, not a substitute for it)

@@ -9,6 +9,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
+  a sizing section with the RAM and disk figures for a team server.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added
