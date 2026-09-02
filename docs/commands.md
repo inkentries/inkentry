@@ -340,8 +340,10 @@ even though nothing failed. `-q` suppresses all of them on its own; PowerShell 7
 does not render them that way.
 
 `-q` and `--no-stale-check` are not the same thing. `--no-stale-check` skips the
-staleness probe altogether, so it also saves the work; `-q` still probes and
-still lets the result reach the no-results message, it just does not print.
+staleness probe and its warning only, and leaves the coverage and ranking
+notices printing. `-q` covers all of them, the staleness probe included. Either
+way the coverage counts are still read, so a run that finds nothing still says
+whether the index was only partly embedded.
 
 `--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
 LinearRAG: a two-stage entity-activation + personalised PageRank pipeline.
