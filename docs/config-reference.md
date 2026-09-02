@@ -209,6 +209,11 @@ configured `server_url`.
 | `local_first` | local | local, then async background sync | best-effort |
 | `cloud_first` | server (error if unreachable) | server (error if unreachable) | required |
 
+Under `cloud_first` an unreachable server is reported as soon as the connection
+attempt gives up, a couple of seconds, rather than after the full per-request
+timeout, and the error names the server and states that there is no fallback to
+the local store.
+
 When unset, the effective mode is derived: no `server_url` means `offline`; a
 configured `server_url` means `local_first`. `INKENTRY_NO_SERVER=1` forces
 `offline` regardless of this setting, as a hard kill-switch. See

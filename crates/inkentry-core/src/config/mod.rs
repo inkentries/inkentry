@@ -40,6 +40,20 @@ pub use tls::apply_server_ca;
 /// predates ours (ADR-089).
 pub const DEFAULT_SERVER_PORT: u16 = 4655;
 
+/// How long a client may spend establishing a connection to a configured
+/// server before the server is reported unreachable.
+///
+/// Short on purpose, and unrelated to the per-request budgets, which stay long
+/// because a real transfer or a server-side embed legitimately runs for
+/// minutes once the connection is up. Nothing legitimate happens between the
+/// SYN and the handshake completing: a reachable server answers in
+/// milliseconds, including over loopback. Without this bound an unreachable
+/// host instead burns the whole request budget, since a firewall that drops
+/// rather than refuses leaves the connect attempt with nothing to fail on.
+/// Matches the liveness probes, which settled on the same number for the same
+/// reason.
+pub const REMOTE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[cfg(test)]
 use tempfile::TempDir;
 

@@ -28,6 +28,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   embedding has got, and the reason if it stops early. A new run appends to the
   log instead of overwriting what the last one reported.
 
+### Fixed
+
+- **A `cloud_first` command against an unreachable team server now fails in
+  seconds instead of most of a minute.** The client now bounds how long it will
+  spend opening a connection, so a server that is stopped, firewalled or simply
+  not there is reported almost immediately instead of after the whole request
+  budget, which read as a hang. The error names the server and says that
+  `cloud_first` does not fall back to the local store. Reads and writes still
+  never fall back, and a server that is slow but reachable is unaffected.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added

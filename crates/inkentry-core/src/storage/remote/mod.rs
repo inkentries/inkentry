@@ -110,6 +110,79 @@ pub fn credential_hint(status: reqwest::StatusCode, base_url: &str) -> String {
     )
 }
 
+/// Whether the request died before a connection to the server existed at all:
+/// refused, unresolvable, or a connect attempt that ran out of time.
+///
+/// A request that timed out *after* the server accepted the connection is
+/// deliberately not this. That is a slow server rather than an absent one, and
+/// the two want different words.
+fn is_unreachable(err: &reqwest::Error) -> bool {
+    err.is_connect()
+}
+
+/// Why the connection never came up, in the few words that change what the
+/// reader does next: nothing listening on that port, versus a connect that
+/// never drew any answer at all (a dropped SYN, which is how a filtering
+/// firewall looks from this side).
+fn connect_detail(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        return "connect timed out";
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = source {
+        if let Some(io) = err.downcast_ref::<std::io::Error>()
+            && io.kind() == std::io::ErrorKind::ConnectionRefused
+        {
+            return "connection refused";
+        }
+        source = std::error::Error::source(err);
+    }
+    "could not connect"
+}
+
+/// Headline for a transport failure against a server that is not there.
+///
+/// Naming the mode is true by construction wherever this is reached:
+/// [`open_memory_backend`](super::open_memory_backend) builds
+/// [`RemoteMemoryBackend`] and [`CloudApiMemoryBackend`] only under
+/// [`SyncMode::CloudFirst`](crate::config::SyncMode::CloudFirst), the one mode
+/// that moves the store of record off this machine and therefore has no local
+/// copy it could serve instead.
+fn unreachable_message(base_url: &str, err: &reqwest::Error) -> String {
+    format!(
+        "team server unreachable at {base_url} ({}); mode is cloud_first, which does not fall \
+         back to the local store",
+        connect_detail(err)
+    )
+}
+
+/// Context for a send that failed at the transport layer.
+///
+/// `op` names the request as it always has. An unreachable server additionally
+/// gets the diagnosis as the *headline*, because a raw transport error printed
+/// under a URL reads as a malfunction rather than as "that server is not
+/// answering", which is the one thing the reader needs to know.
+pub(super) fn transport_error(err: reqwest::Error, base_url: &str, op: &str) -> anyhow::Error {
+    let headline = is_unreachable(&err).then(|| unreachable_message(base_url, &err));
+    let err = anyhow::Error::new(err).context(op.to_string());
+    match headline {
+        Some(headline) => err.context(headline),
+        None => err,
+    }
+}
+
+/// [`transport_error`] for the retrying send path, whose transport failure
+/// arrives already wrapped in its route label.
+pub(super) fn unreachable_headline(err: anyhow::Error, base_url: &str) -> anyhow::Error {
+    match err.downcast_ref::<reqwest::Error>() {
+        Some(source) if is_unreachable(source) => {
+            let headline = unreachable_message(base_url, source);
+            err.context(headline)
+        }
+        _ => err,
+    }
+}
+
 /// [`reqwest::Response::error_for_status`] plus [`credential_hint`].
 pub(super) trait CheckedResponse: Sized {
     fn checked(self, base_url: &str) -> Result<Self>;
@@ -161,7 +234,8 @@ impl MemoryBackend for RemoteMemoryBackend {
             retry::send_retrying_while_shed(&retry::RetryPolicy::default(), "POST /memory", || {
                 self.authed(self.client.post(&url)).json(&body).send()
             })
-            .await?;
+            .await
+            .map_err(|e| unreachable_headline(e, &self.base_url))?;
 
         let status = http_resp.status();
 
@@ -231,7 +305,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .json(&body)
             .send()
             .await
-            .context("POST /memory/search")?
+            .map_err(|e| transport_error(e, &self.base_url, "POST /memory/search"))?
             .checked(&self.base_url)
             .context("server returned error for POST /memory/search")?
             .json::<NoteListPayload>()
@@ -286,7 +360,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .authed(req)
             .send()
             .await
-            .context("GET /memory")?
+            .map_err(|e| transport_error(e, &self.base_url, "GET /memory"))?
             .checked(&self.base_url)
             .context("server returned error for GET /memory")?
             .json::<NoteListPayload>()
@@ -303,7 +377,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             )
             .send()
             .await
-            .context("GET /memory/{id}")?;
+            .map_err(|e| transport_error(e, &self.base_url, "GET /memory/{id}"))?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -321,7 +395,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .authed(self.client.get(self.url("stats")))
             .send()
             .await
-            .context("GET /stats")?
+            .map_err(|e| transport_error(e, &self.base_url, "GET /stats"))?
             .checked(&self.base_url)
             .context("server returned error for GET /stats")?
             .json::<CountResponse>()
@@ -338,7 +412,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             )
             .send()
             .await
-            .context("POST /memory/{id}/archive")?
+            .map_err(|e| transport_error(e, &self.base_url, "POST /memory/{id}/archive"))?
             .checked(&self.base_url)
             .context("server returned error for POST /memory/{id}/archive")?
             .json::<BoolResponse>()
@@ -357,7 +431,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .json(&body)
             .send()
             .await
-            .context("POST /memory/{id}/supersede")?
+            .map_err(|e| transport_error(e, &self.base_url, "POST /memory/{id}/supersede"))?
             .checked(&self.base_url)
             .context("server returned error for POST /memory/{id}/supersede")?
             .json::<BoolResponse>()
@@ -382,7 +456,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .authed(req)
             .send()
             .await
-            .context("GET /memory (source_ref filter)")?
+            .map_err(|e| transport_error(e, &self.base_url, "GET /memory (source_ref filter)"))?
             .checked(&self.base_url)
             .context("server returned error for GET /memory")?
             .json::<NoteListPayload>()
@@ -396,7 +470,7 @@ impl MemoryBackend for RemoteMemoryBackend {
             .authed(self.client.get(self.url("memory/harvested-shas")))
             .send()
             .await
-            .context("GET /memory/harvested-shas")?
+            .map_err(|e| transport_error(e, &self.base_url, "GET /memory/harvested-shas"))?
             .checked(&self.base_url)
             .context("server returned error for GET /memory/harvested-shas")?
             .json::<HarvestedShasPayload>()

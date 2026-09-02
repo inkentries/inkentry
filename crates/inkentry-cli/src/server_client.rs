@@ -212,14 +212,22 @@ impl ServerInferenceClient {
             std::process::exit(2);
         }
         let project_id = cfg.project_id.clone().unwrap_or_default();
-        let client = inkentry_core::config::apply_server_ca(
+        let mut builder = inkentry_core::config::apply_server_ca(
             reqwest::Client::builder(),
             cfg.server_ca.as_deref().map(std::path::Path::new),
         )
         .expect("applying custom CA for server inference")
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .expect("building HTTP client for server inference");
+        .timeout(std::time::Duration::from_secs(300));
+        // A configured remote that is simply not there must not cost the whole
+        // 300s request budget before it says so. The loopback daemon is left as
+        // it was: it refuses instantly when it is not running, so it has
+        // nothing to gain from a connect bound.
+        if !inkentry_core::config::is_loopback_url(&base_url) {
+            builder = builder.connect_timeout(inkentry_core::config::REMOTE_CONNECT_TIMEOUT);
+        }
+        let client = builder
+            .build()
+            .expect("building HTTP client for server inference");
 
         // Carry WorkOS refresh state only when the resolved bearer came from
         // `[auth]`, i.e. `base_url`'s origin is the cloud kind (ADR-071 D2).

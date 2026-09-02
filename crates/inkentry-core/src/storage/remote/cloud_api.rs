@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use super::super::backend::{MemoryBackend, NoteInput};
 use super::super::memory::{MemoryEdge, Note, NoteId};
-use super::encode_project_id;
+use super::{encode_project_id, transport_error};
 use wire::*;
 
 mod wire;
@@ -76,7 +76,7 @@ impl CloudApiMemoryBackend {
         self.authed(req)
             .send()
             .await
-            .context("GET /memory")?
+            .map_err(|e| transport_error(e, &self.base_url, "GET /memory"))?
             .error_for_status()
             .context("server returned error for GET /memory")?
             .json::<EntryListResponse>()
@@ -145,7 +145,7 @@ impl CloudApiMemoryBackend {
             )
             .send()
             .await
-            .context("GET /memory/{id}")?;
+            .map_err(|e| transport_error(e, &self.base_url, "GET /memory/{id}"))?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -182,7 +182,7 @@ impl MemoryBackend for CloudApiMemoryBackend {
             .json(&body)
             .send()
             .await
-            .context("POST /memory")?;
+            .map_err(|e| transport_error(e, &self.base_url, "POST /memory"))?;
 
         // A 409 means "stored, but semantically close to an existing entry":
         // a warning on every other backend, so a warning here too.
@@ -273,7 +273,7 @@ impl MemoryBackend for CloudApiMemoryBackend {
             .authed(req)
             .send()
             .await
-            .context("GET /memory")?
+            .map_err(|e| transport_error(e, &self.base_url, "GET /memory"))?
             .error_for_status()
             .context("server returned error for GET /memory")?
             .json::<EntryListResponse>()
@@ -319,7 +319,7 @@ impl MemoryBackend for CloudApiMemoryBackend {
             )
             .send()
             .await
-            .context("DELETE /memory/{id}")?;
+            .map_err(|e| transport_error(e, &self.base_url, "DELETE /memory/{id}"))?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(false);
         }
@@ -352,7 +352,7 @@ impl MemoryBackend for CloudApiMemoryBackend {
             .json(&body)
             .send()
             .await
-            .context("POST /memory/batch")?
+            .map_err(|e| transport_error(e, &self.base_url, "POST /memory/batch"))?
             .error_for_status()
             .context("server returned error for POST /memory/batch")?
             .json::<BatchEdgeResult>()
