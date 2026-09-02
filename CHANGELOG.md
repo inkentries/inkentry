@@ -13,6 +13,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
   a sizing section with the RAM and disk figures for a team server.
+- **Source builds now parse PDF, DOCX and spreadsheets by default.** The
+  `rich-formats` feature is on by default for `inkentry-cli`, so a plain
+  `cargo build` matches every published binary and no longer needs
+  `--features rich-formats`. Pass `--no-default-features` to build without
+  those readers.
 
 ## [1.0.1] — 2026-08-28
 

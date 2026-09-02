@@ -70,7 +70,7 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    # RUSTSEC-2026-0097: affects rand 0.10.0 via lopdf 0.40.0 (optional rich-formats feature).
+    # RUSTSEC-2026-0097: affects rand 0.10.0 via lopdf 0.40.0 (the rich-formats feature, on by default).
     # lopdf is at the latest release with no patched version available.
     { id = "RUSTSEC-2026-0097", reason = "no fix available; lopdf 0.40.0 is the latest release" },
     # RUSTSEC-2024-0436: paste 1.0.15 is unmaintained; pulled in transitively by the
