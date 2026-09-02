@@ -14,6 +14,7 @@ mod sync;
 mod uuid_v7;
 
 pub use dedupe::DedupeSummary;
+pub use import::CarriedEdgeImport;
 pub use import_state::NotesImportMarker;
 pub use note_id::{NoteId, unresolvable_id_message};
 pub use sync::{SyncEdge, SyncRow};

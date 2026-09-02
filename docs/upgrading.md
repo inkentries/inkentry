@@ -152,8 +152,8 @@ Nothing is lost yet.
    import` the dump.
 
 No backup, and memory was never published to notes? It's gone. Published? A
-fresh `init` recovers what reached the ref, minus edges git notes can't carry
-(`relates_to`/`contradicts` — notes only hold `supersedes`) and anything
+fresh `init` recovers what reached the ref, including the `relates_to` and
+`contradicts` links between the entries it recovers, and minus anything
 recorded with `store_in_git_notes = false`.
 
 ## Appendix: symptoms if you skip this

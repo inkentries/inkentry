@@ -14,6 +14,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
   a sizing section with the RAM and disk figures for a team server.
 
+### Fixed
+
+- **`relates_to` and `contradicts` links now travel with the repository.** They
+  ride the git-notes carrier on the record of the entry each link starts from,
+  so a clone rebuilds the graph the writer had instead of the entries alone.
+  Older builds still read the new records, and notes already on the ref are
+  unaffected. Re-run `inkentry init`, or any command that reads memory, after a
+  fetch to pick the links up. A link whose other entry has not arrived yet is
+  reported as skipped and applied by a later import.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added

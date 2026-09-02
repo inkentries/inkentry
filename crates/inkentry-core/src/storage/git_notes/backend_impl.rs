@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use super::super::backend::{MemoryBackend, NoteInput};
 use super::super::memory::{MemoryEdge, Note, NoteId};
-use super::super::note_record::{NoteRecord, now_millis, now_secs, record_to_note};
+use super::super::note_record::{CarriedEdge, NoteRecord, now_millis, now_secs, record_to_note};
 use super::GitNotesBackend;
 
 /// The carrier keys on the frozen integer record id, so an id minted anywhere
@@ -36,6 +36,7 @@ impl MemoryBackend for GitNotesBackend {
             remote_id: None,
             entity_id: Some(entity_id),
             superseded_by_entity_id: None,
+            edges: Vec::new(),
         };
 
         let head = self.head_sha().await?;
@@ -198,8 +199,26 @@ impl MemoryBackend for GitNotesBackend {
         Err(crate::error::InkentryError::BackendUnsupported("has_source_ref".into()).into())
     }
 
-    async fn add_edge(&self, _from_id: &NoteId, _to_id: &NoteId, _kind: &str) -> Result<()> {
-        Err(crate::error::InkentryError::BackendUnsupported("add_edge".into()).into())
+    /// The edge rides a record appended for the source entity, naming the
+    /// target by `entity_id`. `supersedes` is refused here on purpose: it has
+    /// its own carrier field, and a second path to the same row would be a
+    /// second place for the two to disagree.
+    async fn add_edge(&self, from_id: &NoteId, to_id: &NoteId, kind: &str) -> Result<()> {
+        if !matches!(kind, "relates_to" | "contradicts") {
+            return Err(crate::error::InkentryError::BackendUnsupported(format!(
+                "add_edge({kind})"
+            ))
+            .into());
+        }
+        let Some(from) = self.get(from_id.clone()).await? else {
+            anyhow::bail!("No memory entry with id {from_id} (from).");
+        };
+        let Some(to) = self.get(to_id.clone()).await? else {
+            anyhow::bail!("No memory entry with id {to_id} (to).");
+        };
+        let edge = CarriedEdge::new(kind, crate::storage::entity_id::note_entity_id(&to));
+        super::append_edges(self.git_root(), &from, vec![edge]).await?;
+        Ok(())
     }
 
     async fn get_edges(&self, _id: &NoteId) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {

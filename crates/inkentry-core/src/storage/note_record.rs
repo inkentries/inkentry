@@ -47,6 +47,32 @@ pub struct NoteRecord {
     /// renumber and resolves on any machine.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub superseded_by_entity_id: Option<String>,
+    /// This entry's outgoing `relates_to` and `contradicts` edges, each naming
+    /// its target by `entity_id`. Outgoing only: `memory_edges` is directed, so
+    /// carrying each edge once from its source reconstructs the table exactly,
+    /// and a second copy on the target would be a second place to disagree.
+    /// `supersedes` never appears here; it stays on `superseded_by_entity_id`.
+    /// Additive under `schema_version` 1: an older reader ignores the key.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub edges: Vec<CarriedEdge>,
+}
+
+/// One outgoing graph edge as the carrier records it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CarriedEdge {
+    /// `relates_to` or `contradicts`.
+    pub kind: String,
+    /// The target entry's `entity_id`, resolved to a local row at import.
+    pub to_entity_id: String,
+}
+
+impl CarriedEdge {
+    pub fn new(kind: &str, to_entity_id: String) -> Self {
+        Self {
+            kind: kind.to_string(),
+            to_entity_id,
+        }
+    }
 }
 
 impl NoteRecord {
@@ -128,6 +154,7 @@ mod tests {
             remote_id: None,
             entity_id: None,
             superseded_by_entity_id: None,
+            edges: vec![],
         }
     }
 
@@ -173,6 +200,51 @@ mod tests {
         let back: NoteRecord = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.entity_id, rec.entity_id);
         assert_eq!(back.superseded_by_entity_id, rec.superseded_by_entity_id);
+    }
+
+    /// The edge list is omitted when empty and carries `(kind, target
+    /// entity_id)` pairs verbatim when not.
+    #[test]
+    fn edges_are_omitted_when_empty_and_round_trip_when_present() {
+        let rec = base_record();
+        let json = serde_json::to_string(&rec).expect("serialize");
+        assert!(!json.contains("edges"), "key omitted when empty: {json}");
+
+        let mut rec = base_record();
+        rec.edges = vec![
+            CarriedEdge::new("relates_to", "aaaa".to_string()),
+            CarriedEdge::new("contradicts", "bbbb".to_string()),
+        ];
+        let json = serde_json::to_string(&rec).expect("serialize");
+        assert!(json.contains("\"edges\""), "{json}");
+        assert_eq!(rec.schema_version, 1, "additive: no version bump");
+
+        let back: NoteRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.edges, rec.edges);
+    }
+
+    /// Every record written before edges existed has no `edges` key; it must
+    /// read exactly as before, with an empty list.
+    #[test]
+    fn a_blob_without_the_edges_key_reads_as_no_edges() {
+        let old = r#"{"schema_version":1,"id":7,"kind":"note","title":"t","body":"b","tags":[],"linked_files":[],"created_at":1,"status":"active","entity_id":"e7"}"#;
+        let back: NoteRecord = serde_json::from_str(old).expect("deserialize old blob");
+        assert!(back.edges.is_empty());
+        assert_eq!(back.schema_version, 1);
+    }
+
+    /// The reader side of the additive contract: a key this build does not
+    /// know is ignored, which is what lets a field be added under the same
+    /// `schema_version` without every older reader refusing the note.
+    #[test]
+    fn an_unknown_extra_key_is_ignored() {
+        let future = r#"{"schema_version":1,"id":7,"kind":"note","title":"t","body":"b","tags":[],"linked_files":[],"created_at":1,"status":"active","edges":[{"kind":"relates_to","to_entity_id":"e1"}],"not_yet_invented":{"x":1}}"#;
+        let back: NoteRecord = serde_json::from_str(future).expect("unknown key must not refuse");
+        assert_eq!(back.id, 7);
+        assert_eq!(
+            back.edges,
+            vec![CarriedEdge::new("relates_to", "e1".to_string())]
+        );
     }
 
     /// A legacy blob with no `entity_id` key recomputes the same id a fresh
