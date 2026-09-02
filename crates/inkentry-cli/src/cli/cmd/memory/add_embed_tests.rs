@@ -234,10 +234,17 @@ async fn a_stalled_embedder_defers_the_vector_within_the_budget() {
     .expect("a stalled embedder must not fail the command");
     let elapsed = started.elapsed();
 
+    // Against the budget, not against `stall`: the criterion is that the command
+    // returns within the interactive budget, and a bound of "less than the whole
+    // 100s stall" would stay green with the budget raised to a minute, which is
+    // the wait this change exists to remove. Doubling it absorbs process and
+    // probe overhead without loosening what is being claimed.
+    let bound = super::add::INTERACTIVE_EMBED_BUDGET * 2;
     assert!(
-        elapsed < stall,
-        "memory add waited {elapsed:?}, which means it sat out the whole stall \
-         instead of giving up on the vector"
+        elapsed < bound,
+        "memory add waited {elapsed:?}, over the {bound:?} allowed for a \
+         {budget:?} budget, so the wait for the vector is not bounded by it",
+        budget = super::add::INTERACTIVE_EMBED_BUDGET
     );
     assert!(
         stored_titles(&mem_path).contains(&title.to_string()),
@@ -247,6 +254,26 @@ async fn a_stalled_embedder_defers_the_vector_within_the_budget() {
         embedding_for(&mem_path, title).is_none(),
         "the entry should be left vectorless for the catch-up paths, not given a \
          partial or placeholder vector"
+    );
+}
+
+// The budget's magnitude is behaviour, not a tuning detail: it is the whole
+// claim that `memory add` stays interactive. A timing assertion derived from the
+// constant scales with it and stays green at any value, so this is the one thing
+// that has to be pinned in absolute terms.
+#[test]
+fn the_interactive_embed_budget_stays_interactive() {
+    let budget = super::add::INTERACTIVE_EMBED_BUDGET;
+    assert!(
+        budget <= Duration::from_secs(10),
+        "the add-time embed budget is {budget:?}; past a few seconds the command \
+         stops being interactive and a caller with a tool timeout goes back to \
+         losing entries, which is the failure the budget exists to prevent"
+    );
+    assert!(
+        budget >= Duration::from_secs(1),
+        "the add-time embed budget is {budget:?}, too short to let a healthy \
+         embed finish, so entries would be deferred that would have succeeded"
     );
 }
 
