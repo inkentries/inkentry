@@ -340,12 +340,13 @@ impl ServerInferenceClient {
     /// is no refresh state (a per-origin server key, nothing to refresh). Errors
     /// carry a clear "re-run `inkentry login`" message.
     async fn refresh_access_token(&self) -> Result<bool> {
-        let (refresh_token, org_id, workos_url, client_id, config_path) = {
+        let (refresh_token, org_id, cloud_origin, workos_url, client_id, config_path) = {
             let guard = self.auth.lock().expect("auth mutex poisoned");
             match &guard.refresh {
                 Some(r) => (
                     r.tokens.refresh_token.clone(),
                     r.tokens.org_id.clone(),
+                    r.tokens.cloud_origin.clone(),
                     r.workos_url.clone(),
                     r.client_id.clone(),
                     r.config_path.clone(),
@@ -368,7 +369,7 @@ impl ServerInferenceClient {
         .map_err(|e| {
             e.context("session expired and token refresh failed — re-run `inkentry login`")
         })?;
-        let new_tokens = rotated.into_auth_tokens();
+        let new_tokens = rotated.into_auth_tokens(cloud_origin);
 
         // Persist rotated tokens so the next process starts authenticated.
         match &config_path {
@@ -704,6 +705,7 @@ mod tests {
             refresh_token: "rt-old".to_string(),
             expires_at,
             org_id: "org_1".to_string(),
+            cloud_origin: auth_api::DEFAULT_CLOUD_URL.to_string(),
         }
     }
 
@@ -966,6 +968,7 @@ mod tests {
             refresh_token: "rt-login".into(),
             expires_at: 4_000_000_000,
             org_id: "org_1".into(),
+            cloud_origin: auth_api::DEFAULT_CLOUD_URL.to_string(),
         };
         inkentry_core::config::save_auth_tokens_to(&tokens, &path).unwrap();
 

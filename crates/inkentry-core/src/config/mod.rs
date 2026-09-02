@@ -106,6 +106,8 @@ struct ProjectIndexConfig {
 struct ProjectConfig {
     /// Canonical server URL (preferred).
     server_url: Option<String>,
+    /// Opt into the hosted inkentry cloud. Mutually exclusive with `server_url`.
+    cloud: Option<bool>,
     project_id: Option<String>,
     /// Base URL of the inference endpoint. A team pointing at one approved
     /// provider states it once here rather than in every developer's own file.
@@ -161,6 +163,16 @@ pub struct Config {
     /// per-developer one.
     #[serde(default)]
     pub server_url: Option<String>,
+
+    /// When true, this project uses the hosted inkentry cloud. Cloud is a fixed
+    /// service, so it is a flag rather than a URL: the CLI targets the
+    /// compile-time cloud URL ([`server_keys::DEFAULT_CLOUD_URL`], a development
+    /// build may override it), and the access token travels only to the host it
+    /// was issued for. Mutually exclusive with `server_url`, which names a
+    /// self-hosted team server. Set in `.inkentry/config.toml` (project-level)
+    /// only; a personal value is discarded, like `server_url`.
+    #[serde(default)]
+    pub cloud: bool,
 
     /// Project slug for the inkentry-server (e.g. `acme/my-app`).
     /// Required when `server_url` is set.
@@ -259,7 +271,9 @@ pub struct Config {
 /// * missing `expires_at` ⇒ `0` ⇒ [`AuthTokens::is_expired_at`] reports
 ///   expired, so an unknown expiry can never read as "still valid";
 /// * missing `org_id` ⇒ empty ⇒ no organisation scoping (the same empty-string
-///   sentinel the login/refresh paths already use).
+///   sentinel the login/refresh paths already use);
+/// * missing `cloud_origin` ⇒ empty ⇒ no bearer released, since the token then
+///   names no host it may be sent to (see [`server_keys::bearer_for`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthTokens {
     /// Short-lived WorkOS access token, sent as `Authorization: Bearer`.
@@ -280,6 +294,13 @@ pub struct AuthTokens {
     /// without an org (`--org` omitted); no scoping is applied.
     #[serde(default)]
     pub org_id: String,
+    /// Normalized origin of the cloud host these tokens were issued for. The
+    /// access token is released only to this origin (see
+    /// [`server_keys::bearer_for`]), so the cloud URL a request is aimed at
+    /// cannot direct a token issued for one host to another. Empty resolves to
+    /// no bearer.
+    #[serde(default)]
+    pub cloud_origin: String,
 }
 
 impl AuthTokens {
@@ -320,6 +341,7 @@ impl Default for Config {
             llm_model: None,
             llm_url: None,
             server_url: None,
+            cloud: false,
             project_id: None,
             server_ca: None,
             mode: None,
@@ -416,8 +438,10 @@ impl Config {
         // team server on its own: everyone on a project needs the same
         // server_url, which only the checked-in project config or an env var
         // can guarantee. Discard whatever the global file set here; step 2
-        // below is the only file-based source allowed to populate it.
+        // below is the only file-based source allowed to populate it. The cloud
+        // opt-in is a project-wide choice for the same reason.
         cfg.server_url = None;
+        cfg.cloud = false;
 
         // ── 2. Merge project-level config (.inkentry/config.toml) ─────────────
         // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
@@ -436,6 +460,9 @@ impl Config {
 
             if let Some(v) = proj.server_url {
                 cfg.server_url = Some(v);
+            }
+            if let Some(v) = proj.cloud {
+                cfg.cloud = v;
             }
             if let Some(v) = proj.project_id {
                 cfg.project_id = Some(v);
@@ -493,6 +520,22 @@ impl Config {
                 )
             })?;
             cfg.mode = Some(parsed);
+        }
+
+        // `cloud = true` targets the hosted cloud at the fixed URL. It is how a
+        // project opts into cloud; `server_url` names a self-hosted team server,
+        // and the two cannot both apply.
+        if cfg.cloud {
+            if cfg.server_url.is_some() {
+                anyhow::bail!(
+                    "`cloud = true` and `server_url` cannot both be set: a project uses either the hosted cloud or a self-hosted team server"
+                );
+            }
+            cfg.server_url = Some(server_keys::cloud_url());
+            // Cloud is the memory home unless a mode was chosen explicitly.
+            if cfg.mode.is_none() {
+                cfg.mode = Some(SyncMode::CloudFirst);
+            }
         }
 
         Ok(cfg)
@@ -612,6 +655,7 @@ fn parse_project_config(raw: &str, path: &Path) -> Result<ProjectConfig> {
 /// [`project_config_key_warnings`], so the two cannot drift.
 const PROJECT_CONFIG_KEYS: &[&str] = &[
     "server_url",
+    "cloud",
     "project_id",
     "server_ca",
     "mode",
@@ -1667,6 +1711,50 @@ mode = "cloud_first"
 
     #[test]
     #[serial_test::serial]
+    fn cloud_flag_targets_the_fixed_cloud_url_and_defaults_to_cloud_first() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered("", Some("cloud = true\nproject_id = \"team/proj\"\n"));
+        let cfg = cfg.expect("`cloud = true` must load");
+        let target = server_keys::cloud_url();
+        assert_eq!(cfg.server_url.as_deref(), Some(target.as_str()));
+        assert_eq!(cfg.resolve_mode(), SyncMode::CloudFirst);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cloud_flag_with_server_url_is_a_load_error() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered(
+            "",
+            Some("cloud = true\nserver_url = \"https://team.example\"\nproject_id = \"p\"\n"),
+        );
+        let err = cfg.expect_err("`cloud = true` with a server_url must fail the load");
+        assert!(err.to_string().contains("cloud"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cloud_flag_honours_the_development_cloud_url_override() {
+        clear_inkentry_env();
+        unsafe { std::env::set_var("INKENTRY_CLOUD_URL", "https://dev.example") };
+        let (_tmp, cfg) = load_layered("", Some("cloud = true\nproject_id = \"p\"\n"));
+        let target = cfg.map(|c| c.server_url);
+        unsafe { std::env::remove_var("INKENTRY_CLOUD_URL") };
+        assert_eq!(target.unwrap().as_deref(), Some("https://dev.example"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_personal_cloud_opt_in_is_discarded() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered("cloud = true\n", None);
+        let cfg = cfg.expect("a personal cloud opt-in is ignored, not an error");
+        assert!(!cfg.cloud);
+        assert_eq!(cfg.server_url, None);
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn invalid_project_config_mode_names_the_value_and_the_file() {
         clear_inkentry_env();
         let (_tmp, cfg) = load_layered("", Some("mode = \"sideways\"\n"));
@@ -1684,6 +1772,7 @@ mode = "cloud_first"
             refresh_token: "rt-sample".to_string(),
             expires_at: 4_000_000_000,
             org_id: "org_sample".to_string(),
+            cloud_origin: server_keys::normalize_origin(server_keys::DEFAULT_CLOUD_URL).unwrap(),
         }
     }
 
@@ -1725,7 +1814,8 @@ mode = "cloud_first"
             "[auth]\n\
              access_token = \"at\"\n\
              refresh_token = \"rt\"\n\
-             expires_at = 4000000000\n",
+             expires_at = 4000000000\n\
+             cloud_origin = \"https://api.inkentry.com\"\n",
         )
         .unwrap();
 
