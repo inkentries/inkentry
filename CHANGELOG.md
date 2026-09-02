@@ -16,8 +16,8 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 - **Source builds now parse PDF, DOCX and spreadsheets by default.** The
   `rich-formats` feature is on by default for `inkentry-cli`, so a plain
   `cargo build` matches every published binary and no longer needs
-  `--features rich-formats`. Pass `--no-default-features` to build without
-  those readers.
+  `--features rich-formats`. To build the CLI without those readers, pass
+  `-p inkentry-cli --no-default-features`.
 
 ## [1.0.1] — 2026-08-28
 
