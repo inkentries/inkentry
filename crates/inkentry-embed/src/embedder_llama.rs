@@ -198,7 +198,14 @@ impl LlamaEmbedder {
         let (n_gpu_layers, device_name) = match (device, first_gpu_backend()) {
             (DeviceRequest::Cpu, _) => (0, "cpu"),
             (_, Some(flavor)) => (1000, flavor),
-            (_, None) => {
+            // Auto lands here on every deliberately CPU-only build (bare
+            // `llama` / arm64 release), so it is routine, not a warning;
+            // an explicit gpu request that can't be honored is.
+            (DeviceRequest::Auto, None) => {
+                tracing::info!("no GPU backend available; llama engine on CPU");
+                (0, "cpu")
+            }
+            (DeviceRequest::Gpu, None) => {
                 tracing::warn!(
                     "GPU embedding requested but no GPU backend is available (module \
                      missing, no usable driver, or built without one); running on CPU"

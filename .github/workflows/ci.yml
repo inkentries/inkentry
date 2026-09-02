@@ -279,11 +279,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # glslc + libvulkan-dev satisfy the ggml Vulkan backend's build-time
-      # needs on ubuntu-24.04 (build-time only; the backend is a dlopen'd
-      # module at runtime).
+      # glslc + libvulkan-dev + spirv-headers satisfy the ggml Vulkan
+      # backend's build-time needs on ubuntu-24.04 (build-time only; the
+      # backend is a dlopen'd module at runtime). spirv-headers is the CMake
+      # config package ggml's find_package(SPIRV-Headers CONFIG) resolves.
       - name: Install build dependencies
-        run: sudo apt-get install -y libdbus-1-dev pkg-config glslc libvulkan-dev
+        run: sudo apt-get install -y libdbus-1-dev pkg-config glslc libvulkan-dev spirv-headers
 
       - name: Install stable toolchain
         run: |

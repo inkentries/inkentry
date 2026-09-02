@@ -18,6 +18,9 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   same indexes — nothing re-embeds. Set `INKENTRY_EMBED_DEVICE=cpu` to opt
   out. The Windows/Linux-x64 archives now contain engine library files next
   to the binaries; keep the extracted files together when installing manually.
+- **Faster CPU embedding on Linux arm64.** Where Vulkan can't go, the same
+  new engine runs on CPU (measured 1.2–1.9x the previous CPU speed), with
+  the previous engine still in the binary as a fallback.
 
 ## [1.0.1] — 2026-08-28
 

@@ -71,7 +71,7 @@ Three install paths live outside this workflow:
 | Target | Runner | Archive format | Notes |
 |--------|--------|---------------|-------|
 | `x86_64-unknown-linux-gnu` | ubuntu-latest | `.tar.gz` | Built in a `debian:11` container; binaries stripped. Ships the llama.cpp Vulkan engine: the archive also carries `lib*.so*` (core engine libs + ggml backend modules) that must stay next to the binaries |
-| `aarch64-unknown-linux-gnu` | ubuntu-24.04-arm | `.tar.gz` | Native arm64 runner, built in a `debian:11` container. candle engine only (LunarG ships no arm64-linux Vulkan SDK) |
+| `aarch64-unknown-linux-gnu` | ubuntu-24.04-arm | `.tar.gz` | Native arm64 runner, built in a `debian:11` container. llama.cpp CPU engine statically linked (no Vulkan: LunarG ships no arm64-linux SDK), candle fallback; no extra archive files |
 | `aarch64-apple-darwin` | macos-latest | `.tar.gz` | Native build (Apple Silicon), candle Metal engine |
 | `x86_64-pc-windows-msvc` | windows-latest | `.zip` | Native build; produces `.exe` binaries plus the llama.cpp engine DLLs (`ggml*.dll`, `llama*.dll`), which must stay next to the `.exe`s |
 

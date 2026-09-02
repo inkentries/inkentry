@@ -199,6 +199,8 @@ build_in_floor_container() {
         rm /tmp/vulkansdk.tar.xz
       fi
       export VULKAN_SDK=/opt/vulkansdk/'"${VULKAN_SDK_VERSION}"'/x86_64
+      # find_package(SPIRV-Headers CONFIG) resolves via the SDK share/cmake.
+      export CMAKE_PREFIX_PATH="$VULKAN_SDK"
       export PATH="$VULKAN_SDK/bin:$PATH"
       if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
         curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
