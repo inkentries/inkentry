@@ -67,12 +67,14 @@ any database or request load. Treat them as the floor.
   search over memory needs the embeddings. A server run as nothing more than a
   shared memory store (`--db` plus a key) still sits at this figure. There is
   no switch to skip the load.
-- **Disk: about 339 MB for the model, held twice.** The embedder is a
-  pre-quantized Q8_0 GGUF (`f2llm-v2-330m-q8_0.gguf`, about 339 MB) fetched
-  once into the model cache. The cache currently keeps two copies of it, the
-  download cache's own blob and the file the loader reads, so budget about
-  700 MB for the model cache. The database is separate and grows with the
-  team's memory entries.
+- **Disk: about 350 MB for the model.** The embedder is a pre-quantized Q8_0
+  GGUF (`f2llm-v2-330m-q8_0.gguf`, about 339 MB) fetched once into the model
+  cache, alongside the tokenizer and a small config file. The download is hard
+  linked into place rather than copied, so the cache holds a single copy of the
+  GGUF; on a filesystem that cannot hard link, it is copied and the cache holds
+  both. See
+  [Where the model is cached](getting-started.md#where-the-model-is-cached).
+  The database is separate and grows with the team's memory entries.
 - **Co-locating with a developer machine doubles the model.** The local
   inference server that `inkentry` starts on demand loads the same embedder,
   so a team server on a machine that also runs `inkentry` holds two resident
@@ -373,7 +375,7 @@ nothing published reaches a loopback-only bind.
 
 **What's on the `/data` volume.** Both the SQLite database (`/data/inkentry.db`)
 and the native embedder's downloaded model cache (`/data/inkentry/models/`, a
-one-time ~339 MB pull, held twice on disk today; see
+one-time pull of about 350 MB; see
 [Sizing the host](#sizing-the-host)) live on the same named volume. Size it
 accordingly, and when backing it up, only the database needs your normal
 database backup process (per [Production deployment](#production-deployment) below); the model
