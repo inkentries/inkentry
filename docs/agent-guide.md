@@ -607,7 +607,7 @@ Emit code graph edges (imports, calls, extends/implements) for a file or symbol.
 | `--file <file>` | Project-relative path; emit all edges originating from this file. |
 | `--symbol <symbol>` | Symbol name; emit edges where this name appears as source or target. |
 
-Exit codes: `0` = edges found, `1` = no edges matched, `2` = neither flag supplied or DB error.
+Exit codes: `0` = edges found, `1` = no edges matched, `2` = neither flag supplied, `--file` names a path the index does not hold, or DB error.
 
 Example:
 
