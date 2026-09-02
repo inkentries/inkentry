@@ -23,7 +23,7 @@ CI enforces formatting, lints, and tests. Run the same checks locally:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
+cargo clippy --lib --bins --tests --benches -- -D warnings
 cargo test
 ```
 

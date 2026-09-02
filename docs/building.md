@@ -93,18 +93,18 @@ cargo build --release -p inkentry-server --no-default-features
 
 | Feature | Default | Description |
 |---|---|---|
-| `rich-formats` | no | Enable parsing of PDF, DOCX, and XLSX files during indexing (pulls in `lopdf`, `docx-rs`, and `calamine`). |
+| `rich-formats` | yes | Parse PDF, DOCX, and XLSX files during indexing (pulls in `lopdf`, `docx-rs`, and `calamine`). Every published release binary includes it. |
 
 ```bash
-# CLI with rich document format support
-cargo build --release -p inkentry-cli --features rich-formats
+# CLI without the PDF, DOCX and XLSX readers
+cargo build --release -p inkentry-cli --no-default-features
 ```
 
 ### inkentry-core features
 
 | Feature | Default | Description |
 |---|---|---|
-| `rich-formats` | no | Same as above — `inkentry-cli/rich-formats` propagates to this crate automatically. |
+| `rich-formats` | no | The parsers themselves. Off in the library's own defaults; `inkentry-cli` turns it on through its default feature, so a standalone `inkentry-server` build does not pull `lopdf`, `docx-rs` or `calamine` in. |
 
 ## Running tests
 
