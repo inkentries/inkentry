@@ -3,7 +3,7 @@
 
 use crate::storage::MemoryStore;
 
-pub(super) fn register_sqlite_vec() {
+pub(in crate::cli::cmd::memory) fn register_sqlite_vec() {
     use std::sync::OnceLock;
     // `MemoryStore::open` creates a vec0 table, so the extension must be
     // registered before any connection opens.
@@ -21,7 +21,7 @@ pub(super) fn register_sqlite_vec() {
 // Spin up a real `inkentry-server` axum router (the production router) on
 // an ephemeral loopback port, serving the team-hosting
 // `/v1/projects/*/memory*` routes this test's `CloudSyncClient`s talk to.
-pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
+pub(in crate::cli::cmd::memory) async fn spawn_inkentry_server() -> std::net::SocketAddr {
     register_sqlite_vec();
     let db_dir = tempfile::TempDir::new().unwrap();
     let db = inkentry_server::db::ServerDb::open(&db_dir.path().join("server.db"), 4, "test-model")
@@ -66,8 +66,8 @@ pub(super) async fn spawn_inkentry_server() -> std::net::SocketAddr {
 // tests.
 //
 // Mutates process-global env, so every test using it must be `#[serial]`.
-pub(super) struct LoopbackEmbedder {
-    pub(super) server: wiremock::MockServer,
+pub(in crate::cli::cmd::memory) struct LoopbackEmbedder {
+    pub(in crate::cli::cmd::memory) server: wiremock::MockServer,
     _state_dir: tempfile::TempDir,
     prev_state_dir: Option<std::ffi::OsString>,
     prev_discovery_port: Option<std::ffi::OsString>,
@@ -95,7 +95,7 @@ impl Drop for LoopbackEmbedder {
 
 // The fp32 vector `spawn_loopback_embedder`'s `/index/embed` route returns.
 // L2-normalised and 896-dim, so it survives the push's own dimension guard.
-pub(super) fn stub_vector() -> Vec<f32> {
+pub(in crate::cli::cmd::memory) fn stub_vector() -> Vec<f32> {
     let dim = inkentry_core::embeddings::EMBEDDING_DIM;
     vec![1.0 / (dim as f32).sqrt(); dim]
 }
@@ -113,7 +113,7 @@ pub(super) fn stub_vector() -> Vec<f32> {
 // leaves a caller racing the probe and daemon tests. A concurrent probe then
 // reads this test's discovery override and hits this test's mock, which is
 // exactly what breaks the "no embed calls" assertions.
-pub(super) async fn spawn_loopback_embedder(
+pub(in crate::cli::cmd::memory) async fn spawn_loopback_embedder(
     project_id: &str,
     failing_title_marker: Option<&str>,
 ) -> LoopbackEmbedder {
@@ -149,7 +149,7 @@ pub(super) async fn spawn_loopback_embedder(
 // a test assert a real KNN round trip instead of "some blob was written".
 //
 // Carries the same `#[serial]` requirement as `spawn_loopback_embedder`.
-pub(super) async fn spawn_content_embedder(
+pub(in crate::cli::cmd::memory) async fn spawn_content_embedder(
     project_id: &str,
     failing_title_marker: Option<&str>,
 ) -> LoopbackEmbedder {
@@ -191,7 +191,7 @@ pub(super) async fn spawn_content_embedder(
 // hashed to one dimension. Shared tokens are shared direction, so cosine
 // distance behaves the way a real embedder's does for the purposes of "does the
 // right entry come back first".
-pub(super) fn content_vector(text: &str) -> Vec<f32> {
+pub(in crate::cli::cmd::memory) fn content_vector(text: &str) -> Vec<f32> {
     let dim = inkentry_core::embeddings::EMBEDDING_DIM;
     let mut v = vec![0f32; dim];
     for token in text.split(|c: char| !c.is_ascii_alphanumeric()) {
@@ -218,7 +218,7 @@ pub(super) fn content_vector(text: &str) -> Vec<f32> {
     v
 }
 
-async fn mount_health(server: &wiremock::MockServer) {
+pub(in crate::cli::cmd::memory) async fn mount_health(server: &wiremock::MockServer) {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
 
@@ -241,7 +241,9 @@ async fn mount_health(server: &wiremock::MockServer) {
 // `inkentry-server` process reporting the recorded instance id, and a wiremock
 // stand-in is neither. The state dir is still redirected at an empty temp dir,
 // so nothing here reads the developer's own state.
-fn point_discovery_at(server: wiremock::MockServer) -> LoopbackEmbedder {
+pub(in crate::cli::cmd::memory) fn point_discovery_at(
+    server: wiremock::MockServer,
+) -> LoopbackEmbedder {
     let port = server.address().port();
     let state_dir = tempfile::TempDir::new().unwrap();
     let prev_state_dir = std::env::var_os("INKENTRY_STATE_DIR");
@@ -263,7 +265,7 @@ fn point_discovery_at(server: wiremock::MockServer) -> LoopbackEmbedder {
 
 // Open a fresh local memory store in a new tempdir, returning both (the
 // tempdir must be kept alive by the caller for the store's lifetime).
-pub(super) fn fresh_store() -> (tempfile::TempDir, MemoryStore) {
+pub(in crate::cli::cmd::memory) fn fresh_store() -> (tempfile::TempDir, MemoryStore) {
     register_sqlite_vec();
     let tmp = tempfile::TempDir::new().unwrap();
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();

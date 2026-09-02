@@ -876,7 +876,10 @@ any entry in the set they are about to push that still lacks it (see [Repair
 during push and sync](#repair-during-push-and-sync)). A note that misses both
 moments — because no embedder was reachable when it was added, or because it
 arrived from an `inkentry import` (a portable dump carries no vectors) — stays
-in `memory.db` **present but unembedded**. Such a note is still listed by
+in `memory.db` **present but unembedded**. `memory add` stores the entry first and
+then waits a few seconds for its vector, so an entry added while the embedder
+is busy with a bulk index pass is stored without one and becomes searchable at
+the next `inkentry memory reindex` or `inkentry sync`, whichever comes first. Such a note is still listed by
 `memory list` and `context`, which take no query. It is missing from the *semantic* ranking of `inkentry search`,
 because that ranking is a KNN over the embedding vectors and this note has none.
 
