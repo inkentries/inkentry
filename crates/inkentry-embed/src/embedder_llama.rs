@@ -74,21 +74,82 @@ fn backend() -> Result<&'static LlamaBackend> {
             // llama.cpp logs straight to stderr by default (very chatty at
             // model load); route it into `tracing` with everything else.
             llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default());
+            #[cfg(feature = "llama-vulkan")]
+            load_backend_modules();
             LlamaBackend::init().map_err(|e| e.to_string())
         })
         .as_ref()
         .map_err(|e| anyhow::anyhow!("initialising llama.cpp backend: {e}"))
 }
 
-/// Which GPU backend this build carries, for logs and `/v1/health`.
-fn gpu_flavor() -> Option<&'static str> {
-    if cfg!(feature = "llama-vulkan") {
-        Some("vulkan")
-    } else if cfg!(feature = "llama-metal") {
-        Some("metal")
-    } else {
-        None
+/// With `dynamic-backends` (the `llama-vulkan` build) every ggml backend —
+/// Vulkan *and* the CPU-SIMD variants — is a runtime-loaded module, and
+/// nothing loads them implicitly: skipping this leaves the registry empty and
+/// every model load failing. `GGML_BACKEND_PATH` is the operator override;
+/// otherwise the two shipped layouts below are probed, then the compile-time
+/// build-tree dir that covers `cargo run`/tests. A module whose driver is
+/// missing (no Vulkan) simply fails to load, which is the graceful CPU
+/// degrade this build exists for.
+#[cfg(feature = "llama-vulkan")]
+fn load_backend_modules() {
+    use llama_cpp_2::llama_backend::{load_backends, load_backends_from_path};
+
+    if let Ok(dir) = std::env::var("GGML_BACKEND_PATH") {
+        tracing::info!("loading ggml backend modules from GGML_BACKEND_PATH ({dir})");
+        load_backends_from_path(std::path::Path::new(&dir));
+        return;
     }
+    // Two shipped layouts: archives are flat (modules beside the binary);
+    // the .deb splits them (/usr/bin + /usr/lib/inkentry, matching the
+    // binary's $ORIGIN/../lib/inkentry rpath for its core libs).
+    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| {
+        p.parent().and_then(|d| {
+            [d.to_path_buf(), d.join("../lib/inkentry")]
+                .into_iter()
+                .find(|c| dir_has_ggml_modules(c))
+        })
+    }) {
+        tracing::info!("loading ggml backend modules from {}", exe_dir.display());
+        load_backends_from_path(&exe_dir);
+        return;
+    }
+    load_backends();
+}
+
+/// Module filenames are `libggml-<backend>.so` on unix (macOS included) and
+/// `ggml-<backend>.dll` on Windows, with `<backend>` varying by build
+/// (vulkan, cpu-haswell, cpu-apple_m1, …) — so probe by prefix, not name.
+#[cfg(feature = "llama-vulkan")]
+fn dir_has_ggml_modules(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("libggml-") || n.starts_with("ggml-"))
+        })
+    })
+}
+
+/// Name of the first registered GPU-class backend, if any. Resolved from the
+/// live ggml registry rather than compile-time features: with runtime-loaded
+/// modules the Vulkan module can be absent or driverless, and `/v1/health`
+/// must not claim a device that isn't actually serving.
+fn first_gpu_backend() -> Option<&'static str> {
+    use llama_cpp_2::LlamaBackendDeviceType;
+    llama_cpp_2::list_llama_ggml_backend_devices()
+        .into_iter()
+        .find(|d| {
+            matches!(
+                d.device_type,
+                LlamaBackendDeviceType::Gpu | LlamaBackendDeviceType::IntegratedGpu
+            )
+        })
+        .map(|d| match d.backend.as_str() {
+            "Vulkan" => "vulkan",
+            // ggml's Metal backend registers under "MTL".
+            "MTL" | "Metal" => "metal",
+            _ => "gpu",
+        })
 }
 
 fn context_params(ubatch: u32, n_threads: i32) -> LlamaContextParams {
@@ -134,13 +195,13 @@ impl LlamaEmbedder {
 
         let backend = backend()?;
 
-        let (n_gpu_layers, device_name) = match (device, gpu_flavor()) {
+        let (n_gpu_layers, device_name) = match (device, first_gpu_backend()) {
             (DeviceRequest::Cpu, _) => (0, "cpu"),
             (_, Some(flavor)) => (1000, flavor),
             (_, None) => {
                 tracing::warn!(
-                    "GPU embedding requested but this build carries no llama GPU backend \
-                     (built without llama-vulkan/llama-metal); running on CPU"
+                    "GPU embedding requested but no GPU backend is available (module \
+                     missing, no usable driver, or built without one); running on CPU"
                 );
                 (0, "cpu")
             }
@@ -179,7 +240,7 @@ impl LlamaEmbedder {
     }
 
     /// The resolved inference device, for logs and `/v1/health` (`"cpu"`,
-    /// `"metal"`, or `"vulkan"`).
+    /// `"metal"`, `"vulkan"`, or `"gpu"` for any other GPU-class backend).
     pub fn device(&self) -> &'static str {
         self.device
     }

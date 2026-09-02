@@ -1642,7 +1642,7 @@
               "string",
               "null"
             ],
-            "description": "Device the engine was configured for at load: `\"cpu\"`, `\"metal\"`, or\n`\"vulkan\"`. `null` until the embedder is `ready` (and on older\nservers pre-dating the field)."
+            "description": "Device the engine resolved at load: `\"cpu\"`, `\"metal\"`, `\"vulkan\"`,\nor `\"gpu\"` (another GPU-class backend). `null` until the embedder is\n`ready` (and on older servers pre-dating the field)."
           },
           "engine": {
             "type": [

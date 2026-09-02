@@ -32,10 +32,21 @@ jobs:
           # debian:11 = glibc 2.31 floor (Bullseye+/Ubuntu 20.04+). LTS ends
           # 2026-08-31: apt sources then fall back to archive.debian.org;
           # changing this base image changes the supported floor.
+          #
+          # llama: true adds the llama.cpp Vulkan engine (server feature
+          # `llama-vulkan`): the Vulkan SDK is installed at build time, and the
+          # archive gains the engine's core shared libs plus its runtime-loaded
+          # ggml backend modules next to the binaries. x64 Linux and Windows
+          # only: LunarG ships no arm64-linux SDK, and macOS stays on candle
+          # Metal. The rpath makes the binary find its libs beside itself
+          # (tarball) or in ../lib/inkentry (the .deb split layout); Windows
+          # resolves DLLs from the exe directory natively.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            features: rich-formats
+            features: rich-formats,llama-vulkan
             container: debian:11
+            llama: true
+            rustflags: "-C link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/../lib/inkentry"
           # Native arm64 runner (free for public repos) + arm64 bullseye
           # container. Replaces the old cross-compile + ports-mirror setup.
           - os: ubuntu-24.04-arm
@@ -47,7 +58,8 @@ jobs:
             features: rich-formats,metal
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: rich-formats
+            features: rich-formats,llama-vulkan
+            llama: true
 
     steps:
       # Inside the bullseye container nothing is preinstalled. git must be
@@ -74,10 +86,54 @@ jobs:
             | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # The llama-vulkan feature needs the Vulkan SDK at BUILD time only:
+      # glslc compiles the ggml shaders, the headers/loader are linked against.
+      # Nothing Vulkan is a runtime requirement of the shipped binary — the
+      # Vulkan backend is a dlopen'd module that fails to load (and degrades
+      # to CPU) on machines without a driver. Pinned by version + sha256;
+      # bullseye's own vulkan packages are far too old, hence the SDK tarball.
+      # cmake + xz-utils are llama.cpp build requirements (cmake build, .xz SDK).
+      - name: Install Vulkan SDK (Linux container)
+        if: matrix.container != '' && matrix.llama
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get install -y --no-install-recommends cmake xz-utils
+          SDK_VERSION="1.4.357.1"
+          SDK_SHA256="4b41e3b30e8aedaa5dac7c136561ab463eb316a25a54e2c6245f2c299ea1fb85"
+          curl -fsSL -o /tmp/vulkansdk.tar.xz \
+            "https://sdk.lunarg.com/sdk/download/${SDK_VERSION}/linux/vulkansdk-linux-x86_64-${SDK_VERSION}.tar.xz"
+          echo "${SDK_SHA256}  /tmp/vulkansdk.tar.xz" | sha256sum -c -
+          mkdir -p /opt/vulkansdk
+          tar -xf /tmp/vulkansdk.tar.xz -C /opt/vulkansdk
+          rm /tmp/vulkansdk.tar.xz
+          echo "VULKAN_SDK=/opt/vulkansdk/${SDK_VERSION}/x86_64" >> "$GITHUB_ENV"
+          echo "/opt/vulkansdk/${SDK_VERSION}/x86_64/bin" >> "$GITHUB_PATH"
+
       # One command per step (Windows steps must not chain rustup invocations).
       - name: Install Rust toolchain (runner VM)
         if: matrix.container == ''
         run: rustup toolchain install stable --no-self-update
+
+      # Same build-time-only Vulkan SDK as the Linux step above; the Qt
+      # installer framework's silent mode needs the three flags exactly.
+      - name: Download Vulkan SDK (Windows)
+        if: matrix.llama && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $v = "1.4.357.1"
+          curl.exe -fsSL -o vulkansdk.exe "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+          $expected = "82f20b87fee7b39d1561cb3890abbce2b11ecdb0e98d54ba77d44d74471f0997"
+          $actual = (Get-FileHash vulkansdk.exe -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "vulkansdk.exe sha256 mismatch: $actual" }
+
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.llama && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Start-Process -Wait -FilePath .\vulkansdk.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install"
+          "VULKAN_SDK=C:\VulkanSDK\1.4.357.1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "C:\VulkanSDK\1.4.357.1\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Add Rust target (runner VM)
         if: matrix.container == ''
@@ -103,12 +159,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Single-quoted: $ORIGIN must reach the linker literally.
+          if [ -n '${{ matrix.rustflags }}' ]; then
+            export RUSTFLAGS='${{ matrix.rustflags }}'
+          fi
           FEATURES="${{ matrix.features }}"
           if [ -n "$FEATURES" ]; then
             cargo build --release --target ${{ matrix.target }} --features "$FEATURES"
           else
             cargo build --release --target ${{ matrix.target }}
           fi
+
+      # A dynamic-backends build splits the llama engine into the binary, four
+      # core shared libs it links by SONAME, and dlopen'd ggml backend modules.
+      # All of them ship next to the binaries; see the script for the layout.
+      - name: Collect llama runtime libraries
+        if: matrix.llama
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/collect-ggml-backends.sh \
+            "target/${{ matrix.target }}/release" \
+            "target/${{ matrix.target }}/release"
+
+      # The modules keep cmake's full symbol tables (cargo's `strip` profile
+      # setting only reaches rust-linked artifacts); the Vulkan module alone
+      # is ~50 MB unstripped.
+      - name: Strip llama runtime libraries (Linux)
+        if: matrix.llama && matrix.container != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          strip --strip-unneeded target/${{ matrix.target }}/release/lib*.so*
 
       # The whole point of the container build: fail the release if either
       # binary needs a glibc symbol newer than the 2.31 floor. Pinned forever,
@@ -121,7 +203,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for bin in inkentry inkentry-server; do
+          shipped="inkentry inkentry-server"
+          # The llama legs also ship shared objects; every ELF in the archive
+          # must honor the same floor, or the engine silently dies on exactly
+          # the distros the floor exists for.
+          if [ -n "${{ matrix.llama }}" ]; then
+            shipped="$shipped $(cd "target/${{ matrix.target }}/release" && ls lib*.so*)"
+          fi
+          for bin in $shipped; do
             path="target/${{ matrix.target }}/release/${bin}"
             raw="$(objdump -T "$path")"
             ceiling="$(printf '%s\n' "$raw" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
@@ -145,9 +234,15 @@ jobs:
           VERSION="${{ github.ref_name }}"
           TARGET="${{ matrix.target }}"
           ARCHIVE="inkentry-${VERSION}-${TARGET}.tar.gz"
+          # Flat archive; llama legs add the engine's shared libs and modules.
+          extra=""
+          if [ -n "${{ matrix.llama }}" ]; then
+            extra="$(cd "target/${TARGET}/release" && ls lib*.so*)"
+          fi
+          # shellcheck disable=SC2086  # word-splitting $extra is the point
           tar -czf "${ARCHIVE}" \
             -C "target/${TARGET}/release" \
-            inkentry inkentry-server
+            inkentry inkentry-server ${extra}
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - name: Package zip (Windows)
@@ -161,7 +256,11 @@ jobs:
             "target\${TARGET}\release\inkentry.exe",
             "target\${TARGET}\release\inkentry-server.exe"
           )
-          Compress-Archive -Path $binaries -DestinationPath $ARCHIVE
+          # llama leg: the engine's core DLLs + dlopen'd ggml backend modules.
+          $libs = Get-ChildItem "target\${TARGET}\release" |
+            Where-Object { $_.Name -match '^(ggml|llama).*\.dll$' } |
+            ForEach-Object { $_.FullName }
+          Compress-Archive -Path ($binaries + $libs) -DestinationPath $ARCHIVE
           "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload artifact
@@ -211,10 +310,16 @@ jobs:
           mkdir -p BUILD/DEBIAN
           mkdir -p BUILD/usr/bin
           mkdir -p BUILD/usr/lib/systemd/user
+          mkdir -p BUILD/usr/lib/inkentry
 
           # Binaries
           install -m 755 linux-amd64/inkentry        BUILD/usr/bin/inkentry
           install -m 755 linux-amd64/inkentry-server BUILD/usr/bin/inkentry-server
+
+          # llama engine: core shared libs (found via the binary's
+          # $ORIGIN/../lib/inkentry rpath) and dlopen'd ggml backend modules
+          # (found by the server probing the same directory).
+          install -m 644 linux-amd64/lib*.so* BUILD/usr/lib/inkentry/
 
           # systemd user unit
           install -m 644 packaging/inkentry-server.service \
@@ -236,7 +341,17 @@ jobs:
             mkdir -p /tmp/sd/debian
             printf "Source: inkentry\nMaintainer: inkentries <hello@inkentry.com>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
             cd /tmp/sd
-            dpkg-shlibdeps -O /w/BUILD/usr/bin/inkentry /w/BUILD/usr/bin/inkentry-server
+            # -l resolves the private libggml/libllama libs the server links;
+            # -e on the core libs folds their own needs (libstdc++6, libgcc)
+            # into Depends. The ggml backend MODULES are deliberately absent:
+            # they are dlopen-optional, and listing ggml-vulkan would turn
+            # libvulkan1 into a hard dependency the CPU fallback does not have.
+            dpkg-shlibdeps -O -l/w/BUILD/usr/lib/inkentry \
+              -e/w/BUILD/usr/lib/inkentry/libggml-base.so.0 \
+              -e/w/BUILD/usr/lib/inkentry/libggml.so.0 \
+              -e/w/BUILD/usr/lib/inkentry/libllama.so.0 \
+              -e/w/BUILD/usr/lib/inkentry/libllama-common.so.0 \
+              /w/BUILD/usr/bin/inkentry /w/BUILD/usr/bin/inkentry-server
           ')"
           echo "Derived ${DEB_DEPENDS}"
 

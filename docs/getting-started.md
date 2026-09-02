@@ -58,8 +58,10 @@ inkentry --version
 Download the `.zip` for your platform from the
 [releases page](https://github.com/inkentries/inkentry/releases). The Windows
 archive is named `inkentry-<version>-x86_64-pc-windows-msvc.zip`. Extract it and
-place `inkentry.exe` and `inkentry-server.exe` anywhere on your `PATH`
-(e.g. `C:\Users\<you>\bin\`).
+place the **entire archive contents** — `inkentry.exe`, `inkentry-server.exe`,
+and the `ggml*.dll`/`llama*.dll` engine files — together in one directory on
+your `PATH` (e.g. `C:\Users\<you>\bin\`). The DLLs are the GPU embedding
+engine; the server will not start without them.
 
 > **winget:** deferred, available on request. Track the
 > [releases page](https://github.com/inkentries/inkentry/releases) or the repo
@@ -131,9 +133,9 @@ binaries on your `$PATH`. Supported targets:
 | Platform | Archive name | Notes |
 |----------|-------------|-------|
 | macOS (Apple Silicon) | `inkentry-<version>-aarch64-apple-darwin.tar.gz` | |
-| Linux x86_64 | `inkentry-<version>-x86_64-unknown-linux-gnu.tar.gz` | Requires glibc 2.31 (Debian 11 Bullseye or newer / Ubuntu 20.04 or newer); on minimal images, install `libdbus-1-3` |
+| Linux x86_64 | `inkentry-<version>-x86_64-unknown-linux-gnu.tar.gz` | Requires glibc 2.31 (Debian 11 Bullseye or newer / Ubuntu 20.04 or newer); on minimal images, install `libdbus-1-3`. Also contains `lib*.so*` files (the GPU embedding engine); install them alongside the binaries |
 | Linux ARM64 | `inkentry-<version>-aarch64-unknown-linux-gnu.tar.gz` | Requires glibc 2.31 (Debian 11 Bullseye or newer / Ubuntu 20.04 or newer); on minimal images, install `libdbus-1-3` |
-| Windows x86_64 | `inkentry-<version>-x86_64-pc-windows-msvc.zip` | |
+| Windows x86_64 | `inkentry-<version>-x86_64-pc-windows-msvc.zip` | Also contains `ggml*.dll`/`llama*.dll` (the GPU embedding engine); keep them next to the `.exe`s |
 
 > **Intel Macs (`x86_64-apple-darwin`):** prebuilt binaries are not published for
 > this target — Apple deprecated the architecture and Apple Silicon replaced it on

@@ -9,6 +9,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **GPU-accelerated embedding on Windows and Linux (x64).** The server now
+  bundles a second embedding engine (llama.cpp, Vulkan) that runs the same
+  model on NVIDIA, AMD, and Intel GPUs; machines without a usable GPU driver
+  fall back to CPU automatically, and macOS stays on Metal. Same vectors,
+  same indexes — nothing re-embeds. Set `INKENTRY_EMBED_DEVICE=cpu` to opt
+  out. The Windows/Linux-x64 archives now contain engine library files next
+  to the binaries; keep the extracted files together when installing manually.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added

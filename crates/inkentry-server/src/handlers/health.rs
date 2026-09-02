@@ -25,9 +25,9 @@ pub struct EmbedderStatus {
     /// field). Both engines produce the same vector space; this exists so a
     /// field report can name the engine without reading server logs.
     pub engine: Option<&'static str>,
-    /// Device the engine was configured for at load: `"cpu"`, `"metal"`, or
-    /// `"vulkan"`. `null` until the embedder is `ready` (and on older
-    /// servers pre-dating the field).
+    /// Device the engine resolved at load: `"cpu"`, `"metal"`, `"vulkan"`,
+    /// or `"gpu"` (another GPU-class backend). `null` until the embedder is
+    /// `ready` (and on older servers pre-dating the field).
     pub device: Option<&'static str>,
 }
 

@@ -224,8 +224,8 @@ pub struct LoadedEmbedder {
     pub backend: Arc<dyn inkentry_core::embeddings::EmbeddingBackend>,
     /// `"candle"` or `"llama"`.
     pub engine: &'static str,
-    /// `"cpu"`, `"metal"`, or `"vulkan"` — the device the engine was
-    /// configured for at load.
+    /// `"cpu"`, `"metal"`, `"vulkan"`, or `"gpu"` — the device the engine
+    /// resolved at load.
     pub device: &'static str,
 }
 

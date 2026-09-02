@@ -45,7 +45,11 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 TARGET="x86_64-unknown-linux-gnu"
-FEATURES="rich-formats"
+FEATURES="rich-formats,llama-vulkan"
+# Pinned Vulkan SDK (build-time only: glslc + headers/loader for the
+# llama-vulkan feature). Mirrors the release.yml pin; bump both together.
+VULKAN_SDK_VERSION="1.4.357.1"
+VULKAN_SDK_SHA256="4b41e3b30e8aedaa5dac7c136561ab463eb316a25a54e2c6245f2c299ea1fb85"
 BUILD_IMAGE="debian:11"
 SMOKE_IMAGES="${SMOKE_IMAGES:-debian:11 ubuntu:20.04 ubuntu:24.04}"
 # Every container below must run as amd64, matching the amd64 target/.deb --
@@ -184,20 +188,40 @@ build_in_floor_container() {
       set -euo pipefail
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends \
-        git curl ca-certificates build-essential pkg-config libdbus-1-dev binutils
+        git curl ca-certificates build-essential pkg-config libdbus-1-dev binutils \
+        cmake xz-utils
+      if [ ! -f /opt/vulkansdk/'"${VULKAN_SDK_VERSION}"'/x86_64/bin/glslc ]; then
+        curl -fsSL -o /tmp/vulkansdk.tar.xz \
+          "https://sdk.lunarg.com/sdk/download/'"${VULKAN_SDK_VERSION}"'/linux/vulkansdk-linux-x86_64-'"${VULKAN_SDK_VERSION}"'.tar.xz"
+        echo "'"${VULKAN_SDK_SHA256}"'  /tmp/vulkansdk.tar.xz" | sha256sum -c -
+        mkdir -p /opt/vulkansdk
+        tar -xf /tmp/vulkansdk.tar.xz -C /opt/vulkansdk
+        rm /tmp/vulkansdk.tar.xz
+      fi
+      export VULKAN_SDK=/opt/vulkansdk/'"${VULKAN_SDK_VERSION}"'/x86_64
+      export PATH="$VULKAN_SDK/bin:$PATH"
       if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
         curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
           | sh -s -- -y --profile minimal --default-toolchain stable
       fi
       export PATH="$HOME/.cargo/bin:$PATH"
+      # Single-quoted: $ORIGIN must reach the linker literally (release.yml
+      # sets the same rpath so the shipped binary finds its llama libs beside
+      # itself, or in ../lib/inkentry for the .deb split layout).
+      export RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN:\$ORIGIN/../lib/inkentry"
       cargo build --release --target '"${TARGET}"' --features '"${FEATURES}"'
       strip "target/'"${TARGET}"'/release/inkentry"
       strip "target/'"${TARGET}"'/release/inkentry-server"
+      scripts/collect-ggml-backends.sh \
+        "target/'"${TARGET}"'/release" "target/'"${TARGET}"'/release"
+      strip --strip-unneeded target/'"${TARGET}"'/release/lib*.so*
     ' || die "container build failed (see docker output above)"
 
   for bin in inkentry inkentry-server; do
     [ -x "target/${TARGET}/release/${bin}" ] || die "expected binary target/${TARGET}/release/${bin} not found after build"
   done
+  ls "target/${TARGET}/release"/lib*.so* >/dev/null 2>&1 \
+    || die "expected llama runtime libraries next to the binaries after build"
 }
 
 # --- stage 2: glibc ceiling check ---------------------------------------
@@ -213,7 +237,8 @@ enforce_glibc_ceiling() {
       set -euo pipefail
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends binutils >/dev/null
-      for bin in inkentry inkentry-server; do
+      shipped="inkentry inkentry-server $(cd "target/'"${TARGET}"'/release" && ls lib*.so*)"
+      for bin in $shipped; do
         path="target/'"${TARGET}"'/release/${bin}"
         raw="$(objdump -T "$path")"
         ceiling="$(printf "%s\n" "$raw" | grep -o "GLIBC_[0-9.]*" | sort -Vu | tail -1 || true)"
@@ -243,9 +268,11 @@ enforce_glibc_ceiling() {
 assemble_deb() {
   log_stage "assemble .deb layout + derive Depends (${BUILD_IMAGE})"
 
-  mkdir -p "${DEB_LAYOUT}/DEBIAN" "${DEB_LAYOUT}/usr/bin" "${DEB_LAYOUT}/usr/lib/systemd/user"
+  mkdir -p "${DEB_LAYOUT}/DEBIAN" "${DEB_LAYOUT}/usr/bin" "${DEB_LAYOUT}/usr/lib/systemd/user" \
+    "${DEB_LAYOUT}/usr/lib/inkentry"
   install -m 755 "target/${TARGET}/release/inkentry" "${DEB_LAYOUT}/usr/bin/inkentry"
   install -m 755 "target/${TARGET}/release/inkentry-server" "${DEB_LAYOUT}/usr/bin/inkentry-server"
+  install -m 644 "target/${TARGET}/release/"lib*.so* "${DEB_LAYOUT}/usr/lib/inkentry/"
   install -m 644 packaging/inkentry-server.service "${DEB_LAYOUT}/usr/lib/systemd/user/inkentry-server.service"
 
   # Captured via a file rather than command substitution: `$(...)` runs the
@@ -261,7 +288,16 @@ assemble_deb() {
       mkdir -p /tmp/sd/debian
       printf "Source: inkentry\nMaintainer: inkentries <hello@inkentry.com>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
       cd /tmp/sd
-      dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
+      # -l resolves the private libggml/libllama libs; -e folds the core
+      # libs own needs (libstdc++6, libgcc) into Depends. The ggml backend
+      # MODULES stay out: dlopen-optional, and listing ggml-vulkan would
+      # make libvulkan1 a hard dependency the CPU fallback does not have.
+      dpkg-shlibdeps -O -l"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libggml-base.so.0" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libggml.so.0" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libllama.so.0" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libllama-common.so.0" \
+        "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
     ' >"${depends_out}" || die "dpkg-shlibdeps failed inside ${BUILD_IMAGE}"
   deb_depends="$(cat "${depends_out}")"
   [ -n "${deb_depends}" ] || die "dpkg-shlibdeps produced no Depends line"
