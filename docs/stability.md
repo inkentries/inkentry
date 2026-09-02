@@ -72,6 +72,11 @@ because scripts branch on them. They are **stable**:
 A script must distinguish `1` from `2`. Treating any non-zero exit as fatal is
 wrong: `1` means the query was valid and matched nothing.
 
+A filter naming something the index does not hold is a hard error rather than an
+empty set. `plumbing graph-edges --file <path>` exits `2`, naming the path on
+stderr, when no indexed file has that path, so a mistyped path never reads as a
+file with no edges; its exit `1` means the file is indexed and has no edges.
+
 Three commands cannot return `1`, by construction, and this is part of the
 contract rather than an oversight:
 
