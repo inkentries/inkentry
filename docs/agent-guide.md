@@ -79,12 +79,13 @@ inkentry search "auth flow" --format json \
   `{token_budget, tokens_used, tokens_remaining, results}`. `jsonl` is
   unaffected. Iterating the top level of a budgeted `json` run reads zero
   results.
-- Stale-index, coverage and ranking-availability notices go to stderr, never
-  stdout, so they never reach a parser reading stdout. `-q` / `--quiet` silences
-  all of them when even a clean stderr matters, which is worth reaching for
-  under Windows PowerShell 5.1: it renders any native-command stderr as a red
-  error block, so an informational notice there reads as a crash. Results,
-  errors and exit codes are the same either way.
+- Stale-index, server-discovery, coverage and ranking-availability notices go to
+  stderr, never stdout, so they never reach a parser reading stdout. `-q` /
+  `--quiet` silences them when even a clean stderr matters, which is worth
+  reaching for under Windows PowerShell 5.1: it renders any native-command
+  stderr as a red error block, so an informational notice there reads as a
+  crash. Results and exit codes are the same either way, and `-q` never hides an
+  error or the warning about a server started by another user.
 
 Field by field, including every guaranteed and conditional field of both
 payloads, see

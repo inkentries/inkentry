@@ -2365,6 +2365,82 @@ fn test_search_quiet_suppresses_the_stderr_notices_and_leaves_results_intact() {
     );
 }
 
+// The sink swallows notices, not failures: an error still has to reach the
+// caller, or -q would leave a non-zero exit with nothing explaining it.
+#[test]
+fn test_search_quiet_still_reports_a_genuine_error() {
+    let home = tempfile::TempDir::new().unwrap();
+    let empty = home.path().join("not-a-project");
+    fs::create_dir_all(&empty).unwrap();
+
+    let out = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&empty)
+        .args(["search", "compute", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "an uninitialised directory must fail"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).trim().is_empty(),
+        "-q must not silence the reason for a non-zero exit"
+    );
+}
+
+// The recorded-server warning explains why semantic ranking is unavailable, and
+// it fires in the ordinary "server was stopped or went stale" state, which is
+// exactly when the ranking notice fires too. A caller who reaches for --quiet
+// because of that red block must not still get this one.
+#[test]
+fn test_search_quiet_suppresses_the_recorded_server_warning() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    // Claim a free port and drop it, so the recording names one nothing answers.
+    let dead_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let state_dir = home.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(state_dir.join("server.port"), dead_port.to_string()).unwrap();
+
+    let loud = inkentry_bin_in(home.path())
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(loud.status.success());
+    let loud_stderr = String::from_utf8_lossy(&loud.stderr);
+    assert!(
+        loud_stderr.contains("did not answer"),
+        "a recorded server that is gone must still be announced by default: {loud_stderr}"
+    );
+
+    let quiet = inkentry_bin_in(home.path())
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        quiet_stderr.trim().is_empty(),
+        "--quiet must silence the recorded-server warning too, got: {quiet_stderr}"
+    );
+    let _: serde_json::Value =
+        serde_json::from_slice(&quiet.stdout).expect("stdout must stay machine-clean JSON");
+}
+
 // A stale index is the ordinary state right after editing, which is exactly
 // when someone searches, so the stale warning is the notice a caller reaching
 // for --quiet is most likely to hit.

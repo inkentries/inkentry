@@ -11,10 +11,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`inkentry search --quiet`** suppresses every informational notice on stderr
-  (stale index, ranking availability, embedding coverage). Results, errors and
-  exit codes are unchanged. Reach for it in Windows PowerShell 5.1, which renders
-  anything a native command writes to stderr as a red error block.
+- **`inkentry search --quiet`** suppresses the informational notices on stderr
+  (stale index, server discovery, ranking availability, embedding coverage).
+  Results and exit codes are unchanged, and it never hides an error or the
+  warning about a server started by another user. Reach for it in Windows
+  PowerShell 5.1, which renders anything a native command writes to stderr as a
+  red error block.
 
 ### Changed
 

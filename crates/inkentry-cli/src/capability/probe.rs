@@ -400,7 +400,7 @@ async fn probe_loopback() -> Tier {
             },
         };
 
-        eprintln!(
+        crate::notice::enotice!(
             "warning: {refused}. Embeddings are offline for this run: run \
              `inkentry server stop`, then `inkentry server start`."
         );
@@ -940,6 +940,9 @@ async fn parse_health(url: &str, resp: reqwest::Response) -> HealthFacts {
                          but you are UID {my_uid}; on a multi-user host this may \
                          expose another user's memory: consider running your own server"
                     );
+                    // Never routed through the notice sink: this one says
+                    // another user's memory may be exposed, which no
+                    // output-tidiness flag should be able to hide.
                     eprintln!("warning: {warning}");
                     tracing::warn!("{warning}");
                 }

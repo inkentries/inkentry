@@ -324,26 +324,36 @@ inkentry search <query> [options]
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
 | `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
-| `-q, --quiet` | false | Suppress every informational notice on stderr (stale index, ranking availability, embedding coverage) |
+| `-q, --quiet` | false | Suppress the informational notices on stderr (stale index, server discovery, ranking availability, embedding coverage) |
 
 ### Where the notices go
 
-The stale-index warning and the coverage and ranking-availability notices are
-written to **stderr**, never stdout, so `--format json` and `--format jsonl`
-output stays machine-clean and a pipeline consuming stdout never has to filter
-them. They are informational: the exit status is zero and the results are
-complete for the ranking that was available.
+The notices this command writes go to **stderr**, never stdout, so `--format
+json` and `--format jsonl` output stays machine-clean and a pipeline consuming
+stdout never has to filter them. They are informational: the exit status is zero
+and the results are complete for the ranking that was available. There are four
+families, and `-q` covers all of them:
+
+- the stale-index warning;
+- server discovery, when a local server that was started no longer answers;
+- semantic-ranking availability, when the run fell back to full-text;
+- embedding coverage, including the warmup caveat.
+
+Two things `-q` does not touch. An error is not a notice, so anything that ends
+the run non-zero still prints. Neither is the multi-user warning about a server
+started by a different user, which says another user's memory may be reachable.
 
 Windows PowerShell 5.1 renders anything a native command writes to stderr as a
 red `NativeCommandError` block, so these notices can look like a crash there
-even though nothing failed. `-q` suppresses all of them on its own; PowerShell 7
-does not render them that way.
+even though nothing failed. `-q` suppresses them on its own; PowerShell 7 does
+not render them that way.
 
 `-q` and `--no-stale-check` are not the same thing. `--no-stale-check` skips the
-staleness probe and its warning only, and leaves the coverage and ranking
-notices printing. `-q` covers all of them, the staleness probe included. Either
-way the coverage counts are still read, so a run that finds nothing still says
-whether the index was only partly embedded.
+staleness probe altogether, so it also saves that work, and leaves every other
+notice printing. `-q` prints nothing informational but still does the work
+behind it: the probe still runs, and the coverage counts are still read, so a
+run that finds nothing still says whether the index was only partly embedded.
+Pass both to skip the probe and stay quiet.
 
 `--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
 LinearRAG: a two-stage entity-activation + personalised PageRank pipeline.

@@ -3,6 +3,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod capability;
 mod cli;
+mod notice;
 mod server_client;
 
 use cli::cmd::plumbing::PlumbingCommand;
@@ -25,6 +26,9 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse_or_exit();
     cli::cmd::set_color_choice(cli.color);
+    // Recorded before any command runs, because notices are printed from the
+    // capability probes too, which never see the command's own flags.
+    notice::set_quiet(matches!(&cli.command, Command::Search(a) if a.quiet));
 
     // Logging: RUST_LOG=debug inkentry ...
     //

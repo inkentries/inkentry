@@ -51,7 +51,7 @@ pub(crate) fn announce_index_rebuild(db: &Database) {
     let Some(found) = db.rebuilt_from() else {
         return;
     };
-    eprintln!(
+    crate::notice::enotice!(
         "notice: this index was written by {} and cannot be read by this build, so it was \
          rebuilt empty (recorded usage history was kept). Run `inkentry index .` to \
          repopulate it.",
