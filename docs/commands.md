@@ -339,9 +339,13 @@ families, and `-q` covers all of them:
 - semantic-ranking availability, when the run fell back to full-text;
 - embedding coverage, including the warmup caveat.
 
-Two things `-q` does not touch. An error is not a notice, so anything that ends
+Three things `-q` does not touch. An error is not a notice, so anything that ends
 the run non-zero still prints. Neither is the multi-user warning about a server
 started by a different user, which says another user's memory may be reachable.
+Nor are the configuration warnings about an unread key or a stored credential:
+those are raised while the configuration loads, before any command sees its own
+flags, and they name a misconfiguration that outlives the run rather than a
+condition of this search.
 
 Windows PowerShell 5.1 renders anything a native command writes to stderr as a
 red `NativeCommandError` block, so these notices can look like a crash there
