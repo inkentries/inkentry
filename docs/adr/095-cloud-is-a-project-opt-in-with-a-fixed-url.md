@@ -59,10 +59,8 @@ The stored cloud credential records the origin it was authenticated against.
 `inkentry login` and `inkentry org switch` set it to the normalized origin of
 the cloud URL they authenticated to; a token rotation carries it forward, since
 a refresh does not change the host. `bearer_for` releases the access token only
-when the request origin equals that recorded origin. A credential written before
-this was recorded has no origin and resolves to `DEFAULT_CLOUD_URL`, so a
-production login is unaffected and a login against another cloud host re-runs
-once.
+when the request origin equals that recorded origin; a credential that carries
+no origin matches nothing and resolves to no bearer.
 
 A token issued for production is therefore never sent to a host that
 `INKENTRY_CLOUD_URL` points at, and a developer who logs in against a
