@@ -14,6 +14,21 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
   a sizing section with the RAM and disk figures for a team server.
 
+### Fixed
+
+- **The model cache no longer holds the embedding model twice.** A fresh
+  download now occupies about 350 MB instead of about 690 MB. If your cache was
+  filled by an earlier release, delete the model cache directory and let the
+  next server start refetch to reclaim the duplicate.
+- **Interrupted model downloads are cleaned up.** A partial download is resumed
+  where it left off, and one that nothing can resume is removed instead of
+  sitting in the cache forever. The server also stops calling a start after an
+  interrupted download a first run.
+- **The documented model cache path is now correct on every platform.** It is
+  the platform's local-data directory, which is not the same place as config
+  and state. See
+  [Where the model is cached](docs/getting-started.md#where-the-model-is-cached).
+
 ## [1.0.1] — 2026-08-28
 
 ### Added

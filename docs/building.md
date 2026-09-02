@@ -22,8 +22,9 @@ Rust 1.80 or later is required (inkentry uses the 2024 edition).
 From v0.9.0, `inkentry-server` bundles a native embedder
 (codefuse-ai/F2LLM-v2-330M, 896-dim, via candle). No LM Studio, Ollama, or
 other external inference server is needed. The CLI auto-starts the server on
-first use; model weights are downloaded once and cached under
-`~/.local/share/inkentry/models/`.
+first use; model weights are downloaded once, into the platform's own
+local-data directory (see
+[Where the model is cached](getting-started.md#where-the-model-is-cached)).
 
 If you want GPU acceleration on macOS, build `inkentry-server` with the `metal`
 feature (see [Build feature flags](#build-feature-flags) below).
