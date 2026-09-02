@@ -2365,6 +2365,52 @@ fn test_search_quiet_suppresses_the_stderr_notices_and_leaves_results_intact() {
     );
 }
 
+// A stale index is the ordinary state right after editing, which is exactly
+// when someone searches, so the stale warning is the notice a caller reaching
+// for --quiet is most likely to hit.
+#[test]
+fn test_search_quiet_also_suppresses_the_stale_index_warning() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    // Edit a file after indexing so the staleness probe has something to find.
+    fs::write(
+        project_dir.join("lib.rs"),
+        "pub fn compute(x: i32) -> i32 { x * 3 }\npub fn helper() -> i32 { 8 }\npub fn added() -> i32 { 9 }\n",
+    )
+    .unwrap();
+
+    let loud = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute"])
+        .output()
+        .unwrap();
+    assert!(loud.status.success());
+    let loud_stderr = String::from_utf8_lossy(&loud.stderr);
+    assert!(
+        loud_stderr.contains("index may be stale"),
+        "the edit should have made the index stale: {loud_stderr}"
+    );
+
+    let quiet = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        quiet_stderr.trim().is_empty(),
+        "--quiet must silence the stale-index warning too, got: {quiet_stderr}"
+    );
+}
+
 // A log line the CLI writes to a redirected stdout carries no colour escapes.
 // The post-commit hook captures this stream into a file, so escapes written
 // here outlive the run in a file nothing strips them from.

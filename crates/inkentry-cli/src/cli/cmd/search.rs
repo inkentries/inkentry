@@ -62,8 +62,9 @@ pub struct SearchArgs {
     #[arg(long)]
     pub expand_graph: bool,
 
-    /// Suppress the informational notices on stderr (semantic-ranking
-    /// availability and embedding coverage). Results and errors are unaffected.
+    /// Suppress every informational notice on stderr (stale index,
+    /// semantic-ranking availability, embedding coverage). Results, errors and
+    /// exit codes are unaffected.
     #[arg(short = 'q', long)]
     pub quiet: bool,
 }
@@ -129,7 +130,9 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
         dep_projects
     };
 
-    if !args.no_stale_check {
+    // `--no-stale-check` skips the probe; `--quiet` keeps it but drops the
+    // warning, so the flag covers every informational line this command writes.
+    if !args.no_stale_check && !args.quiet {
         maybe_warn_stale(&db_path);
     }
 

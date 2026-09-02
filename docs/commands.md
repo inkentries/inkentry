@@ -324,20 +324,24 @@ inkentry search <query> [options]
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
 | `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
-| `-q, --quiet` | false | Suppress the informational notices on stderr (ranking availability, embedding coverage) |
+| `-q, --quiet` | false | Suppress every informational notice on stderr (stale index, ranking availability, embedding coverage) |
 
 ### Where the notices go
 
-The coverage and ranking-availability notices are written to **stderr**, never
-stdout, so `--format json` and `--format jsonl` output stays machine-clean and a
-pipeline consuming stdout never has to filter them. They are informational: the
-exit status is zero and the results are complete for the ranking that was
-available.
+The stale-index warning and the coverage and ranking-availability notices are
+written to **stderr**, never stdout, so `--format json` and `--format jsonl`
+output stays machine-clean and a pipeline consuming stdout never has to filter
+them. They are informational: the exit status is zero and the results are
+complete for the ranking that was available.
 
 Windows PowerShell 5.1 renders anything a native command writes to stderr as a
 red `NativeCommandError` block, so these notices can look like a crash there
-even though nothing failed. `-q` suppresses them; PowerShell 7 does not render
-them that way.
+even though nothing failed. `-q` suppresses all of them on its own; PowerShell 7
+does not render them that way.
+
+`-q` and `--no-stale-check` are not the same thing. `--no-stale-check` skips the
+staleness probe altogether, so it also saves the work; `-q` still probes and
+still lets the result reach the no-results message, it just does not print.
 
 `--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
 LinearRAG: a two-stage entity-activation + personalised PageRank pipeline.
