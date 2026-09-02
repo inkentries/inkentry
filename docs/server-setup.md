@@ -830,8 +830,10 @@ Produce that directory on a machine that does have network access, then
 carry it to the air-gapped host:
 
 1. On the connected machine, run `inkentry-server` once with no `--model-dir`.
-   This populates the normal online cache at `~/.local/share/inkentry/models/`
-   (Linux: `$XDG_DATA_HOME/inkentry/models/`), which ends up holding:
+   This populates the normal online cache, which lives in the platform's
+   local-data directory and so differs per OS (see
+   [Where the model is cached](getting-started.md#where-the-model-is-cached)).
+   It ends up holding:
    - `f2llm-v2-330m-q8_0.gguf`
    - `config.json`
    - a nested `tokenizer.json`, under
@@ -842,8 +844,10 @@ carry it to the air-gapped host:
    the air-gapped host.
    ```bash
    mkdir -p offline-model
-   cp ~/.local/share/inkentry/models/f2llm-v2-330m-q8_0.gguf offline-model/
-   cp ~/.local/share/inkentry/models/models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF/snapshots/*/tokenizer.json \
+   # Linux path shown; on macOS use ~/Library/Application\ Support/inkentry/models
+   MODELS=~/.local/share/inkentry/models
+   cp "$MODELS/f2llm-v2-330m-q8_0.gguf" offline-model/
+   cp "$MODELS"/models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF/snapshots/*/tokenizer.json \
       offline-model/
    ```
 3. Transfer `offline-model/` to the air-gapped host by whatever out-of-band

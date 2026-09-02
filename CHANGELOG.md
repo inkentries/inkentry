@@ -22,8 +22,8 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   next server start refetch to reclaim the duplicate.
 - **Interrupted model downloads are cleaned up.** A partial download is resumed
   where it left off, and one that nothing can resume is removed instead of
-  sitting in the cache forever. The server also stops calling a start after an
-  interrupted download a first run.
+  sitting in the cache forever. A start that follows an interrupted download is
+  no longer announced as a first run.
 - **The documented model cache path is now correct on every platform.** It is
   the platform's local-data directory, which is not the same place as config
   and state. See
