@@ -254,10 +254,9 @@ separate opt-in step, covered in section 5.
 
 No config file, no Docker, no external embedder. The server bundles a native
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
-via candle); a pre-quantized Q8_0 GGUF (~339 MB) is downloaded once on first use
-and cached under `~/.local/share/inkentry/models/`. No LM Studio or other
-external inference server is needed. The next section covers commands
-that work even before you index.
+via candle); a pre-quantized Q8_0 GGUF (~339 MB) is downloaded once on first
+use. No LM Studio or other external inference server is needed. The next
+section covers commands that work even before you index.
 
 You can manage the background server explicitly if you want:
 
@@ -271,6 +270,32 @@ inkentry server stop      # stop the daemon
 In non-interactive contexts (CI, agent harnesses) `inkentry init` does **not**
 auto-spawn the server — run `inkentry server start` first if you want semantic
 search there, or set `INKENTRY_NO_SERVER=1` to stay fully offline.
+
+### Where the model is cached
+
+The model cache is the platform's own local-data directory:
+
+| Platform | Model cache |
+|---|---|
+| Linux | `~/.local/share/inkentry/models/` (or `$XDG_DATA_HOME/inkentry/models/`) |
+| macOS | `~/Library/Application Support/inkentry/models/` |
+| Windows | `%LOCALAPPDATA%\inkentry\models\` |
+
+That is deliberately not where config and state live: those stay at
+`~/.config/inkentry/` and `~/.local/state/inkentry/` on every platform,
+Windows included, so a single path is correct in the documentation, in error
+messages, and in whatever a colleague pastes into chat. The model cache holds
+one large machine-local artifact instead, nothing anyone edits or quotes, so
+it goes where each OS already keeps that kind of data and where existing
+backup and sync exclusions expect to find it.
+
+Budget about **350 MB**: the ~339 MB GGUF, an ~8 MB tokenizer, and a 1 KB
+config file. The GGUF is stored once. It is linked into place rather than
+copied, so a cache filled by a fresh download does not hold it twice; on a
+filesystem that cannot hard link, it is copied instead and the cache holds
+both. A cache first filled by an earlier release keeps a second copy of the
+GGUF, about 339 MB, until you delete the cache directory and let the next
+server start download the model again.
 
 ## 3. Start using it inside your project
 

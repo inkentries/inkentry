@@ -3624,6 +3624,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustls",
+ "same-file",
  "serde",
  "serde_json",
  "serial_test",
