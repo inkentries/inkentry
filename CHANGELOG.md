@@ -22,6 +22,13 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   new engine runs on CPU (measured 1.2–1.9x the previous CPU speed), with
   the previous engine still in the binary as a fallback.
 
+### Changed
+
+- **The supported Linux floor is now Ubuntu 22.04 / Debian 12 (glibc 2.35).**
+  Debian 11 reached end of life on 2026-08-31 and release binaries no longer
+  target it; users on Debian 11 or Ubuntu 20.04 should upgrade the OS or
+  build from source.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added
