@@ -953,7 +953,12 @@ This changes what is stored locally, not what is sent. `kind`, `title`, and
 `body` are serialised on every push and always were; the vector fields are
 additive, so the same entry text travels either way. What a local vector adds is
 that a destination advertising `accepts_pushed_vectors` can store the entry
-as-is instead of re-embedding it.
+as-is instead of re-embedding it. A destination checks such a vector against
+its own embedder before storing it: model tag, `fp32` precision, dimension,
+finite components, and an L2 magnitude inside `[0.5, 1.5]`. A vector failing
+any of these is refused with `400`, not rescaled. Vectors from the built-in
+embedder satisfy all five, so this is invisible to the CLI and matters only to
+a client computing vectors some other way.
 
 Scope and limits:
 
