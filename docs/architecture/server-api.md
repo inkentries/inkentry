@@ -133,8 +133,13 @@ a client can distinguish "still warming up" from "not configured" even before
 `capabilities` reflects readiness. `accepts_pushed_vectors` says whether this
 server will store a vector the client computed itself instead of re-embedding
 the text; it is `true` only while the embedder is ready, since the pushed
-vector is checked against that embedder's model and dimension. A client
-reading `false`, or an older server omitting the field, pushes text only.
+vector is checked against that embedder's model and dimension. A pushed vector
+is also checked for `fp32` precision, finite components, and an L2 magnitude
+inside `[0.5, 1.5]`: the index ranks by Euclidean distance, so a vector that
+was never L2-normalised would be stored and then mis-ranked against everything
+else. Any of these refuses the write with `400` rather than rescaling the
+vector or re-embedding the text. A client reading `false`, or an older server
+omitting the field, pushes text only.
 `limits` (verified against `handlers.rs`)
 advertises the server's own `/index/embed` sizing so a client can batch
 correctly against the server it's actually talking to; a server predating this

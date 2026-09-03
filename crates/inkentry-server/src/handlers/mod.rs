@@ -72,8 +72,18 @@ fn validate_title_body(title: &str, body: &str) -> Result<(), AppError> {
 ///
 /// A client may push its own vector to skip server-side embedding, but only if
 /// it matches what this server would have produced: same model family, fp32,
-/// same dimension, no non-finite components. `None` (no vector supplied)
-/// always passes, since pushing one is optional and the server embeds instead.
+/// same dimension, no non-finite components, and an L2 magnitude inside
+/// `[0.5, 1.5]`. `None` (no vector supplied) always passes, since pushing one
+/// is optional and the server embeds instead.
+///
+/// The magnitude window exists because the vector index ranks by Euclidean
+/// distance, which agrees with cosine similarity only across vectors of equal
+/// length. A vector that was never L2-normalised therefore ranks against
+/// unrelated entries, and nothing downstream can distinguish it from a good
+/// one. The window is wide: it catches a vector that was never normalised, or
+/// a zero vector, rather than policing floating-point error around 1.0. A
+/// vector outside it is refused rather than rescaled, so the mismatch reaches
+/// the caller instead of being hidden.
 ///
 /// The model tag and precision are **required** whenever a vector is present.
 /// An untagged vector cannot be checked against what this server embeds with,
@@ -131,6 +141,12 @@ fn validate_pushed_vector(
         return Err(AppError::BadRequest(
             "pushed vector contains NaN or infinite values".into(),
         ));
+    }
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if !(0.5..=1.5).contains(&norm) {
+        return Err(AppError::BadRequest(format!(
+            "pushed vector L2 magnitude {norm:.4} outside expected [0.5, 1.5]"
+        )));
     }
     Ok(())
 }

@@ -1358,7 +1358,10 @@ mod tests {
             vector_model: None,
             vector_precision: None,
         }
-        .maybe_attach_vector(caps.accepts_pushed_vectors, Some(vec![0.25_f32; dim]));
+        .maybe_attach_vector(
+            caps.accepts_pushed_vectors,
+            Some(vec![1.0 / (dim as f32).sqrt(); dim]),
+        );
         assert!(
             item.vector.is_some(),
             "the advertised capability must actually open the push gate"

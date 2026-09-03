@@ -20,6 +20,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING: a pushed memory vector must be near unit length.** Both memory
+  write routes refuse a `vector` whose L2 norm is outside `[0.5, 1.5]` with
+  `400`, matching the hosted API. Clients that compute their own vectors must
+  L2-normalise before pushing, or omit `vector` and let the server embed. The
+  `inkentry` CLI is unaffected: its vectors come from the built-in embedder,
+  which already normalises.
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
   a sizing section with the RAM and disk figures for a team server.
 - **`inkentry plumbing graph-edges --file` now exits `2` for a path the index

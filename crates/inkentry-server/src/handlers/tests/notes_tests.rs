@@ -169,6 +169,71 @@ async fn add_note_mismatched_embedding_dim_returns_400() {
         http::StatusCode::BAD_REQUEST,
         "mismatched embedding dimension must be 400; body: {body}"
     );
+    // This vector also sits outside the magnitude window, so the message pins
+    // which rule answers first: a caller sending the wrong dimension is told
+    // about the dimension.
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("does not match server's configured dimension"),
+        "a wrong-dimension vector must be reported as a dimension mismatch; got: {message}"
+    );
+}
+
+// A pushed vector is stored verbatim and ranked by Euclidean distance, which
+// only tracks similarity across vectors of equal length. One that was never
+// L2-normalised is refused rather than rescaled, so the caller learns its
+// vectors are wrong instead of getting silently degraded retrieval.
+#[tokio::test]
+async fn add_note_rejects_a_pushed_vector_outside_the_magnitude_window() {
+    let (app, _dim) = make_app(0.92);
+    let (status, body) = post_note(app, "cap-test", "title", vec![3.0, 0.0, 0.0, 0.0]).await;
+    assert_eq!(
+        status,
+        http::StatusCode::BAD_REQUEST,
+        "a pushed vector of L2 norm 3 must be refused; body: {body}"
+    );
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("L2 magnitude"),
+        "the refusal must name the magnitude rule; got: {message}"
+    );
+}
+
+// A zero vector is the degenerate case the window's lower end exists for: it
+// carries no direction at all, yet sits closer to every query than most
+// genuine matches.
+#[tokio::test]
+async fn add_note_rejects_a_zero_pushed_vector() {
+    let (app, _dim) = make_app(0.92);
+    let (status, body) = post_note(app, "cap-test", "title", vec![0.0, 0.0, 0.0, 0.0]).await;
+    assert_eq!(
+        status,
+        http::StatusCode::BAD_REQUEST,
+        "a zero pushed vector must be refused; body: {body}"
+    );
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("L2 magnitude"),
+        "the refusal must name the magnitude rule; got: {message}"
+    );
+}
+
+// The refusal carries the same error envelope every other pushed-vector check
+// on this route returns, and names the offending norm to four decimals so the
+// caller can see how far off its vectors are.
+#[tokio::test]
+async fn add_note_magnitude_refusal_carries_the_standard_error_body() {
+    let (app, _dim) = make_app(0.92);
+    let (status, body) = post_note(app, "cap-test", "title", vec![3.0, 0.0, 0.0, 0.0]).await;
+    assert_eq!(status, http::StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(
+        body["error"]["code"], "bad_request",
+        "must use the shared bad-request envelope; body: {body}"
+    );
+    assert_eq!(
+        body["error"]["message"], "pushed vector L2 magnitude 3.0000 outside expected [0.5, 1.5]",
+        "the message names the norm to four decimals; body: {body}"
+    );
 }
 
 // `ServerDb::upsert_project`'s own per-project dimension check (distinct
