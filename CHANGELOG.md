@@ -31,18 +31,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **A `cloud_first` command against an unreachable team server now fails in
-  seconds instead of most of a minute.** The client now bounds how long it will
-  spend opening a connection, so a server that is stopped, firewalled or simply
-  not there is reported almost immediately instead of after the whole request
-  budget, which read as a hang. The error names the server and says that
-  `cloud_first` does not fall back to the local store, and once one attempt has
-  found the server absent the rest of the command stops re-attempting it. Reads
-  and writes still never fall back, and a server that is slow but reachable is
+  about two seconds instead of most of a minute.** The error names the server
+  and says that `cloud_first` does not fall back to the local store. Reads and
+  writes still never fall back, and a server that is slow but reachable is
   unaffected.
 - **A server with an untrusted certificate is no longer reported as
-  unreachable.** It is running, so the message now names the TLS failure, the
-  certificate cause and `server_ca`, instead of sending you to restart a server
-  that is already up.
+  unreachable.** It is running, so the message names the certificate cause and
+  points at `server_ca` instead of sending you to restart a server that is
+  already up.
 
 ## [1.0.1] — 2026-08-28
 
