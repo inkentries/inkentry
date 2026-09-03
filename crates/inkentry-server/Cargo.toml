@@ -56,7 +56,7 @@ utoipa = { version = "5", features = ["axum_extras"] }
 clap = { version = "4", features = ["derive", "env"] }
 regex = { version = "1", default-features = false, features = ["std"] }
 blake3 = "1"
-constant_time_eq = "0.5"
+constant_time_eq = "0.6"
 # Physical core count for the embed CPU-thread budget (main.rs). Not gated by
 # embed-native: the budget is resolved before the runtime starts regardless of
 # feature set. Pinned here since no other crate uses it directly.
