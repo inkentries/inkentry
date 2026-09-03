@@ -137,9 +137,9 @@ vector is checked against that embedder's model and dimension. A pushed vector
 is also checked for `fp32` precision, finite components, and an L2 magnitude
 inside `[0.5, 1.5]`: the index ranks by Euclidean distance, so a vector that
 was never L2-normalised would be stored and then mis-ranked against everything
-else. Any of these refuses the write with `400` rather than rescaling the
-vector or re-embedding the text. A client reading `false`, or an older server
-omitting the field, pushes text only.
+else. Failing any of these refuses the write with `400` rather than rescaling
+the vector or re-embedding the text. A client reading `false`, or an older
+server omitting the field, pushes text only.
 `limits` (verified against `handlers.rs`)
 advertises the server's own `/index/embed` sizing so a client can batch
 correctly against the server it's actually talking to; a server predating this
