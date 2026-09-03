@@ -41,6 +41,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   one that never started. The worker now records when it started, how far the
   embedding has got, and the reason if it stops early. A new run appends to the
   log instead of overwriting what the last one reported.
+- **A `cloud_first` command against an unreachable team server now fails in
+  about two seconds instead of most of a minute.** The error names the server
+  and says that `cloud_first` does not fall back to the local store. Reads and
+  writes still never fall back, and a server that is slow but reachable is
+  unaffected.
+- **A server with an untrusted certificate is no longer reported as
+  unreachable.** It is running, so the message names the certificate cause and
+  points at `server_ca` instead of sending you to restart a server that is
+  already up.
 
 ### Fixed
 

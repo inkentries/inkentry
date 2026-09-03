@@ -4,6 +4,8 @@ mod plumbing_helpers;
 
 #[path = "memory_sync_tests/absent_memory_store.rs"]
 mod absent_memory_store;
+#[path = "memory_sync_tests/cloud_first_fail_fast.rs"]
+mod cloud_first_fail_fast;
 #[path = "memory_sync_tests/memory_push_sync_partial_failure.rs"]
 mod memory_push_sync_partial_failure;
 #[path = "memory_sync_tests/memory_push_sync_total_failure.rs"]

@@ -3558,6 +3558,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "serial_test",

@@ -218,6 +218,7 @@ async fn open_remote_memory_backend_with_bearer(
         reqwest::Client::builder(),
         cfg.server_ca.as_deref().map(std::path::Path::new),
     )?
+    .connect_timeout(crate::config::REMOTE_CONNECT_TIMEOUT)
     .timeout(std::time::Duration::from_secs(30))
     .build()?;
 

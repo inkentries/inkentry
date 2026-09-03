@@ -444,3 +444,65 @@ fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_withou
         "the server_ca-specific hint must not appear when server_ca isn't set: {combined}"
     );
 }
+
+// ── cloud_first memory against an untrusted certificate ──────────────────────
+
+// A server whose certificate is not trusted is running: it accepted the
+// connection and completed enough of the handshake to present a certificate.
+// Reporting that as "unreachable" sends the operator to restart a server that
+// is already up, when the fix is a trust anchor. `reqwest` reports a TLS
+// handshake failure as a connect error, so telling the two apart takes more
+// than `is_connect()`, and this is the end-to-end proof that it does.
+#[test]
+fn cloud_first_write_to_an_untrusted_certificate_is_a_certificate_error_not_unreachable() {
+    // A properly issued leaf, signed by a CA this machine does not trust and
+    // with no `server_ca` configured: the ordinary internal-CA setup, rather
+    // than a malformed certificate.
+    let ca = new_ca();
+    let (leaf_pem, leaf_key_pem) = new_leaf(&ca.issuer);
+    let port = spawn_tls_server(leaf_pem, leaf_key_pem);
+    let (temp, project_dir, config_path) = setup_project();
+    let db_path = temp.path().join("index.db");
+    write_tls_config_no_ca(&config_path, &db_path, port, &project_dir);
+    let mut cfg = fs::read_to_string(&config_path).expect("read config");
+    cfg.push_str("mode = \"cloud_first\"\n");
+    fs::write(&config_path, cfg).expect("write cloud_first config");
+    // Memory routed to a server needs a project to key entries to, and a raw
+    // UUID skips slug resolution so the only thing left to fail is the
+    // handshake under test.
+    plumbing_helpers::write_project_server_config(
+        &project_dir,
+        &format!("https://127.0.0.1:{port}"),
+        "11111111-1111-1111-1111-111111111111",
+    );
+
+    let out = inkentry_bin()
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["memory", "--db"])
+        .arg(temp.path().join("memory.db"))
+        .args(["add", "--kind", "note", "--title", "t", "--body", "b"])
+        .output()
+        .expect("run memory add");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "the write must fail: {stderr}");
+    assert!(
+        stderr.contains("TLS handshake"),
+        "the error must name the handshake as what failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("unknown issuer"),
+        "the error must carry the certificate cause: {stderr}"
+    );
+    assert!(
+        stderr.contains("server_ca") || stderr.contains("INKENTRY_SERVER_CA"),
+        "the error must name the setting that fixes it: {stderr}"
+    );
+    // The whole point: a running server must never be described as absent.
+    assert!(
+        !stderr.contains("unreachable"),
+        "a server that answered must not be reported as unreachable: {stderr}"
+    );
+}
