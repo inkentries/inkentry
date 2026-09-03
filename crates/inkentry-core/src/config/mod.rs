@@ -47,8 +47,14 @@ pub const DEFAULT_SERVER_PORT: u16 = 4655;
 /// because a real transfer or a server-side embed legitimately runs for
 /// minutes once the connection is up. Without this bound an unreachable host
 /// instead burns the whole request budget, since a firewall that drops rather
-/// than refuses leaves the connect attempt with nothing to fail on. Matches the
-/// liveness probes, which settled on the same number for the same reason.
+/// than refuses leaves the connect attempt with nothing to fail on.
+///
+/// This is the bound for a request that carries real work. The liveness probes
+/// derive their own from it rather than reusing it directly, because each has
+/// to keep connecting distinguishable from waiting for a reply: the capability
+/// probe gives connecting half of its own short budget, and the dialect probe
+/// keeps a reply budget of twice this. A miss that cannot be told apart from a
+/// slow answer cannot safely be recorded as unreachable.
 ///
 /// Note this covers the TLS handshake as well as the TCP connect, so it is a
 /// budget for a round trip or two to the server rather than for a bare SYN. Two

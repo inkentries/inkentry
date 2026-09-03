@@ -1122,6 +1122,64 @@ mod tests {
         );
     }
 
+    // Accept TCP on loopback and then say nothing, holding the connection
+    // open. Without a connect bound this client waits out its whole 300s
+    // request budget: the TCP connect succeeds and the TLS handshake it is
+    // waiting for never arrives.
+    //
+    // The portable stand-in for the originating report, a loopback team server
+    // whose SYN a firewall dropped rather than refused. That cannot be
+    // simulated, but it costs a client the same thing, and the connect bound
+    // covers the handshake as well as the TCP connect.
+    //
+    // Pinned here rather than through the CLI because end to end this call site
+    // is masked: the capability probe's own bound fires first and memoises the
+    // origin, so the command stays fast even with this bound removed. That
+    // makes this the only level at which the exemption removed in review can be
+    // caught coming back.
+    fn spawn_stalling_loopback_listener() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stall listener");
+        let port = listener.local_addr().expect("local_addr").port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => held.push(stream),
+                    Err(_) => break,
+                }
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(reachability_memo)]
+    async fn the_inference_client_bounds_connecting_to_a_stalled_loopback_server() {
+        inkentry_core::reachability::clear_for_test();
+        let port = spawn_stalling_loopback_listener();
+        let cfg = crate::config::Config {
+            server_url: Some(format!("https://127.0.0.1:{port}")),
+            project_id: Some("proj".to_string()),
+            mode: Some(inkentry_core::config::SyncMode::CloudFirst),
+            ..Default::default()
+        };
+        let store = inkentry_core::config::secret_store::MemoryStore::default();
+        let client = ServerInferenceClient::from_config_with_store(&cfg, &store)
+            .expect("cloud_first builds an inference client aimed at server_url");
+
+        let started = std::time::Instant::now();
+        let err = client
+            .embed_text("anything")
+            .await
+            .expect_err("a stalled server must fail the embed");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "connecting must be bounded on loopback, took {elapsed:?}: {err:#}"
+        );
+    }
+
     /// End-to-end regression test for the founder's own manual repro
     /// (2026-07-23): `local_first`, `server_url` set to a
     /// cloud host, no explicit `mode` → embedding must reach the LOCAL

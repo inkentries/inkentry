@@ -818,6 +818,63 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(reachability_memo)]
+    async fn wait_for_embedder_recovers_after_a_real_refusal_was_memoised() {
+        // The readiness poll exists to watch a server that is not up yet come
+        // up, and it can run for as long as a model download takes. Skipping a
+        // redundant connect attempt must never turn into refusing to look
+        // again: one refused poll while the server was still binding its port
+        // would otherwise stand in for every later one, the consecutive-offline
+        // counter would run out, and durable queued embed work would be
+        // abandoned for a server that came back seconds later.
+        //
+        // Driven with a genuine connection refusal rather than a non-2xx
+        // response, because only a refusal is a connect failure and only a
+        // connect failure is memoised. A test that flapped with a 500 would
+        // pass without ever touching the memo.
+        inkentry_core::reachability::clear_for_test();
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}");
+        let cfg = cfg_for(url.clone());
+
+        // A real probe against the closed port: refused, and recorded.
+        let refused = capability::get_inference_tier_fresh(&cfg).await;
+        assert!(
+            matches!(refused, capability::Tier::Offline(_)),
+            "a closed port must probe offline; got {refused:?}"
+        );
+        assert!(
+            inkentry_core::reachability::connect_already_failed(&url),
+            "a genuine refusal must be what lands in the memo, or this test proves nothing"
+        );
+
+        // The server comes up on the same port, and enough time passes for the
+        // recorded miss to stop being worth acting on. Ageing the entry stands
+        // in for that wait so the test does not spend it.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let mock = MockServer::builder().listener(listener).start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("ready")))
+            .mount(&mock)
+            .await;
+        inkentry_core::reachability::record_connect_failure_aged(
+            &url,
+            inkentry_core::reachability::MEMO_TTL + std::time::Duration::from_secs(1),
+        );
+
+        let tier = wait_for_embedder(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
+        assert!(
+            matches!(tier.caps(), Some(c) if c.index_embed),
+            "the poller must look again once the recorded miss has expired, rather than \
+             abandoning a server that came back; got {tier:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn wait_for_embedder_gives_up_after_bounded_offline_probes() {
         // A vanished server (crashed after spawning the worker) must not hang
         // the worker forever: bounded consecutive offline probes, then return

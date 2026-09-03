@@ -255,3 +255,54 @@ fn cloud_first_write_to_a_closed_port_is_refused_and_stores_nothing_locally() {
         "a failed cloud_first write must not land in the local store: {titles}"
     );
 }
+
+// ── a loopback server that accepts and then says nothing ─────────────────────
+
+// Accept TCP on loopback and hold every connection open without speaking. A
+// client that does not bound connecting waits out its whole request budget
+// here: the TCP connect succeeds, and the TLS handshake it then waits for never
+// comes.
+//
+// This is the portable stand-in for the originating report, a loopback team
+// server whose SYN was dropped by a firewall rather than refused. A dropped SYN
+// cannot be simulated in a test, but it costs a client the same thing, an
+// attempt with nothing to fail on, and the connect bound covers the handshake
+// as well as the TCP connect. It is also the case an exemption for loopback
+// would silently reintroduce, which has already happened once.
+fn spawn_stalling_loopback_listener() -> u16 {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stall listener");
+    let port = listener.local_addr().expect("local_addr").port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => held.push(stream),
+                Err(_) => break,
+            }
+        }
+    });
+    port
+}
+
+#[test]
+fn cloud_first_write_to_a_stalled_loopback_server_is_still_bounded() {
+    let port = spawn_stalling_loopback_listener();
+    let project = cloud_first_project(&format!("https://127.0.0.1:{port}"));
+    let (out, elapsed) = project.memory(&[
+        "add",
+        "--kind",
+        "note",
+        "--title",
+        ATTEMPTED_TITLE,
+        "--body",
+        "b",
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "the write must fail: {stderr}");
+    assert_fails_fast(elapsed, "a write to a stalled loopback server");
+    assert!(
+        !project.local_titles().contains(ATTEMPTED_TITLE),
+        "a failed cloud_first write must not land in the local store"
+    );
+}
