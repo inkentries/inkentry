@@ -472,7 +472,8 @@ A memory entry. These fields are always present:
 
 | Field | Type |
 |---|---|
-| `id` | string. A **UUID**, not an integer |
+| `id` | string. A **UUID**, not an integer. Minted by the store that answered, so it is per machine |
+| `entity_id` | string. 64-character SHA-256 hex over the entry's `kind`, `title` and `body`. The portable identity: the same on every machine holding the entry |
 | `kind` | string, for example `decision`, `requirement`, `handoff` |
 | `title`, `body` | string |
 | `tags`, `linked_files` | array of strings, possibly empty |

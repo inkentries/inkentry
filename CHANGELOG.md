@@ -13,14 +13,13 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 - **Memory entries now show the id that travels with the repo.** `memory list`,
   `memory show` and `context` lead each entry with a 12-character handle taken
-  from its entity id, and `memory show` prints the full value. `memory show`,
-  `memory archive` and `memory supersede` accept it: the full id, or any prefix
-  of 8 or more characters, or the id they already took. `--format json` and
-  `--format jsonl` carry the full `entity_id` on every entry alongside the
-  unchanged `id`. Quote the entity id whenever you name an entry outside the
-  machine that recorded it: in a document, a handoff or a script. The `id`
-  beside it is minted per machine, so an entry that travels on
-  `refs/notes/inkentry` arrives elsewhere with a different one.
+  from its entity id; `memory show` prints the full value, and `--format json`
+  and `--format jsonl` carry it as `entity_id` beside the unchanged `id`.
+  `memory show`, `memory archive` and `memory supersede` accept the full entity
+  id or any prefix of 8 or more characters, as well as the id they already
+  took. Quote the entity id whenever you name an entry outside the machine that
+  recorded it, in a document, a handoff or a script: the `id` beside it is
+  minted per machine and does not travel.
 - **`inkentry search --quiet`** suppresses the informational notices on stderr
   (stale index, server discovery, ranking availability, embedding coverage).
   Results and exit codes are unchanged, and it never hides an error or the

@@ -43,9 +43,10 @@ SHA-256 over exactly its `kind`, `title`, and `body`. Two people who
 independently record the same decision in two clones arrive at the same
 identity, with no server and no coordination between them. Mutable metadata is
 deliberately excluded, so tagging, archiving, or superseding an entry never
-changes its identity. (The numeric `id` in `memory list` output is a local row
-number rather than an identity: `inkentry init` renumbers it, and each machine
-assigns it independently.)
+changes its identity. `memory list` leads each entry with the first 12
+characters of this identity and `memory show` prints it in full as `entity_id`.
+(The `id` beside it is the local store's own token for the entry rather than an
+identity: each machine mints its own, and an import mints a new one.)
 
 Because identity is content-derived, two clones can carry their own copy of the
 same entry, and once the notes refs meet, both copies are there. `inkentry memory
