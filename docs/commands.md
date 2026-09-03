@@ -1168,12 +1168,17 @@ from the entry's own text, so it is the same wherever the entry is held, while
 the `id` is minted by whichever store holds the entry and an import mints a new
 one (see [ADR-093](adr/093-entity-id-is-the-portable-handle-for-memory-entries.md)).
 
-The local store, the git-notes carrier and the hosted service resolve a handle
-against every entry they hold. A self-hosted team server offers no lookup keyed
-on the entity id and no way to page its listing, so against one the lookup reads
-the most recent entries only. An entry older than that window is not reported as
-missing: the command says how far it looked and tells you to widen
-`memory list --limit`.
+The local store and the git-notes carrier resolve a handle against every entry
+they hold. The hosted service has no lookup keyed on the entity id either, so
+the handle is resolved by paging the project; the pager walks the whole project
+up to a ceiling far above any project-sized store, and stops short only beyond
+it. A self-hosted team server offers no such lookup and no way to page its
+listing, so against one the lookup reads the most recent entries only.
+
+An entry outside what was read is never reported as missing. The command says
+how far it looked, so you can widen `memory list --limit` to bring the entry
+into view; from there, `--format json` gives you its `id`, which resolves
+directly however old the entry is.
 
 `inkentry search` and `memory list` accept `--local-only` to skip the
 cross-project dep pass (see [Cross-project visibility](memory.md#cross-project-visibility)).
