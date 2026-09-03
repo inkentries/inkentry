@@ -211,9 +211,11 @@ configured `server_url`.
 
 Under `cloud_first` an unreachable server is reported in about two seconds
 rather than after the full per-request timeout: opening a connection is given a
-couple of seconds, and once one attempt has found the server absent the rest of
-the command stops re-attempting it. The error names the server and states that
-there is no fallback to the local store.
+couple of seconds, and the attempts that follow within the next few seconds skip
+straight to the same result instead of each waiting again. That shortcut is
+short-lived, so a long-running command still re-checks a server that may have
+come back. The error names the server and states that there is no fallback to
+the local store.
 
 A server that is running but presents a certificate this machine does not trust
 is reported separately, as a TLS failure naming the certificate and pointing at
