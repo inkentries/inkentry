@@ -17,7 +17,7 @@ The shapes we distinguish:
 |---|---|---|
 | Local (R0) | Your workstation | `http://127.0.0.1:4655` (auto) |
 | **Local Docker (R1)** | A container on your machine | `https://inkentry.your-domain` (portable) |
-| Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | `https://api.inkentry.com` |
+| Cloud-managed (R2) | A cloud workspace (e.g. Background Agents) | Not set: `cloud = true` in `.inkentry/config.toml` targets the hosted cloud, then `inkentry login` |
 | Self-hosted remote (R3) | Your own VM / pod | `https://inkentry.your-domain`: see [Server setup](server-setup.md) |
 
 This page covers **R1 (local Docker)**. R3 (self-hosted over the network) is

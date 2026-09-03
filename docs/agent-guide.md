@@ -8,7 +8,7 @@
 
 **What's server-backed:** semantic/hybrid search (the default `inkentry search` ranking) and `inkentry harvest` use `inkentry-server` for **inference** (embeddings + LLM). From v0.8.0 the server is autostarted locally on demand and bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS via candle) — there is no external embedding server to run by default. The auto-discovered loopback server is **inference-only**: it never stores memory. For the memory corpus of `inkentry search` the CLI sends only the query to the loopback embedder and runs the vector search locally against `memory.db` — note text never leaves the local store. If you force offline mode (`INKENTRY_NO_SERVER=1`), these commands fall back to full-text search or error clearly, and all memory commands operate on `memory.db`.
 
-**Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
+**Where does memory live?** Always `memory.db` for the active project — **unless** you have *explicitly* configured a team `server_url`, or opted the project into the hosted inkentry cloud (`cloud = true`, mutually exclusive with `server_url`), either of which relocates the store of record to that shared server (the team-memory tier). An auto-discovered loopback server does **not** change where memory lives.
 
 ## The core loop
 
@@ -102,7 +102,7 @@ If your config does not have a `server_url`, `inkentry` auto-discovers a local
 when the recorded `server.pid` still names an `inkentry-server` process and the
 server reports the `instance_id` recorded at start. A daemon started before
 these files existed is not auto-discovered until you restart it.  You can start, stop, and inspect that
-daemon with the `inkentry server` subcommand. This auto-discovered daemon is an **inference backend only** — it serves embeddings and LLM calls. It is **not** a memory store: your project's memory stays in `memory.db` regardless of whether this server is running. (Memory moves to a server only when you *explicitly* set `server_url` to a team instance in your config.)
+daemon with the `inkentry server` subcommand. This auto-discovered daemon is an **inference backend only** — it serves embeddings and LLM calls. It is **not** a memory store: your project's memory stays in `memory.db` regardless of whether this server is running. (Memory moves to a server only when you *explicitly* set `server_url` to a team instance, or set `cloud = true`, in your config.)
 
 ```bash
 # Start inkentry-server on port 4655 (idempotent — no-op if already running)

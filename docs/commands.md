@@ -852,6 +852,10 @@ code, and approve the sign-in in your browser. On success, short-lived tokens
 are stored in your config and refreshed automatically in the background, so you
 do not need to log in again until the refresh token expires.
 
+`login` only authenticates; it does not by itself move a project's memory to
+the cloud. Set `cloud = true` in the project's `.inkentry/config.toml` for that
+(see [`cloud`](config-reference.md#cloud)).
+
 ```
 inkentry login [--org <slug>] [--cloud-url <url>]
 ```
@@ -977,10 +981,11 @@ inkentry auth remove-key --llm
 
 Resolution precedence for a given request's `server_url`: the `INKENTRY_SERVER_KEY`
 environment variable (if set, always wins, regardless of origin) takes priority
-over the per-origin store; an inkentry cloud origin instead resolves through the
-`[auth]` token pair from `inkentry login`. This lets CI pin a single key for the
-one server it talks to without touching the keychain, while a developer's
-machine holds separate keys per self-hosted server.
+over the per-origin store; a request whose origin matches the one the `[auth]`
+token pair from `inkentry login` was issued for resolves through that token
+pair instead, and is never sent to any other origin (ADR-095). This lets CI pin
+a single key for the one server it talks to without touching the keychain,
+while a developer's machine holds separate keys per self-hosted server.
 
 The LLM credential resolves as `INKENTRY_LLM_KEY` > this stored entry > unset,
 and only on the code path that starts a local daemon: no other command reads

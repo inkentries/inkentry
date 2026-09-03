@@ -23,7 +23,10 @@ use super::auth_api::{self, DEFAULT_CLOUD_URL, MeOrg};
 
 #[derive(Args, Debug)]
 pub struct OrgArgs {
-    /// Override the inkentry cloud API URL (default: https://api.inkentry.com)
+    /// Development override: points `org` at a development cloud instead of the
+    /// fixed hosted URL (default: https://api.inkentry.com). Not a user setting
+    /// for choosing a cloud (use `cloud = true` in `.inkentry/config.toml`), and
+    /// it does not change which origin a stored access token is released to.
     #[arg(long, env = "INKENTRY_CLOUD_URL", global = true)]
     pub cloud_url: Option<String>,
 
