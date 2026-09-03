@@ -148,7 +148,10 @@ mod tests {
         // What keeps a long-lived poller able to see a server come back.
         clear_for_test();
         let url = "https://server.example:4655";
-        record_connect_failure_aged(url, MEMO_TTL + Duration::from_secs(1));
+        // A literal, not an offset from the constant under test: the latter
+        // would be expired for any value of MEMO_TTL and so could not see its
+        // magnitude at all.
+        record_connect_failure_aged(url, Duration::from_secs(5));
         assert!(
             !connect_already_failed(url),
             "a stale miss must not stand in for an attempt that was never made"
@@ -162,7 +165,7 @@ mod tests {
         // command stop skipping, which is the whole reason the memo exists.
         clear_for_test();
         let url = "https://server.example:4655";
-        record_connect_failure_aged(url, MEMO_TTL / 2);
+        record_connect_failure_aged(url, Duration::from_secs(1));
         assert!(connect_already_failed(url));
     }
 

@@ -817,6 +817,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_memo_ttl_is_short_enough_for_this_poller_to_look_again() {
+        // The upper bound on MEMO_TTL, and the reason it is expressed here
+        // rather than next to the constant: the constant is only "short enough"
+        // relative to this poll loop's schedule.
+        //
+        // The first poll attempts for real and records the miss. Every poll
+        // after it that lands while the entry is still fresh is skipped and
+        // counts against the consecutive-offline tolerance. Polls land at
+        // cumulative 1, 3, 7, 15, 31s (the initial backoff doubling, capped),
+        // so the number of consecutive skips is just the number of those that
+        // fall inside the TTL. Let that grow and a memoised miss stops
+        // deferring the wait and starts ending it, which is the failure this
+        // whole expiry exists to prevent: durable queued embed work abandoned
+        // for a server that came back.
+        let mut skipped = 0u32;
+        let mut since_record = std::time::Duration::ZERO;
+        let mut backoff = EMBED_WAIT_INITIAL_BACKOFF;
+        loop {
+            since_record += backoff;
+            if since_record >= inkentry_core::reachability::MEMO_TTL {
+                break;
+            }
+            skipped += 1;
+            backoff = (backoff * 2).min(EMBED_WAIT_MAX_BACKOFF);
+        }
+
+        assert!(
+            skipped <= 2,
+            "a recorded miss must cost this poller at most two consecutive skipped polls, \
+             leaving most of its tolerance of {EMBED_WAIT_MAX_OFFLINE_PROBES} for real \
+             misses; MEMO_TTL of {:?} would skip {skipped}",
+            inkentry_core::reachability::MEMO_TTL,
+        );
+    }
+
     #[tokio::test]
     #[serial_test::serial(reachability_memo)]
     async fn wait_for_embedder_recovers_after_a_real_refusal_was_memoised() {
@@ -861,9 +897,17 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(health_body("ready")))
             .mount(&mock)
             .await;
+        // A fixed literal, deliberately not expressed in terms of MEMO_TTL:
+        // an offset defined from the constant under test is expired by
+        // construction for any value of it, so it would pin that expiry exists
+        // while saying nothing about whether the TTL is short enough for this
+        // poller, which is the thing that actually matters here. Five seconds
+        // is a point on the poller's own schedule: its polls land at cumulative
+        // 0, 1, 3 and 7s, so a miss recorded at the first must be stale well
+        // before the fourth.
         inkentry_core::reachability::record_connect_failure_aged(
             &url,
-            inkentry_core::reachability::MEMO_TTL + std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(5),
         );
 
         let tier = wait_for_embedder(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
