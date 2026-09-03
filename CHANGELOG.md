@@ -86,6 +86,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   fetch to pick the links up. A link whose other entry has not arrived yet is
   reported as skipped and applied by a later import.
 
+### Fixed
+
+- **`inkentry memory add` no longer waits on a busy embedder.** Adding an entry
+  during a bulk index pass could block for minutes, and the entry was not saved
+  until the embed came back, so a caller that gave up first lost it. The entry
+  is now saved first and the command returns in seconds. An entry saved before
+  its search vector arrives says so, and is listed and readable straight away;
+  `inkentry memory reindex` adds the vector, and the next `inkentry sync` does
+  it on its own.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added

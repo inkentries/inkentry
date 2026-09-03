@@ -847,3 +847,6 @@ mod draft_file_tests {
         let _ = std::fs::remove_file(&tmp_path);
     }
 }
+
+#[cfg(test)]
+mod add_embed_tests;
