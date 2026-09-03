@@ -10,10 +10,12 @@ use anyhow::Result;
 use crate::storage::memory::Note;
 use crate::storage::{MemoryBackend, NoteId, is_entity_id_lookup};
 
-/// The entry `token` names, or `None` when nothing matches.
+/// The entry `token` names, or `None` when the store does not hold it.
 ///
-/// `Err` is reserved for a handle that names more than one entry: picking one
-/// would show, archive or supersede an entry the user did not mean.
+/// `Err` covers the two cases where an answer would be a guess: a handle naming
+/// more than one entry, where picking one would show, archive or supersede an
+/// entry the user did not mean, and a backend that could not read far enough to
+/// know, where `None` would be a denial it never established.
 pub(super) async fn resolve_note(
     backend: &dyn MemoryBackend,
     token: &NoteId,
@@ -26,12 +28,21 @@ pub(super) async fn resolve_note(
     }
     // A full `entity_id` is the longest prefix of itself and the column is
     // unique, so the exact match and the prefix match are the same read.
-    let mut candidates = backend
+    let (mut matches, examined) = backend
         .note_ids_for_entity_id_prefix(token.as_str())
-        .await?;
-    match candidates.len() {
-        0 => Ok(None),
-        1 => backend.get(candidates.remove(0)).await,
+        .await?
+        .into_parts();
+    match matches.len() {
+        0 => match examined {
+            None => Ok(None),
+            Some(examined) => anyhow::bail!(
+                "'{token}' is not among the {examined} most recent memory entries, \
+                 and this server offers no lookup by entity id, so older entries \
+                 were not searched. Run `inkentry memory list --archived --limit N` \
+                 with a larger N to reach further back."
+            ),
+        },
+        1 => backend.get(matches.remove(0)).await,
         n => anyhow::bail!(
             "'{token}' matches {n} memory entries. \
              Give more characters of the entity id to pick one; \

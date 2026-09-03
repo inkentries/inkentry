@@ -38,6 +38,37 @@ pub(crate) fn ids_with_entity_id_prefix(notes: Vec<Note>, prefix: &str) -> Vec<N
         .collect()
 }
 
+/// What a handle lookup found, and whether the backend could see far enough to
+/// mean it.
+///
+/// The distinction is the whole point of the type: an empty result from a store
+/// the backend read to the end says the entry is not there, and an empty result
+/// from a partial read says only that it was not in the part that was read.
+/// Reporting the second as the first denies an entry that was never looked for,
+/// which for the id ADR-093 tells people to quote is the failure that record
+/// exists to prevent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityIdLookup {
+    /// Every entry in the store was examined.
+    Complete(Vec<NoteId>),
+    /// Only `examined` entries could be read, and the store holds more.
+    Bounded {
+        matches: Vec<NoteId>,
+        examined: usize,
+    },
+}
+
+impl EntityIdLookup {
+    /// The matches, and how many entries were examined when that was not all of
+    /// them.
+    pub fn into_parts(self) -> (Vec<NoteId>, Option<usize>) {
+        match self {
+            Self::Complete(matches) => (matches, None),
+            Self::Bounded { matches, examined } => (matches, Some(examined)),
+        }
+    }
+}
+
 /// Abstraction over local SQLite and remote HTTP memory stores.
 #[async_trait]
 pub trait MemoryBackend: Send {
@@ -106,7 +137,11 @@ pub trait MemoryBackend: Send {
     /// The ids of the entries whose `entity_id` starts with `prefix`, for
     /// resolving the handle a user quotes (ADR-093 D2). More than one means the
     /// prefix is ambiguous and the caller must refuse to pick.
-    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>>;
+    ///
+    /// A backend that cannot read its whole store says so with
+    /// [`EntityIdLookup::Bounded`] rather than letting a partial read pass for
+    /// an exhaustive one.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup>;
     async fn count(&self) -> Result<i64>;
     async fn archive(&self, id: NoteId) -> Result<bool>;
     async fn supersede(&self, old_id: NoteId, new_id: NoteId) -> Result<bool>;
@@ -248,11 +283,14 @@ impl MemoryBackend for LocalMemoryBackend {
         self.store.lock().await.get(&id)
     }
 
-    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>> {
-        self.store
-            .lock()
-            .await
-            .note_ids_for_entity_id_prefix(prefix)
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
+        // A range read over the whole index: nothing here is bounded.
+        Ok(EntityIdLookup::Complete(
+            self.store
+                .lock()
+                .await
+                .note_ids_for_entity_id_prefix(prefix)?,
+        ))
     }
 
     async fn count(&self) -> Result<i64> {

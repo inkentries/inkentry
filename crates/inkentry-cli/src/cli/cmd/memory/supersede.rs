@@ -22,6 +22,19 @@ pub(super) async fn memory_supersede(
     };
     let old_handle = crate::storage::entity_id_handle(&old_target.entity_id).to_string();
     let new_handle = crate::storage::entity_id_handle(&new_note.entity_id).to_string();
+    // Two tokens can name one entry without looking alike: a handle, a longer
+    // prefix of it and the local id are three spellings of the same entry.
+    // Letting that through archives the entry and points its successor link at
+    // itself, which is not a state any reader can act on.
+    if old_target.id == new_note.id {
+        anyhow::bail!(
+            "'{old}' and '{new}' name the same memory entry (#{old_handle}), \
+             so it would supersede itself. Give the id of the entry that \
+             replaces it; `inkentry memory add` prints one for a new entry.",
+            old = args.old_id,
+            new = args.new_id,
+        );
+    }
     if backend
         .supersede(old_target.id.clone(), new_note.id.clone())
         .await

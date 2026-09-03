@@ -517,3 +517,40 @@ fn a_clone_remints_the_local_id_and_keeps_the_entity_id() {
         );
     }
 }
+
+// ── an entry cannot supersede itself ────────────────────────────────────────
+
+// Handles widened this: a 12-character handle and an 8-character prefix are two
+// different-looking tokens for one entry, so a user can name the same entry
+// twice without noticing. Letting it through archives the entry and points its
+// successor link at itself.
+#[test]
+fn an_entry_cannot_supersede_itself_however_it_is_named() {
+    let p = project();
+    let eid = p.add("Its own successor", "body of the self-superseding entry");
+    let uuid = p.uuid_of("Its own successor");
+
+    for (old, new) in [
+        (&eid[..12], &eid[..8]),
+        (eid.as_str(), &eid[..12]),
+        (uuid.as_str(), &eid[..12]),
+        (uuid.as_str(), uuid.as_str()),
+    ] {
+        let assert = p.memory().args(["supersede", old, new]).assert().failure();
+        let err = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+        assert!(
+            err.contains("name the same memory entry"),
+            "supersede {old} {new} should be refused, got: {err}"
+        );
+        assert_eq!(
+            p.status_of("Its own successor"),
+            "active",
+            "supersede {old} {new} must not archive the entry"
+        );
+    }
+
+    assert!(
+        p.entry("Its own successor")["superseded_by"].is_null(),
+        "nothing may have been linked"
+    );
+}

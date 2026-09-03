@@ -534,3 +534,138 @@ async fn a_slug_project_still_lists_and_adds() {
     assert!(be.list(None, 10, false, None).await.unwrap().is_empty());
     assert!(be.add(note_input("t")).await.is_ok());
 }
+
+// ── entity id lookup ─────────────────────────────────────────────────────────
+
+// Two titles whose content hashes agree for exactly the first eight characters,
+// found by searching over `entity_id` inputs. Genuine collisions rather than
+// injected values: the cloud wire carries no entity id, so the backend computes
+// it from the entry itself and a fixture cannot choose one.
+const TWIN_A: &str = "twin-3608";
+const TWIN_B: &str = "twin-94341";
+const TWIN_PREFIX: &str = "22a92aad";
+
+// Enough pages that the target sits well past both the first page and the
+// 1000-entry mark a single bounded read would have stopped at.
+const FILLED_PAGES: usize = 6;
+
+fn filler(page: usize, i: usize) -> Value {
+    let n = page * PAGE_SIZE + i;
+    entry(
+        &format!("{n:08x}-0000-7000-8000-000000000000"),
+        &format!("filler {n}"),
+    )
+}
+
+// Mount `FILLED_PAGES` full pages of filler, with `tail` as the short final
+// page that tells the pager it has reached the end.
+async fn mount_paged_project(server: &MockServer, tail: Vec<Value>, seeded: &[(usize, Value)]) {
+    for page in 0..FILLED_PAGES {
+        let mut entries: Vec<Value> = (0..PAGE_SIZE).map(|i| filler(page, i)).collect();
+        for (seed_page, seed) in seeded {
+            if *seed_page == page {
+                entries[0] = seed.clone();
+            }
+        }
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/projects/{PROJECT}/memory")))
+            .and(query_param("offset", (page * PAGE_SIZE).to_string()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"entries": entries, "total": 0})),
+            )
+            .mount(server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/projects/{PROJECT}/memory")))
+        .and(query_param(
+            "offset",
+            (FILLED_PAGES * PAGE_SIZE).to_string(),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"entries": tail, "total": 0})),
+        )
+        .mount(server)
+        .await;
+}
+
+fn expect_complete(lookup: EntityIdLookup) -> Vec<NoteId> {
+    match lookup {
+        EntityIdLookup::Complete(matches) => matches,
+        EntityIdLookup::Bounded { examined, .. } => {
+            panic!("the pager stopped after {examined} entries instead of reaching the end")
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_entry_past_the_first_page_resolves_by_its_full_entity_id() {
+    let server = MockServer::start().await;
+    mount_paged_project(&server, vec![entry(UUID_2, "target")], &[]).await;
+
+    let target = crate::storage::entity_id("decision", "target", "b");
+    let found = expect_complete(
+        backend(&server)
+            .note_ids_for_entity_id_prefix(&target)
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(found, vec![UUID_2.parse::<NoteId>().unwrap()]);
+}
+
+#[tokio::test]
+async fn an_entry_past_the_first_page_resolves_by_a_twelve_character_handle() {
+    let server = MockServer::start().await;
+    mount_paged_project(&server, vec![entry(UUID_2, "target")], &[]).await;
+
+    let target = crate::storage::entity_id("decision", "target", "b");
+    let found = expect_complete(
+        backend(&server)
+            .note_ids_for_entity_id_prefix(&target[..12])
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(found, vec![UUID_2.parse::<NoteId>().unwrap()]);
+}
+
+// The reason every page is read rather than every page until the first match:
+// a prefix is only unambiguous once the whole store has been checked, and two
+// entries sharing one can sit on different pages.
+#[tokio::test]
+async fn an_ambiguous_prefix_is_detected_across_pages() {
+    let server = MockServer::start().await;
+    mount_paged_project(
+        &server,
+        vec![entry(UUID_2, TWIN_B)],
+        &[(0, entry(UUID, TWIN_A))],
+    )
+    .await;
+
+    assert_eq!(
+        crate::storage::entity_id("decision", TWIN_A, "b")[..8],
+        *TWIN_PREFIX,
+        "fixture: the twins must really share the prefix"
+    );
+    assert_eq!(
+        crate::storage::entity_id("decision", TWIN_B, "b")[..8],
+        *TWIN_PREFIX
+    );
+
+    let found = expect_complete(
+        backend(&server)
+            .note_ids_for_entity_id_prefix(TWIN_PREFIX)
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(
+        found,
+        vec![
+            UUID.parse::<NoteId>().unwrap(),
+            UUID_2.parse::<NoteId>().unwrap()
+        ],
+        "both twins must be collected, though they are pages apart"
+    );
+}

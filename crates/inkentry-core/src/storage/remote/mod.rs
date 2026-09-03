@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::collections::HashSet;
 
-use super::backend::{MemoryBackend, NoteInput};
+use super::backend::{EntityIdLookup, MemoryBackend, NoteInput};
 use super::memory::{MemoryEdge, Note, NoteId};
 use crate::embeddings::{PUSHED_VECTOR_PRECISION, blob_to_vec, pushed_vector_model_tag};
 
@@ -472,20 +472,29 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(Some(note.into()))
     }
 
-    /// The server has no route keyed on `entity_id`, so the handle is resolved
-    /// by filtering a listing this backend can already ask for.
-    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>> {
-        let notes = self
-            .list(
-                None,
-                crate::storage::backend::ENTITY_ID_SCAN_LIMIT,
-                true,
-                None,
-            )
-            .await?;
-        Ok(crate::storage::backend::ids_with_entity_id_prefix(
-            notes, prefix,
-        ))
+    /// The team server has no route keyed on `entity_id` and no offset or
+    /// cursor on its listing, so this reads one page and reports honestly
+    /// whether that page was the whole store.
+    ///
+    /// A full page back means the listing was cut off at the limit and older
+    /// entries were never read, so the result is
+    /// [`EntityIdLookup::Bounded`]: without paging there is no way to reach
+    /// them, and claiming the entry is absent would deny one that was never
+    /// looked for. A short page means the store ended inside it, so the answer
+    /// is exhaustive.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
+        let limit = crate::storage::backend::ENTITY_ID_SCAN_LIMIT;
+        let notes = self.list(None, limit, true, None).await?;
+        let saturated = notes.len() >= limit;
+        let matches = crate::storage::backend::ids_with_entity_id_prefix(notes, prefix);
+        Ok(if saturated {
+            EntityIdLookup::Bounded {
+                matches,
+                examined: limit,
+            }
+        } else {
+            EntityIdLookup::Complete(matches)
+        })
     }
 
     async fn count(&self) -> Result<i64> {
