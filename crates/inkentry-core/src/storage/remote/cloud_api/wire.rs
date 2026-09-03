@@ -67,11 +67,14 @@ impl EntryResponse {
         // The cloud id IS the cross-machine identity, so it is both the entry's
         // id on this backend and its `remote_id`.
         let remote_id = Some(self.id.to_string());
+        let body = self.body.unwrap_or_default();
+        let entity_id = crate::storage::entity_id(&self.kind, &self.title, &body);
         Note {
             id: self.id,
+            entity_id,
             kind: self.kind,
             title: self.title,
-            body: self.body.unwrap_or_default(),
+            body,
             // The cloud API carries neither on its entry shape.
             tags: vec![],
             linked_files: vec![],

@@ -23,6 +23,21 @@ pub struct NoteInput {
     pub supersedes: Option<NoteId>,
 }
 
+/// How many entries a backend with no index over `entity_id` reads to resolve a
+/// quoted handle. Bounded so a lookup cannot pull an unbounded listing across a
+/// network; a store larger than this resolves the full value, not a prefix.
+pub(crate) const ENTITY_ID_SCAN_LIMIT: usize = 1_000;
+
+/// The ids among `notes` whose `entity_id` starts with `prefix`, for a backend
+/// that can only answer the lookup by reading its own listing.
+pub(crate) fn ids_with_entity_id_prefix(notes: Vec<Note>, prefix: &str) -> Vec<NoteId> {
+    notes
+        .into_iter()
+        .filter(|n| n.entity_id.starts_with(prefix))
+        .map(|n| n.id)
+        .collect()
+}
+
 /// Abstraction over local SQLite and remote HTTP memory stores.
 #[async_trait]
 pub trait MemoryBackend: Send {
@@ -88,6 +103,10 @@ pub trait MemoryBackend: Send {
         as_of: Option<i64>,
     ) -> Result<Vec<Note>>;
     async fn get(&self, id: NoteId) -> Result<Option<Note>>;
+    /// The ids of the entries whose `entity_id` starts with `prefix`, for
+    /// resolving the handle a user quotes (ADR-093 D2). More than one means the
+    /// prefix is ambiguous and the caller must refuse to pick.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>>;
     async fn count(&self) -> Result<i64>;
     async fn archive(&self, id: NoteId) -> Result<bool>;
     async fn supersede(&self, old_id: NoteId, new_id: NoteId) -> Result<bool>;
@@ -227,6 +246,13 @@ impl MemoryBackend for LocalMemoryBackend {
 
     async fn get(&self, id: NoteId) -> Result<Option<Note>> {
         self.store.lock().await.get(&id)
+    }
+
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>> {
+        self.store
+            .lock()
+            .await
+            .note_ids_for_entity_id_prefix(prefix)
     }
 
     async fn count(&self) -> Result<i64> {

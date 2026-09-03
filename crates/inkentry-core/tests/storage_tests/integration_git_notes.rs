@@ -3718,11 +3718,13 @@ use inkentry_core::storage::memory::Note;
 /// A `Note` as `backend.get()` would hand back right after an entry is
 /// created — the shape `append_state_update`'s `base` parameter expects.
 fn note_for(title: &str, id: i64, created_at: i64) -> Note {
+    let body = format!("body for {title}");
     Note {
         id: carrier_token(id),
+        entity_id: inkentry_core::storage::entity_id("decision", title, &body),
         kind: "decision".to_string(),
         title: title.to_string(),
-        body: format!("body for {title}"),
+        body,
         tags: vec![],
         linked_files: vec![],
         created_at,

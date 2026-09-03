@@ -106,6 +106,19 @@ impl MemoryBackend for GitNotesBackend {
             .map(record_to_note))
     }
 
+    /// Reads the same folded records `get` does, so a handle resolves to the
+    /// carrier token that backend's other methods accept.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>> {
+        Ok(self
+            .folded_records()
+            .await?
+            .into_iter()
+            .map(record_to_note)
+            .filter(|note| note.entity_id.starts_with(prefix))
+            .map(|note| note.id)
+            .collect())
+    }
+
     async fn count(&self) -> Result<i64> {
         Ok(self.noted_commits().await?.len() as i64)
     }

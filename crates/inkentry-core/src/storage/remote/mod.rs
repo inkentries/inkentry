@@ -472,6 +472,22 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(Some(note.into()))
     }
 
+    /// The server has no route keyed on `entity_id`, so the handle is resolved
+    /// by filtering a listing this backend can already ask for.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>> {
+        let notes = self
+            .list(
+                None,
+                crate::storage::backend::ENTITY_ID_SCAN_LIMIT,
+                true,
+                None,
+            )
+            .await?;
+        Ok(crate::storage::backend::ids_with_entity_id_prefix(
+            notes, prefix,
+        ))
+    }
+
     async fn count(&self) -> Result<i64> {
         let resp = self
             .send(self.client.get(self.url("stats")), "GET /stats")

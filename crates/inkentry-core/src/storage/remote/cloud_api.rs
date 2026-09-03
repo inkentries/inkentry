@@ -314,6 +314,22 @@ impl MemoryBackend for CloudApiMemoryBackend {
         Ok(self.fetch(&id).await?.map(EntryResponse::into_note))
     }
 
+    /// The server has no route keyed on `entity_id`, so the handle is resolved
+    /// by filtering a listing this backend can already ask for.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>> {
+        let notes = self
+            .list(
+                None,
+                crate::storage::backend::ENTITY_ID_SCAN_LIMIT,
+                true,
+                None,
+            )
+            .await?;
+        Ok(crate::storage::backend::ids_with_entity_id_prefix(
+            notes, prefix,
+        ))
+    }
+
     /// The list route computes the total in the same round trip, so a
     /// single-entry page carries the count without a dedicated stats route.
     async fn count(&self) -> Result<i64> {

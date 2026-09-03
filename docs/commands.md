@@ -1153,6 +1153,20 @@ inkentry memory reindex [--force] [--include-archived] [--dry-run] [--format tex
 All `memory` subcommands accept `--backend sqlite|git-notes` (default `sqlite`)
 and `--db <path>`.
 
+**Which id to give.** `memory list`, `memory show` and `context` lead each entry
+with a 12-character handle: the start of that entry's `entity_id`. `memory show`,
+`memory archive` and `memory supersede` accept that handle, the full
+64-character `entity_id`, or the UUIDv7 carried in the `id` field. Any prefix of
+8 or more characters of an `entity_id` resolves; a prefix matching more than one
+entry fails, naming the prefix and the number of entries it matched, and
+resolves nothing. `--format json` and `--format jsonl` carry the full
+`entity_id` on every entry alongside the unchanged `id`.
+
+Quote the `entity_id` when naming an entry outside this machine: it is derived
+from the entry's own text, so it is the same wherever the entry is held, while
+the `id` is minted by whichever store holds the entry and an import mints a new
+one (see [ADR-093](adr/093-entity-id-is-the-portable-handle-for-memory-entries.md)).
+
 `inkentry search` and `memory list` accept `--local-only` to skip the
 cross-project dep pass (see [Cross-project visibility](memory.md#cross-project-visibility)).
 Results from linked projects carry a `[from: <project>]` badge in text output
@@ -1185,8 +1199,9 @@ store, it fails instead), and retrying the command is the remedy.
 converges on one identity. `memory reconcile` and the `inkentry init` git-notes
 import dedup on it: entries with identical text collapse into one even when
 their creation time, tags, or linked files differ, and the survivor carries the
-union of the tags and linked files. The `id` shown by `memory list` is a local
-row number, not this identity. See [Entry identity](memory.md#project-memory).
+union of the tags and linked files. `memory list` leads each entry with a
+12-character prefix of this identity; the `id` beside it is the local store's
+own token for the entry and does not travel. See [Entry identity](memory.md#project-memory).
 Existing duplicate rows already resident in `memory.db` are never collapsed
 automatically; use `inkentry memory dedupe` to do that explicitly (see
 [Collapsing duplicate entries already in memory.db](memory.md#collapsing-duplicate-entries-already-in-memorydb)).

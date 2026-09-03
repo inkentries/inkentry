@@ -156,10 +156,12 @@ mod tests {
     }
 
     fn note(id: &str, distance: f64) -> Note {
+        let title = format!("note {id}");
         Note {
             id: id.parse().unwrap(),
+            entity_id: crate::storage::entity_id("decision", &title, "body"),
             kind: "decision".into(),
-            title: format!("note {id}"),
+            title,
             body: "body".into(),
             tags: vec![],
             linked_files: vec![],
