@@ -10,6 +10,21 @@ use anyhow::{Context, Result};
 use std::str::FromStr;
 
 use super::{MemoryStore, NoteId};
+use crate::storage::note_record::CarriedEdge;
+
+/// What applying a batch of carried edges did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CarriedEdgeImport {
+    /// Edges that became a new `memory_edges` row.
+    pub applied: usize,
+    /// Edges already present, so nothing was added for them.
+    pub already_present: usize,
+    /// Edges whose source or target has no row in this store. Skipped, not
+    /// fatal: a partial fetch, an entry kept off the carrier, or an entry
+    /// deleted on the writing machine all produce this legitimately, and a
+    /// later import after a fuller fetch resolves them.
+    pub unresolved: usize,
+}
 
 impl MemoryStore {
     /// Insert an entry exactly as the dump described it, and return its id.
@@ -126,7 +141,9 @@ impl MemoryStore {
         )
     }
 
-    /// Insert an edge from a dump, preserving its recorded timestamp.
+    /// Insert an edge from a dump, preserving its recorded timestamp. Returns
+    /// whether a row was actually added, which is how a caller tells an edge it
+    /// imported from one that was already here.
     ///
     /// `INSERT OR IGNORE` because a dump may legitimately describe the same
     /// relationship twice — the reader deduplicates on `(type, from, to)`, and
@@ -137,8 +154,8 @@ impl MemoryStore {
         to_id: &NoteId,
         kind: &str,
         created_at: Option<i64>,
-    ) -> Result<()> {
-        match created_at {
+    ) -> Result<bool> {
+        let inserted = match created_at {
             Some(at) => self.conn.execute(
                 "INSERT OR IGNORE INTO memory_edges (from_id, to_id, kind, created_at) \
                  VALUES (?1, ?2, ?3, ?4)",
@@ -150,7 +167,45 @@ impl MemoryStore {
             ),
         }
         .with_context(|| format!("importing a {kind} relationship"))?;
-        Ok(())
+        Ok(inserted > 0)
+    }
+
+    /// Apply edges that arrived as `(source entity_id, edge)` pairs, the shape
+    /// the git-notes carrier records them in. Both endpoints resolve through
+    /// `entity_id`, so the same edge lands on the same row on every machine.
+    ///
+    /// Must run after every entry it could reference is in the store: the
+    /// foreign keys refuse an edge whose endpoints are absent, so an edge is
+    /// only ever applied once both rows exist and is otherwise counted as
+    /// unresolved. Idempotent through the primary key, so re-applying the
+    /// whole carrier after a fetch adds nothing that is already here.
+    ///
+    /// Only the two kinds the carrier defines are applied. Any other kind is a
+    /// record from a build this one does not know and is passed over, the way
+    /// an unknown key on the record itself is.
+    pub fn import_carried_edges(
+        &self,
+        edges: &[(String, CarriedEdge)],
+    ) -> Result<CarriedEdgeImport> {
+        let mut outcome = CarriedEdgeImport::default();
+        for (from_entity_id, edge) in edges {
+            if !matches!(edge.kind.as_str(), "relates_to" | "contradicts") {
+                continue;
+            }
+            let (Some(from), Some(to)) = (
+                self.note_id_for_entity_id(from_entity_id)?,
+                self.note_id_for_entity_id(&edge.to_entity_id)?,
+            ) else {
+                outcome.unresolved += 1;
+                continue;
+            };
+            if self.import_edge(&from, &to, &edge.kind, None)? {
+                outcome.applied += 1;
+            } else {
+                outcome.already_present += 1;
+            }
+        }
+        Ok(outcome)
     }
 
     /// The id of the entry already holding `entity_id`, if any. Lets an import
@@ -168,5 +223,122 @@ impl MemoryStore {
             .optional()?;
         raw.map(|r| NoteId::from_str(&r).map_err(|e| anyhow::anyhow!(e)))
             .transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::OnceLock;
+
+    fn register_sqlite_vec() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            #[allow(clippy::missing_transmute_annotations)]
+            unsafe {
+                rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )));
+            }
+        });
+    }
+
+    fn add(store: &MemoryStore, title: &str) -> (NoteId, String) {
+        let (id, _) = store
+            .add_note("decision", title, "body", &[], &[], None, None)
+            .expect("add");
+        (
+            id,
+            crate::storage::entity_id::entity_id("decision", title, "body"),
+        )
+    }
+
+    fn edge_rows(store: &MemoryStore) -> Vec<(String, String, String)> {
+        let mut stmt = store
+            .conn
+            .prepare("SELECT from_id, to_id, kind FROM memory_edges ORDER BY from_id, to_id, kind")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// The whole contract in one pass: a resolvable edge of either kind lands,
+    /// one with a missing endpoint is counted rather than failing the batch,
+    /// and applying the same batch again changes nothing.
+    #[test]
+    fn import_carried_edges_applies_resolvable_edges_counts_dangling_and_is_idempotent() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let store = MemoryStore::open(tmp.path()).expect("open");
+        let (a, ea) = add(&store, "a");
+        let (b, eb) = add(&store, "b");
+
+        let edges = vec![
+            (ea.clone(), CarriedEdge::new("relates_to", eb.clone())),
+            (eb.clone(), CarriedEdge::new("contradicts", ea.clone())),
+            (
+                ea.clone(),
+                CarriedEdge::new("relates_to", "not-here".to_string()),
+            ),
+            (
+                "not-here".to_string(),
+                CarriedEdge::new("relates_to", ea.clone()),
+            ),
+        ];
+        let first = store.import_carried_edges(&edges).expect("apply");
+        assert_eq!(
+            first,
+            CarriedEdgeImport {
+                applied: 2,
+                already_present: 0,
+                unresolved: 2,
+            }
+        );
+        assert_eq!(edge_rows(&store), {
+            let mut rows = vec![
+                (a.to_string(), b.to_string(), "relates_to".to_string()),
+                (b.to_string(), a.to_string(), "contradicts".to_string()),
+            ];
+            rows.sort();
+            rows
+        });
+
+        let again = store.import_carried_edges(&edges).expect("re-apply");
+        assert_eq!(
+            again,
+            CarriedEdgeImport {
+                applied: 0,
+                already_present: 2,
+                unresolved: 2,
+            }
+        );
+        assert_eq!(edge_rows(&store).len(), 2, "re-applying adds no rows");
+
+        // The dangling target arrives; the next pass resolves it.
+        let (_c, ec) = add(&store, "not-here-yet");
+        let late = vec![(ea, CarriedEdge::new("relates_to", ec))];
+        assert_eq!(store.import_carried_edges(&late).expect("late").applied, 1);
+    }
+
+    /// `supersedes` has its own carrier field; a record carrying it in the edge
+    /// list is not something this build writes, so it is passed over rather
+    /// than turned into a second, unreconciled path to the same row.
+    #[test]
+    fn import_carried_edges_passes_over_kinds_it_does_not_define() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let store = MemoryStore::open(tmp.path()).expect("open");
+        let (_a, ea) = add(&store, "a");
+        let (_b, eb) = add(&store, "b");
+
+        let edges = vec![
+            (ea.clone(), CarriedEdge::new("supersedes", eb.clone())),
+            (ea, CarriedEdge::new("depends_on", eb)),
+        ];
+        let outcome = store.import_carried_edges(&edges).expect("apply");
+        assert_eq!(outcome, CarriedEdgeImport::default());
+        assert!(edge_rows(&store).is_empty());
     }
 }

@@ -7,9 +7,9 @@ use crate::{
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        GitNotesBackend, MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus,
-        append_state_update, append_to_git_notes, now_millis, now_secs, open_memory_backend,
-        unresolvable_id_message,
+        CarriedEdge, GitNotesBackend, MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus,
+        append_state_update, append_to_git_notes, note_entity_id, now_millis, now_secs,
+        open_memory_backend, unresolvable_id_message,
     },
 };
 
@@ -150,6 +150,10 @@ pub(super) async fn memory_add(
     // archives it — a relates_to link is non-superseding. Skipped pre-init
     // (there is no local graph to read or to hold an edge). Reuses/opens
     // `backend_for_add` so the backend is opened at most once.
+    // The target entry itself is kept, not just the fact that it exists: the
+    // carrier records the edge by the target's `entity_id`, which is the only
+    // name for it that survives a re-`init` renumbering ids on another machine.
+    let mut relates_to_entity_id: Option<String> = None;
     if let Some(rel_id) = args.relates_to.as_ref()
         && !pre_init_notes
     {
@@ -157,11 +161,12 @@ pub(super) async fn memory_add(
             Some(backend) => backend,
             None => open_memory_backend(cfg, mem_path, backend_override).await?,
         };
-        let target_exists = backend.get(rel_id.clone()).await?.is_some();
+        let target = backend.get(rel_id.clone()).await?;
         backend_for_add = Some(backend);
-        if !target_exists {
+        let Some(target) = target else {
             anyhow::bail!("{}", unresolvable_id_message(rel_id));
-        }
+        };
+        relates_to_entity_id = Some(note_entity_id(&target));
     }
 
     // Primary store (ADR-004): the local SQLite `memory.db`, an explicit team
@@ -205,13 +210,14 @@ pub(super) async fn memory_add(
     // active. A single directed `relates_to` row is visible from BOTH
     // endpoints: `get_edges` returns it as outgoing from the new entry and
     // incoming to the target, so `memory graph`/`memory show` render it from
-    // either id. The edge lives in the local SQLite graph (`memory_edges`);
-    // the git-notes and remote backends report edge ops unsupported/no-op, so
-    // this is confined to the SQLite backend (and skipped pre-init). The
-    // target's existence was validated in the pre-flight above.
+    // either id. Both stores that can hold a graph take it: SQLite writes a
+    // `memory_edges` row, git notes appends a record carrying the edge. The
+    // remote backend reports edge ops as a no-op, and pre-init there is no
+    // primary store at all. The target's existence was validated in the
+    // pre-flight above.
     if let Some(rel_id) = args.relates_to.as_ref()
         && let Some(backend) = primary_backend.as_ref()
-        && backend.backend_kind() == "sqlite"
+        && matches!(backend.backend_kind(), "sqlite" | "git-notes")
     {
         backend
             .add_edge(&id, rel_id, "relates_to")
@@ -248,6 +254,12 @@ pub(super) async fn memory_add(
             remote_id: None,
             entity_id: Some(new_entity_id.clone()),
             superseded_by_entity_id: None,
+            // A `--relates-to` link starts at this entry, so it rides this
+            // entry's record (ADR-086 D1).
+            edges: relates_to_entity_id
+                .iter()
+                .map(|to| CarriedEdge::new("relates_to", to.clone()))
+                .collect(),
         };
         // Secret scan already ran above; no second check needed here.
         match append_to_git_notes(Some(project_root), &record).await {

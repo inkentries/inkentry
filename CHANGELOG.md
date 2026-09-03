@@ -68,6 +68,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   and state. See
   [Where the model is cached](docs/getting-started.md#where-the-model-is-cached).
 
+### Fixed
+
+- **`relates_to` and `contradicts` links now travel with the repository.** A
+  clone rebuilds the graph the writer had, instead of the entries alone. Older
+  builds still read the new records, and notes already on the ref are
+  unaffected. Re-run `inkentry init`, or any command that reads memory, after a
+  fetch to pick the links up. A link whose other entry has not arrived yet is
+  reported as skipped and applied by a later import.
+
 ## [1.0.1] — 2026-08-28
 
 ### Added

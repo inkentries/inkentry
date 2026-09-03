@@ -678,14 +678,22 @@ inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33
 inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33 --format json
 ```
 
-**Where these edges live.** `relates_to` and `contradicts` edges are recorded
-only in the project's local `memory.db`. Unlike the entries themselves and their
-supersede state, they are not written to `refs/notes/inkentry`, so they do not
-arrive with a clone or a fetch: a teammate who pulls your memory sees the same
-entries without the links you drew between them. Two paths do carry them off the
-machine that recorded them: `inkentry sync` pushes `relates_to` edges to a
-configured team server, and a [portable dump](dump-format.md) carries all three
-kinds into whichever store imports it.
+**Where these edges live.** All three kinds travel with the repository.
+`relates_to` and `contradicts` ride `refs/notes/inkentry` on the record of the
+entry each edge starts from, naming their target by its portable entry id, and
+the graph is rebuilt from them when the notes are imported. `supersedes`
+travels as it always has, as supersede state on the entry it archives, so a
+clone shows the superseded entry as archived; the edge itself is not currently
+rebuilt as a row in the clone's `memory.db`.
+
+An edge is applied only once both entries it joins are present. One naming an
+entry that has not arrived (a partial fetch, or a target recorded with
+`store_in_git_notes = false`) is skipped rather than failing the import, and
+the number skipped is reported; a later import, after the missing entries
+arrive, applies it. Two other paths also carry edges off the machine that
+recorded them: `inkentry sync` pushes `relates_to` edges to a configured team
+server, and a [portable dump](dump-format.md) carries all three kinds into
+whichever store imports it.
 
 ## Harvesting from git history
 
