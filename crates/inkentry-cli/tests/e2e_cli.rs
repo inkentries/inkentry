@@ -2314,6 +2314,213 @@ fn test_search_zero_coverage_degrades_to_full_text_with_warmup_notice() {
         .stderr(predicate::str::contains("ast-grep").not());
 }
 
+// The coverage and capability notices stay on stderr by default, and --quiet
+// is the opt-out for a caller that wants none of them. The default arm is a
+// regression guard: the warmup caveat is what keeps a missing hit from reading
+// as "not in the codebase", so it must survive the flag existing.
+#[test]
+fn test_search_quiet_suppresses_the_stderr_notices_and_leaves_results_intact() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    let loud = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(loud.status.success());
+    let loud_stderr = String::from_utf8_lossy(&loud.stderr);
+    assert!(
+        loud_stderr.contains("warmup"),
+        "the warmup caveat must still be printed by default: {loud_stderr}"
+    );
+    assert!(
+        loud_stderr.contains("full-text search"),
+        "the degraded-ranking notice must still be printed by default: {loud_stderr}"
+    );
+
+    let quiet = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        quiet_stderr.trim().is_empty(),
+        "--quiet must leave stderr clean, got: {quiet_stderr}"
+    );
+
+    let loud_json: serde_json::Value = serde_json::from_slice(&loud.stdout).unwrap();
+    let quiet_json: serde_json::Value = serde_json::from_slice(&quiet.stdout).unwrap();
+    assert_eq!(
+        loud_json, quiet_json,
+        "--quiet must change nothing about the results"
+    );
+}
+
+// The sink swallows notices, not failures: an error still has to reach the
+// caller, or -q would leave a non-zero exit with nothing explaining it.
+#[test]
+fn test_search_quiet_still_reports_a_genuine_error() {
+    let home = tempfile::TempDir::new().unwrap();
+    let empty = home.path().join("not-a-project");
+    fs::create_dir_all(&empty).unwrap();
+
+    let out = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&empty)
+        .args(["search", "compute", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "an uninitialised directory must fail"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).trim().is_empty(),
+        "-q must not silence the reason for a non-zero exit"
+    );
+}
+
+// The recorded-server warning explains why semantic ranking is unavailable, and
+// it fires in the ordinary "server was stopped or went stale" state, which is
+// exactly when the ranking notice fires too. A caller who reaches for --quiet
+// because of that red block must not still get this one.
+#[test]
+fn test_search_quiet_suppresses_the_recorded_server_warning() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    // Claim a free port and drop it, so the recording names one nothing answers.
+    let dead_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let state_dir = home.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(state_dir.join("server.port"), dead_port.to_string()).unwrap();
+
+    let loud = inkentry_bin_in(home.path())
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(loud.status.success());
+    let loud_stderr = String::from_utf8_lossy(&loud.stderr);
+    assert!(
+        loud_stderr.contains("did not answer"),
+        "a recorded server that is gone must still be announced by default: {loud_stderr}"
+    );
+
+    let quiet = inkentry_bin_in(home.path())
+        .env("INKENTRY_STATE_DIR", &state_dir)
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--format", "json", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        quiet_stderr.trim().is_empty(),
+        "--quiet must silence the recorded-server warning too, got: {quiet_stderr}"
+    );
+    let _: serde_json::Value =
+        serde_json::from_slice(&quiet.stdout).expect("stdout must stay machine-clean JSON");
+}
+
+// A stale index is the ordinary state right after editing, which is exactly
+// when someone searches, so the stale warning is the notice a caller reaching
+// for --quiet is most likely to hit.
+#[test]
+fn test_search_quiet_also_suppresses_the_stale_index_warning() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    // Edit a file after indexing so the staleness probe has something to find.
+    fs::write(
+        project_dir.join("lib.rs"),
+        "pub fn compute(x: i32) -> i32 { x * 3 }\npub fn helper() -> i32 { 8 }\npub fn added() -> i32 { 9 }\n",
+    )
+    .unwrap();
+
+    let loud = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute"])
+        .output()
+        .unwrap();
+    assert!(loud.status.success());
+    let loud_stderr = String::from_utf8_lossy(&loud.stderr);
+    assert!(
+        loud_stderr.contains("index may be stale"),
+        "the edit should have made the index stale: {loud_stderr}"
+    );
+
+    let quiet = inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        quiet_stderr.trim().is_empty(),
+        "--quiet must silence the stale-index warning too, got: {quiet_stderr}"
+    );
+}
+
+// A log line the CLI writes to a redirected stdout carries no colour escapes.
+// The post-commit hook captures this stream into a file, so escapes written
+// here outlive the run in a file nothing strips them from.
+#[test]
+fn test_cli_log_output_to_a_pipe_carries_no_escape_bytes() {
+    let home = tempfile::TempDir::new().unwrap();
+    let (project_dir, config_path) = offline_indexed_project(home.path());
+
+    // A non-numeric discovery port is refused with a warning and disables the
+    // fixed-port fallback, which both triggers a log line deterministically and
+    // keeps the probe inside this test's world.
+    let output = inkentry_bin_in(home.path())
+        .env("INKENTRY_STATE_DIR", home.path().join("state"))
+        .env("INKENTRY_TEST_DISCOVERY_PORT", "notaport")
+        .env("RUST_LOG", "warn")
+        .env_remove("NO_COLOR")
+        .current_dir(&project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["search", "compute", "--only-text"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("disabling loopback discovery"),
+        "the run should have logged a warning: {stdout}"
+    );
+    assert!(
+        !output.stdout.contains(&0x1b),
+        "log output to a pipe must be plain text: {stdout}"
+    );
+}
+
 // Partial-coverage cell, end to end: embed everything, then add a
 // file and re-index offline so coverage is partial. An auto search must emit
 // the one-line stderr warmup notice carrying the coverage AND its

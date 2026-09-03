@@ -324,6 +324,40 @@ inkentry search <query> [options]
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
 | `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
+| `-q, --quiet` | false | Suppress the informational notices on stderr (stale index, server discovery, ranking availability, embedding coverage) |
+
+### Where the notices go
+
+The notices this command writes go to **stderr**, never stdout, so `--format
+json` and `--format jsonl` output stays machine-clean and a pipeline consuming
+stdout never has to filter them. They are informational: the exit status is zero
+and the results are complete for the ranking that was available. There are four
+families, and `-q` covers all of them:
+
+- the stale-index warning;
+- server discovery, when a local server that was started no longer answers;
+- semantic-ranking availability, when the run fell back to full-text;
+- embedding coverage, including the warmup caveat.
+
+Three things `-q` does not touch. An error is not a notice, so anything that ends
+the run non-zero still prints. Neither is the multi-user warning about a server
+started by a different user, which says another user's memory may be reachable.
+Nor are the configuration warnings about an unread key or a stored credential:
+those are raised while the configuration loads, before any command sees its own
+flags, and they name a misconfiguration that outlives the run rather than a
+condition of this search.
+
+Windows PowerShell 5.1 renders anything a native command writes to stderr as a
+red `NativeCommandError` block, so these notices can look like a crash there
+even though nothing failed. `-q` suppresses them on its own; PowerShell 7 does
+not render them that way.
+
+`-q` and `--no-stale-check` are not the same thing. `--no-stale-check` skips the
+staleness probe altogether, so it also saves that work, and leaves every other
+notice printing. `-q` prints nothing informational but still does the work
+behind it: the probe still runs, and the coverage counts are still read, so a
+run that finds nothing still says whether the index was only partly embedded.
+Pass both to skip the probe and stay quiet.
 
 `--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
 LinearRAG: a two-stage entity-activation + personalised PageRank pipeline.
@@ -357,6 +391,7 @@ inkentry search "where is the JWT token validated"
 inkentry search "database schema migration" --limit 5 --format json
 inkentry search "validate_token" --graph            # ranked results + the symbol's call-graph neighbours
 inkentry search "TODO fix me" --only-text           # full-text only, no server needed
+inkentry search "retry backoff" --quiet             # results only, no notices on stderr
 inkentry search "authentication" --only-code        # code corpus only, no interleaved memory
 inkentry search "why did we choose sqlite" --only-memory --as-of 2026-01-01
 ```
@@ -815,6 +850,10 @@ inkentry server logs [-n <lines>]
 | `stop` | Graceful SIGTERM, then SIGKILL escalation for an unresponsive daemon; reports success only once the process is confirmed gone. |
 | `status` | Print PID, port, instance id, and uptime |
 | `logs` | Print the last N lines of the server log (`-n`, default 50) |
+
+The daemon writes its log through a redirected stdout, so the log file is plain
+text and readable with any tool: colour is emitted only when the server runs in
+a terminal, and `NO_COLOR` turns it off there too.
 
 ```bash
 inkentry server start

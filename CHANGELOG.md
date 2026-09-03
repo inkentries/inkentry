@@ -9,6 +9,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`inkentry search --quiet`** suppresses the informational notices on stderr
+  (stale index, server discovery, ranking availability, embedding coverage).
+  Results and exit codes are unchanged, and it never hides an error or the
+  warning about a server started by another user. Reach for it in Windows
+  PowerShell 5.1, which renders anything a native command writes to stderr as a
+  red error block.
+
 ### Changed
 
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
@@ -32,6 +41,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   one that never started. The worker now records when it started, how far the
   embedding has got, and the reason if it stops early. A new run appends to the
   log instead of overwriting what the last one reported.
+
+### Fixed
+
+- **The server log file is plain text.** The daemon coloured its log
+  unconditionally, so `server.log` held raw escape sequences and every reader
+  without VT processing showed litter around each field. Colour is now emitted
+  only when the log is going to a terminal, and `inkentry`'s own `RUST_LOG`
+  output follows the same rule.
+- **`inkentry hooks install` prints one path separator on Windows.** The
+  installed-hook path read as `D:\src\repo\.git/hooks\post-commit`, because git
+  reports its hooks directory with forward slashes.
 
 ## [1.0.1] — 2026-08-28
 
