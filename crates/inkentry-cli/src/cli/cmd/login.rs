@@ -48,9 +48,13 @@ use super::org::{persist_tokens, switch_org};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// Override the inkentry cloud API URL (default: https://api.inkentry.com).
-    /// Also selects the WorkOS environment (prod host → prod client_id; any
-    /// other host → dev client_id) unless `INKENTRY_WORKOS_CLIENT_ID` is set.
+    /// Development override: points `login` at a development cloud instead of
+    /// the fixed hosted URL (default: https://api.inkentry.com). Not a user
+    /// setting for choosing a cloud (use `cloud = true` in
+    /// `.inkentry/config.toml`), and it does not change which origin a stored
+    /// access token is released to. Also selects the WorkOS environment (prod
+    /// host → prod client_id; any other host → dev client_id) unless
+    /// `INKENTRY_WORKOS_CLIENT_ID` is set.
     #[arg(long, env = "INKENTRY_CLOUD_URL")]
     pub cloud_url: Option<String>,
 

@@ -283,18 +283,19 @@ Store the credential in the secret store instead:
 
 ### How the bearer is resolved
 
-Two tiers, branched by the target server's origin:
+Two tiers, branched by whether the target origin is the one recorded in
+`[auth].cloud_origin`, not by whether it looks like a cloud address (ADR-095):
 
 | Target | Order |
 |--------|-------|
-| inkentry cloud | `INKENTRY_SERVER_KEY`, then `[auth].access_token` from `inkentry login` |
-| any other `server_url` (self-hosted / team) | `INKENTRY_SERVER_KEY`, then the per-origin key store |
+| origin equals `[auth].cloud_origin` | `INKENTRY_SERVER_KEY`, then `[auth].access_token` from `inkentry login` |
+| any other `server_url` (self-hosted / team, or a cloud origin you are not logged into) | `INKENTRY_SERVER_KEY`, then the per-origin key store |
 
-Each kind consults only its own tier: a cloud request never reads the
-per-origin store, and a self-hosted request never reads `[auth]`. The
-per-origin scoping (ADR-071) is what lets one developer hold keys for two
-different self-hosted servers without them colliding or leaking into each
-other.
+Each kind consults only its own tier: a request matching the recorded cloud
+origin never reads the per-origin store, and any other request never reads
+`[auth]`. The per-origin scoping (ADR-071) is what lets one developer hold keys
+for two different self-hosted servers without them colliding or leaking into
+each other.
 
 An origin with no stored key resolves to **no bearer**. If the server requires
 one, the request fails and the error names
@@ -346,14 +347,19 @@ access_token = "..."
 refresh_token = "..."
 expires_at = 1234567890
 org_id = "org_..."
+cloud_origin = "https://api.inkentry.com"
 ```
 
-While `access_token` is unexpired, it is the source of the `Authorization:
-Bearer` token every inkentry cloud request sends; it does not apply to a
-self-hosted `server_url`, which resolves its own credential separately (see
-[How the bearer is resolved](#how-the-bearer-is-resolved) above).
-`refresh_token` rotates an expired access token and backs organization
-switching. The file is written with `0600` permissions. This
+While `access_token` is unexpired **and** the request's target origin equals
+`cloud_origin`, it is the source of the `Authorization: Bearer` token an
+inkentry cloud request sends; it does not apply to a self-hosted `server_url`,
+which resolves its own credential separately (see [How the bearer is
+resolved](#how-the-bearer-is-resolved) above). `cloud_origin` is the origin
+`inkentry login` (or `inkentry org switch`) authenticated against, recorded at
+that time and preserved across a token refresh; the access token is never
+released to a different origin, including one `INKENTRY_CLOUD_URL` points at
+(ADR-095). `refresh_token` rotates an expired access token and backs
+organization switching. The file is written with `0600` permissions. This
 table is not read from `.inkentry/config.toml`.
 
 Every field is optional: a partial table (for example a login without an org,
@@ -361,7 +367,8 @@ which omits `org_id`, or a hand-trimmed file) is tolerated and never blocks
 commands that need no credentials. A missing or empty `access_token` is read as
 "not logged in" (no bearer is sent); a missing `expires_at` is treated as
 expired (forcing a refresh); a missing `org_id` applies no organization
-scoping.
+scoping; a missing or empty `cloud_origin` matches no origin, so no bearer is
+ever released for that table.
 
 ### `[index]`
 

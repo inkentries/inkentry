@@ -91,13 +91,15 @@ truth, you run a **team server** and point everyone at it. The team server share
 your memory index, the decisions and requirements behind the code, not the code
 itself; each person's code stays on their own machine. It is the same
 open-source server, free to self-host. If you would rather not run one yourself,
-the hosted inkentry cloud service is the managed alternative.
+the hosted inkentry cloud service is the managed alternative: set `cloud = true`
+in `.inkentry/config.toml` and run `inkentry login`.
 
 | Tier | What it adds | Where memory lives |
 |---|---|---|
 | Built-in (no server) | git-notes memory, full-text search, code graph | local `memory.db` |
 | Local semantic server (auto-started on loopback) | faster semantic search, summaries | still local `memory.db`: inference only, never a memory store |
 | Team memory server (explicit `server_url`) | one shared memory index for the team | the shared server: the only path off the local machine |
+| inkentry cloud (`cloud = true`) | the same shared memory, hosted for you | the hosted service: the only path off the local machine |
 
 Everyone on a team sets an explicit `server_url` (plus a shared server key)
 pointing at the same server, and [`inkentry sync`](commands.md#inkentry-sync) keeps
@@ -107,6 +109,7 @@ for that. Only memory does.
 
 - [Getting Started → capability tiers](getting-started.md#capability-tiers-where-inference-and-memory-live): the tier table in context
 - [Getting Started → team setup](getting-started.md#team-setup-shared-memory-with-inkentry-server): how to set `server_url` and sync
+- [Getting Started → using inkentry cloud](getting-started.md#using-inkentry-cloud): how to set `cloud = true` and log in
 - [Server setup](server-setup.md): deploy and expose a team server (Docker, systemd, TLS, client config)
 - [Remote agents](remote-agents.md): run an agent in a container against your server
 

@@ -178,7 +178,10 @@ guess wrong about, and each restriction is part of the contract:
   may come only from the checked-in `.inkentry/config.toml` or from
   `INKENTRY_SERVER_URL`. Everyone working on a project needs the same team
   server, which a per-developer file cannot guarantee. A global config that
-  still sets it loads fine; the value is discarded.
+  still sets it loads fine; the value is discarded. `cloud` carries the same
+  restriction and for the same reason: it is a project-wide choice between the
+  hosted cloud and a self-hosted `server_url`, so a personal-config value is
+  discarded the same way.
 - `server_key` is **not a config key at all, in either file**. It is ignored in
   the checked-in `.inkentry/config.toml` and ignored in the personal
   `~/.config/inkentry/config.toml` alike. A repository must never be able to
@@ -216,9 +219,9 @@ Beyond those three:
   rest in plaintext. In the personal config, `server_key` is the only ignored
   key that is named; the rest are silent.
 - The **project-level allowlist** is itself stable. A checked-in
-  `.inkentry/config.toml` is honoured for exactly `server_url`, `project_id`,
-  `server_ca`, `mode`, `llm_url`, and `[index]`. Adding a key to that allowlist is additive
-  and allowed; removing one is a breaking change.
+  `.inkentry/config.toml` is honoured for exactly `server_url`, `cloud`,
+  `project_id`, `server_ca`, `mode`, `llm_url`, and `[index]`. Adding a key to
+  that allowlist is additive and allowed; removing one is a breaking change.
 - Environment variable overrides (`INKENTRY_*`) are stable on the same terms as
   the keys they override. They are not subject to the file restrictions above:
   `INKENTRY_SERVER_URL` and `INKENTRY_LLM_URL` take effect wherever they are
@@ -230,11 +233,12 @@ Beyond those three:
   documented in [Config reference](config-reference.md) but is not frozen here.
 - **Credential resolution is two tiers, and the order is part of the
   contract.** For a request to `server_url`: `INKENTRY_SERVER_KEY`, then the
-  per-origin key store written by `inkentry auth set-key --server <url>` (for
-  an inkentry cloud origin, the `[auth]` token pair from `inkentry login` takes
-  that second place instead). There is no third tier and no fallback below
-  those: an origin with no stored key resolves to no bearer, and the resulting
-  authentication failure names `inkentry auth set-key --server <url>`. No key
+  per-origin key store written by `inkentry auth set-key --server <url>` (for a
+  request whose origin matches the one the `[auth]` token pair was issued for,
+  that token pair takes that second place instead, per ADR-095). There is no
+  third tier and no fallback below those: an origin with no stored key
+  resolves to no bearer, and the resulting authentication failure names
+  `inkentry auth set-key --server <url>`. No key
   is ever migrated between tiers or lifted out of a file on your behalf.
 
 ### Deprecation policy

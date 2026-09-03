@@ -10,7 +10,8 @@ until you install the pre-push hook with `inkentry hooks install --pre-push`
 (see [Sharing memory across clones via
 git-notes](#sharing-memory-across-clones-via-git-notes)). No external
 database or server is required. (You can make git-notes the primary backend with
-`--backend git-notes`, or point at a shared server with `server_url`.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
+`--backend git-notes`, or point at a shared server with `server_url`, or opt
+into the hosted inkentry cloud with `cloud = true` instead.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` (or `cloud = true`) **and** opt into `mode = "cloud_first"` (the default once `cloud = true`); with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
@@ -32,7 +33,7 @@ for memory and `.inkentry/memory.db` as the queryable *index* built over it. Eve
 `inkentry init` hydrates the index by importing those notes: `memory list` and
 `context` see them immediately, and `inkentry memory reindex` adds the
 embeddings the semantic ranking of `inkentry search` needs. Both live in the repo, and the store of record stays local
-unless you configure a team `server_url` with `mode = "cloud_first"` (see [Team
+unless you configure a team `server_url` (or `cloud = true`) with `mode = "cloud_first"` (see [Team
 server and sync modes](#team-server-and-sync-modes)). The carrier reaches teammates only once
 the notes ref is pushed and fetched (see [Sharing memory across clones via
 git-notes](#sharing-memory-across-clones-via-git-notes) below).
@@ -96,10 +97,10 @@ search and embed).
 
 1. Explicit `--db <path>` (always wins)
 2. Explicit `--backend git-notes` (git notes is the primary store)
-3. Explicit team `server_url` in config with `mode = "cloud_first"` (remote
-   server; under the default `local_first` mode a configured `server_url` does
-   *not* redirect reads or writes, see [Team server and sync
-   modes](#team-server-and-sync-modes))
+3. Explicit team `server_url` (or `cloud = true`) in config with
+   `mode = "cloud_first"` (remote server; under the default `local_first` mode
+   a configured `server_url` does *not* redirect reads or writes, see [Team
+   server and sync modes](#team-server-and-sync-modes))
 4. A local `.inkentry/memory.db` (after `inkentry init`)
 5. No project but inside a git repo: the git-notes write-through carrier (add/list only)
 6. Neither a project nor a git repo: error, *"no inkentry project here, and not inside a git repo. Run 'inkentry init' first, or run inside a git repository."*
@@ -127,13 +128,16 @@ git-notes carrier rationale.
 
 Configuring a team `server_url` does not, by itself, redirect reads or writes
 to the server. The `mode` config field (or the `INKENTRY_MODE` environment
-variable) controls how the CLI reconciles the local store and the server:
+variable) controls how the CLI reconciles the local store and the server.
+`cloud = true` is the one exception: with no `mode` set explicitly it defaults
+to `cloud_first` rather than `local_first`, since opting into the hosted
+service is itself the deliberate step (see [`cloud`](config-reference.md#cloud)).
 
 | `mode` | reads | writes | when the server is unreachable |
 |---|---|---|---|
 | `offline` | local | local | never contacted, even with `server_url` set |
-| `local_first` (default when `server_url` is set) | local | local | everything keeps working; the local store is unaffected |
-| `cloud_first` | server | server | commands fail with an error; local data is never silently substituted |
+| `local_first` (default when `server_url` is set without `cloud`) | local | local | everything keeps working; the local store is unaffected |
+| `cloud_first` (default when `cloud = true`) | server | server | commands fail with an error; local data is never silently substituted |
 
 **`local_first`** is the default whenever `server_url` is configured. Reads
 and writes stay in the project's local `memory.db`, so every command keeps
@@ -173,7 +177,8 @@ your own machine whether you wrote it or a teammate did (see
 **`cloud_first`** makes the server authoritative: reads and writes go straight
 to it, and an unreachable or untrusted server is a hard error naming the cause
 (for certificate trust, see `server_ca` / `INKENTRY_SERVER_CA`). The CLI never
-falls back to local data in this mode. Configure it in `.inkentry/config.toml`:
+falls back to local data in this mode. Configure a self-hosted team server in
+`.inkentry/config.toml`:
 
 ```toml
 server_url = "https://inkentry.internal.example.com"
@@ -181,13 +186,21 @@ project_id = "my-awesome-app"
 mode = "cloud_first"
 ```
 
-`server_url` may point at a self-hosted `inkentry-server` or at the hosted API.
-The two expose different memory routes, so inkentry settles which to speak when
-the backend opens, by reading the capability list `/v1/health` already
-advertises. A peer advertising SSE memory streaming is the hosted API; anything
-else, including a probe that times out, is unreachable, or answers without a
-capability list, is treated as a self-hosted server. The probe is
-unauthenticated and never sends your server key.
+Or opt into the hosted inkentry cloud instead, mutually exclusive with
+`server_url` (see [`cloud`](config-reference.md#cloud)):
+
+```toml
+cloud = true
+project_id = "my-awesome-app"
+```
+
+`cloud = true` defaults to `cloud_first` unless `mode` is set explicitly, so it
+does not need to be repeated here. Either way, the CLI settles which backend it
+is speaking to when the connection opens, by reading the capability list
+`/v1/health` already advertises. A peer advertising SSE memory streaming is the
+hosted API; anything else, including a probe that times out, is unreachable, or
+answers without a capability list, is treated as a self-hosted server. The
+probe is unauthenticated and never sends your server key or cloud token.
 
 `project_id` may be a slug or a UUID against either peer; every memory
 command, including `inkentry memory show` and `inkentry memory archive`, resolves
