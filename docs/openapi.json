@@ -1637,6 +1637,20 @@
             ],
             "description": "Optional human-readable detail (e.g. the load-failure summary while\n`unavailable`). `null` when not useful."
           },
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Device the engine was configured for at load: `\"cpu\"`, `\"metal\"`, or\n`\"vulkan\"`. `null` until the embedder is `ready` (and on older\nservers pre-dating the field)."
+          },
+          "engine": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Inference engine serving embeddings: `\"candle\"` or `\"llama\"`. `null`\nuntil the embedder is `ready` (and on older servers pre-dating the\nfield). Both engines produce the same vector space; this exists so a\nfield report can name the engine without reading server logs."
+          },
           "state": {
             "$ref": "#/components/schemas/EmbedderState",
             "description": "Readiness of the server-side embedder."

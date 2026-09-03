@@ -15,8 +15,6 @@ use inkentry_server::{
 };
 use utoipa::OpenApi;
 
-#[cfg(feature = "embed-native")]
-use inkentry_embed::DIM as NATIVE_EMBED_DIM;
 // Via inkentry-core (always linked); inkentry_embed is only present under embed-native.
 use inkentry_core::embeddings::MODEL_ID as NATIVE_MODEL_ID;
 #[cfg(feature = "embed-native")]
@@ -389,6 +387,8 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     let embedder_slot = state.embedder.clone();
     let repair_signal = state.repair_signal.clone();
     let model_dir = args.model_dir.clone();
+    #[cfg_attr(not(feature = "embed-native"), allow(unused_variables))]
+    let embed_threads = state.embed_threads;
 
     tokio::spawn(inkentry_server::repair::run_repair_worker(
         state.clone(),
@@ -453,16 +453,16 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     if load_native {
         let slot = embedder_slot.clone();
         tokio::spawn(async move {
-            let load = move || match model_dir {
-                Some(dir) => embed_hub::load_from_model_dir(&dir),
-                None => embed_hub::load_from_hub(),
-            };
+            let load = move || embed_hub::load_backend(model_dir.as_deref(), embed_threads);
             match tokio::task::spawn_blocking(load).await {
-                Ok(Ok(native)) => {
-                    tracing::info!("native embedding model loaded (dim={})", NATIVE_EMBED_DIM);
-                    slot.set_ready(
-                        Arc::new(native) as Arc<dyn inkentry_core::embeddings::EmbeddingBackend>
+                Ok(Ok(loaded)) => {
+                    tracing::info!(
+                        "embedding model loaded (engine={}, device={}, dim={})",
+                        loaded.engine,
+                        loaded.device,
+                        loaded.backend.dimension()
                     );
+                    slot.set_ready_with_engine(loaded.backend, loaded.engine, loaded.device);
                     // Anything stored while the model was warming up went in
                     // without a vector. This is also the restart recovery
                     // floor: a process that comes up with a working model

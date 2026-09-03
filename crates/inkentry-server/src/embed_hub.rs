@@ -22,10 +22,13 @@
 //! were derived from.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
 use inkentry_embed::NativeEmbedder;
+#[cfg(feature = "embed-llama")]
+use inkentry_embed::{DeviceRequest, LlamaEmbedder};
 
 /// `config.json` for F2LLM-v2-330M (Qwen3 architecture config; ~1 KB).
 /// Embedded directly in the binary — it's tiny and never changes independent
@@ -68,6 +71,23 @@ const DEFAULT_GGUF_REPO: &str = "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF";
 /// that publishes `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` (see
 /// `docs/third-party-models.md`), not built on device.
 const QUANT_GGUF: &str = "f2llm-v2-330m-q8_0.gguf";
+
+/// Filename of the *canonical llama.cpp* GGUF for the same model, hosted in
+/// the same repo as [`QUANT_GGUF`]. The two are not interchangeable: this one
+/// carries llama.cpp tensor names (`blk.N.*`), arch metadata, and the baked
+/// tokenizer + last-token pooling config that `LlamaEmbedder` needs, while
+/// [`QUANT_GGUF`] keeps HF-style names only the candle loader reads. Both are
+/// Q8_0 quantizations of the same pinned upstream revision, so they share the
+/// vector space and `MODEL_ID`.
+#[cfg(feature = "embed-llama")]
+const LLAMA_GGUF: &str = "f2llm-v2-330m-llama-q8_0.gguf";
+
+/// Env var selecting where the embedder runs: `auto` (default), `gpu`, or
+/// `cpu`. Deliberately API-agnostic values — no `vulkan`/`metal` — so the
+/// same setting means the same thing on every platform. `cpu` is the escape
+/// hatch that skips the llama engine entirely and keeps today's candle path.
+#[cfg(feature = "embed-llama")]
+const EMBED_DEVICE_ENV: &str = "INKENTRY_EMBED_DEVICE";
 
 /// Load the F2LLM-v2-330M model, quantized to Q8_0, via the Hugging Face Hub.
 ///
@@ -197,6 +217,154 @@ pub fn load_from_model_dir(dir: &Path) -> Result<NativeEmbedder> {
     NativeEmbedder::load_from_path(&gguf_path, &tokenizer_path, &config_path)
 }
 
+/// A ready embedding backend plus the identity facts `/v1/health` surfaces
+/// about it. `engine`/`device` exist so a field report can say *which* engine
+/// on *which* device produced a problem without reading server logs.
+pub struct LoadedEmbedder {
+    pub backend: Arc<dyn inkentry_core::embeddings::EmbeddingBackend>,
+    /// `"candle"` or `"llama"`.
+    pub engine: &'static str,
+    /// `"cpu"`, `"metal"`, or `"vulkan"` — the device the engine was
+    /// configured for at load.
+    pub device: &'static str,
+}
+
+/// Load the embedding backend, choosing the engine at runtime.
+///
+/// With the `embed-llama` feature and `INKENTRY_EMBED_DEVICE` not `cpu`, the
+/// llama.cpp engine (GPU) is tried first; any failure there — missing
+/// artifact, no usable driver, out of device memory — logs a warning and
+/// falls back to the candle engine, so a build carrying the llama engine can
+/// never embed *less* than one without it. `cpu` (or a build without
+/// `embed-llama`) is exactly today's candle path.
+pub fn load_backend(model_dir: Option<&Path>, embed_threads: usize) -> Result<LoadedEmbedder> {
+    #[cfg(feature = "embed-llama")]
+    {
+        let device = embed_device_request()?;
+        if !matches!(device, DeviceRequest::Cpu) {
+            let llama = match model_dir {
+                Some(dir) => load_llama_from_model_dir(dir, device, embed_threads),
+                None => load_llama_from_hub(device, embed_threads),
+            };
+            match llama {
+                Ok(embedder) => {
+                    return Ok(LoadedEmbedder {
+                        device: embedder.device(),
+                        backend: Arc::new(embedder),
+                        engine: "llama",
+                    });
+                }
+                Err(e) => tracing::warn!(
+                    "llama embedding engine failed to load ({e:#}); falling back to candle"
+                ),
+            }
+        }
+    }
+    #[cfg(not(feature = "embed-llama"))]
+    let _ = embed_threads;
+
+    let native = match model_dir {
+        Some(dir) => load_from_model_dir(dir),
+        None => load_from_hub(),
+    }?;
+    Ok(LoadedEmbedder {
+        backend: Arc::new(native),
+        engine: "candle",
+        // Compile-time flavor: the candle loader's rare runtime
+        // Metal-init fallback to CPU is logged but not surfaced here.
+        device: if cfg!(feature = "metal") {
+            "metal"
+        } else {
+            "cpu"
+        },
+    })
+}
+
+/// Load the llama.cpp engine's canonical GGUF via the Hugging Face Hub —
+/// same repo, cache, and flat-copy layout as [`load_from_hub`], but a single
+/// file: the canonical GGUF embeds its own tokenizer and config.
+#[cfg(feature = "embed-llama")]
+fn load_llama_from_hub(device: DeviceRequest, embed_threads: usize) -> Result<LlamaEmbedder> {
+    let cache_dir = model_cache_dir()?;
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("creating model cache dir {}", cache_dir.display()))?;
+    let gguf_path = cache_dir.join(LLAMA_GGUF);
+
+    if !gguf_path.exists() {
+        let gguf_repo = prequantized_gguf_repo();
+        tracing::info!("fetching canonical llama.cpp GGUF from {gguf_repo} (first run)…");
+        let api = ApiBuilder::new()
+            .with_cache_dir(cache_dir)
+            .build()
+            .context("building HuggingFace Hub API client")?;
+        let repo = api.repo(Repo::new(gguf_repo.clone(), RepoType::Model));
+        let downloaded = repo
+            .get(LLAMA_GGUF)
+            .with_context(|| format!("downloading {LLAMA_GGUF} from {gguf_repo}"))?;
+        if downloaded != gguf_path {
+            std::fs::copy(&downloaded, &gguf_path).with_context(|| {
+                format!(
+                    "caching {} -> {}",
+                    downloaded.display(),
+                    gguf_path.display()
+                )
+            })?;
+        }
+        tracing::info!(
+            "fetched canonical llama.cpp GGUF to {}",
+            gguf_path.display()
+        );
+    }
+
+    LlamaEmbedder::load_from_path(&gguf_path, device, Some(embed_threads))
+}
+
+/// Air-gapped counterpart of [`load_llama_from_hub`]: reads the canonical
+/// llama.cpp GGUF from the operator-provisioned `--model-dir`. Zero network
+/// access, no `hf_hub` involvement.
+#[cfg(feature = "embed-llama")]
+fn load_llama_from_model_dir(
+    dir: &Path,
+    device: DeviceRequest,
+    embed_threads: usize,
+) -> Result<LlamaEmbedder> {
+    anyhow::ensure!(
+        dir.is_dir(),
+        "--model-dir {} is not a directory. See \"Air-gapped / no-egress install\" in \
+         docs/server-setup.md for the offline provisioning procedure.",
+        dir.display()
+    );
+    let gguf_path = dir.join(LLAMA_GGUF);
+    anyhow::ensure!(
+        gguf_path.exists(),
+        "offline model artifact missing: {} not found in --model-dir {}. See \
+         \"Air-gapped / no-egress install\" in docs/server-setup.md for the fetch-and-transfer \
+         procedure.",
+        LLAMA_GGUF,
+        dir.display()
+    );
+    tracing::info!(
+        "loading F2LLM-v2-330M (Q8_0) via llama.cpp from offline --model-dir {} \
+         (zero network access)",
+        dir.display()
+    );
+    LlamaEmbedder::load_from_path(&gguf_path, device, Some(embed_threads))
+}
+
+/// Parse [`EMBED_DEVICE_ENV`]; unset or blank means `auto`. An unparseable
+/// value is a load error (surfaced through `/v1/health` as `unavailable`)
+/// rather than a silent default: a typo'd `INKENTRY_EMBED_DEVICE=vulkan`
+/// quietly running on some other device would be worse than failing loudly.
+#[cfg(feature = "embed-llama")]
+fn embed_device_request() -> Result<DeviceRequest> {
+    match std::env::var(EMBED_DEVICE_ENV) {
+        Ok(v) if !v.trim().is_empty() => v
+            .parse()
+            .with_context(|| format!("parsing {EMBED_DEVICE_ENV}")),
+        _ => Ok(DeviceRequest::Auto),
+    }
+}
+
 fn model_cache_dir() -> Result<PathBuf> {
     dirs::data_local_dir()
         .map(|d| d.join("inkentry").join("models"))
@@ -324,6 +492,92 @@ mod tests {
             related > unrelated + 0.2,
             "GQA-fixed embeddings must discriminate related from unrelated: \
              related={related:.3} vs unrelated={unrelated:.3} (inkentry-oss#19)"
+        );
+    }
+
+    /// Cross-engine vector-space parity gate: the llama.cpp engine must land in
+    /// the same vector space as the candle engine, within the drift the product
+    /// already ships between candle-CPU and candle-Metal (median cosine ≥
+    /// 0.999, worst chunk ≥ 0.99, measured over 300+ real repo chunks in the
+    /// Phase-0 study). This is what lets both engines serve one `MODEL_ID`
+    /// with no re-index. Ignored by default: needs both GGUFs on disk — the
+    /// HF-named one via [`load_from_hub`] and the canonical llama.cpp one in
+    /// the model cache (published alongside it, or placed manually before the
+    /// repo carries it).
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    #[ignore = "requires both F2LLM GGUFs and runs inference on both engines"]
+    fn llama_engine_matches_candle_vector_space() {
+        use inkentry_core::embeddings::EmbeddingBackend;
+
+        let candle = load_from_hub().expect("load candle engine");
+        let llama = load_llama_from_hub(DeviceRequest::Auto, 4)
+            .expect("load llama engine (canonical GGUF)");
+        assert_eq!(
+            candle.dimension(),
+            llama.dimension(),
+            "engines must agree on dim"
+        );
+
+        let texts: [&str; 8] = [
+            "title: load_from_hub | text: pub fn load_from_hub() -> Result<NativeEmbedder> { \
+             let cache_dir = model_cache_dir()?; }",
+            "title: none | text: The server binds its listener before the model warms up so \
+             health stays live during the download.",
+            "title: l2_normalise | text: fn l2_normalise(v: &mut [f32]) { let norm = \
+             v.iter().map(|x| x * x).sum::<f32>().sqrt(); }",
+            "title: none | text: 埋め込みモデルは起動時にバックグラウンドで読み込まれます。",
+            "title: none | text: SELECT id, title FROM notes WHERE archived = 0 ORDER BY \
+             created_at DESC LIMIT 20;",
+            "title: none | text: the fall of the roman empire and the rise of byzantium",
+            "title: token_cap | text: the memory-budget-derived bound that keeps the \
+             single-chunk attention scratch within RAM",
+            "title: none | text: cosine similarity between L2-normalised vectors is their \
+             dot product",
+        ];
+        let query = "Instruct: Given a code search query, retrieve the relevant code \
+                     snippets\nQuery: normalise an embedding vector in place";
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let candle_vecs = rt.block_on(candle.embed(&texts)).expect("candle embed");
+        let llama_vecs = rt.block_on(llama.embed(&texts)).expect("llama embed");
+
+        // Embeddings are L2-normalised, so dot product == cosine similarity.
+        let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+
+        let mut cosines: Vec<f32> = candle_vecs
+            .iter()
+            .zip(&llama_vecs)
+            .map(|(c, l)| cos(c, l))
+            .collect();
+        cosines.sort_by(|a, b| a.partial_cmp(b).expect("finite cosines"));
+        let min = cosines[0];
+        let median = cosines[cosines.len() / 2];
+        assert!(
+            min >= 0.99 && median >= 0.999,
+            "cross-engine drift exceeds the shipped candle CPU↔Metal envelope: \
+             min={min:.5} (≥0.99 required), median={median:.5} (≥0.999 required) — \
+             if this regressed after a llama-cpp-2 upgrade, the vector space moved \
+             and MODEL_ID must change (forcing a re-index)"
+        );
+
+        // Retrieval agreement: both engines must rank the same best chunk for
+        // a real query (the contract that actually matters to search).
+        let candle_q = &rt.block_on(candle.embed(&[query])).expect("candle query")[0];
+        let llama_q = &rt.block_on(llama.embed(&[query])).expect("llama query")[0];
+        let argmax = |q: &[f32], vecs: &[Vec<f32>]| {
+            (0..vecs.len())
+                .max_by(|&a, &b| {
+                    cos(q, &vecs[a])
+                        .partial_cmp(&cos(q, &vecs[b]))
+                        .expect("finite cosines")
+                })
+                .expect("non-empty corpus")
+        };
+        assert_eq!(
+            argmax(candle_q, &candle_vecs),
+            argmax(llama_q, &llama_vecs),
+            "engines disagree on the top-1 chunk for the same query"
         );
     }
 

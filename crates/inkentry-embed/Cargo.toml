@@ -31,6 +31,18 @@ native = [
 ]
 # metal: enable Metal GPU acceleration on macOS. Add this when building the macOS binary.
 metal = ["native", "candle-core/metal", "candle-nn/metal"]
+# llama: the llama.cpp-based LlamaEmbedder (same F2LLM model, canonical
+# llama.cpp GGUF). Off by default so a plain build never compiles the C++
+# engine; the CPU-only ggml backend is what this bare feature gives you.
+llama = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2", "dep:tokio", "dep:tracing"]
+# llama-metal: Metal GPU for LlamaEmbedder — used for parity/bench runs on
+# macOS (release macOS builds stay on the candle `metal` path).
+llama-metal = ["llama", "llama-cpp-2/metal"]
+# llama-vulkan: the cross-vendor Windows/Linux GPU target. dynamic-backends
+# (GGML_BACKEND_DL) compiles ggml backends as runtime-loaded modules, so one
+# binary ships Vulkan + CPU-SIMD variants and degrades to CPU on machines
+# without a Vulkan driver. Needs the Vulkan SDK (glslc) at build time only.
+llama-vulkan = ["llama", "llama-cpp-2/vulkan", "llama-cpp-2/dynamic-backends"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -49,6 +61,11 @@ candle-nn = { workspace = true, optional = true }
 # cost real compile time and `target/` disk space (the unused models are only
 # eliminated from the final *linked binary* by LTO, not from the build itself).
 tokenizers = { workspace = true, optional = true }
+llama-cpp-2 = { workspace = true, optional = true }
+# Resolution anchor only (never imported): pins the sys crate exactly, because
+# llama-cpp-2's own caret requirement lets it float to a binding-incompatible
+# release. See the pin comment in the workspace root Cargo.toml.
+llama-cpp-sys-2 = { workspace = true, optional = true }
 
 # macOS-only: `hw.memsize` sysctl in `total_system_ram` (Linux reads
 # /proc/meminfo, no FFI). Not in [workspace.dependencies] since inkentry-embed
