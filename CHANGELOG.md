@@ -13,6 +13,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
   a sizing section with the RAM and disk figures for a team server.
+- **`inkentry plumbing graph-edges --file` now exits `2` for a path the index
+  does not hold**, naming the path on stderr. It exited `1` before, which a
+  script could not tell apart from an indexed file that genuinely has no edges.
+  Branch on `2` as an error; an indexed file with no edges still exits `1` with
+  no output.
 - **Source builds now parse PDF, DOCX and spreadsheets by default.** The
   `rich-formats` feature is on by default for `inkentry-cli`, so a plain
   `cargo build` matches every published binary and no longer needs

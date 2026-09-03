@@ -675,7 +675,9 @@ inkentry plumbing graph-edges --file crates/inkentry-core/src/storage/db.rs
 ```
 
 `--file` matches the path as it is stored in the index, so pass the full
-repo-relative path rather than a suffix.
+repo-relative path rather than a suffix. A path the index does not hold exits
+`2` with the path named on stderr, so a mistyped path never reads as a file
+with no edges.
 
 ---
 
