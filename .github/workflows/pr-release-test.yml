@@ -120,7 +120,12 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             features: rich-formats,llama-metal
-          - os: windows-latest
+          # Pinned to windows-2022 (VS 2022), not windows-latest: the latter now
+          # carries a "Visual Studio 18 2026" preview whose MSBuild custom-build
+          # step breaks ggml-vulkan's nested vulkan-shaders-gen ExternalProject
+          # ("The system cannot find the batch label specified - VCEnd"). VS 2022
+          # is the toolchain llama.cpp ships Windows Vulkan on.
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             features: rich-formats,llama-vulkan
             llama: true
@@ -206,7 +211,7 @@ jobs:
       # a failed download surfaces only as a confusing Get-FileHash "path not
       # found" on the next line.
       - name: Download Vulkan SDK (Windows)
-        if: matrix.llama && matrix.os == 'windows-latest'
+        if: matrix.llama && runner.os == 'Windows'
         shell: pwsh
         run: |
           $v = "1.4.357.0"
@@ -218,7 +223,7 @@ jobs:
           if ($actual -ne $expected) { throw "vulkansdk.exe sha256 mismatch: $actual" }
 
       - name: Install Vulkan SDK (Windows)
-        if: matrix.llama && matrix.os == 'windows-latest'
+        if: matrix.llama && runner.os == 'Windows'
         shell: pwsh
         run: |
           Start-Process -Wait -FilePath .\vulkansdk.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install"
