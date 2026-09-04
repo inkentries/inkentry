@@ -1,0 +1,319 @@
+name: PR Release Test
+
+# On-demand, no-release counterpart to release.yml. Runs the same build matrix
+# to produce per-target tarballs (plus the Windows zip) for a chosen ref, stamps
+# every binary with a `-pr` version, and uploads them as run artifacts instead
+# of cutting a GitHub Release. No .deb: it would only re-wrap these same
+# binaries, and the tarball smoke test already exercises them. Its purpose is to
+# hand the binaries to a fleet for cross-machine matrix testing before a change
+# is sanctioned for release.
+#
+# It lives on the default branch (where workflow_dispatch is enabled from) and
+# builds whatever the `ref` input names — a PR's head branch, a tag, or a SHA —
+# so the branch under test needs no copy of this file and no rebase to be built.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or SHA to build (e.g. a PR's head branch). Empty builds the ref this was dispatched from."
+        required: false
+        default: ""
+      label:
+        description: "Optional label folded into the -pr version (alphanumerics only)."
+        required: false
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  # Derive the version once and hand it to every downstream job so the tarball
+  # name and the version compiled into the binary agree.
+  version:
+    name: Compute -pr version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      pr_version: ${{ steps.compute.outputs.pr_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Base version is whatever the built ref carries in Cargo.toml; the
+      # `-pr.<run>.g<sha>` pre-release ties each build back to the run and the
+      # commit it came from — what the fleet needs to tell one matrix build
+      # apart from the next.
+      - id: compute
+        shell: bash
+        env:
+          LABEL_INPUT: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+          BASE="$(grep -m1 '^version = ' crates/inkentry-cli/Cargo.toml \
+            | sed -E 's/^version = "([^"]+)".*/\1/')"
+          if [ -z "$BASE" ]; then
+            echo "::error::could not read base version from crates/inkentry-cli/Cargo.toml"
+            exit 1
+          fi
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          PR_VERSION="${BASE}-pr.${{ github.run_number }}.g${SHORT_SHA}"
+          # Strip the optional label to alphanumerics so the result stays valid
+          # as both a semver pre-release identifier and an artifact name; an
+          # empty or junk label then simply contributes nothing.
+          LABEL="$(printf '%s' "$LABEL_INPUT" | tr -cd '[:alnum:]')"
+          if [ -n "$LABEL" ]; then
+            PR_VERSION="${PR_VERSION}.${LABEL}"
+          fi
+          echo "pr_version=${PR_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "PR version: ${PR_VERSION}"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    # Linux builds run inside an ubuntu:22.04 (jammy) container so the binaries
+    # link against glibc 2.35, the supported floor (Ubuntu 22.04+ / Debian 12+).
+    # Building on the runner's own userland (24.04, glibc 2.39) is what made
+    # earlier releases crash on the floor distros. An empty `container` means
+    # the job runs directly on the runner VM (macOS, Windows).
+    container: ${{ matrix.container }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PR_VERSION: ${{ needs.version.outputs.pr_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu:22.04 (Jammy) = glibc 2.35 floor (Ubuntu 22.04+ / Debian 12+).
+          # Replaced debian:11, whose LTS ended 2026-08-31; glibc 2.35 also
+          # clears the floor current Vulkan software needs. Changing this base
+          # image changes the supported floor.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            container: ubuntu:22.04
+          # Native arm64 runner (free for public repos) + arm64 jammy
+          # container. Replaces the old cross-compile + ports-mirror setup.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            container: ubuntu:22.04
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            features: metal
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      # Inside the jammy container nothing is preinstalled. git must be
+      # present before actions/checkout so it does a real clone; curl +
+      # ca-certificates are for rustup; libdbus-1-dev + pkg-config are for the
+      # keyring crate's sync-secret-service feature (links libdbus, a C lib).
+      - name: Install build dependencies (Linux container)
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential pkg-config libdbus-1-dev
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Rust stable (Linux container)
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # One command per step (Windows steps must not chain rustup invocations).
+      - name: Install Rust toolchain (runner VM)
+        if: matrix.container == ''
+        run: rustup toolchain install stable --no-self-update
+
+      - name: Add Rust target (runner VM)
+        if: matrix.container == ''
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # The `${{ matrix.container }}` component keeps container-built artifacts
+          # separate from caches produced by builds on the runner VM. cc-built
+          # static archives (ring, bundled sqlite, blake3) do not refingerprint
+          # on the C toolchain's glibc, so restoring a VM-era cache into the
+          # container would silently re-raise the binaries' glibc ceiling.
+          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-
+
+      # CARGO_PKG_VERSION is baked into the binary at compile time, so stamping
+      # every workspace crate here is what makes `inkentry --version` report the
+      # `-pr` build on the fleet — the whole point of this workflow. Only the
+      # first `version = "…"` line (the [package] version) in each crate is
+      # touched; the inter-crate path deps carry no version requirement, so
+      # nothing else has to move. perl is present on every runner and in the
+      # jammy container, unlike GNU-only sed address ranges.
+      - name: Stamp -pr version into Cargo.toml
+        shell: bash
+        run: |
+          set -euo pipefail
+          for crate in inkentry-core inkentry-embed inkentry-cli inkentry-server; do
+            f="crates/${crate}/Cargo.toml"
+            perl -pi -e 'if (!$d && /^version = "/) { s/"[^"]*"/"$ENV{PR_VERSION}"/; $d=1 }' "$f"
+          done
+          grep -m1 -H '^version = ' crates/*/Cargo.toml
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          FEATURES="${{ matrix.features }}"
+          if [ -n "$FEATURES" ]; then
+            cargo build --release --target ${{ matrix.target }} --features "$FEATURES"
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      # The whole point of the container build: fail the build if either binary
+      # needs a glibc symbol newer than the 2.35 floor. Pinned forever, not
+      # measured once: must keep failing even after toolchain bumps. A missing,
+      # empty, or non-numeric ceiling is treated as a broken check, never as
+      # proof of compliance (a bare GLIBC_PRIVATE match, or no GLIBC_ symbols at
+      # all, would otherwise slip through as a false pass).
+      - name: Enforce glibc ceiling (Linux)
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in inkentry inkentry-server; do
+            path="target/${{ matrix.target }}/release/${bin}"
+            raw="$(objdump -T "$path")"
+            ceiling="$(printf '%s\n' "$raw" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
+            if ! [[ "$ceiling" =~ ^GLIBC_[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::${bin}: no valid versioned GLIBC symbol found (got '${ceiling}')"
+              exit 1
+            fi
+            echo "${bin}: max versioned glibc symbol = ${ceiling}"
+            max="$(printf '%s\nGLIBC_2.35\n' "$ceiling" | sort -V | tail -1)"
+            if [ "$max" != "GLIBC_2.35" ]; then
+              echo "::error::${bin} requires ${ceiling}, above the glibc 2.35 floor"
+              exit 1
+            fi
+          done
+
+      - name: Package tarball (unix)
+        if: matrix.target != 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${PR_VERSION}"
+          TARGET="${{ matrix.target }}"
+          ARCHIVE="inkentry-${VERSION}-${TARGET}.tar.gz"
+          tar -czf "${ARCHIVE}" \
+            -C "target/${TARGET}/release" \
+            inkentry inkentry-server
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Package zip (Windows)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $VERSION  = "${env:PR_VERSION}"
+          $TARGET   = "${{ matrix.target }}"
+          $ARCHIVE  = "inkentry-${VERSION}-${TARGET}.zip"
+          $binaries = @(
+            "target\${TARGET}\release\inkentry.exe",
+            "target\${TARGET}\release\inkentry-server.exe"
+          )
+          Compress-Archive -Path $binaries -DestinationPath $ARCHIVE
+          "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # 7-day retention: these are throwaway fleet-test builds, not releases, so
+      # expire them well before the 90-day default and keep artifact storage
+      # from filling up with superseded runs.
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: inkentry-${{ env.PR_VERSION }}-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 7
+
+  # The tarball is the one packaging this workflow ships (no .deb: it would just
+  # re-wrap these same binaries), so run its binaries on the support floor.
+  # Non-blocking: this is a signal, not a gate — the build artifacts are already
+  # uploaded by the `build` job, and a headless CI container is not the GPU/Vulkan
+  # fleet these builds are for, so a failure here never withholds anything.
+  tarball-smoke:
+    name: Run tarball binaries on the support floor (${{ matrix.target }})
+    needs: [version, build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      PR_VERSION: ${{ needs.version.outputs.pr_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: inkentry-${{ env.PR_VERSION }}-${{ matrix.target }}
+          path: tarball
+
+      - name: Extract tarball
+        run: |
+          tar -xzf tarball/inkentry-${{ env.PR_VERSION }}-${{ matrix.target }}.tar.gz \
+            -C tarball
+
+      # Install-success proves nothing: apt is happy with a package whose
+      # binary immediately fails to link or run. Exercise real subcommands
+      # (a git-backed memory round trip included) on each floor/current image.
+      - name: Execute on floor and current images
+        run: |
+          set -euo pipefail
+          for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
+            echo "=== ${image} ==="
+            docker run --rm -v "$PWD/tarball:/t:ro" -e INKENTRY_SECRET_STORE=file "$image" bash -euc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends libdbus-1-3 git ca-certificates
+              test -n "$(/t/inkentry --version)"
+              test -n "$(/t/inkentry-server --version)"
+
+              mkdir -p /w && cd /w
+              git init -q .
+              git config user.email t@t
+              git config user.name t
+              echo "fn main() {}" > main.rs
+              git add . && git commit -qm init
+
+              /t/inkentry status
+              /t/inkentry init --no-index
+              /t/inkentry memory add --kind note --title "tarball smoke" --body "runs on this image"
+              /t/inkentry memory list | grep -q "tarball smoke"
+            '
+          done
