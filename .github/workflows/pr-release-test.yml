@@ -145,21 +145,15 @@ jobs:
         if: matrix.container == ''
         run: rustup target add ${{ matrix.target }}
 
-      - name: Cache Cargo registry
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          # The `${{ matrix.container }}` component keeps container-built artifacts
-          # separate from caches produced by builds on the runner VM. cc-built
-          # static archives (ring, bundled sqlite, blake3) do not refingerprint
-          # on the C toolchain's glibc, so restoring a VM-era cache into the
-          # container would silently re-raise the binaries' glibc ceiling.
-          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-
+      # No Actions cache on purpose. This workflow is dispatchable from the
+      # default branch (a privileged context) and builds an arbitrary, possibly
+      # untrusted `ref`; a shared build cache written from here is a
+      # cache-poisoning vector — a trusted workflow (CI, Release) could later
+      # restore a tampered target/ or ~/.cargo entry via the key prefix. The
+      # cache is the only privileged sink the untrusted checkout could reach
+      # (no secrets, contents: read, no trusted consumer of the artifacts), so
+      # dropping it makes the build inert beyond its own run. An occasional
+      # fleet-test build can afford the cold compile.
 
       # CARGO_PKG_VERSION is baked into the binary at compile time, so stamping
       # every workspace crate here is what makes `inkentry --version` report the
