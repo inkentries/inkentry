@@ -232,6 +232,13 @@ jobs:
           "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CMAKE_PREFIX_PATH=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "$sdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # Keep cargo's target dir short (later steps inherit this). llama.cpp's
+          # vulkan-shaders-gen ExternalProject nests a TryCompile object/PDB path
+          # so deep that from the default D:\a\inkentry\inkentry\target it exceeds
+          # CMake's 250-char CMAKE_OBJECT_PATH_MAX (and Win32's 260 MAX_PATH). A
+          # short root, plus dropping the target-triple subdir in the build step,
+          # keeps every generated path well inside the limit.
+          "CARGO_TARGET_DIR=D:/t" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Add Rust target (runner VM)
         if: matrix.container == ''
@@ -283,18 +290,19 @@ jobs:
         shell: cmd
         env:
           CMAKE_GENERATOR: Ninja
-          # ggml's nested vulkan-shaders-gen ExternalProject probe compiles with
-          # /Zi, and its parallel C/CXX ABI checks share one vc140.pdb (fatal
-          # error C1041). That nested probe never sees the outer build's /FS, so
-          # inject it through cl.exe's own CL variable, which every cl.exe
-          # invocation honors — including the sub-build's.
+          # /FS lets parallel cl.exe invocations share a PDB; the nested
+          # vulkan-shaders-gen sub-build does not inherit the outer build's /FS,
+          # and cl.exe honors CL on every invocation.
           CL: /FS
         run: |
           set "PF86=%ProgramFiles(x86)%"
           for /f "usebackq tokens=*" %%i in (`"%PF86%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
           if not defined VSPATH ( echo could not locate Visual Studio via vswhere & exit /b 1 )
           call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
-          cargo build --release --target ${{ matrix.target }} --features "${{ matrix.features }}"
+          rem No --target: the extra x86_64-pc-windows-msvc path segment would
+          rem push the deep shaders-gen object path back over CMAKE_OBJECT_PATH_MAX.
+          rem The host is this triple, so a native build is equivalent.
+          cargo build --release --features "${{ matrix.features }}"
 
       # A dynamic-backends build splits the llama engine into the binary, four
       # core shared libs it links by SONAME, and dlopen'd ggml backend modules.
@@ -304,9 +312,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scripts/collect-ggml-backends.sh \
-            "target/${{ matrix.target }}/release" \
-            "target/${{ matrix.target }}/release"
+          # Windows builds to a short CARGO_TARGET_DIR with no target-triple
+          # subdir (MAX_PATH); every other leg uses target/<triple>/release.
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            rel="${CARGO_TARGET_DIR}/release"
+          else
+            rel="target/${{ matrix.target }}/release"
+          fi
+          scripts/collect-ggml-backends.sh "${rel}" "${rel}"
 
       # The modules keep cmake's full symbol tables (cargo's `strip` profile
       # setting only reaches rust-linked artifacts); the Vulkan module alone
@@ -378,12 +391,14 @@ jobs:
           $VERSION  = "${env:PR_VERSION}"
           $TARGET   = "${{ matrix.target }}"
           $ARCHIVE  = "inkentry-${VERSION}-${TARGET}.zip"
+          # Windows builds to $CARGO_TARGET_DIR with no target-triple subdir.
+          $rel = "$env:CARGO_TARGET_DIR/release"
           $binaries = @(
-            "target\${TARGET}\release\inkentry.exe",
-            "target\${TARGET}\release\inkentry-server.exe"
+            "$rel/inkentry.exe",
+            "$rel/inkentry-server.exe"
           )
           # llama leg: the engine's core DLLs + dlopen'd ggml backend modules.
-          $libs = Get-ChildItem "target\${TARGET}\release" |
+          $libs = Get-ChildItem "$rel" |
             Where-Object { $_.Name -match '^(ggml|llama).*\.dll$' } |
             ForEach-Object { $_.FullName }
           Compress-Archive -Path ($binaries + $libs) -DestinationPath $ARCHIVE
