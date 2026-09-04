@@ -1,23 +1,16 @@
 name: PR Release Test
 
 # On-demand, no-release counterpart to release.yml. Runs the same build matrix
-# to produce per-target tarballs (plus the Windows zip) for a chosen ref, stamps
-# every binary with a `-pr` version, and uploads them as run artifacts instead
-# of cutting a GitHub Release. No .deb: it would only re-wrap these same
+# to produce per-target tarballs (plus the Windows zip) from a chosen branch,
+# stamps every binary with a `-pr` version, and uploads them as run artifacts
+# instead of cutting a GitHub Release. No .deb: it would only re-wrap these same
 # binaries, and the tarball smoke test already exercises them. Its purpose is to
 # hand the binaries to a fleet for cross-machine matrix testing before a change
-# is sanctioned for release.
-#
-# It lives on the default branch (where workflow_dispatch is enabled from) and
-# builds whatever the `ref` input names — a PR's head branch, a tag, or a SHA —
-# so the branch under test needs no copy of this file and no rebase to be built.
+# is sanctioned for release. Dispatch it from the branch under test (the "Use
+# workflow from" picker selects the ref that is built).
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Branch, tag, or SHA to build (e.g. a PR's head branch). Empty builds the ref this was dispatched from."
-        required: false
-        default: ""
       label:
         description: "Optional label folded into the -pr version (alphanumerics only)."
         required: false
@@ -41,13 +34,11 @@ jobs:
       pr_version: ${{ steps.compute.outputs.pr_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref }}
 
-      # Base version is whatever the built ref carries in Cargo.toml; the
-      # `-pr.<run>.g<sha>` pre-release ties each build back to the run and the
-      # commit it came from — what the fleet needs to tell one matrix build
-      # apart from the next.
+      # Base version is whatever the branch already carries in Cargo.toml (the
+      # release line it is stacked on); the `-pr.<run>.g<sha>` pre-release ties
+      # each build back to the run and commit it came from — what the fleet
+      # needs to tell one matrix build apart from the next.
       - id: compute
         shell: bash
         env:
@@ -124,8 +115,6 @@ jobs:
             git curl ca-certificates build-essential pkg-config libdbus-1-dev
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref }}
 
       - name: Install Rust stable (Linux container)
         if: matrix.container != ''
@@ -145,15 +134,21 @@ jobs:
         if: matrix.container == ''
         run: rustup target add ${{ matrix.target }}
 
-      # No Actions cache on purpose. This workflow is dispatchable from the
-      # default branch (a privileged context) and builds an arbitrary, possibly
-      # untrusted `ref`; a shared build cache written from here is a
-      # cache-poisoning vector — a trusted workflow (CI, Release) could later
-      # restore a tampered target/ or ~/.cargo entry via the key prefix. The
-      # cache is the only privileged sink the untrusted checkout could reach
-      # (no secrets, contents: read, no trusted consumer of the artifacts), so
-      # dropping it makes the build inert beyond its own run. An occasional
-      # fleet-test build can afford the cold compile.
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # The `${{ matrix.container }}` component keeps container-built artifacts
+          # separate from caches produced by builds on the runner VM. cc-built
+          # static archives (ring, bundled sqlite, blake3) do not refingerprint
+          # on the C toolchain's glibc, so restoring a VM-era cache into the
+          # container would silently re-raise the binaries' glibc ceiling.
+          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-
 
       # CARGO_PKG_VERSION is baked into the binary at compile time, so stamping
       # every workspace crate here is what makes `inkentry --version` report the
