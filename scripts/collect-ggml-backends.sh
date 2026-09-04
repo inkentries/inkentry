@@ -51,7 +51,14 @@ for f in "${out_dir}"/lib*/libggml-base.so.* "${out_dir}"/lib*/libggml.so.* \
     *.so.*.*.*) continue ;;
     *.[0-9]*.[0-9]*.[0-9]*.dylib) continue ;;
   esac
-  cp -f "$f" "${dest}/"
+  dst="${dest}/$(basename "$f")"
+  # On Windows cargo hardlinks the core DLLs into the profile dir, which is also
+  # our dest; plain cp then aborts with "are the same file". Drop the existing
+  # dest entry first (a second hardlink to the same data — the source, a
+  # different path, survives), so the copy always proceeds. A no-op elsewhere,
+  # where the core libs are not already in the profile dir.
+  rm -f "$dst"
+  cp -f "$f" "$dst"
   found_libs=$((found_libs + 1))
 done
 if [ "${found_libs}" -eq 0 ]; then
@@ -59,7 +66,12 @@ if [ "${found_libs}" -eq 0 ]; then
   exit 1
 fi
 
-cp -f "${backends_dir}"/* "${dest}/"
+for f in "${backends_dir}"/*; do
+  [ -e "$f" ] || continue
+  dst="${dest}/$(basename "$f")"
+  rm -f "$dst"
+  cp -f "$f" "$dst"
+done
 
 echo "collected into ${dest}:"
 ls -l "${dest}" | tail -n +2 | awk '{printf "  %s (%d bytes)\n", $NF, $5}'
