@@ -263,6 +263,48 @@ jobs:
       - name: Clippy (rich-formats)
         run: cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
 
+  llama-vulkan:
+    name: Build (llama-vulkan)
+    # The release Linux/Windows legs ship this feature, but no other CI job
+    # compiles it — without this leg, a break in the llama engine or its C++
+    # build would first surface at tag-push. Scoped to inkentry-server (the
+    # only crate carrying the feature); clippy before build so lint findings
+    # aren't hidden behind the long ggml/shader compile.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 40
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # glslc + libvulkan-dev + spirv-headers satisfy the ggml Vulkan
+      # backend's build-time needs on ubuntu-24.04 (build-time only; the
+      # backend is a dlopen'd module at runtime). spirv-headers is the CMake
+      # config package ggml's find_package(SPIRV-Headers CONFIG) resolves.
+      - name: Install build dependencies
+        run: sudo apt-get install -y libdbus-1-dev pkg-config glslc libvulkan-dev spirv-headers
+
+      - name: Install stable toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Keyed apart from the default ubuntu legs: this cache carries the
+          # ggml/vulkan C++ objects, which never refingerprint on features.
+          key: llama-vulkan
+
+      - name: Clippy (llama-vulkan)
+        run: cargo clippy -p inkentry-server -p inkentry-embed --lib --bins --tests --features llama-vulkan -- -D warnings
+
+      - name: Build (llama-vulkan)
+        run: cargo build -p inkentry-server --features llama-vulkan
+
   release-scripts:
     name: Release script tests
     runs-on: ubuntu-latest

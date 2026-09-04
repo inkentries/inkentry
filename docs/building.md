@@ -28,10 +28,21 @@ first use; model weights are downloaded once and cached under
 If you want GPU acceleration on macOS, build `inkentry-server` with the `metal`
 feature (see [Build feature flags](#build-feature-flags) below).
 
+### Vulkan SDK (only for `llama-vulkan` builds)
+
+The optional `llama-vulkan` server feature (cross-vendor GPU embedding on
+Windows/Linux via llama.cpp) needs the [Vulkan SDK](https://vulkan.lunarg.com/)
+at build time: `glslc` compiles the compute shaders, and the headers/loader are
+linked against. On Ubuntu, `apt install glslc libvulkan-dev cmake` is enough.
+Nothing Vulkan is required at *runtime*: the Vulkan backend is a runtime-loaded
+module that fails to load, and degrades to CPU, on machines without a driver.
+A default build never touches any of this.
+
 ## Build
 
-This is a Cargo workspace with three crates: `inkentry-core` (library),
-`inkentry-cli` (`inkentry` binary), and `inkentry-server` (`inkentry-server` binary).
+This is a Cargo workspace with four crates: `inkentry-core` (library),
+`inkentry-cli` (`inkentry` binary), `inkentry-embed` (embedding engines
+library), and `inkentry-server` (`inkentry-server` binary).
 Build them all together:
 
 ```bash
@@ -77,13 +88,19 @@ cargo build --release -p inkentry-server
 | Feature | Default | Description |
 |---|---|---|
 | `embed-native` | yes | Bundle the F2LLM-v2-330M native embedder via candle (CPU). Disabling it builds a server with no embedding capability at all: embed endpoints return a permanent 400 (there is no external-endpoint fallback). |
-| `metal` | no | Enable Metal GPU acceleration on macOS. Requires the `embed-native` feature. Add when building the macOS release binary for best performance. |
+| `metal` | no | Enable Metal GPU acceleration (candle engine) on macOS. Requires the `embed-native` feature. Add when building the macOS release binary for best performance. |
+| `embed-llama` | no | Additionally bundle the llama.cpp engine for the same model (CPU with this bare feature). Implies `embed-native`: candle stays in the binary as the fallback engine, selected at runtime (`INKENTRY_EMBED_DEVICE=auto\|gpu\|cpu`). |
+| `llama-metal` | no | llama.cpp engine with Metal — parity/bench builds on macOS. |
+| `llama-vulkan` | no | llama.cpp engine with Vulkan + runtime-loaded backend modules — the cross-vendor Windows/Linux GPU target shipped in release binaries. Needs the Vulkan SDK at build time (see Prerequisites); produces shared libraries and `ggml` modules that must ship next to the binary. |
 
 Enable non-default features with `--features`:
 
 ```bash
 # macOS release build with Metal GPU acceleration
 cargo build --release -p inkentry-server --features metal
+
+# Windows/Linux build with the llama.cpp Vulkan engine (needs the Vulkan SDK)
+cargo build --release -p inkentry-server --features llama-vulkan
 
 # Server without the bundled embedder (no embedding capability at all)
 cargo build --release -p inkentry-server --no-default-features

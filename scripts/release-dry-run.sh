@@ -3,15 +3,15 @@
 # scripts/release-dry-run.sh
 #
 # Local, docker-based dry run of the Linux leg of .github/workflows/release.yml:
-# build inside debian:11 (the glibc 2.31 floor), enforce the glibc ceiling on
+# build inside ubuntu:22.04 (the glibc 2.35 floor), enforce the glibc ceiling on
 # the resulting binaries, assemble the .deb with its Depends line derived by
-# dpkg-shlibdeps run inside debian:11, then install and smoke-test the .deb in
+# dpkg-shlibdeps run inside ubuntu:22.04, then install and smoke-test the .deb in
 # a fresh floor container. Run this before pushing a version tag, to catch
 # release breakage on a dev machine instead of at tag-push time.
 #
 # What this proves: the Linux x86_64 build links against the glibc floor,
 # the .deb's Depends line is floor-derived (so it can actually install on
-# debian:11 / ubuntu:20.04), and the installed package survives real
+# ubuntu:22.04 / debian:12), and the installed package survives real
 # subcommands, not just `apt-get install`.
 #
 # What this does NOT prove: macOS or Windows builds, the arm64 Linux leg,
@@ -45,9 +45,15 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 TARGET="x86_64-unknown-linux-gnu"
-FEATURES="rich-formats"
-BUILD_IMAGE="debian:11"
-SMOKE_IMAGES="${SMOKE_IMAGES:-debian:11 ubuntu:20.04 ubuntu:24.04}"
+FEATURES="rich-formats,llama-vulkan"
+# Pinned Vulkan SDK (build-time only: glslc + headers for the llama-vulkan
+# feature). Mirrors the release.yml pin; bump both together, and check the
+# new glslc still executes on the floor (LunarG builds it against glibc
+# 2.34, inside the 2.35 floor).
+VULKAN_SDK_VERSION="1.4.357.1"
+VULKAN_SDK_SHA256="4b41e3b30e8aedaa5dac7c136561ab463eb316a25a54e2c6245f2c299ea1fb85"
+BUILD_IMAGE="ubuntu:22.04"
+SMOKE_IMAGES="${SMOKE_IMAGES:-ubuntu:22.04 debian:12 ubuntu:24.04}"
 # Every container below must run as amd64, matching the amd64 target/.deb --
 # on an arm64 host (e.g. Apple Silicon), Docker silently resolves some image
 # tags to a native arm64 manifest and others to amd64 depending on what's
@@ -168,10 +174,10 @@ run_docker() {
 
 # --- stage 1: build inside the glibc floor container --------------------
 #
-# Mirrors release.yml lines 55-117: git/curl/build tooling installed fresh
-# (nothing is preinstalled in the base image), rustup stable, then a release
-# build with the same feature set the Linux legs ship with. Building on the
-# host's own userland instead of debian:11 is exactly the mistake this
+# Mirrors release.yml: git/curl/build tooling installed fresh (nothing is
+# preinstalled in the base image), rustup stable, then a release build with
+# the same feature set the Linux legs ship with. Building on the host's own
+# userland instead of the floor container is exactly the mistake this
 # script exists to catch -- it would silently raise the glibc floor.
 build_in_floor_container() {
   log_stage "build (${BUILD_IMAGE}, target ${TARGET})"
@@ -182,22 +188,65 @@ build_in_floor_container() {
     -w /repo \
     "${BUILD_IMAGE}" bash -euc '
       set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends \
-        git curl ca-certificates build-essential pkg-config libdbus-1-dev binutils
+        git curl ca-certificates build-essential pkg-config libdbus-1-dev binutils \
+        cmake xz-utils libclang-dev libvulkan-dev
+      if [ ! -f /opt/vulkansdk/'"${VULKAN_SDK_VERSION}"'/x86_64/bin/glslc ]; then
+        curl -fsSL -o /tmp/vulkansdk.tar.xz \
+          "https://sdk.lunarg.com/sdk/download/'"${VULKAN_SDK_VERSION}"'/linux/vulkansdk-linux-x86_64-'"${VULKAN_SDK_VERSION}"'.tar.xz"
+        echo "'"${VULKAN_SDK_SHA256}"'  /tmp/vulkansdk.tar.xz" | sha256sum -c -
+        mkdir -p /opt/vulkansdk
+        tar -xf /tmp/vulkansdk.tar.xz -C /opt/vulkansdk
+        rm /tmp/vulkansdk.tar.xz
+      fi
+      export VULKAN_SDK=/opt/vulkansdk/'"${VULKAN_SDK_VERSION}"'/x86_64
+      # find_package(SPIRV-Headers CONFIG) resolves via the SDK share/cmake.
+      export CMAKE_PREFIX_PATH="$VULKAN_SDK"
+      export PATH="$VULKAN_SDK/bin:$PATH"
       if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
         curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
-          | sh -s -- -y --profile minimal --default-toolchain stable
+          | sh -s -- -y --profile minimal --default-toolchain stable --component rustfmt
       fi
       export PATH="$HOME/.cargo/bin:$PATH"
+      # Heal a wedged llama.cpp build dir: the sys crate skips cmake configure
+      # when its build dir already exists, so a dir left behind by a FAILED
+      # configure (no Makefile) sends every later run straight into
+      # "gmake: Makefile: No such file or directory". Remove such dirs; a
+      # healthy one is kept and reused.
+      for d in target/'"${TARGET}"'/release/build/llama-cpp-sys-2-*/out/build; do
+        if [ -d "$d" ] && [ ! -f "$d/Makefile" ]; then
+          rm -rf "$(dirname "$(dirname "$d")")"
+        fi
+      done
+      # Drop llama libs hard-linked into the profile dirs by a PREVIOUS sys
+      # build. When the sys build dir they came from is gone, the unversioned
+      # spellings in deps/ and examples/ are dangling symlink entries; the
+      # exists guard in the sys build script follows them, sees nothing, and
+      # the re-link panics on AlreadyExists. The script recreates all of
+      # these whenever it runs; packaging reads from out/backends, never here.
+      for d in "" deps/ examples/; do
+        rm -f target/'"${TARGET}"'/release/${d}libggml*.so* \
+              target/'"${TARGET}"'/release/${d}libllama*.so*
+      done
+      # Single-quoted: $ORIGIN must reach the linker literally (release.yml
+      # sets the same rpath so the shipped binary finds its llama libs beside
+      # itself, or in ../lib/inkentry for the .deb split layout).
+      export RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN:\$ORIGIN/../lib/inkentry"
       cargo build --release --target '"${TARGET}"' --features '"${FEATURES}"'
       strip "target/'"${TARGET}"'/release/inkentry"
       strip "target/'"${TARGET}"'/release/inkentry-server"
+      scripts/collect-ggml-backends.sh \
+        "target/'"${TARGET}"'/release" "target/'"${TARGET}"'/release"
+      strip --strip-unneeded target/'"${TARGET}"'/release/lib*.so*
     ' || die "container build failed (see docker output above)"
 
   for bin in inkentry inkentry-server; do
     [ -x "target/${TARGET}/release/${bin}" ] || die "expected binary target/${TARGET}/release/${bin} not found after build"
   done
+  ls "target/${TARGET}/release"/lib*.so* >/dev/null 2>&1 \
+    || die "expected llama runtime libraries next to the binaries after build"
 }
 
 # --- stage 2: glibc ceiling check ---------------------------------------
@@ -205,7 +254,7 @@ build_in_floor_container() {
 # Lifted near-verbatim from release.yml lines 125-144. A missing, empty, or
 # non-numeric ceiling is a failure, not a silent pass.
 enforce_glibc_ceiling() {
-  log_stage "glibc ceiling check (floor: GLIBC_2.31)"
+  log_stage "glibc ceiling check (floor: GLIBC_2.35)"
   run_docker glibc-check \
     -v "${REPO_ROOT}:/repo:ro" \
     -w /repo \
@@ -213,7 +262,8 @@ enforce_glibc_ceiling() {
       set -euo pipefail
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends binutils >/dev/null
-      for bin in inkentry inkentry-server; do
+      shipped="inkentry inkentry-server $(cd "target/'"${TARGET}"'/release" && ls lib*.so*)"
+      for bin in $shipped; do
         path="target/'"${TARGET}"'/release/${bin}"
         raw="$(objdump -T "$path")"
         ceiling="$(printf "%s\n" "$raw" | grep -o "GLIBC_[0-9.]*" | sort -Vu | tail -1 || true)"
@@ -222,19 +272,19 @@ enforce_glibc_ceiling() {
           exit 1
         fi
         echo "${bin}: max versioned glibc symbol = ${ceiling}"
-        max="$(printf "%s\nGLIBC_2.31\n" "$ceiling" | sort -V | tail -1)"
-        if [ "$max" != "GLIBC_2.31" ]; then
-          echo "ERROR: ${bin} requires ${ceiling}, above the glibc 2.31 floor" >&2
+        max="$(printf "%s\nGLIBC_2.35\n" "$ceiling" | sort -V | tail -1)"
+        if [ "$max" != "GLIBC_2.35" ]; then
+          echo "ERROR: ${bin} requires ${ceiling}, above the glibc 2.35 floor" >&2
           exit 1
         fi
       done
-    ' || die "glibc ceiling check failed -- a binary links against a glibc symbol newer than 2.31, or has no versioned GLIBC symbols at all"
+    ' || die "glibc ceiling check failed -- a binary links against a glibc symbol newer than 2.35, or has no versioned GLIBC symbols at all"
 }
 
 # --- stage 3: assemble the .deb layout + derive Depends ------------------
 #
 # Depends is derived from the packaged binaries, never hardcoded, and
-# derived INSIDE debian:11 (the build floor) -- release.yml lines 228-246
+# derived INSIDE ubuntu:22.04 (the build floor) -- mirrors release.yml
 # explains why: deriving it on a newer-glibc host resolves to a Depends line
 # that can't install on the floor. Layout assembly and control-file
 # generation (via the existing write-deb-control.js -- pure Node builtins,
@@ -243,9 +293,11 @@ enforce_glibc_ceiling() {
 assemble_deb() {
   log_stage "assemble .deb layout + derive Depends (${BUILD_IMAGE})"
 
-  mkdir -p "${DEB_LAYOUT}/DEBIAN" "${DEB_LAYOUT}/usr/bin" "${DEB_LAYOUT}/usr/lib/systemd/user"
+  mkdir -p "${DEB_LAYOUT}/DEBIAN" "${DEB_LAYOUT}/usr/bin" "${DEB_LAYOUT}/usr/lib/systemd/user" \
+    "${DEB_LAYOUT}/usr/lib/inkentry"
   install -m 755 "target/${TARGET}/release/inkentry" "${DEB_LAYOUT}/usr/bin/inkentry"
   install -m 755 "target/${TARGET}/release/inkentry-server" "${DEB_LAYOUT}/usr/bin/inkentry-server"
+  install -m 644 "target/${TARGET}/release/"lib*.so* "${DEB_LAYOUT}/usr/lib/inkentry/"
   install -m 644 packaging/inkentry-server.service "${DEB_LAYOUT}/usr/lib/systemd/user/inkentry-server.service"
 
   # Captured via a file rather than command substitution: `$(...)` runs the
@@ -256,12 +308,22 @@ assemble_deb() {
   run_docker shlibdeps \
     -v "${REPO_ROOT}:/w:ro" "${BUILD_IMAGE}" bash -euc '
       set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null
       apt-get install -y -qq --no-install-recommends dpkg-dev libdbus-1-3 >/dev/null
       mkdir -p /tmp/sd/debian
       printf "Source: inkentry\nMaintainer: inkentries <hello@inkentry.com>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
       cd /tmp/sd
-      dpkg-shlibdeps -O "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
+      # -l resolves the private libggml/libllama libs; -e folds the core
+      # libs own needs (libstdc++6, libgcc) into Depends. The ggml backend
+      # MODULES stay out: dlopen-optional, and listing ggml-vulkan would
+      # make libvulkan1 a hard dependency the CPU fallback does not have.
+      dpkg-shlibdeps -O -l"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libggml-base.so.0" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libggml.so.0" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libllama.so.0" \
+        -e"/w/'"${DEB_LAYOUT}"'/usr/lib/inkentry/libllama-common.so.0" \
+        "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry" "/w/'"${DEB_LAYOUT}"'/usr/bin/inkentry-server"
     ' >"${depends_out}" || die "dpkg-shlibdeps failed inside ${BUILD_IMAGE}"
   deb_depends="$(cat "${depends_out}")"
   [ -n "${deb_depends}" ] || die "dpkg-shlibdeps produced no Depends line"
@@ -276,11 +338,9 @@ assemble_deb() {
 
 # --- stage 4: build the .deb ---------------------------------------------
 #
-# -Zxz, not the host/container's default compressor: debian:11's dpkg (1.20)
-# cannot read zstd-compressed control/data members, so a default-built .deb
-# fails to install on the floor with "unknown compression for member". dpkg
-# itself (and dpkg-deb) ships in every debian base image, so no extra
-# package install is needed here.
+# -Zxz: a deterministic member format across every smoke image, independent
+# of the container dpkg's compressor default. dpkg itself ships in every
+# debian/ubuntu base image, so no extra package install is needed here.
 build_deb() {
   log_stage "build .deb (-Zxz)"
   run_docker dpkg-deb \
@@ -343,7 +403,7 @@ main() {
   echo ""
   echo "=== release-dry-run: PASS ==="
   echo "Built and smoke-tested: ${DEB_PATH}"
-  echo "This proves the Linux x86_64 build, glibc-2.31 floor, and .deb install/smoke are release-safe."
+  echo "This proves the Linux x86_64 build, glibc-2.35 floor, and .deb install/smoke are release-safe."
   echo "It does NOT exercise macOS/Windows builds, the GitHub Release, or the Homebrew/Scoop publish steps."
 }
 

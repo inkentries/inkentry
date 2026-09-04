@@ -14,11 +14,13 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    # Linux builds run inside a debian:11 (bullseye) container so the binaries
-    # link against glibc 2.31, the supported floor (Debian 11+ / Ubuntu 20.04+).
-    # Building on the runner's own userland (24.04, glibc 2.39) is what made
-    # earlier releases crash on the floor distros. An empty `container` means
-    # the job runs directly on the runner VM (macOS, Windows).
+    # Linux builds run inside an ubuntu:22.04 (jammy) container so the
+    # binaries link against glibc 2.35, the supported floor (Ubuntu 22.04+ /
+    # Debian 12+; Debian 11 left support when it reached end of life,
+    # 2026-08-31). Building on the runner's own userland (24.04, glibc 2.39)
+    # is what made earlier releases crash on the floor distros. An empty
+    # `container` means the job runs directly on the runner VM (macOS,
+    # Windows).
     container: ${{ matrix.container }}
     timeout-minutes: 30
     # Builds and uploads a run artifact; the release itself is created by the
@@ -29,39 +31,64 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # debian:11 = glibc 2.31 floor (Bullseye+/Ubuntu 20.04+). LTS ends
-          # 2026-08-31: apt sources then fall back to archive.debian.org;
-          # changing this base image changes the supported floor.
+          # ubuntu:22.04 = glibc 2.35 floor (Ubuntu 22.04+/Debian 12+).
+          # Changing this base image changes the supported floor.
+          #
+          # llama: true adds the llama.cpp Vulkan engine (server feature
+          # `llama-vulkan`): the Vulkan SDK is installed at build time, and the
+          # archive gains the engine's core shared libs plus its runtime-loaded
+          # ggml backend modules next to the binaries. x64 Linux and Windows
+          # only: LunarG ships no arm64-linux SDK, and macOS stays on candle
+          # Metal. The rpath makes the binary find its libs beside itself
+          # (tarball) or in ../lib/inkentry (the .deb split layout); Windows
+          # resolves DLLs from the exe directory natively.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            features: rich-formats
-            container: debian:11
-          # Native arm64 runner (free for public repos) + arm64 bullseye
+            features: rich-formats,llama-vulkan
+            container: ubuntu:22.04
+            llama: true
+            rustflags: "-C link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/../lib/inkentry"
+          # Native arm64 runner (free for public repos) + arm64 jammy
           # container. Replaces the old cross-compile + ports-mirror setup.
+          # embed-llama without a GPU flavor = the llama.cpp CPU engine,
+          # statically linked (no SDK, no extra files): where Vulkan can't go
+          # (LunarG ships no arm64-linux SDK), llama.cpp CPU is still the
+          # faster engine, with candle as the in-binary fallback.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            features: rich-formats
-            container: debian:11
+            features: rich-formats,embed-llama
+            container: ubuntu:22.04
           - os: macos-latest
             target: aarch64-apple-darwin
             features: rich-formats,metal
-          - os: windows-latest
+          # Pinned to windows-2022 (VS 2022): windows-latest now carries a
+          # "Visual Studio 18 2026" preview whose MSBuild custom-build step breaks
+          # ggml-vulkan's nested vulkan-shaders-gen ExternalProject. VS 2022 is
+          # the toolchain llama.cpp ships Windows Vulkan on.
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
-            features: rich-formats
+            features: rich-formats,llama-vulkan
+            llama: true
 
     steps:
-      # Inside the bullseye container nothing is preinstalled. git must be
+      # Inside the jammy container nothing is preinstalled. git must be
       # present before actions/checkout so it does a real clone; curl +
       # ca-certificates are for rustup; libdbus-1-dev + pkg-config are for the
-      # keyring crate's sync-secret-service feature (links libdbus, a C lib).
+      # keyring crate's sync-secret-service feature (links libdbus, a C lib);
+      # cmake builds llama.cpp (jammy's 3.22 satisfies ggml's >= 3.19) and
+      # libclang-dev feeds bindgen's FFI generation (both Linux legs carry a
+      # llama engine feature; runner VMs have LLVM preinstalled, bare
+      # containers have neither). Noninteractive: tzdata prompts otherwise.
       - name: Install build dependencies (Linux container)
         if: matrix.container != ''
         shell: bash
         run: |
           set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y --no-install-recommends \
-            git curl ca-certificates build-essential pkg-config libdbus-1-dev
+            git curl ca-certificates build-essential pkg-config libdbus-1-dev \
+            cmake libclang-dev
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -70,14 +97,89 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # rustfmt: bindgen formats its generated FFI bindings with it and
+          # prints a spurious "error:" line when it is missing.
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain stable
+            | sh -s -- -y --profile minimal --default-toolchain stable --component rustfmt
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The llama-vulkan feature needs the Vulkan SDK at BUILD time only:
+      # glslc compiles the ggml shaders, the headers/loader are linked against.
+      # Nothing Vulkan is a runtime requirement of the shipped binary — the
+      # Vulkan backend is a dlopen'd module that fails to load (and degrades
+      # to CPU) on machines without a driver. Pinned by version + sha256;
+      # jammy's own vulkan packages are too old, hence the SDK tarball.
+      - name: Install Vulkan SDK (Linux container)
+        if: matrix.container != '' && matrix.llama
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          # libvulkan-dev: the SDK tarball ships headers + glslc but no
+          # prebuilt loader; linking needs only the loader's stable
+          # entrypoints (ggml uses dynamic dispatch), so jammy's own loader
+          # satisfies Vulkan_LIBRARY. Runtime uses the end user's system
+          # loader regardless.
+          apt-get install -y --no-install-recommends xz-utils libvulkan-dev
+          # The SDK's glslc binary itself must RUN in this container: LunarG
+          # builds it against glibc 2.34, inside the 2.35 floor. Check that
+          # before any future SDK bump that outpaces the floor.
+          SDK_VERSION="1.4.357.1"
+          SDK_SHA256="4b41e3b30e8aedaa5dac7c136561ab463eb316a25a54e2c6245f2c299ea1fb85"
+          curl -fsSL -o /tmp/vulkansdk.tar.xz \
+            "https://sdk.lunarg.com/sdk/download/${SDK_VERSION}/linux/vulkansdk-linux-x86_64-${SDK_VERSION}.tar.xz"
+          echo "${SDK_SHA256}  /tmp/vulkansdk.tar.xz" | sha256sum -c -
+          mkdir -p /opt/vulkansdk
+          tar -xf /tmp/vulkansdk.tar.xz -C /opt/vulkansdk
+          rm /tmp/vulkansdk.tar.xz
+          echo "VULKAN_SDK=/opt/vulkansdk/${SDK_VERSION}/x86_64" >> "$GITHUB_ENV"
+          # find_package(SPIRV-Headers CONFIG) resolves via the SDK's
+          # share/cmake, which only CMAKE_PREFIX_PATH makes visible.
+          echo "CMAKE_PREFIX_PATH=/opt/vulkansdk/${SDK_VERSION}/x86_64" >> "$GITHUB_ENV"
+          echo "/opt/vulkansdk/${SDK_VERSION}/x86_64/bin" >> "$GITHUB_PATH"
 
       # One command per step (Windows steps must not chain rustup invocations).
       - name: Install Rust toolchain (runner VM)
         if: matrix.container == ''
         run: rustup toolchain install stable --no-self-update
+
+      # Same build-time-only Vulkan SDK as the Linux step above; the Qt
+      # installer framework's silent mode needs the three flags exactly.
+      # LunarG's Windows installer is vulkan-sdk.exe (not the Linux tarball's
+      # name), and its latest 1.4.357 Windows build is .0 — the .1 respin is
+      # Linux-only, so Windows pins its own version. curl.exe returning non-zero
+      # does not stop pwsh on its own, so guard it explicitly: without the guard
+      # a failed download surfaces only as a confusing Get-FileHash "path not
+      # found" on the next line.
+      - name: Download Vulkan SDK (Windows)
+        if: matrix.llama && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = "1.4.357.0"
+          $url = "https://sdk.lunarg.com/sdk/download/$v/windows/vulkan-sdk.exe"
+          curl.exe -fsSL -o vulkansdk.exe $url
+          if ($LASTEXITCODE -ne 0) { throw "vulkan-sdk.exe download failed (curl exit $LASTEXITCODE): $url" }
+          $expected = "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
+          $actual = (Get-FileHash vulkansdk.exe -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "vulkansdk.exe sha256 mismatch: $actual" }
+
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.llama && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Process -Wait -FilePath .\vulkansdk.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install"
+          $sdk = "C:\VulkanSDK\1.4.357.0"
+          if (-not (Test-Path "$sdk\Bin\glslc.exe")) { throw "Vulkan SDK install did not produce $sdk\Bin\glslc.exe" }
+          "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CMAKE_PREFIX_PATH=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$sdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # Keep cargo's target dir short (later steps inherit this). llama.cpp's
+          # vulkan-shaders-gen ExternalProject nests a TryCompile object/PDB path
+          # so deep that from the default D:\a\inkentry\inkentry\target it exceeds
+          # CMake's 250-char CMAKE_OBJECT_PATH_MAX (and Win32's 260 MAX_PATH). A
+          # short root, plus dropping the target-triple subdir in the build step,
+          # keeps every generated path well inside the limit.
+          "CARGO_TARGET_DIR=D:/t" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Add Rust target (runner VM)
         if: matrix.container == ''
@@ -100,9 +202,36 @@ jobs:
             ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-
 
       - name: Build release binaries
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
+          # Heal a wedged llama.cpp build dir out of the restored cache: the
+          # sys crate skips cmake configure when its build dir exists, so a
+          # dir cached after a failed configure (no Makefile) breaks every
+          # later run at "gmake: Makefile: No such file or directory".
+          # (Linux legs only: the Makefile marker is generator-specific.)
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            for d in target/${{ matrix.target }}/release/build/llama-cpp-sys-2-*/out/build; do
+              if [ -d "$d" ] && [ ! -f "$d/Makefile" ]; then
+                rm -rf "$(dirname "$(dirname "$d")")"
+              fi
+            done
+            # Drop llama libs hard-linked into the profile dirs by a previous
+            # sys build (a restored cache): once their source build dir is
+            # gone, the unversioned spellings in deps/ and examples/ dangle,
+            # and the sys build script's re-link panics on AlreadyExists.
+            # It recreates all of these whenever it runs; packaging reads
+            # from out/backends, never from here.
+            for d in "" deps/ examples/; do
+              rm -f target/${{ matrix.target }}/release/${d}libggml*.so* \
+                    target/${{ matrix.target }}/release/${d}libllama*.so*
+            done
+          fi
+          # Single-quoted: $ORIGIN must reach the linker literally.
+          if [ -n '${{ matrix.rustflags }}' ]; then
+            export RUSTFLAGS='${{ matrix.rustflags }}'
+          fi
           FEATURES="${{ matrix.features }}"
           if [ -n "$FEATURES" ]; then
             cargo build --release --target ${{ matrix.target }} --features "$FEATURES"
@@ -110,8 +239,62 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
+      # Windows Vulkan builds with the Visual Studio generator break on ggml's
+      # nested vulkan-shaders-gen ExternalProject: its MSBuild custom-build step
+      # fails the compiler probe ("batch label VCEnd" / C1083 empty file), on
+      # both VS 2022 and the VS 2026 preview. Build with Ninja — the generator
+      # llama.cpp uses on Windows, which runs the sub-build directly instead of
+      # through the custom-build wrapper. Ninja needs the MSVC toolchain on PATH,
+      # so source vcvars64 first; cmake-rs honors CMAKE_GENERATOR. The windows
+      # legs carry no rustflags, so none are exported here.
+      - name: Build release binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          CMAKE_GENERATOR: Ninja
+          # /FS lets parallel cl.exe invocations share a PDB; the nested
+          # vulkan-shaders-gen sub-build does not inherit the outer build's /FS,
+          # and cl.exe honors CL on every invocation.
+          CL: /FS
+        run: |
+          set "PF86=%ProgramFiles(x86)%"
+          for /f "usebackq tokens=*" %%i in (`"%PF86%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH ( echo could not locate Visual Studio via vswhere & exit /b 1 )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          rem No --target: the extra x86_64-pc-windows-msvc path segment would
+          rem push the deep shaders-gen object path back over CMAKE_OBJECT_PATH_MAX.
+          rem The host is this triple, so a native build is equivalent.
+          cargo build --release --features "${{ matrix.features }}"
+
+      # A dynamic-backends build splits the llama engine into the binary, four
+      # core shared libs it links by SONAME, and dlopen'd ggml backend modules.
+      # All of them ship next to the binaries; see the script for the layout.
+      - name: Collect llama runtime libraries
+        if: matrix.llama
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Windows builds to a short CARGO_TARGET_DIR with no target-triple
+          # subdir (MAX_PATH); every other leg uses target/<triple>/release.
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            rel="${CARGO_TARGET_DIR}/release"
+          else
+            rel="target/${{ matrix.target }}/release"
+          fi
+          scripts/collect-ggml-backends.sh "${rel}" "${rel}"
+
+      # The modules keep cmake's full symbol tables (cargo's `strip` profile
+      # setting only reaches rust-linked artifacts); the Vulkan module alone
+      # is ~50 MB unstripped.
+      - name: Strip llama runtime libraries (Linux)
+        if: matrix.llama && matrix.container != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          strip --strip-unneeded target/${{ matrix.target }}/release/lib*.so*
+
       # The whole point of the container build: fail the release if either
-      # binary needs a glibc symbol newer than the 2.31 floor. Pinned forever,
+      # binary needs a glibc symbol newer than the 2.35 floor. Pinned forever,
       # not measured once: must keep failing even after toolchain bumps. A
       # missing, empty, or non-numeric ceiling is treated as a broken check,
       # never as proof of compliance (a bare GLIBC_PRIVATE match, or no
@@ -121,7 +304,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for bin in inkentry inkentry-server; do
+          shipped="inkentry inkentry-server"
+          # The llama legs also ship shared objects; every ELF in the archive
+          # must honor the same floor, or the engine silently dies on exactly
+          # the distros the floor exists for.
+          if [ -n "${{ matrix.llama }}" ]; then
+            shipped="$shipped $(cd "target/${{ matrix.target }}/release" && ls lib*.so*)"
+          fi
+          for bin in $shipped; do
             path="target/${{ matrix.target }}/release/${bin}"
             raw="$(objdump -T "$path")"
             ceiling="$(printf '%s\n' "$raw" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
@@ -130,9 +320,9 @@ jobs:
               exit 1
             fi
             echo "${bin}: max versioned glibc symbol = ${ceiling}"
-            max="$(printf '%s\nGLIBC_2.31\n' "$ceiling" | sort -V | tail -1)"
-            if [ "$max" != "GLIBC_2.31" ]; then
-              echo "::error::${bin} requires ${ceiling}, above the glibc 2.31 floor"
+            max="$(printf '%s\nGLIBC_2.35\n' "$ceiling" | sort -V | tail -1)"
+            if [ "$max" != "GLIBC_2.35" ]; then
+              echo "::error::${bin} requires ${ceiling}, above the glibc 2.35 floor"
               exit 1
             fi
           done
@@ -145,9 +335,15 @@ jobs:
           VERSION="${{ github.ref_name }}"
           TARGET="${{ matrix.target }}"
           ARCHIVE="inkentry-${VERSION}-${TARGET}.tar.gz"
+          # Flat archive; llama legs add the engine's shared libs and modules.
+          extra=""
+          if [ -n "${{ matrix.llama }}" ]; then
+            extra="$(cd "target/${TARGET}/release" && ls lib*.so*)"
+          fi
+          # shellcheck disable=SC2086  # word-splitting $extra is the point
           tar -czf "${ARCHIVE}" \
             -C "target/${TARGET}/release" \
-            inkentry inkentry-server
+            inkentry inkentry-server ${extra}
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - name: Package zip (Windows)
@@ -157,11 +353,17 @@ jobs:
           $VERSION  = "${{ github.ref_name }}"
           $TARGET   = "${{ matrix.target }}"
           $ARCHIVE  = "inkentry-${VERSION}-${TARGET}.zip"
+          # Windows builds to $CARGO_TARGET_DIR with no target-triple subdir.
+          $rel = "$env:CARGO_TARGET_DIR/release"
           $binaries = @(
-            "target\${TARGET}\release\inkentry.exe",
-            "target\${TARGET}\release\inkentry-server.exe"
+            "$rel/inkentry.exe",
+            "$rel/inkentry-server.exe"
           )
-          Compress-Archive -Path $binaries -DestinationPath $ARCHIVE
+          # llama leg: the engine's core DLLs + dlopen'd ggml backend modules.
+          $libs = Get-ChildItem "$rel" |
+            Where-Object { $_.Name -match '^(ggml|llama).*\.dll$' } |
+            ForEach-Object { $_.FullName }
+          Compress-Archive -Path ($binaries + $libs) -DestinationPath $ARCHIVE
           "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload artifact
@@ -211,32 +413,47 @@ jobs:
           mkdir -p BUILD/DEBIAN
           mkdir -p BUILD/usr/bin
           mkdir -p BUILD/usr/lib/systemd/user
+          mkdir -p BUILD/usr/lib/inkentry
 
           # Binaries
           install -m 755 linux-amd64/inkentry        BUILD/usr/bin/inkentry
           install -m 755 linux-amd64/inkentry-server BUILD/usr/bin/inkentry-server
+
+          # llama engine: core shared libs (found via the binary's
+          # $ORIGIN/../lib/inkentry rpath) and dlopen'd ggml backend modules
+          # (found by the server probing the same directory).
+          install -m 644 linux-amd64/lib*.so* BUILD/usr/lib/inkentry/
 
           # systemd user unit
           install -m 644 packaging/inkentry-server.service \
             BUILD/usr/lib/systemd/user/inkentry-server.service
 
           # Depends is derived from the packaged binaries, never hardcoded, and
-          # derived INSIDE debian:11 (the build floor), not on the ubuntu runner.
-          # On ubuntu-24.04 (glibc 2.39) the binaries' link against the pre-merge
-          # libpthread.so.0 / libdl.so.2 resolves to libc's merged (>= 2.34)
-          # symbols, so dpkg-shlibdeps derives libc6 (>= 2.34) — which then cannot
-          # install on the glibc-2.31 floor the release targets. debian:11 derives
-          # libc6 (>= 2.30). The container needs dpkg-dev plus every linked
-          # library's package (libdbus-1-3); libc6/libgcc-s1 are in the base
-          # image. dpkg-shlibdeps needs a debian/control in its working dir.
-          DEB_DEPENDS="$(docker run --rm -v "$PWD:/w:ro" debian:11 bash -c '
+          # derived INSIDE ubuntu:22.04 (the build floor), not on the ubuntu
+          # runner: a newer userland resolves symbols against a newer libc and
+          # derives a libc6 requirement the floor distros cannot install. The
+          # container needs dpkg-dev plus every linked library's package
+          # (libdbus-1-3); libc6/libgcc-s1 are in the base image.
+          # dpkg-shlibdeps needs a debian/control in its working dir.
+          DEB_DEPENDS="$(docker run --rm -v "$PWD:/w:ro" ubuntu:22.04 bash -c '
             set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq >/dev/null
             apt-get install -y -qq --no-install-recommends dpkg-dev libdbus-1-3 >/dev/null
             mkdir -p /tmp/sd/debian
             printf "Source: inkentry\nMaintainer: inkentries <hello@inkentry.com>\n\nPackage: inkentry\nArchitecture: amd64\nDescription: placeholder\n placeholder\n" > /tmp/sd/debian/control
             cd /tmp/sd
-            dpkg-shlibdeps -O /w/BUILD/usr/bin/inkentry /w/BUILD/usr/bin/inkentry-server
+            # -l resolves the private libggml/libllama libs the server links;
+            # -e on the core libs folds their own needs (libstdc++6, libgcc)
+            # into Depends. The ggml backend MODULES are deliberately absent:
+            # they are dlopen-optional, and listing ggml-vulkan would turn
+            # libvulkan1 into a hard dependency the CPU fallback does not have.
+            dpkg-shlibdeps -O -l/w/BUILD/usr/lib/inkentry \
+              -e/w/BUILD/usr/lib/inkentry/libggml-base.so.0 \
+              -e/w/BUILD/usr/lib/inkentry/libggml.so.0 \
+              -e/w/BUILD/usr/lib/inkentry/libllama.so.0 \
+              -e/w/BUILD/usr/lib/inkentry/libllama-common.so.0 \
+              /w/BUILD/usr/bin/inkentry /w/BUILD/usr/bin/inkentry-server
           ')"
           echo "Derived ${DEB_DEPENDS}"
 
@@ -250,26 +467,24 @@ jobs:
 
       - name: Build .deb
         run: |
-          # -Zxz: this runner is ubuntu-24.04, whose dpkg-deb defaults to zstd
-          # (control.tar.zst / data.tar.zst). debian:11's dpkg (1.20) cannot read
-          # zstd members, so a default-built .deb fails to install on the
-          # glibc-2.31 floor with "unknown compression for member 'control.tar.zst'".
-          # xz members install everywhere from the floor up.
+          # -Zxz: a deterministic member format across every image the smoke
+          # test installs on, independent of the runner dpkg's compressor
+          # default.
           dpkg-deb --build -Zxz BUILD "inkentry_${{ env.DEB_VERSION }}_amd64.deb"
 
       # apt-get install SUCCEEDS on a .deb whose Depends omits a linked library;
       # only executing real subcommands (a git-backed memory round trip
       # included) surfaces that gap and proves the installed binary runs, not
-      # just links. debian:11 and ubuntu:20.04 are the support floor (glibc
-      # 2.31); ubuntu:24.04 guards the forward direction. The package is
+      # just links. ubuntu:22.04 and debian:12 are the support floor (glibc
+      # 2.35/2.36); ubuntu:24.04 guards the forward direction. The package is
       # mounted read-only; the scratch repo lives in the container's own
       # filesystem so the smoke test never writes into the runner's checkout.
       - name: Smoke-test the .deb in clean containers (floor and current)
         run: |
           set -euo pipefail
-          for image in debian:11 ubuntu:20.04 ubuntu:24.04; do
+          for image in ubuntu:22.04 debian:12 ubuntu:24.04; do
             echo "=== ${image} ==="
-            docker run --rm -v "$PWD:/pkg:ro" -e INKENTRY_SECRET_STORE=file "$image" bash -euc '
+            docker run --rm -v "$PWD:/pkg:ro" -e INKENTRY_SECRET_STORE=file -e DEBIAN_FRONTEND=noninteractive "$image" bash -euc '
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
@@ -334,9 +549,9 @@ jobs:
       - name: Execute on floor and current images
         run: |
           set -euo pipefail
-          for image in debian:11 ubuntu:20.04 ubuntu:24.04 debian:12; do
+          for image in ubuntu:22.04 debian:12 ubuntu:24.04; do
             echo "=== ${image} ==="
-            docker run --rm -v "$PWD/tarball:/t:ro" -e INKENTRY_SECRET_STORE=file "$image" bash -euc '
+            docker run --rm -v "$PWD/tarball:/t:ro" -e INKENTRY_SECRET_STORE=file -e DEBIAN_FRONTEND=noninteractive "$image" bash -euc '
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq

@@ -298,9 +298,9 @@ struct EmbedderSlotInner {
     /// Optional human-readable detail (e.g. the load error) surfaced in the
     /// health body and warm-up responses.
     detail: Option<String>,
-    /// Inference engine identity (`"candle"`/`"llama"`) and configured device
-    /// (`"cpu"`/`"metal"`/`"vulkan"`) surfaced in the health body. `None` for
-    /// slots readied without them (test backends).
+    /// Inference engine identity (`"candle"`/`"llama"`) and resolved device
+    /// (`"cpu"`/`"metal"`/`"vulkan"`/`"gpu"`) surfaced in the health body.
+    /// `None` for slots readied without them (test backends).
     engine: Option<&'static str>,
     device: Option<&'static str>,
 }
@@ -414,8 +414,8 @@ impl EmbedderSlot {
         self.0.read().expect("embedder slot poisoned").engine
     }
 
-    /// Configured device (`"cpu"`/`"metal"`/`"vulkan"`), when the ready
-    /// backend has one.
+    /// Resolved device (`"cpu"`/`"metal"`/`"vulkan"`/`"gpu"`), when the
+    /// ready backend has one.
     pub fn device(&self) -> Option<&'static str> {
         self.0.read().expect("embedder slot poisoned").device
     }
