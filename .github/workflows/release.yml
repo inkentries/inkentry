@@ -141,13 +141,21 @@ jobs:
 
       # Same build-time-only Vulkan SDK as the Linux step above; the Qt
       # installer framework's silent mode needs the three flags exactly.
+      # LunarG's Windows installer is vulkan-sdk.exe (not the Linux tarball's
+      # name), and its latest 1.4.357 Windows build is .0 — the .1 respin is
+      # Linux-only, so Windows pins its own version. curl.exe returning non-zero
+      # does not stop pwsh on its own, so guard it explicitly: without the guard
+      # a failed download surfaces only as a confusing Get-FileHash "path not
+      # found" on the next line.
       - name: Download Vulkan SDK (Windows)
         if: matrix.llama && matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $v = "1.4.357.1"
-          curl.exe -fsSL -o vulkansdk.exe "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
-          $expected = "82f20b87fee7b39d1561cb3890abbce2b11ecdb0e98d54ba77d44d74471f0997"
+          $v = "1.4.357.0"
+          $url = "https://sdk.lunarg.com/sdk/download/$v/windows/vulkan-sdk.exe"
+          curl.exe -fsSL -o vulkansdk.exe $url
+          if ($LASTEXITCODE -ne 0) { throw "vulkan-sdk.exe download failed (curl exit $LASTEXITCODE): $url" }
+          $expected = "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
           $actual = (Get-FileHash vulkansdk.exe -Algorithm SHA256).Hash.ToLower()
           if ($actual -ne $expected) { throw "vulkansdk.exe sha256 mismatch: $actual" }
 
@@ -156,9 +164,11 @@ jobs:
         shell: pwsh
         run: |
           Start-Process -Wait -FilePath .\vulkansdk.exe -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install"
-          "VULKAN_SDK=C:\VulkanSDK\1.4.357.1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CMAKE_PREFIX_PATH=C:\VulkanSDK\1.4.357.1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "C:\VulkanSDK\1.4.357.1\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $sdk = "C:\VulkanSDK\1.4.357.0"
+          if (-not (Test-Path "$sdk\Bin\glslc.exe")) { throw "Vulkan SDK install did not produce $sdk\Bin\glslc.exe" }
+          "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CMAKE_PREFIX_PATH=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$sdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Add Rust target (runner VM)
         if: matrix.container == ''
