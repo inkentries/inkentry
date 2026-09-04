@@ -283,6 +283,12 @@ jobs:
         shell: cmd
         env:
           CMAKE_GENERATOR: Ninja
+          # ggml's nested vulkan-shaders-gen ExternalProject probe compiles with
+          # /Zi, and its parallel C/CXX ABI checks share one vc140.pdb (fatal
+          # error C1041). That nested probe never sees the outer build's /FS, so
+          # inject it through cl.exe's own CL variable, which every cl.exe
+          # invocation honors — including the sub-build's.
+          CL: /FS
         run: |
           set "PF86=%ProgramFiles(x86)%"
           for /f "usebackq tokens=*" %%i in (`"%PF86%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
