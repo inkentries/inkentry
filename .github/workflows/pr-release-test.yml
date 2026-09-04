@@ -1,4 +1,4 @@
-name: PR Builds
+name: PR Release Test
 
 # On-demand, no-release counterpart to release.yml. Runs the same build matrix
 # to produce per-target tarballs (plus the Windows zip) from a chosen branch,
