@@ -255,6 +255,7 @@ jobs:
           grep -m1 -H '^version = ' crates/*/Cargo.toml
 
       - name: Build release binaries
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -268,6 +269,26 @@ jobs:
           else
             cargo build --release --target ${{ matrix.target }}
           fi
+
+      # Windows Vulkan builds with the Visual Studio generator break on ggml's
+      # nested vulkan-shaders-gen ExternalProject: its MSBuild custom-build step
+      # fails the compiler probe ("batch label VCEnd" / C1083 empty file), on
+      # both VS 2022 and the VS 2026 preview. Build with Ninja — the generator
+      # llama.cpp uses on Windows, which runs the sub-build directly instead of
+      # through the custom-build wrapper. Ninja needs the MSVC toolchain on PATH,
+      # so source vcvars64 first; cmake-rs honors CMAKE_GENERATOR. The windows
+      # leg carries no rustflags, so none are exported here.
+      - name: Build release binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          CMAKE_GENERATOR: Ninja
+        run: |
+          set "PF86=%ProgramFiles(x86)%"
+          for /f "usebackq tokens=*" %%i in (`"%PF86%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH ( echo could not locate Visual Studio via vswhere & exit /b 1 )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cargo build --release --target ${{ matrix.target }} --features "${{ matrix.features }}"
 
       # A dynamic-backends build splits the llama engine into the binary, four
       # core shared libs it links by SONAME, and dlopen'd ggml backend modules.
