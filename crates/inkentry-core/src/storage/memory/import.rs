@@ -224,6 +224,26 @@ impl MemoryStore {
         raw.map(|r| NoteId::from_str(&r).map_err(|e| anyhow::anyhow!(e)))
             .transpose()
     }
+
+    /// Every entry whose `entity_id` starts with `prefix`, so a caller can tell
+    /// a miss from a hit from an ambiguous handle (ADR-093 D2).
+    ///
+    /// A range over the unique index rather than a `LIKE`, which SQLite only
+    /// turns into a range under the right collation and pragma. `'g'` is the
+    /// upper bound because the column is lowercase hex, so it sorts after every
+    /// value the prefix can extend to and before the next prefix.
+    pub fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<Vec<NoteId>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT uuid FROM notes WHERE entity_id >= ?1 AND entity_id < ?1 || 'g' \
+             ORDER BY entity_id",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![prefix], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|r| NoteId::from_str(&r).map_err(|e| anyhow::anyhow!(e)))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +340,61 @@ mod tests {
         let (_c, ec) = add(&store, "not-here-yet");
         let late = vec![(ea, CarriedEdge::new("relates_to", ec))];
         assert_eq!(store.import_carried_edges(&late).expect("late").applied, 1);
+    }
+
+    /// The prefix read is what tells a quoted handle from an ambiguous one, so
+    /// it is pinned against crafted values: two that share the queried prefix,
+    /// one that shares only part of it, and one that shares none. Crafted
+    /// rather than hashed because entries sharing eight hex characters is a
+    /// 32-bit coincidence no fixture can produce from content.
+    #[test]
+    fn the_prefix_read_returns_every_candidate_and_stops_at_the_range_bound() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let store = MemoryStore::open(tmp.path()).expect("open");
+        let (first, _) = add(&store, "first");
+        let (second, _) = add(&store, "second");
+        let (neighbour, _) = add(&store, "neighbour");
+        let (elsewhere, _) = add(&store, "elsewhere");
+        for (id, entity_id) in [
+            (&first, "abcd1234aaaa"),
+            (&second, "abcd1234bbbb"),
+            (&neighbour, "abcd1235cccc"),
+            (&elsewhere, "00000000dddd"),
+        ] {
+            store
+                .conn
+                .execute(
+                    "UPDATE notes SET entity_id = ?1 WHERE uuid = ?2",
+                    rusqlite::params![entity_id, id.as_str()],
+                )
+                .expect("craft entity_id");
+        }
+
+        assert_eq!(
+            store.note_ids_for_entity_id_prefix("abcd1234").unwrap(),
+            vec![first.clone(), second],
+            "both entries under the prefix, and nothing from the next one"
+        );
+        assert_eq!(
+            store.note_ids_for_entity_id_prefix("abcd1234aaaa").unwrap(),
+            vec![first],
+            "a longer prefix separates them"
+        );
+        assert_eq!(
+            store
+                .note_ids_for_entity_id_prefix("abcd123")
+                .unwrap()
+                .len(),
+            3,
+            "a shorter prefix reaches the neighbouring value too"
+        );
+        assert!(
+            store
+                .note_ids_for_entity_id_prefix("ffffffff")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// `supersedes` has its own carrier field; a record carrying it in the edge

@@ -13,8 +13,13 @@ pub(super) async fn memory_archive(
     backend_override: Option<&str>,
 ) -> Result<()> {
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
-    if backend.archive(args.id.clone()).await? {
-        println!("Archived memory entry #{}.", args.id);
+    let resolved = super::resolve::resolve_note(backend.as_ref(), &args.id).await?;
+    let Some(target) = resolved else {
+        anyhow::bail!("No active memory entry with id {}.", args.id);
+    };
+    let handle = crate::storage::entity_id_handle(&target.entity_id).to_string();
+    if backend.archive(target.id.clone()).await? {
+        println!("Archived memory entry #{handle}.");
 
         // ── Git-notes write-through carrier ──────────────────────────────────
         // Best-effort and non-fatal, matching `memory add`/`memory supersede`'s
@@ -26,33 +31,30 @@ pub(super) async fn memory_archive(
         // already returned `Ok` above).
         let write_through = cfg.store_in_git_notes && backend_override != Some("git-notes");
         if write_through {
-            match backend.get(args.id.clone()).await {
+            match backend.get(target.id.clone()).await {
                 // `append_state_update` derives the entity_id from `note`
-                // itself (ADR-068 A6) rather than from the rowid `args.id`.
+                // itself (ADR-068 A6) rather than from the id it was found by.
                 Ok(Some(note)) => {
                     let invalid_at = note.invalid_at.or_else(|| Some(now_secs()));
                     if let Err(e) =
                         append_state_update(None, &note, "archived", invalid_at, None).await
                     {
                         eprintln!(
-                            "Warning: #{} archived locally, but the git-notes carry failed, \
-                             so it will not travel with the repo: {e:#}",
-                            args.id
+                            "Warning: #{handle} archived locally, but the git-notes carry \
+                             failed, so it will not travel with the repo: {e:#}"
                         );
                     }
                 }
                 Ok(None) => {
                     eprintln!(
-                        "Warning: could not re-read #{} after archiving it, so it was not \
-                         carried to git notes.",
-                        args.id
+                        "Warning: could not re-read #{handle} after archiving it, so it was \
+                         not carried to git notes."
                     );
                 }
                 Err(e) => {
                     eprintln!(
-                        "Warning: could not re-read #{} after archiving it, so it was not \
-                         carried to git notes: {e:#}",
-                        args.id
+                        "Warning: could not re-read #{handle} after archiving it, so it was \
+                         not carried to git notes: {e:#}"
                     );
                 }
             }

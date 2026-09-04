@@ -28,7 +28,7 @@ impl MemoryStore {
              )
              SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
                     n.created_at, n.status, n.superseded_by, n.source_ref,
-                    n.valid_at, n.invalid_at, CAST(k.distance AS REAL)
+                    n.valid_at, n.invalid_at, n.entity_id, CAST(k.distance AS REAL)
              FROM   knn k
              JOIN   notes n ON n.id = k.note_id
              {where_clause}
@@ -61,7 +61,7 @@ impl MemoryStore {
         let sql = format!(
             "SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
                     n.created_at, n.status, n.superseded_by, n.source_ref,
-                    n.valid_at, n.invalid_at, bm25(memory_fts) AS bm25_score
+                    n.valid_at, n.invalid_at, n.entity_id, bm25(memory_fts) AS bm25_score
              FROM memory_fts
              JOIN notes n ON memory_fts.rowid = n.id
              WHERE memory_fts MATCH ?1
@@ -73,7 +73,7 @@ impl MemoryStore {
         let fts_query = crate::utils::fts5_quote_literal(query);
         let notes = if let Some(ts) = as_of {
             stmt.query_map(rusqlite::params![fts_query, ts], |row| {
-                let bm25_score: f64 = row.get(12)?;
+                let bm25_score: f64 = row.get(13)?;
                 let mut note = row_to_note(row)?;
                 note.distance = Some(-bm25_score);
                 Ok(note)
@@ -81,7 +81,7 @@ impl MemoryStore {
             .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             stmt.query_map(rusqlite::params![fts_query], |row| {
-                let bm25_score: f64 = row.get(12)?;
+                let bm25_score: f64 = row.get(13)?;
                 let mut note = row_to_note(row)?;
                 // Negate so that higher relevance → lower distance (ascending convention).
                 note.distance = Some(-bm25_score);
@@ -178,11 +178,11 @@ impl MemoryStore {
         let sql = format!(
             "SELECT uuid, kind, title, body, tags, linked_files,
                     created_at, status, superseded_by, source_ref,
-                    valid_at, invalid_at
+                    valid_at, invalid_at, entity_id
              FROM (
                  SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
                         n.created_at, n.status, n.superseded_by, n.source_ref,
-                        n.valid_at, n.invalid_at
+                        n.valid_at, n.invalid_at, n.entity_id
                  FROM   memory_fts
                  JOIN   notes n ON memory_fts.rowid = n.id
                  WHERE  memory_fts MATCH ?1

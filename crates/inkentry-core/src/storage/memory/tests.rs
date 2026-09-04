@@ -43,6 +43,51 @@ fn absent_id() -> NoteId {
     "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33".parse().unwrap()
 }
 
+// ── entity_id on read ────────────────────────────────────────────────────────
+
+// Every read path hands back the entry's portable identity, so a caller that
+// displays or quotes it never has to know which query produced the note.
+#[test]
+fn every_read_path_carries_the_entity_id() {
+    let store = open_store();
+    let (id, _) = store
+        .add_note(
+            "decision",
+            "Portable identity",
+            "the handle travels",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+    let expected =
+        crate::storage::entity_id::entity_id("decision", "Portable identity", "the handle travels");
+
+    let got = store.get(&id).unwrap().expect("get");
+    assert_eq!(got.entity_id, expected);
+    assert_eq!(
+        store.list(None, 10, false).unwrap()[0].entity_id,
+        expected,
+        "list"
+    );
+    assert_eq!(
+        store.search_text("portable", 10, None).unwrap()[0].entity_id,
+        expected,
+        "full-text search"
+    );
+    assert_eq!(
+        store.search_timeline("portable", 10).unwrap()[0].entity_id,
+        expected,
+        "timeline"
+    );
+    assert_eq!(
+        store.all_notes_for_dedup().unwrap()[0].entity_id,
+        expected,
+        "dedup listing"
+    );
+}
+
 // ── supersede() ──────────────────────────────────────────────────────────────
 
 #[test]

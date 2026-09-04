@@ -183,6 +183,20 @@ fn entries_and_their_relationship_land_together() {
 }
 
 #[test]
+fn the_report_names_the_entity_id_as_the_portable_one() {
+    let p = project();
+    let d = dump(
+        &[&entry("e1", "carried", 1000, "")],
+        r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
+    );
+    let out = p.import(&d).assert().success();
+    let report = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(report.contains("Imported 1 memory entry"), "{report}");
+    assert!(report.contains("minted on this machine"), "{report}");
+    assert!(report.contains("entity id"), "{report}");
+}
+
+#[test]
 fn an_entry_arriving_with_an_identity_keeps_it_verbatim() {
     let p = project();
     let carried = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33";

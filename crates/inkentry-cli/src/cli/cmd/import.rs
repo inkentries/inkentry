@@ -93,6 +93,14 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
             summary.projects,
             if summary.projects == 1 { "" } else { "s" },
         );
+        if summary.memory_entries > 0 {
+            // Import mints a fresh local id for every entry, so a count alone
+            // would report every visible id silently changing (ADR-093 D5).
+            println!(
+                "The ids these entries show were minted on this machine; quote the entity id \
+                 from `inkentry memory show` to name an entry anywhere else."
+            );
+        }
         report_records_that_did_not_become_rows(&summary);
         report_what_travels(carried.as_ref());
     }

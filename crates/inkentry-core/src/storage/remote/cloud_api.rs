@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashSet;
 
-use super::super::backend::{MemoryBackend, NoteInput};
+use super::super::backend::{EntityIdLookup, MemoryBackend, NoteInput};
 use super::super::memory::{MemoryEdge, Note, NoteId};
 use super::{already_unreachable, encode_project_id, transport_error};
 use wire::*;
@@ -312,6 +312,37 @@ impl MemoryBackend for CloudApiMemoryBackend {
 
     async fn get(&self, id: NoteId) -> Result<Option<Note>> {
         Ok(self.fetch(&id).await?.map(EntryResponse::into_note))
+    }
+
+    /// The cloud API exposes no filter on `entity_id`, so the handle is resolved
+    /// by paging the project and matching client-side, the same way
+    /// `filter_by_source_commit` handles the other unindexed key.
+    ///
+    /// Paged to exhaustion rather than to a first page: a partial read that
+    /// found nothing cannot tell a missing entry from an unread one, and the
+    /// listing is ordered newest first, so a bounded read drops exactly the
+    /// oldest entries, which are the ones a long-lived document quotes. Every
+    /// match is collected so an ambiguous prefix is still caught when its two
+    /// entries fall on different pages.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
+        let mut matches = Vec::new();
+        for page in 0..MAX_PAGES {
+            let resp = self.page(None, PAGE_SIZE, page * PAGE_SIZE, true).await?;
+            let drained = resp.entries.len();
+            for entry in resp.entries {
+                let note = entry.into_note();
+                if note.entity_id.starts_with(prefix) {
+                    matches.push(note.id);
+                }
+            }
+            if drained < PAGE_SIZE {
+                return Ok(EntityIdLookup::Complete(matches));
+            }
+        }
+        Ok(EntityIdLookup::Bounded {
+            matches,
+            examined: MAX_PAGES * PAGE_SIZE,
+        })
     }
 
     /// The list route computes the total in the same round trip, so a

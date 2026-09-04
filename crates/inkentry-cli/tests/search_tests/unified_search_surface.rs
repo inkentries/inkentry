@@ -210,6 +210,11 @@ fn only_text_interleaves_code_and_memory_in_fused_order() {
     assert_eq!(code["code"]["file_path"], "auth.rs");
     let mem = results.iter().find(|r| r["type"] == "memory").unwrap();
     assert_eq!(mem["memory"]["title"], "Authentication decision");
+    // The portable identity rides along additively; the documented fields
+    // around it are untouched.
+    let entity_id = mem["memory"]["entity_id"].as_str().expect("entity_id");
+    assert_eq!(entity_id.len(), 64);
+    assert!(mem["memory"]["id"].as_str().is_some());
 }
 
 // A corpus pair deep enough for the fused order to distinguish ordering rules:

@@ -12,6 +12,8 @@ mod memory_add_kind_validation;
 mod memory_add_secret_gate;
 #[path = "memory_crud_tests/memory_dedupe.rs"]
 mod memory_dedupe;
+#[path = "memory_crud_tests/memory_entity_id_handle.rs"]
+mod memory_entity_id_handle;
 #[path = "memory_crud_tests/memory_list_format.rs"]
 mod memory_list_format;
 #[path = "memory_crud_tests/memory_list_source_ref.rs"]
