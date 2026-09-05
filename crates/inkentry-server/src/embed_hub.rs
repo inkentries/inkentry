@@ -581,6 +581,58 @@ mod tests {
         );
     }
 
+    // The pooled worker reuses one warm context across calls, clearing the KV
+    // cache between chunks. That reuse must not change the vectors: many chunks
+    // run through one reused context (a multi-chunk call, then repeated calls on
+    // the now-warm context) must match each chunk decoded on its own. A leaked
+    // KV state between chunks — the failure mode context reuse could introduce —
+    // would surface here as drift on the later chunks. Ignored by default: needs
+    // the canonical GGUF on disk and runs inference.
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    #[ignore = "requires the canonical F2LLM GGUF and runs inference"]
+    fn llama_reused_context_matches_isolated_chunks() {
+        use inkentry_core::embeddings::EmbeddingBackend;
+
+        let llama = load_llama_from_hub(DeviceRequest::Auto, 4)
+            .expect("load llama engine (canonical GGUF)");
+
+        // Mixed lengths and scripts so a KV leak between neighbours of differing
+        // size would show up.
+        let texts: [&str; 6] = [
+            "title: none | text: a",
+            "title: l2_normalise | text: fn l2_normalise(v: &mut [f32]) { let norm = \
+             v.iter().map(|x| x * x).sum::<f32>().sqrt(); for x in v { *x /= norm; } }",
+            "title: none | text: SELECT id, title FROM notes WHERE archived = 0;",
+            "title: none | text: 埋め込みは起動時にバックグラウンドで読み込まれます。",
+            "title: none | text: the fall of the roman empire and the rise of byzantium",
+            "title: none | text: cosine similarity between L2-normalised vectors is their dot product",
+        ];
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // One multi-chunk call: all six run through one reused context in order.
+        let batched = rt.block_on(llama.embed(&texts)).expect("multi-chunk embed");
+        // Then each on its own, reusing the same now-warm pooled context.
+        let singles: Vec<Vec<f32>> = texts
+            .iter()
+            .map(|t| {
+                rt.block_on(llama.embed(&[*t]))
+                    .expect("single embed")
+                    .remove(0)
+            })
+            .collect();
+
+        let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        for (i, (b, s)) in batched.iter().zip(&singles).enumerate() {
+            let c = cos(b, s);
+            assert!(
+                c >= 0.9999,
+                "chunk {i}: vector from the reused context drifts from the isolated decode \
+                 (cos={c:.6}); the KV cache is not being cleared cleanly between chunks"
+            );
+        }
+    }
+
     /// End-to-end proof that an oversized single chunk no longer OOMs/aborts
     /// (inkentry-oss#17), exercised via the Hub acquisition path. Ignored by
     /// default: downloads the model and runs inference.
