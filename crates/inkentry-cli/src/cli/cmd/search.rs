@@ -61,12 +61,19 @@ pub struct SearchArgs {
     /// Expand memory results by 1 hop along relates_to edges
     #[arg(long)]
     pub expand_graph: bool,
+
+    /// Suppress the informational notices on stderr (stale index, server
+    /// discovery, semantic-ranking availability, embedding coverage). Results,
+    /// exit codes, errors and the multi-user server warning are unaffected.
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
 }
 
 use super::color::cprintln;
 use super::fusion::{self, UnifiedResult};
 use super::helpers::{embed_query, project_display_name, require_server_client};
 use super::ui::spinner;
+use crate::notice::enotice;
 use crate::{
     capability,
     config::Config,
@@ -172,6 +179,8 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     }
 
     // ── Code-corpus coverage & freshness notices (stderr keeps stdout clean) ───
+    // The counts feed the no-results message, so they are read whether or not
+    // the notices are printed.
     let mut code_coverage: Option<(i64, i64)> = None;
     let mut code_refresh_pending: i64 = 0;
     if want_code && !args.only_text {
@@ -182,12 +191,12 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             code_refresh_pending = db.refresh_pending_count().unwrap_or(0);
         }
         match code_coverage {
-            Some((e, t)) if t > 0 && e <= 0 => eprintln!("{}", warmup_notice_zero(t)),
-            Some((e, t)) if e < t => eprintln!("{}", warmup_notice_partial(e, t)),
+            Some((e, t)) if t > 0 && e <= 0 => enotice!("{}", warmup_notice_zero(t)),
+            Some((e, t)) if e < t => enotice!("{}", warmup_notice_partial(e, t)),
             _ => {}
         }
         if code_refresh_pending > 0 {
-            eprintln!("{}", refresh_pending_notice(code_refresh_pending));
+            enotice!("{}", refresh_pending_notice(code_refresh_pending));
         }
     }
 
@@ -196,7 +205,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     if want_memory && !args.only_text {
         memory_missing = memory_missing_count(&mem_path);
         if memory_missing > 0 {
-            eprintln!("{}", memory_warmup_notice(memory_missing));
+            enotice!("{}", memory_warmup_notice(memory_missing));
         }
     }
 
@@ -558,10 +567,11 @@ pub(crate) fn maybe_warn_stale(db_path: &std::path::Path) {
         && let Ok(report) = db.staleness_report(&root, Some(20))
         && report.stale > 0
     {
-        eprintln!(
+        enotice!(
             "warning: index may be stale ({}/{} sampled files changed). \
              Run `inkentry index .` to refresh.",
-            report.stale, report.sampled
+            report.stale,
+            report.sampled
         );
     }
 }
@@ -826,7 +836,7 @@ fn offline_semantic_notice(
 /// Print the semantic-unavailable notice to stderr so structured
 /// (`--format json`/`jsonl`) output on stdout stays clean.
 fn eprint_semantic_unavailable_notice(tier: &capability::Tier, cfg: &Config) {
-    eprintln!(
+    enotice!(
         "{}",
         semantic_unavailable_message(tier, cfg.server_url.as_deref(), cfg!(windows))
     );

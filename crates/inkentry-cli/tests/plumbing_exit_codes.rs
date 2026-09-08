@@ -16,8 +16,8 @@
 mod plumbing_helpers;
 
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, init_git_repo, inkentry_bin,
-    inkentry_cmd, write_config, write_project_server_config,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, index_fixture_project, index_project_dir,
+    init_git_repo, inkentry_bin, inkentry_cmd, write_config, write_project_server_config,
 };
 
 use std::path::{Path, PathBuf};
@@ -319,6 +319,69 @@ fn graph_edges_exit_codes() {
     // Neither filter given is a usage error, not an empty set.
     let err = inkentry_cmd(&db, &cfg).arg("graph-edges").output().unwrap();
     assert_hard_error("graph-edges no filter", &err);
+}
+
+// A `--file` path that matches nothing in the index is a hard error, not an
+// empty set: a mistyped path must never read the same as a file with no edges.
+#[test]
+fn graph_edges_unindexed_file_is_a_hard_error() {
+    let (_tmp, db, cfg) = index_fixture_project();
+
+    let err = inkentry_cmd(&db, &cfg)
+        .args(["graph-edges", "--file", "src/no_such_file.rs"])
+        .output()
+        .unwrap();
+    assert_hard_error("graph-edges unindexed file", &err);
+    let stderr = String::from_utf8_lossy(&err.stderr);
+    assert!(
+        stderr.contains("src/no_such_file.rs") && stderr.contains("not in the index"),
+        "stderr must name the path as not indexed, got {stderr:?}"
+    );
+
+    // A matching --symbol does not rescue a mistyped --file.
+    let err = inkentry_cmd(&db, &cfg)
+        .args([
+            "graph-edges",
+            "--file",
+            "src/no_such_file.rs",
+            "--symbol",
+            "greet",
+        ])
+        .output()
+        .unwrap();
+    assert_hard_error("graph-edges unindexed file with matching symbol", &err);
+}
+
+// An indexed file that simply has no edges is still an empty set, so the
+// not-in-index error does not over-reach.
+#[test]
+fn graph_edges_indexed_file_without_edges_is_an_empty_set() {
+    let project = TempDir::new().expect("create project dir");
+    std::fs::create_dir_all(project.path().join("src")).expect("create src");
+    // Indexing records a "mentions" edge for every identifier long enough to
+    // look like a symbol, so an edge-free file needs identifiers below that
+    // length and nothing called or imported.
+    std::fs::write(
+        project.path().join("src/leaf.rs"),
+        "pub fn ab() -> u8 {\n    42\n}\n",
+    )
+    .expect("write leaf.rs");
+    let (_tmp, db, cfg) = index_project_dir(project.path());
+
+    // An empty result only means "indexed, no edges" if the file reached the
+    // index at all; without this the assertion below would also pass for a
+    // file that was never indexed.
+    let listed = inkentry_cmd(&db, &cfg).args(["ls-files"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains("src/leaf.rs"),
+        "fixture file must be indexed for the empty result to mean anything"
+    );
+
+    let empty = inkentry_cmd(&db, &cfg)
+        .args(["graph-edges", "--file", "src/leaf.rs"])
+        .output()
+        .unwrap();
+    assert_empty("graph-edges indexed file without edges", &empty);
 }
 
 // ── read-memory ──────────────────────────────────────────────────────────────

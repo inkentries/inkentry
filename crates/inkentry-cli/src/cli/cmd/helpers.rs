@@ -51,7 +51,7 @@ pub(crate) fn announce_index_rebuild(db: &Database) {
     let Some(found) = db.rebuilt_from() else {
         return;
     };
-    eprintln!(
+    crate::notice::enotice!(
         "notice: this index was written by {} and cannot be read by this build, so it was \
          rebuilt empty (recorded usage history was kept). Run `inkentry index .` to \
          repopulate it.",
@@ -118,10 +118,13 @@ pub(crate) fn background_log_path() -> Option<std::path::PathBuf> {
     inkentry_core::config::find_project_dir(&cwd).map(|d| d.join("background.log"))
 }
 
-/// Open the background log for appending, `0600`, refusing to follow a symlink
-/// at the path. Appending rather than truncating is what lets the two detached
-/// runs a single commit fires (index, then harvest) both survive in one file.
-fn open_background_log(path: &std::path::Path) -> Result<std::fs::File> {
+/// Open a log for appending, `0600`, refusing to follow a symlink at the path.
+///
+/// Appending rather than truncating is what lets the two detached runs a
+/// single commit fires (index, then harvest) both survive in one file, and it
+/// keeps a fresh spawn from punching a hole through the output of a detached
+/// child that is still writing to the same log at its own offset.
+pub(crate) fn open_log_for_append(path: &std::path::Path) -> Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.append(true).create(true);
     #[cfg(unix)]
@@ -181,7 +184,7 @@ fn open_log_pair(
     args: &[String],
 ) -> Option<(std::fs::File, std::fs::File)> {
     use std::io::Write;
-    let mut out = open_background_log(path).ok()?;
+    let mut out = open_log_for_append(path).ok()?;
     let _ = writeln!(
         out,
         "\n=== inkentry {} ({}) ===",

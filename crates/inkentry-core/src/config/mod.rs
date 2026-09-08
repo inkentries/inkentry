@@ -30,7 +30,7 @@ pub use predicates::{
 pub use project_id::derive_project_id;
 pub use sync_mode::SyncMode;
 pub use team_target::{TeamTarget, declared_team_targets};
-pub use tls::apply_server_ca;
+pub use tls::{apply_server_ca, find_rustls_cause};
 
 /// Default TCP port for `inkentry-server`.
 ///
@@ -39,6 +39,29 @@ pub use tls::apply_server_ca;
 /// by Unreal-engine dedicated servers, Terraria and ARK, whose claim on it
 /// predates ours (ADR-089).
 pub const DEFAULT_SERVER_PORT: u16 = 4655;
+
+/// How long a client may spend establishing a connection to a configured
+/// server before the server is reported unreachable.
+///
+/// Short on purpose, and unrelated to the per-request budgets, which stay long
+/// because a real transfer or a server-side embed legitimately runs for
+/// minutes once the connection is up. Without this bound an unreachable host
+/// instead burns the whole request budget, since a firewall that drops rather
+/// than refuses leaves the connect attempt with nothing to fail on.
+///
+/// This is the bound for a request that carries real work. The liveness probes
+/// derive their own from it rather than reusing it directly, because each has
+/// to keep connecting distinguishable from waiting for a reply: the capability
+/// probe gives connecting half of its own short budget, and the dialect probe
+/// keeps a reply budget of twice this. A miss that cannot be told apart from a
+/// slow answer cannot safely be recorded as unreachable.
+///
+/// Note this covers the TLS handshake as well as the TCP connect, so it is a
+/// budget for a round trip or two to the server rather than for a bare SYN. Two
+/// seconds is generous for that on a healthy link, including a distant one, but
+/// it is the number to revisit if a legitimately slow WAN server is ever
+/// reported as unreachable.
+pub const REMOTE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[cfg(test)]
 use tempfile::TempDir;

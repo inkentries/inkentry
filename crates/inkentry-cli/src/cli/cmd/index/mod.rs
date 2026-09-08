@@ -68,6 +68,7 @@ pub struct IndexArgs {
 
 use crate::{capability, config::Config, registry::Registry, storage::Database};
 
+mod background_log;
 mod continuation;
 mod crash_test_hook;
 mod embed_phase;
@@ -85,6 +86,24 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
+    // A continuation child's streams are the background log, so its whole run
+    // is bracketed here: the start line is what separates a worker that is
+    // running from one that never got going, and the failure line covers the
+    // lock re-acquire and the index open too, which fail before any phase.
+    let Some(phase) = background_log::Phase::of(&args) else {
+        return run_index(args, cfg).await;
+    };
+    background_log::activate();
+    background_log::emit(format!("{phase} started (pid {})", std::process::id()));
+    let outcome = run_index(args, cfg).await;
+    match &outcome {
+        Ok(()) => background_log::emit(format!("{phase} finished")),
+        Err(e) => background_log::emit(format!("{phase} failed: {e:#}")),
+    }
+    outcome
+}
+
+async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
     // Validate config: server_url requires project_id.
     cfg.validate()?;
 

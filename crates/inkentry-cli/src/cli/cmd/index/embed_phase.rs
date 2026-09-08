@@ -494,6 +494,7 @@ async fn run_embed_phase_with_backoff(
     let mut embedded = 0u64;
     let mut cursor = 0usize;
     let mut batch_num = 0u64;
+    let mut progress_log = super::background_log::ProgressThrottle::new();
     let mut previous_batch_size = 1usize;
     let remaining = chunk_ids_and_texts.len();
     // Token-weighted work totals: the ETA and the "of work done" percentage
@@ -787,6 +788,15 @@ async fn run_embed_phase_with_backoff(
 
         previous_batch_size = this_batch_size;
         cursor += this_batch_size;
+
+        // The detached worker has no bar to repaint, so the same counts go to
+        // its log as plain lines (a no-op in the foreground).
+        if progress_log.due(cursor >= remaining) {
+            let work_pct = pct(tokens_done, total_tokens);
+            super::background_log::emit(format!(
+                "embedding: {embedded}/{total} chunks ({work_pct}% of work done)"
+            ));
+        }
     }
 
     bar.finish_with_message(format!("{embedded} chunks embedded"));

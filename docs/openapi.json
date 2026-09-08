@@ -370,7 +370,7 @@
             }
           },
           "400": {
-            "description": "Embedding dimension mismatch",
+            "description": "Invalid request, or a pushed vector that violates the contract: wrong model tag, wrong precision, wrong dimension, a non-finite component, or an L2 magnitude outside [0.5, 1.5]",
             "content": {
               "application/json": {
                 "schema": {
@@ -461,7 +461,7 @@
             }
           },
           "400": {
-            "description": "Bad request (oversized batch, bad field length)",
+            "description": "Bad request (oversized batch, bad field length), or a pushed vector that violates the contract: wrong model tag, wrong precision, wrong dimension, a non-finite component, or an L2 magnitude outside [0.5, 1.5]",
             "content": {
               "application/json": {
                 "schema": {
@@ -1266,7 +1266,7 @@
               "type": "number",
               "format": "float"
             },
-            "description": "Locally-computed embedding vector from the client. Optional: if omitted\nand the server's embedder is ready, the server embeds the entry.\nIf neither is available, the entry is stored without a vector (text\nsearch only)."
+            "description": "Locally-computed embedding vector from the client. Optional: if omitted\nand the server's embedder is ready, the server embeds the entry.\nIf neither is available, the entry is stored without a vector (text\nsearch only).\n\nA supplied vector must be L2-normalised: its magnitude must fall inside\n`[0.5, 1.5]`. The index ranks by Euclidean distance, which tracks\nsimilarity only across vectors of equal length, so one of another\nmagnitude is refused rather than stored and silently mis-ranked."
           },
           "vector_model": {
             "type": [
@@ -1385,7 +1385,7 @@
               "type": "number",
               "format": "float"
             },
-            "description": "Locally-computed embedding, letting the client skip server-side\nembedding. Optional; without it the server embeds the text itself."
+            "description": "Locally-computed embedding, letting the client skip server-side\nembedding. Optional; without it the server embeds the text itself.\n\nA supplied vector must be L2-normalised: its magnitude must fall inside\n`[0.5, 1.5]`. The index ranks by Euclidean distance, which tracks\nsimilarity only across vectors of equal length, so one of another\nmagnitude is refused rather than stored and silently mis-ranked."
           },
           "vector_model": {
             "type": [

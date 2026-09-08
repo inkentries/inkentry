@@ -6,6 +6,8 @@ mod common;
 
 #[path = "server_e2e_tests/cli_sync_e2e.rs"]
 mod cli_sync_e2e;
+#[path = "server_e2e_tests/daemon_log_plain_text.rs"]
+mod daemon_log_plain_text;
 #[path = "server_e2e_tests/health_under_index_load.rs"]
 mod health_under_index_load;
 #[path = "server_e2e_tests/integration_server.rs"]

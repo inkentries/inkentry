@@ -3,8 +3,8 @@
 // Paths here are the paths the index stores, which are relative to the indexed
 // project root (`src/main.rs`), not to the fixture directory
 // (`simple-project/src/main.rs`). Filtering on the latter matches nothing and
-// exits 1, so a test written as "exit 0 or exit 1" over such a path never runs
-// its assertions at all.
+// exits 2, so a test written as "exit 0 or non-zero" over such a path never
+// runs its assertions at all.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{index_fixture_project, inkentry_bin, inkentry_cmd, parse_jsonl};
@@ -129,19 +129,21 @@ fn graph_edges_symbol_filter_finds_edges_across_files() {
 // ── a path the index does not store ───────────────────────────────────────────
 
 #[test]
-fn graph_edges_exits_1_for_a_path_the_index_does_not_store() {
+fn graph_edges_exits_2_for_a_path_the_index_does_not_store() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
     // Stored paths are relative to the indexed root, so a fixture-relative path
-    // matches nothing. Pinned because tolerating this exit silently is what
-    // made the earlier file-filter tests unfalsifiable.
+    // matches nothing. That is a hard error naming the path, not an empty set:
+    // a silent exit here is what made the earlier file-filter tests
+    // unfalsifiable, and what let a mistyped path pass for a file with no edges.
     inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--file")
         .arg("simple-project/src/main.rs")
         .assert()
-        .code(1)
-        .stdout(predicate::str::is_empty());
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("simple-project/src/main.rs"));
 }
 
 // ── no results (exit 1) ───────────────────────────────────────────────────────

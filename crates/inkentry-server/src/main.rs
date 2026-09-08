@@ -1,3 +1,4 @@
+use std::io::IsTerminal as _;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
@@ -220,7 +221,10 @@ async fn run(budget: ThreadBudget) -> Result<()> {
 
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(fmt::layer())
+        .with(fmt::layer().with_ansi(log_ansi_enabled(
+            std::env::var("NO_COLOR").ok().as_deref(),
+            std::io::stdout().is_terminal(),
+        )))
         .init();
 
     tracing::info!(
@@ -691,6 +695,20 @@ fn resolve_api_key(
         }
     }
     Ok(None)
+}
+
+/// Whether the log layer should emit ANSI colour, given the raw `NO_COLOR`
+/// value (if set) and whether stdout is a terminal.
+///
+/// `inkentry server start` daemonises this binary with stdout and stderr
+/// redirected into `server.log`, so colouring unconditionally writes escape
+/// bytes into a file that outlives the run and that every later reader (the
+/// `logs` subcommand, an editor, a log shipper) then has to cope with. Gating
+/// on the sink keeps them out at the source. `NO_COLOR` is honoured for the
+/// interactive case, matching the CLI's own colour policy.
+fn log_ansi_enabled(no_color_env: Option<&str>, stdout_is_terminal: bool) -> bool {
+    let no_color = no_color_env.is_some_and(|v| !v.is_empty());
+    !no_color && stdout_is_terminal
 }
 
 /// `--tls-cert`/`--tls-key` are all-or-nothing (ADR-066 §2): a cert chain needs
@@ -1746,6 +1764,31 @@ mod arg_tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         assert!(super::run_health_check("127.0.0.1", port).await.is_err());
+    }
+
+    // ── Log colour policy ─────────────────────────────────────────────────────
+
+    /// The daemon writes its log through a redirected stdout, so the sink is a
+    /// file and the escapes would be litter in it forever.
+    #[test]
+    fn log_colour_is_off_when_stdout_is_not_a_terminal() {
+        assert!(!super::log_ansi_enabled(None, false));
+    }
+
+    #[test]
+    fn log_colour_is_on_in_a_terminal() {
+        assert!(super::log_ansi_enabled(None, true));
+    }
+
+    #[test]
+    fn no_color_turns_log_colour_off_even_in_a_terminal() {
+        assert!(!super::log_ansi_enabled(Some("1"), true));
+    }
+
+    /// Present but empty is not a request for monochrome (no-color.org).
+    #[test]
+    fn empty_no_color_does_not_turn_log_colour_off() {
+        assert!(super::log_ansi_enabled(Some(""), true));
     }
 }
 

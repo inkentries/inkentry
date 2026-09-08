@@ -7,7 +7,7 @@ use tokio::process::Command;
 
 use super::entity_id::note_entity_id;
 use super::memory::Note;
-use super::note_record::{NoteRecord, now_millis, now_secs, record_to_note};
+use super::note_record::{CarriedEdge, NoteRecord, now_millis, now_secs, record_to_note};
 use fold::fold_records;
 
 mod backend_impl;
@@ -492,7 +492,36 @@ pub async fn append_state_update(
     invalid_at: Option<i64>,
     superseded_by_entity_id: Option<String>,
 ) -> Result<AppendOutcome> {
-    let record = NoteRecord {
+    let record = entity_update_record(base, status, invalid_at, superseded_by_entity_id, vec![]);
+    append_to_git_notes(git_root, &record).await
+}
+
+/// Append a record carrying `edges` as outgoing edges of `base`'s entity, its
+/// mutable state left as `base` reports it.
+///
+/// Same append-only shape as [`append_state_update`], and for the same reason:
+/// the fold unions edge lists across copies, so an edge recorded here converges
+/// on every clone whatever order the copies merge in. `supersedes` is never
+/// passed here; it travels as `superseded_by_entity_id`.
+pub async fn append_edges(
+    git_root: Option<&std::path::Path>,
+    base: &Note,
+    edges: Vec<CarriedEdge>,
+) -> Result<AppendOutcome> {
+    let record = entity_update_record(base, &base.status, base.invalid_at, None, edges);
+    append_to_git_notes(git_root, &record).await
+}
+
+/// The record an entity update appends: `base`'s content unchanged, keyed by
+/// its `entity_id`, with the mutable state the caller supplies.
+fn entity_update_record(
+    base: &Note,
+    status: &str,
+    invalid_at: Option<i64>,
+    superseded_by_entity_id: Option<String>,
+    edges: Vec<CarriedEdge>,
+) -> NoteRecord {
+    NoteRecord {
         schema_version: 1,
         id: now_millis(),
         kind: base.kind.clone(),
@@ -511,8 +540,8 @@ pub async fn append_state_update(
         remote_id: None,
         entity_id: Some(note_entity_id(base)),
         superseded_by_entity_id,
-    };
-    append_to_git_notes(git_root, &record).await
+        edges,
+    }
 }
 
 // ── Read-path merge: making fetched notes visible ────────────────────────────
@@ -662,9 +691,10 @@ const GIT_NOTES_MAX_LIST: usize = 500;
 ///
 /// # Unsupported methods
 /// Semantic search (`search`, `search_hybrid`, `search_timeline`, `search_text`),
-/// graph edges (`add_edge`, `get_edges`), `supersede`, `harvested_shas`, and
-/// `has_source_ref` all return `Err` with a clear message rather than silently
-/// returning empty results.
+/// `get_edges`, `supersede`, `harvested_shas`, and `has_source_ref` all return
+/// `Err` with a clear message rather than silently returning empty results.
+/// `add_edge` is supported for `relates_to` and `contradicts` (the edge rides
+/// an appended record); reading edges back is a store's job after import.
 pub struct GitNotesBackend {
     git_root: Option<std::path::PathBuf>,
 }
@@ -923,6 +953,26 @@ impl GitNotesBackend {
         // Fold before every filter below. Dropping an archived copy first would
         // leave a surviving active copy to resurrect the entity.
         Ok(fold_records(records))
+    }
+
+    /// Every outgoing edge on the ref as `(source entity_id, edge)` pairs, read
+    /// off the folded records so an edge appended on any copy of an entity
+    /// counts once. This is the whole of what the carrier offers about the
+    /// graph: it is reconstructed by resolving these against a store's rows,
+    /// never queried from the ref.
+    pub async fn carried_edges(&self) -> Result<Vec<(String, CarriedEdge)>> {
+        Ok(self
+            .folded_records()
+            .await?
+            .into_iter()
+            .flat_map(|record| {
+                let from = record.resolve_entity_id();
+                record
+                    .edges
+                    .into_iter()
+                    .map(move |edge| (from.clone(), edge))
+            })
+            .collect())
     }
 
     /// Every inkentry record on the ref, each paired with the commit its note is

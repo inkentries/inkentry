@@ -377,6 +377,7 @@ fn make_note_record(id: i64, title: &str) -> NoteRecord {
         superseded_by: None,
         remote_id: None,
         superseded_by_entity_id: None,
+        edges: Vec::new(),
     }
 }
 
@@ -4335,5 +4336,216 @@ async fn a_batch_append_fails_when_the_lock_is_contended() {
     assert!(
         note_on_head(root).is_none(),
         "nothing may be written when the lock is contended"
+    );
+}
+
+// ── carried graph edges (ADR-086) ────────────────────────────────────────────
+//
+// The carrier is append-only, so an edge recorded for an entity that already
+// has a record must arrive as a NEW line. A rewrite would look identical in
+// this one repo and lose the other machine's copy on the next merge, which is
+// exactly the failure the append-only shape exists to prevent.
+
+// Every inkentry record on HEAD's note, raw and unfolded.
+fn raw_records_on_head(root: &std::path::Path) -> Vec<serde_json::Value> {
+    let out = std::process::Command::new("git")
+        .args(["notes", "--ref=inkentry", "show", "HEAD"])
+        .current_dir(root)
+        .output()
+        .expect("git notes show");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
+        .collect()
+}
+
+// The `edges` list of the record carrying `entity_id`, flattened to
+// `(kind, to_entity_id)` pairs, across every record for that entity.
+fn carried_edges_for(root: &std::path::Path, entity_id: &str) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = raw_records_on_head(root)
+        .iter()
+        .filter(|r| r.get("entity_id").and_then(|v| v.as_str()) == Some(entity_id))
+        .filter_map(|r| r.get("edges").and_then(|e| e.as_array()).cloned())
+        .flatten()
+        .map(|e| {
+            (
+                e["kind"].as_str().expect("kind").to_string(),
+                e["to_entity_id"]
+                    .as_str()
+                    .expect("to_entity_id")
+                    .to_string(),
+            )
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+// Both carried kinds reach the ref, each as an outgoing edge on its source
+// entity's record and naming its target by `entity_id`.
+#[tokio::test]
+#[serial]
+async fn git_notes_add_edge_carries_both_kinds_from_the_source_entity() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let (from, _) = backend
+        .add(note_input("decision", "from"))
+        .await
+        .expect("a");
+    let (to, _) = backend.add(note_input("decision", "to")).await.expect("b");
+    let to_entity = entity_id("decision", "to", "body for to");
+    let from_entity = entity_id("decision", "from", "body for from");
+
+    backend
+        .add_edge(&from, &to, "relates_to")
+        .await
+        .expect("relates_to");
+    backend
+        .add_edge(&from, &to, "contradicts")
+        .await
+        .expect("contradicts");
+
+    assert_eq!(
+        carried_edges_for(root, &from_entity),
+        vec![
+            ("contradicts".to_string(), to_entity.clone()),
+            ("relates_to".to_string(), to_entity.clone()),
+        ]
+    );
+    assert!(
+        carried_edges_for(root, &to_entity).is_empty(),
+        "the edge is outgoing only: the target's record must not carry a copy"
+    );
+}
+
+// The edge record is appended alongside the entity's original, never written
+// over it: the original line survives byte for byte.
+#[tokio::test]
+#[serial]
+async fn git_notes_add_edge_appends_and_leaves_the_original_record_intact() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let (from, _) = backend
+        .add(note_input("decision", "from"))
+        .await
+        .expect("a");
+    let (to, _) = backend.add(note_input("decision", "to")).await.expect("b");
+    let before = raw_records_on_head(root);
+
+    backend
+        .add_edge(&from, &to, "relates_to")
+        .await
+        .expect("relates_to");
+
+    let after = raw_records_on_head(root);
+    assert_eq!(
+        after.len(),
+        before.len() + 1,
+        "exactly one new line, got {after:#?}"
+    );
+    assert_eq!(
+        &after[..before.len()],
+        before.as_slice(),
+        "the records already on the ref must be untouched"
+    );
+}
+
+// `supersedes` has its own carrier field (`superseded_by_entity_id`), so the
+// edge list refuses it rather than offering a second, unreconciled path to
+// the same row.
+#[tokio::test]
+#[serial]
+async fn git_notes_add_edge_refuses_supersedes() {
+    let dir = make_temp_git_repo();
+    let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+
+    let (from, _) = backend
+        .add(note_input("decision", "from"))
+        .await
+        .expect("a");
+    let (to, _) = backend.add(note_input("decision", "to")).await.expect("b");
+
+    let err = backend
+        .add_edge(&from, &to, "supersedes")
+        .await
+        .expect_err("supersedes must not ride the edge list");
+    assert!(
+        format!("{err:#}").contains("supersedes"),
+        "the error must name the kind it refused; got: {err:#}"
+    );
+}
+
+// Reading the graph back off the ref stays unsupported: the carrier is made
+// sufficient to rebuild the graph after an import, not queryable in place.
+#[tokio::test]
+#[serial]
+async fn git_notes_get_edges_stays_unsupported() {
+    let dir = make_temp_git_repo();
+    let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+    let (id, _) = backend.add(note_input("decision", "x")).await.expect("add");
+
+    let err = backend
+        .get_edges(&id)
+        .await
+        .expect_err("reading edges from the ref is not supported");
+    assert!(
+        format!("{err:#}").contains("get_edges"),
+        "the error must name the unsupported method; got: {err:#}"
+    );
+}
+
+// The read side of what import consumes: one `(source entity_id, edge)` pair
+// per edge, folded so an entity's edges gather across its records.
+#[tokio::test]
+#[serial]
+async fn git_notes_carried_edges_reports_every_edge_once_against_its_source() {
+    let dir = make_temp_git_repo();
+    let root = dir.path();
+    let backend = GitNotesBackend::with_root(root.to_path_buf());
+
+    let (from, _) = backend
+        .add(note_input("decision", "from"))
+        .await
+        .expect("a");
+    let (to, _) = backend.add(note_input("decision", "to")).await.expect("b");
+    backend
+        .add_edge(&from, &to, "relates_to")
+        .await
+        .expect("e1");
+    // Twice, so the fold's dedup is under test and not just its union.
+    backend
+        .add_edge(&from, &to, "relates_to")
+        .await
+        .expect("e2");
+    backend
+        .add_edge(&from, &to, "contradicts")
+        .await
+        .expect("e3");
+
+    let mut carried: Vec<(String, String, String)> = backend
+        .carried_edges()
+        .await
+        .expect("carried_edges")
+        .into_iter()
+        .map(|(source, edge)| (source, edge.kind, edge.to_entity_id))
+        .collect();
+    carried.sort();
+
+    let from_entity = entity_id("decision", "from", "body for from");
+    let to_entity = entity_id("decision", "to", "body for to");
+    assert_eq!(
+        carried,
+        vec![
+            (
+                from_entity.clone(),
+                "contradicts".to_string(),
+                to_entity.clone()
+            ),
+            (from_entity, "relates_to".to_string(), to_entity),
+        ]
     );
 }

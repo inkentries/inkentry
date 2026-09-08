@@ -72,6 +72,11 @@ because scripts branch on them. They are **stable**:
 A script must distinguish `1` from `2`. Treating any non-zero exit as fatal is
 wrong: `1` means the query was valid and matched nothing.
 
+A filter naming something the index does not hold is a hard error rather than an
+empty set. `plumbing graph-edges --file <path>` exits `2`, naming the path on
+stderr, when no indexed file has that path, so a mistyped path never reads as a
+file with no edges; its exit `1` means the file is indexed and has no edges.
+
 Three commands cannot return `1`, by construction, and this is part of the
 contract rather than an oversight:
 
@@ -274,7 +279,7 @@ one rather than a personal one.
 | `.inkentry/index.db` | `PRAGMA user_version`, no ladder | **Stable**: a store this build did not write is discarded and rebuilt empty, carrying the `usage` table across, and one from a newer build is refused. The index is derived from your source tree, so `inkentry index` is always a valid recovery. |
 | `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index, no ladder | **Stable**, and stricter: memory is authored and cannot be rebuilt, so a store this build did not write is refused outright and left untouched on disk. An older one is refused with a message naming the export and [import](commands.md#inkentry-import) path; a newer one is refused with a message to upgrade. |
 | `~/.config/inkentry/registry.db` | none | **Best-effort**. Tables are created idempotently. It holds project registrations, which are re-derivable by re-registering. |
-| git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not inkentry records are left untouched, so the ref can be shared with other tooling. |
+| git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not inkentry records are left untouched, so the ref can be shared with other tooling. Fields are added within a version rather than by bumping it: a reader ignores keys it does not know, so a record written by a newer build still reads. A record carries the entry, its supersede state, and the entry's outgoing `relates_to` and `contradicts` edges. |
 | server-side database | sequential migration files | **Internal** to a server deployment, and not a client-facing surface. |
 | [portable dump](dump-format.md) | `format_version` in the header record | **Stable**. Version 1 stays readable for the life of the major version; change within a version is additive only, and anything a version 1 reader could not handle is a version bump. A dump is refused whole rather than partially read, so an unreadable one never turns into a partial import. |
 

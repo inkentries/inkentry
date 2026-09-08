@@ -691,14 +691,22 @@ inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33
 inkentry memory graph 0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33 --format json
 ```
 
-**Where these edges live.** `relates_to` and `contradicts` edges are recorded
-only in the project's local `memory.db`. Unlike the entries themselves and their
-supersede state, they are not written to `refs/notes/inkentry`, so they do not
-arrive with a clone or a fetch: a teammate who pulls your memory sees the same
-entries without the links you drew between them. Two paths do carry them off the
-machine that recorded them: `inkentry sync` pushes `relates_to` edges to a
-configured team server, and a [portable dump](dump-format.md) carries all three
-kinds into whichever store imports it.
+**Where these edges live.** All three kinds travel with the repository.
+`relates_to` and `contradicts` ride `refs/notes/inkentry` on the record of the
+entry each edge starts from, naming their target by its portable entry id, and
+the graph is rebuilt from them when the notes are imported. `supersedes`
+travels as it always has, as supersede state on the entry it archives, so a
+clone shows the superseded entry as archived; the edge itself is not currently
+rebuilt as a row in the clone's `memory.db`.
+
+An edge is applied only once both entries it joins are present. One naming an
+entry that has not arrived (a partial fetch, or a target recorded with
+`store_in_git_notes = false`) is skipped rather than failing the import, and
+the number skipped is reported; a later import, after the missing entries
+arrive, applies it. Two other paths also carry edges off the machine that
+recorded them: `inkentry sync` pushes `relates_to` edges to a configured team
+server, and a [portable dump](dump-format.md) carries all three kinds into
+whichever store imports it.
 
 ## Harvesting from git history
 
@@ -876,14 +884,19 @@ to be able to undo it).
 ## Backfilling missing embeddings
 
 A note's semantic vector is normally minted when the note is first added
-(`inkentry memory add`), and `inkentry plumbing push` / `inkentry sync` mint one for
-any entry in the set they are about to push that still lacks it (see [Repair
-during push and sync](#repair-during-push-and-sync)). A note that misses both
-moments — because no embedder was reachable when it was added, or because it
-arrived from an `inkentry import` (a portable dump carries no vectors) — stays
-in `memory.db` **present but unembedded**. Such a note is still listed by
-`memory list` and `context`, which take no query. It is missing from the *semantic* ranking of `inkentry search`,
-because that ranking is a KNN over the embedding vectors and this note has none.
+(`inkentry memory add`), and `inkentry plumbing push` / `inkentry sync` mint
+one for any entry in the set they are about to push that still lacks it (see
+[Repair during push and sync](#repair-during-push-and-sync)). `memory add`
+stores the entry first and then waits a few seconds for its vector, so an entry
+added while the embedder is busy with a bulk index pass is stored without one
+and becomes searchable at the next `inkentry memory reindex` or
+`inkentry sync`, whichever comes first. A note that misses every one of those
+moments, because no embedder was reachable at all when it was added, or
+because it arrived from an `inkentry import` (a portable dump carries no
+vectors), stays in `memory.db` **present but unembedded**. Such a note is
+still listed by `memory list` and `context`, which take no query. It is
+missing from the *semantic* ranking of `inkentry search`, because that ranking
+is a KNN over the embedding vectors and this note has none.
 
 Do not count on text search to reach it in the meantime. The memory text matcher
 treats the whole query as one contiguous phrase (see
@@ -953,7 +966,12 @@ This changes what is stored locally, not what is sent. `kind`, `title`, and
 `body` are serialised on every push and always were; the vector fields are
 additive, so the same entry text travels either way. What a local vector adds is
 that a destination advertising `accepts_pushed_vectors` can store the entry
-as-is instead of re-embedding it.
+as-is instead of re-embedding it. A destination checks such a vector against
+its own embedder before storing it: model tag, `fp32` precision, dimension,
+finite components, and an L2 magnitude inside `[0.5, 1.5]`. A vector failing
+any of these is refused with `400`, not rescaled. Vectors from the built-in
+embedder satisfy all five, so this is invisible to the CLI and matters only to
+a client computing vectors some other way.
 
 Scope and limits:
 

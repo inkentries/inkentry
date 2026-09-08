@@ -27,6 +27,8 @@ use crate::{
     storage::{Database, RewriteRefStatus, ensure_notes_rewrite_ref},
 };
 
+use super::memory::reconcile::GitNotesImport;
+
 pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // ── 1. Detect project root ────────────────────────────────────────────────
     let cwd = std::env::current_dir()?;
@@ -224,8 +226,7 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         // hydrating, so teammates' entries import too (ADR-069 D5 / ADR-077 D3).
         crate::storage::merge_tracking_notes(Some(git_root)).await;
         match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
-            Ok(0) => None,
-            Ok(n) => Some(format!("imported {n} entries from git notes")),
+            Ok(outcome) => git_notes_import_line(&outcome),
             Err(e) => {
                 tracing::warn!("git-notes memory import skipped (non-fatal): {e}");
                 None
@@ -280,6 +281,31 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     println!("  inkentry context");
 
     Ok(())
+}
+
+/// The `Memory:` line of the success summary, or `None` when the carrier
+/// changed nothing worth reporting.
+///
+/// Skipped edges are reported rather than swallowed: a graph that is thinner
+/// than the one on the ref is the outcome a user would otherwise discover only
+/// by missing a link (ADR-086 D4).
+fn git_notes_import_line(outcome: &GitNotesImport) -> Option<String> {
+    let skipped = |u: usize| {
+        let noun = if u == 1 { "edge" } else { "edges" };
+        format!(
+            "{u} {noun} skipped (the entries they point at are not here yet; \
+             a later import resolves them)"
+        )
+    };
+    match (outcome.imported, outcome.edges_unresolved) {
+        (0, 0) => None,
+        (0, u) => Some(skipped(u)),
+        (n, 0) => Some(format!("imported {n} entries from git notes")),
+        (n, u) => Some(format!(
+            "imported {n} entries from git notes, {}",
+            skipped(u)
+        )),
+    }
 }
 
 /// Write `.inkentry/.gitignore` covering the machine-specific SQLite, the
@@ -494,6 +520,47 @@ fn install_hook_for_init() -> Result<String> {
         super::hooks::Installed::AlreadyPresent(p) => {
             Ok(format!("already installed at {}", p.display()))
         }
+    }
+}
+
+#[cfg(test)]
+mod git_notes_import_line_tests {
+    use super::*;
+
+    /// Silence is only for the case where the carrier changed nothing. A
+    /// skipped edge is always said out loud, entries or no entries: a graph
+    /// thinner than the one on the ref is otherwise found only by missing a
+    /// link (ADR-086 D4).
+    #[test]
+    fn a_skipped_edge_is_reported_whether_or_not_entries_arrived() {
+        assert_eq!(git_notes_import_line(&GitNotesImport::default()), None);
+
+        let entries_only = GitNotesImport {
+            imported: 3,
+            edges_applied: 2,
+            edges_unresolved: 0,
+        };
+        assert_eq!(
+            git_notes_import_line(&entries_only).as_deref(),
+            Some("imported 3 entries from git notes")
+        );
+
+        let edges_only = GitNotesImport {
+            imported: 0,
+            edges_applied: 0,
+            edges_unresolved: 1,
+        };
+        let line = git_notes_import_line(&edges_only).expect("a skipped edge must be reported");
+        assert!(line.starts_with("1 edge skipped"), "{line}");
+
+        let both = GitNotesImport {
+            imported: 2,
+            edges_applied: 1,
+            edges_unresolved: 2,
+        };
+        let line = git_notes_import_line(&both).expect("both halves must be reported");
+        assert!(line.contains("imported 2 entries"), "{line}");
+        assert!(line.contains("2 edges skipped"), "{line}");
     }
 }
 

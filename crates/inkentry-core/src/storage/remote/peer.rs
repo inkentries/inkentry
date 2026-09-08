@@ -18,7 +18,14 @@ use serde::Deserialize;
 /// own terms, which is why it is kept small rather than merely "under 30s":
 /// platforms where a connection to an unreachable host hangs rather than
 /// refusing pay it in full, on every memory command.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Kept strictly above the client's connect bound, so the two failures stay
+/// tellable apart: a host that never answers trips the connect bound first and
+/// is reported as a connect error, while only a server that accepted the
+/// connection and then dawdled can reach this. With one budget covering both,
+/// every miss arrives as the same undifferentiated timeout, and the difference
+/// is what decides whether a miss may be recorded as unreachable.
+const PROBE_TIMEOUT: Duration =
+    Duration::from_secs(crate::config::REMOTE_CONNECT_TIMEOUT.as_secs() * 2);
 
 /// The capability that separates the two peers.
 ///
@@ -58,9 +65,29 @@ pub(in crate::storage) async fn detect_dialect(
     client: &reqwest::Client,
     base_url: &str,
 ) -> PeerDialect {
-    let url = format!("{}/v1/health", base_url.trim_end_matches('/'));
-    let Ok(resp) = client.get(&url).timeout(PROBE_TIMEOUT).send().await else {
+    // A connect to this origin already failed in this process, and an
+    // unreachable server resolves to the team dialect anyway, so there is
+    // nothing to learn from spending another connect timeout on it. Skipping
+    // yields exactly the answer attempting would have yielded.
+    if crate::reachability::connect_already_failed(base_url) {
         return PeerDialect::TeamServer;
+    }
+    let url = format!("{}/v1/health", base_url.trim_end_matches('/'));
+    let resp = match client.get(&url).timeout(PROBE_TIMEOUT).send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            // Only a server that never answered is recorded. A slow one that
+            // blew the probe's own budget is still reachable, and so is one
+            // that failed the TLS handshake; memoising either would make later
+            // requests report an outage instead of what actually went wrong.
+            if matches!(
+                super::classify(&err),
+                Some(super::ConnectFailure::Unreachable)
+            ) {
+                crate::reachability::record_connect_failure(base_url);
+            }
+            return PeerDialect::TeamServer;
+        }
     };
     if !resp.status().is_success() {
         return PeerDialect::TeamServer;
@@ -90,7 +117,12 @@ mod tests {
     }
 
     fn client() -> reqwest::Client {
-        reqwest::Client::builder().build().unwrap()
+        // Mirrors the production client, whose connect bound is what stops an
+        // unreachable host from costing this the operating system's own budget.
+        reqwest::Client::builder()
+            .connect_timeout(crate::config::REMOTE_CONNECT_TIMEOUT)
+            .build()
+            .unwrap()
     }
 
     #[tokio::test]

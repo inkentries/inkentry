@@ -162,6 +162,10 @@ fn merge_into(base: &mut NoteRecord, other: NoteRecord) {
     base.invalid_at = min_some(base.invalid_at, other.invalid_at);
     union_into(&mut base.tags, other.tags);
     union_into(&mut base.linked_files, other.linked_files);
+    // Same add-wins OR-Set as tags: an edge recorded on any copy stays.
+    base.edges.extend(other.edges);
+    base.edges.sort();
+    base.edges.dedup();
 }
 
 /// Keep the smallest present value. `None` is the identity.
@@ -183,6 +187,7 @@ fn union_into(base: &mut Vec<String>, other: Vec<String>) {
 mod tests {
     use super::*;
     use crate::storage::entity_id::entity_id;
+    use crate::storage::note_record::CarriedEdge;
 
     /// Two copies of one decision, as two machines would write them.
     pub(super) fn copy(id: i64, created_at: i64, tags: &[&str]) -> NoteRecord {
@@ -203,6 +208,7 @@ mod tests {
             remote_id: None,
             entity_id: Some(entity_id("decision", "HTTP layer", "use axum")),
             superseded_by_entity_id: None,
+            edges: vec![],
         }
     }
 
@@ -218,8 +224,36 @@ mod tests {
 
         let mut earliest = copy(1, 100, &["a"]);
         earliest.invalid_at = Some(900);
+        earliest.edges = vec![CarriedEdge::new("relates_to", "e1".to_string())];
+        middle.edges = vec![
+            CarriedEdge::new("contradicts", "e2".to_string()),
+            CarriedEdge::new("relates_to", "e1".to_string()),
+        ];
 
         vec![earliest, middle, archived]
+    }
+
+    /// Two machines each record an edge from the same entity; the fold keeps
+    /// both and collapses the copy they share, exactly as tags fold.
+    #[test]
+    fn edges_union_across_copies_and_dedup() {
+        let mut a = copy(1, 100, &[]);
+        a.edges = vec![CarriedEdge::new("relates_to", "e1".to_string())];
+        let mut b = copy(2, 200, &[]);
+        b.edges = vec![
+            CarriedEdge::new("relates_to", "e1".to_string()),
+            CarriedEdge::new("contradicts", "e2".to_string()),
+        ];
+
+        let folded = fold_records(vec![a, b]);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(
+            folded[0].edges,
+            vec![
+                CarriedEdge::new("contradicts", "e2".to_string()),
+                CarriedEdge::new("relates_to", "e1".to_string()),
+            ]
+        );
     }
 
     /// A4/A6's stated standard: every rule is order-insensitive, so any merge
@@ -266,6 +300,7 @@ mod tests {
         r.valid_at = want.valid_at;
         r.invalid_at = want.invalid_at;
         r.superseded_by_entity_id = want.superseded_by_entity_id.clone();
+        r.edges = want.edges.clone();
         r
     }
 
@@ -532,6 +567,7 @@ mod tests {
 mod convergence {
     use super::tests::copy;
     use super::*;
+    use crate::storage::note_record::CarriedEdge;
     use proptest::prelude::*;
 
     /// The fields two machines' copies of one entity may legitimately differ in.
@@ -548,6 +584,7 @@ mod convergence {
         source_ref: Option<String>,
         remote_id: Option<String>,
         superseded_by: Option<i64>,
+        edges: Vec<String>,
     }
 
     fn build(s: &Spec) -> NoteRecord {
@@ -561,6 +598,11 @@ mod convergence {
         r.source_ref = s.source_ref.clone();
         r.remote_id = s.remote_id.clone();
         r.superseded_by = s.superseded_by;
+        r.edges = s
+            .edges
+            .iter()
+            .map(|to| CarriedEdge::new("relates_to", to.clone()))
+            .collect();
         r
     }
 
@@ -580,6 +622,7 @@ mod convergence {
                 prop::option::of("[a-c]"),
                 prop::option::of(0i64..3),
             ),
+            prop::collection::vec("[p-r]", 0..3),
         )
             .prop_map(
                 |(
@@ -587,6 +630,7 @@ mod convergence {
                     (tags, linked_files),
                     (valid_at, invalid_at),
                     (superseded_by_entity_id, source_ref, remote_id, superseded_by),
+                    edges,
                 )| Spec {
                     id,
                     created_at,
@@ -599,6 +643,7 @@ mod convergence {
                     source_ref,
                     remote_id,
                     superseded_by,
+                    edges,
                 },
             )
     }

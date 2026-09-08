@@ -193,8 +193,22 @@ fn resolve_hooks_dir(dir: &Path) -> Result<std::path::PathBuf> {
     Ok(if path.is_absolute() {
         inkentry_core::utils::canonicalize(&path)
     } else {
-        inkentry_core::utils::canonicalize(dir).join(path)
+        join_components(&inkentry_core::utils::canonicalize(dir), &path)
     })
+}
+
+/// Join a repository-relative path reported by git onto `base`, one component
+/// at a time.
+///
+/// git reports `rev-parse --git-path` output with `/` separators on every
+/// platform. Joining that whole string keeps the slashes inside the stored
+/// path, so a Windows result prints as `D:\repo\.git/hooks` and gains a
+/// backslash again the moment a file name is joined onto it. Pushing one
+/// component at a time writes the platform separator throughout.
+fn join_components(base: &Path, relative: &Path) -> std::path::PathBuf {
+    let mut joined = base.to_path_buf();
+    joined.extend(relative.components());
+    joined
 }
 
 /// Whether `hooks_dir` sits inside the repository's tracked working tree
@@ -416,6 +430,46 @@ fn hooks_uninstall() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// git reports `rev-parse --git-path` output with `/` separators on every
+    /// platform, so joining that string whole leaves the slash inside the
+    /// stored path and anything joined onto it afterwards adds the platform
+    /// separator next to it. The printed path is then a mix of both.
+    #[test]
+    fn a_relative_path_from_git_joins_with_the_platform_separator() {
+        let base = Path::new("repo");
+        let joined = join_components(base, Path::new(".git/hooks")).join("post-commit");
+        assert_eq!(
+            joined.display().to_string(),
+            base.join(".git")
+                .join("hooks")
+                .join("post-commit")
+                .display()
+                .to_string(),
+        );
+    }
+
+    /// The resolved directory a real repo yields is displayed the same way.
+    #[test]
+    fn a_resolved_hooks_dir_is_displayed_with_one_separator() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = canonical_tmp_dir(&tmp);
+        init_repo(&dir);
+        let shown = resolve_hooks_dir(&dir).unwrap().display().to_string();
+        let foreign = if std::path::MAIN_SEPARATOR == '/' {
+            '\\'
+        } else {
+            '/'
+        };
+        assert!(
+            !shown.contains(foreign),
+            "the hooks directory must be displayed with one separator: {shown}"
+        );
+        assert!(
+            shown.ends_with(&format!(".git{}hooks", std::path::MAIN_SEPARATOR)),
+            "unexpected hooks directory: {shown}"
+        );
+    }
 
     /// The post-commit hook runs the promoted top-level `inkentry harvest`, not
     /// the deprecated `inkentry memory harvest` spelling.

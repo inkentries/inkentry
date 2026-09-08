@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
+use hf_hub::{Cache, Repo, RepoType, api::sync::ApiBuilder};
 use inkentry_embed::NativeEmbedder;
 
 /// `config.json` for F2LLM-v2-330M (Qwen3 architecture config; ~1 KB).
@@ -74,11 +74,17 @@ const QUANT_GGUF: &str = "f2llm-v2-330m-q8_0.gguf";
 /// Downloads our own pre-quantized GGUF (`f2llm-v2-330m-q8_0.gguf`) and
 /// tokenizer (`tokenizer.json`) straight from
 /// `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` through the hf-hub cache
-/// (checksum/resume reused) — first-run download is ~339 MB, cached in
-/// `~/.local/share/inkentry/models/`. Set `INKENTRY_EMBEDDER_GGUF_REPO` to a
+/// (checksum/resume reused). The first-run download is ~339 MB, cached under
+/// [`model_cache_dir`], which is the platform's own local-data location and so
+/// differs per OS (see "Where the model is cached" in
+/// `docs/getting-started.md`). Set `INKENTRY_EMBEDDER_GGUF_REPO` to a
 /// different `org/repo` to fetch both from there instead. `config.json` is
 /// embedded in the binary (see [`CONFIG_JSON`]) and written to the same cache
 /// directory so it lands next to the other artifacts as a real file.
+///
+/// The model is stored once: the download is linked, not copied, to the flat
+/// path the loader reads from (see [`materialise_model`]), and staging files
+/// nothing can resume are reclaimed (see [`prune_partial_downloads`]).
 ///
 /// Subsequent calls read everything from the local cache with no network
 /// access. There is no runtime dependency on any third-party Hugging Face
@@ -102,37 +108,44 @@ pub fn load_from_hub() -> Result<NativeEmbedder> {
     std::fs::write(&config_path, CONFIG_JSON)
         .with_context(|| format!("writing embedded config.json to {}", config_path.display()))?;
 
+    let gguf_repo = prequantized_gguf_repo();
+    let repo_id = Repo::new(gguf_repo.clone(), RepoType::Model);
+    let blobs_dir = cache_dir.join(repo_id.folder_name()).join("blobs");
+
+    // Read before anything is fetched, so it describes the cache this run
+    // inherited rather than the one it just populated.
+    let note = fetch_note(&blobs_dir);
+
+    // A partial is only worth keeping while this run may still fetch the file
+    // it belongs to; with both artifacts already on disk nothing downloads,
+    // so nothing can resume.
+    let will_fetch = !gguf_path.exists()
+        || Cache::new(cache_dir.clone())
+            .repo(repo_id.clone())
+            .get("tokenizer.json")
+            .is_none();
+    match prune_partial_downloads(&blobs_dir, will_fetch) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("reclaimed {n} unusable partial download(s) from the model cache"),
+        Err(e) => tracing::warn!("could not sweep the model cache for partial downloads: {e:#}"),
+    }
+
     let api = ApiBuilder::new()
         .with_cache_dir(cache_dir)
         .build()
         .context("building HuggingFace Hub API client")?;
-
-    let gguf_repo = prequantized_gguf_repo();
-    let repo = api.repo(Repo::new(gguf_repo.clone(), RepoType::Model));
+    let repo = api.repo(repo_id);
 
     let tokenizer_path = repo
         .get("tokenizer.json")
         .with_context(|| format!("downloading tokenizer.json from {gguf_repo}"))?;
 
-    // Acquire the Q8_0 GGUF if it isn't already cached.
     if !gguf_path.exists() {
-        tracing::info!(
-            "fetching pre-quantized F2LLM-v2-330M Q8_0 GGUF from {gguf_repo} (first run)…"
-        );
+        tracing::info!("fetching pre-quantized F2LLM-v2-330M Q8_0 GGUF from {gguf_repo} ({note})…");
         let downloaded = repo
             .get(QUANT_GGUF)
             .with_context(|| format!("downloading {QUANT_GGUF} from {gguf_repo}"))?;
-        // hf-hub returns a path inside its own blob/snapshot layout;
-        // copy it to the stable cache path the loader reads from.
-        if downloaded != gguf_path {
-            std::fs::copy(&downloaded, &gguf_path).with_context(|| {
-                format!(
-                    "caching {} -> {}",
-                    downloaded.display(),
-                    gguf_path.display()
-                )
-            })?;
-        }
+        materialise_model(&downloaded, &gguf_path)?;
         tracing::info!("fetched pre-quantized model to {}", gguf_path.display());
     }
 
@@ -195,6 +208,127 @@ pub fn load_from_model_dir(dir: &Path) -> Result<NativeEmbedder> {
     );
 
     NativeEmbedder::load_from_path(&gguf_path, &tokenizer_path, &config_path)
+}
+
+/// Reclaim `<etag>.part` staging files that nothing will ever finish.
+///
+/// hf-hub stages a download in `blobs/<etag>.part`, then reopens that file in
+/// append mode and continues over an HTTP `Range` request. A partial belonging
+/// to a file the current run is about to fetch is therefore progress worth
+/// keeping, which is what `can_resume` guards. Every other partial is dead
+/// weight no code path reads back: one sitting beside its own completed blob,
+/// and all of them on a run that fetches nothing at all.
+///
+/// Returns how many were removed. Cleanup never fails a model load, so the
+/// caller logs and carries on.
+fn prune_partial_downloads(blobs_dir: &Path, can_resume: bool) -> Result<usize> {
+    let entries = match std::fs::read_dir(blobs_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading model cache {}", blobs_dir.display()));
+        }
+    };
+
+    let mut reclaimed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("part") {
+            continue;
+        }
+        if can_resume && !path.with_extension("").exists() {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => reclaimed += 1,
+            Err(e) => tracing::warn!(
+                "could not remove unusable partial download {}: {e}",
+                path.display()
+            ),
+        }
+    }
+    Ok(reclaimed)
+}
+
+/// How to describe a model fetch in the log, given the cache it inherited.
+///
+/// Anything already in the repo's blob directory, a partial included, means
+/// this machine has downloaded from here before. Calling that a first run
+/// because the model file itself is absent sends the reader hunting for a
+/// cache that does exist.
+fn fetch_note(blobs_dir: &Path) -> &'static str {
+    let inhabited = std::fs::read_dir(blobs_dir).is_ok_and(|mut e| e.next().is_some());
+    if inhabited {
+        "cache present, model file missing"
+    } else {
+        "first run"
+    }
+}
+
+/// Put the downloaded GGUF at the stable flat path the loader reads from,
+/// storing the ~339 MB of bytes once.
+///
+/// hf-hub materialises a download as `blobs/<etag>` plus a pointer under
+/// `snapshots/<rev>/`, and hands back the pointer. A hard link from that one
+/// file to the flat path is what keeps the cache at a single copy: NTFS grants
+/// hard links without the elevation or Developer Mode a symlink needs, and
+/// macOS and Linux link freely within a filesystem.
+///
+/// The pointer is resolved to its target first. On Unix it is a symlink whose
+/// target is written relative to the snapshot directory, so linking the link
+/// itself would leave a flat path resolving against the cache root, where that
+/// target does not exist.
+///
+/// Two servers reach this concurrently on a cold cache: the flat path is
+/// absent for the whole of the first download, and hf-hub answers the second
+/// one from its cached pointer without taking a lock, handing back the very
+/// file the first one just linked. Identity is therefore decided by inode
+/// rather than by path, and the model is linked under a temporary name and
+/// renamed into place. A second start finds the file already linked and does
+/// nothing, or else replaces it atomically. Copying onto the destination in
+/// place is what must never happen: when the two names turn out to be one
+/// file, that truncates the model to nothing and the loader, seeing a file
+/// present, never fetches it again.
+///
+/// hf-hub's own cache is left exactly as it found it. When a hard link cannot
+/// be made the model is copied and the hub keeps its copy, so that case costs
+/// a second copy on disk. Deleting the blob to reclaim it is not an option:
+/// that leaves the snapshot pointer dangling, and hf-hub cannot recover from
+/// it, since a later fetch re-downloads the model and then fails to recreate
+/// a pointer that already exists.
+fn materialise_model(downloaded: &Path, gguf_path: &Path) -> Result<()> {
+    let source = std::fs::canonicalize(downloaded)
+        .with_context(|| format!("resolving downloaded model at {}", downloaded.display()))?;
+    if same_file::is_same_file(&source, gguf_path).unwrap_or(false) {
+        return Ok(());
+    }
+
+    let staging = staging_path(gguf_path);
+    let _ = std::fs::remove_file(&staging);
+
+    if std::fs::hard_link(&source, &staging).is_err()
+        && let Err(e) = std::fs::copy(&source, &staging)
+    {
+        let _ = std::fs::remove_file(&staging);
+        return Err(e)
+            .with_context(|| format!("caching {} -> {}", source.display(), gguf_path.display()));
+    }
+
+    if let Err(e) = std::fs::rename(&staging, gguf_path) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(e)
+            .with_context(|| format!("moving the model into place at {}", gguf_path.display()));
+    }
+    Ok(())
+}
+
+/// A staging name beside the target, distinct per process so two servers
+/// materialising at once cannot collide, and so the real path only ever sees a
+/// rename.
+fn staging_path(gguf_path: &Path) -> PathBuf {
+    let mut name = gguf_path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp", std::process::id()));
+    gguf_path.with_file_name(name)
 }
 
 fn model_cache_dir() -> Result<PathBuf> {
@@ -289,6 +423,319 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
         }
+    }
+
+    // Fixture bytes standing in for the GGUF. The materialisation policy is
+    // about directory entries and link counts, so the content is irrelevant
+    // beyond being identifiable.
+    const GGUF_BYTES: &[u8] = b"GGUF fixture bytes, not a real model";
+
+    fn blobs_dir_with(cache: &std::path::Path, etag: &str, bytes: &[u8]) -> PathBuf {
+        let blobs = cache
+            .join("models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF")
+            .join("blobs");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(blobs.join(etag), bytes).unwrap();
+        blobs
+    }
+
+    #[test]
+    fn materialise_model_links_rather_than_copying() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let blob = blobs.join("deadbeef");
+        let flat = cache.path().join(QUANT_GGUF);
+
+        materialise_model(&blob, &flat).expect("materialise the downloaded model");
+
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+        assert!(
+            blob.exists(),
+            "a successful link must leave the hub blob in place"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let flat_meta = std::fs::metadata(&flat).unwrap();
+            let blob_meta = std::fs::metadata(&blob).unwrap();
+            assert_eq!(
+                flat_meta.ino(),
+                blob_meta.ino(),
+                "the flat path must name the same file as the blob, not a second copy of it"
+            );
+            assert_eq!(
+                flat_meta.nlink(),
+                2,
+                "one copy of the bytes must carry exactly two directory entries"
+            );
+        }
+    }
+
+    // hf-hub hands back the snapshots/<rev>/<file> pointer, a symlink whose
+    // target is relative to the snapshot directory. Linking the symlink itself
+    // would leave a flat path resolving against the cache root, where that
+    // relative target does not exist.
+    #[test]
+    #[cfg(unix)]
+    fn materialise_model_resolves_the_snapshot_pointer_to_its_blob() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let blob = blobs.join("deadbeef");
+
+        let snapshot = cache
+            .path()
+            .join("models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF")
+            .join("snapshots")
+            .join("abc123");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        let pointer = snapshot.join(QUANT_GGUF);
+        std::os::unix::fs::symlink("../../blobs/deadbeef", &pointer).unwrap();
+
+        let flat = cache.path().join(QUANT_GGUF);
+        materialise_model(&pointer, &flat).expect("materialise via the snapshot pointer");
+
+        assert!(
+            !std::fs::symlink_metadata(&flat)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the flat path must be a real directory entry, not a copied symlink"
+        );
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(&flat).unwrap().ino(),
+            std::fs::metadata(&blob).unwrap().ino()
+        );
+    }
+
+    // A file already sitting at the flat path is replaced by the link. Nothing
+    // is copied onto it in place, so there is no way to truncate it.
+    #[test]
+    fn materialise_model_replaces_an_unrelated_file_at_the_flat_path() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let blob = blobs.join("deadbeef");
+        let flat = cache.path().join(QUANT_GGUF);
+        std::fs::write(&flat, b"a partially written earlier attempt").unwrap();
+
+        materialise_model(&blob, &flat).expect("materialise over an existing file");
+
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+        assert!(
+            blob.exists(),
+            "hf-hub's own cache must never be modified by this loader"
+        );
+    }
+
+    // Two servers starting on a cold cache: the first links the model into
+    // place, and the second is handed hf-hub's cached pointer, which resolves
+    // to the very inode the first one linked. Copying a file onto itself
+    // truncates it to nothing, so the second start must leave it alone.
+    #[test]
+    #[cfg(unix)]
+    fn materialise_model_leaves_a_model_already_linked_into_place_intact() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let blob = blobs.join("deadbeef");
+        let flat = cache.path().join(QUANT_GGUF);
+
+        let snapshot = cache
+            .path()
+            .join("models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF")
+            .join("snapshots")
+            .join("abc123");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        let pointer = snapshot.join(QUANT_GGUF);
+        std::os::unix::fs::symlink("../../blobs/deadbeef", &pointer).unwrap();
+
+        // The first server has already linked the model into place.
+        std::fs::hard_link(&blob, &flat).unwrap();
+
+        materialise_model(&pointer, &flat).expect("a second start must not fail");
+
+        assert_eq!(
+            std::fs::metadata(&flat).unwrap().len() as usize,
+            GGUF_BYTES.len(),
+            "the model must keep its size, not be truncated to nothing"
+        );
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+        assert!(blob.exists(), "hf-hub's blob must survive a second start");
+
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(&flat).unwrap().ino(),
+            std::fs::metadata(&blob).unwrap().ino(),
+            "the flat path must still be the same file as the blob"
+        );
+    }
+
+    #[test]
+    fn materialise_model_is_idempotent_across_repeated_calls() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let blob = blobs.join("deadbeef");
+        let flat = cache.path().join(QUANT_GGUF);
+
+        materialise_model(&blob, &flat).expect("first materialise");
+        materialise_model(&blob, &flat).expect("second materialise");
+        materialise_model(&blob, &flat).expect("third materialise");
+
+        assert_eq!(std::fs::read(&flat).unwrap(), GGUF_BYTES);
+        assert!(blob.exists(), "repeated starts must not consume the blob");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let flat_meta = std::fs::metadata(&flat).unwrap();
+            assert_eq!(flat_meta.ino(), std::fs::metadata(&blob).unwrap().ino());
+            assert_eq!(
+                flat_meta.nlink(),
+                2,
+                "repeating must not accumulate extra links"
+            );
+        }
+    }
+
+    // No staging file may survive a materialise, or the cache grows a stray
+    // copy of the model on every start.
+    #[test]
+    fn materialise_model_leaves_no_staging_file_behind() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let flat = cache.path().join(QUANT_GGUF);
+
+        materialise_model(&blobs.join("deadbeef"), &flat).expect("materialise");
+
+        let strays: Vec<_> = std::fs::read_dir(cache.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != QUANT_GGUF && !n.starts_with("models--"))
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "unexpected files in the cache: {strays:?}"
+        );
+    }
+
+    // A partial next to its own completed blob belongs to a download that
+    // already finished. Nothing will ever resume it, so it is pure waste.
+    #[test]
+    fn prune_removes_a_partial_whose_blob_already_completed() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let orphan = blobs.join("deadbeef.part");
+        std::fs::write(&orphan, b"leftover from an interrupted run").unwrap();
+
+        let reclaimed = prune_partial_downloads(&blobs, true).expect("prune");
+
+        assert_eq!(
+            reclaimed, 1,
+            "the orphaned partial must be counted as reclaimed"
+        );
+        assert!(
+            !orphan.exists(),
+            "a partial next to its completed blob must be reclaimed"
+        );
+        assert!(
+            blobs.join("deadbeef").exists(),
+            "the completed blob itself must be untouched"
+        );
+    }
+
+    // hf-hub reopens a partial in append mode and continues over an HTTP Range
+    // request, so a partial for a file the run is about to fetch is worth
+    // keeping. Once nothing will be fetched, no code path can pick it up again.
+    #[test]
+    fn prune_keeps_a_resumable_partial_only_while_a_fetch_can_resume_it() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let partial = blobs.join("cafebabe.part");
+        std::fs::write(&partial, b"5 MB of a 339 MB download").unwrap();
+
+        let kept = prune_partial_downloads(&blobs, true).expect("prune with a fetch pending");
+        assert_eq!(
+            kept, 0,
+            "nothing may be reclaimed while the fetch can resume it"
+        );
+        assert!(
+            partial.exists(),
+            "a partial with no completed blob must survive for hf-hub to resume"
+        );
+
+        let reclaimed =
+            prune_partial_downloads(&blobs, false).expect("prune with nothing to fetch");
+        assert_eq!(reclaimed, 1);
+        assert!(
+            !partial.exists(),
+            "a partial no fetch can resume must not be left orphaned"
+        );
+    }
+
+    #[test]
+    fn prune_leaves_completed_blobs_and_lock_files_alone() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = blobs_dir_with(cache.path(), "deadbeef", GGUF_BYTES);
+        let lock = blobs.join("deadbeef.lock");
+        std::fs::write(&lock, b"").unwrap();
+
+        let reclaimed = prune_partial_downloads(&blobs, false).expect("prune");
+
+        assert_eq!(reclaimed, 0, "only .part files are ever removed");
+        assert!(blobs.join("deadbeef").exists(), "blob must survive");
+        assert!(lock.exists(), "hf-hub's own lock file must survive");
+    }
+
+    // The partial sweep and the air-gapped copy-paste procedure both address
+    // hf-hub's cache by name, so the name is part of the contract.
+    #[test]
+    fn repo_cache_directory_matches_the_documented_hub_layout() {
+        let cache = tempfile::tempdir().unwrap();
+        let repo_id = Repo::new(DEFAULT_GGUF_REPO.to_string(), RepoType::Model);
+
+        assert_eq!(
+            cache.path().join(repo_id.folder_name()),
+            cache
+                .path()
+                .join("models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF")
+        );
+    }
+
+    // The reported defect: an interrupted download left a partial behind and
+    // the next start still announced a first run while fetching the whole
+    // model again. The wording has to follow the cache, not the model file.
+    #[test]
+    fn fetch_note_follows_cache_state_not_the_model_file() {
+        let cache = tempfile::tempdir().unwrap();
+        let blobs = cache.path().join("models--org--repo").join("blobs");
+
+        assert_eq!(fetch_note(&blobs), "first run");
+
+        std::fs::create_dir_all(&blobs).unwrap();
+        assert_eq!(
+            fetch_note(&blobs),
+            "first run",
+            "an empty cache is still a first run"
+        );
+
+        std::fs::write(blobs.join("cafebabe.part"), b"5 MB of a 339 MB download").unwrap();
+        assert_eq!(
+            fetch_note(&blobs),
+            "cache present, model file missing",
+            "an interrupted download must not be announced as a first run"
+        );
+    }
+
+    // A first run has no repo directory at all, which is not an error.
+    #[test]
+    fn prune_tolerates_a_cache_that_does_not_exist_yet() {
+        let cache = tempfile::tempdir().unwrap();
+        let reclaimed = prune_partial_downloads(&cache.path().join("never-created"), true)
+            .expect("an absent cache directory is a first run, not a failure");
+        assert_eq!(reclaimed, 0);
     }
 
     /// End-to-end semantic-discrimination check over the real model. Ignored by

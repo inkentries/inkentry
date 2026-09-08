@@ -3,15 +3,41 @@ use anyhow::{Context, Result};
 use super::MemoryAddArgs;
 use crate::{
     capability,
-    config::Config,
+    config::{Config, SyncMode},
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        GitNotesBackend, MemoryBackend, NoteInput, NoteRecord, RewriteRefStatus,
-        append_state_update, append_to_git_notes, now_millis, now_secs, open_memory_backend,
-        unresolvable_id_message,
+        CarriedEdge, GitNotesBackend, MemoryBackend, MemoryStore, NoteId, NoteInput, NoteRecord,
+        RewriteRefStatus, append_state_update, append_to_git_notes, note_entity_id, now_millis,
+        now_secs, open_memory_backend, unresolvable_id_message,
     },
 };
+
+/// How long an interactive `memory add` waits for its own vector before
+/// storing the entry without one and leaving it to the catch-up paths.
+///
+/// A healthy single embed on a quiet local embedder takes tens of
+/// milliseconds, so this is orders of magnitude more than the work needs and
+/// nothing that was going to succeed is cut short. What it bounds is the
+/// embedder being held by a bulk index pass, where the wait was measured in
+/// minutes: long enough that a caller with a timeout sees a failed command
+/// rather than a slow one, and long enough that the entry was not yet durable
+/// when that happened.
+pub(super) const INTERACTIVE_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The warning printed when an entry is stored without its vector.
+///
+/// `reason` says what went wrong; the rest names the way out. Semantic ranking
+/// cannot reach the entry until a vector exists, and the entry is otherwise
+/// indistinguishable from one that never had one, so it is picked up by the
+/// ordinary backfill paths with no rule of its own.
+pub(super) fn pending_embedding_warning(reason: &str) -> String {
+    format!(
+        "warning: entry stored, but {reason}, so `inkentry search` cannot rank it \
+         semantically yet. `inkentry memory reindex` embeds it now; `inkentry sync` \
+         picks it up on its own."
+    )
+}
 
 pub(super) async fn memory_add(
     args: MemoryAddArgs,
@@ -94,10 +120,18 @@ pub(super) async fn memory_add(
         );
     }
 
+    // `memory.db` is the store of record unless `cloud_first` routes memory CRUD
+    // to a server, or git notes is the primary store. Only a local row can have
+    // a vector attached to it after the fact, so only there can the write go
+    // first; the other backends take the vector as part of the add and have no
+    // local backfill to fall back on (`memory reindex` refuses on this same
+    // condition, and a transfer's local-embedding repair skips it).
+    let store_first = !placeholder_path
+        && !(cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some());
     // Pre-init carrier entries carry no vector (git notes hold none), and
-    // semantic `memory search` stays gated until the project is indexed and the
+    // semantic ranking stays gated until the project is indexed and the
     // carrier hydrates the index (ADR-068 D3/D4).
-    let embedding = if pre_init_notes {
+    let embedding = if store_first || pre_init_notes {
         None
     } else {
         let embed_text = format!("title: {title} | text: {body}");
@@ -150,6 +184,10 @@ pub(super) async fn memory_add(
     // archives it — a relates_to link is non-superseding. Skipped pre-init
     // (there is no local graph to read or to hold an edge). Reuses/opens
     // `backend_for_add` so the backend is opened at most once.
+    // The target entry itself is kept, not just the fact that it exists: the
+    // carrier records the edge by the target's `entity_id`, which is the only
+    // name for it that survives a re-`init` renumbering ids on another machine.
+    let mut relates_to_entity_id: Option<String> = None;
     if let Some(rel_id) = args.relates_to.as_ref()
         && !pre_init_notes
     {
@@ -157,11 +195,12 @@ pub(super) async fn memory_add(
             Some(backend) => backend,
             None => open_memory_backend(cfg, mem_path, backend_override).await?,
         };
-        let target_exists = backend.get(rel_id.clone()).await?.is_some();
+        let target = backend.get(rel_id.clone()).await?;
         backend_for_add = Some(backend);
-        if !target_exists {
+        let Some(target) = target else {
             anyhow::bail!("{}", unresolvable_id_message(rel_id));
-        }
+        };
+        relates_to_entity_id = Some(note_entity_id(&target));
     }
 
     // Primary store (ADR-004): the local SQLite `memory.db`, an explicit team
@@ -205,13 +244,14 @@ pub(super) async fn memory_add(
     // active. A single directed `relates_to` row is visible from BOTH
     // endpoints: `get_edges` returns it as outgoing from the new entry and
     // incoming to the target, so `memory graph`/`memory show` render it from
-    // either id. The edge lives in the local SQLite graph (`memory_edges`);
-    // the git-notes and remote backends report edge ops unsupported/no-op, so
-    // this is confined to the SQLite backend (and skipped pre-init). The
-    // target's existence was validated in the pre-flight above.
+    // either id. Both stores that can hold a graph take it: SQLite writes a
+    // `memory_edges` row, git notes appends a record carrying the edge. The
+    // remote backend reports edge ops as a no-op, and pre-init there is no
+    // primary store at all. The target's existence was validated in the
+    // pre-flight above.
     if let Some(rel_id) = args.relates_to.as_ref()
         && let Some(backend) = primary_backend.as_ref()
-        && backend.backend_kind() == "sqlite"
+        && matches!(backend.backend_kind(), "sqlite" | "git-notes")
     {
         backend
             .add_edge(&id, rel_id, "relates_to")
@@ -248,6 +288,12 @@ pub(super) async fn memory_add(
             remote_id: None,
             entity_id: Some(new_entity_id.clone()),
             superseded_by_entity_id: None,
+            // A `--relates-to` link starts at this entry, so it rides this
+            // entry's record (ADR-086 D1).
+            edges: relates_to_entity_id
+                .iter()
+                .map(|to| CarriedEdge::new("relates_to", to.clone()))
+                .collect(),
         };
         // Secret scan already ran above; no second check needed here.
         match append_to_git_notes(Some(project_root), &record).await {
@@ -323,6 +369,21 @@ pub(super) async fn memory_add(
         }
     }
 
+    // Only now, with the entry durable in both stores, is the vector asked for.
+    // An embed that stalls or never returns therefore costs the caller a
+    // vector, not the entry. Nothing records that the vector is outstanding,
+    // because nothing needs to: an entry with no vector is exactly what
+    // `memory reindex` and a transfer's local-embedding repair already look
+    // for, so the catch-up is the one that already exists.
+    let mut pending_embedding = None;
+    if store_first {
+        // Closed before the attach reopens the store, so the write below is not
+        // contending with this command's own idle connection.
+        drop(primary_backend);
+        let doc = format!("title: {title} | text: {body}");
+        pending_embedding = embed_and_attach(cfg, mem_path, &id, &doc).await;
+    }
+
     if created {
         println!("Stored [{kind}] #{id}: {title}", kind = args.kind);
     } else {
@@ -333,6 +394,12 @@ pub(super) async fn memory_add(
     }
     if let Some(line) = notes_rewrite_note {
         println!("{line}");
+    }
+    // On stderr, so a deferred vector never changes what a caller reading
+    // stdout sees, and unconditionally rather than through `tracing`, which is
+    // invisible without `RUST_LOG` and so cannot warn anyone.
+    if let Some(reason) = pending_embedding {
+        eprintln!("{}", pending_embedding_warning(&reason));
     }
 
     // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
@@ -351,6 +418,56 @@ pub(super) async fn memory_add(
         super::outbox::nudge_after_write(cfg, mem_path).await;
     }
     Ok(())
+}
+
+/// Mint this entry's vector and attach it to the local store, giving up after
+/// [`INTERACTIVE_EMBED_BUDGET`].
+///
+/// Returns `None` once the vector is stored, or `Some(reason)` when the entry
+/// is left without one. The attach goes through `MemoryStore::insert_embedding`,
+/// the same call the backfill commits with, so an entry embedded here and one
+/// embedded by a later backfill are identical on disk.
+async fn embed_and_attach(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    id: &NoteId,
+    doc: &str,
+) -> Option<String> {
+    use crate::embeddings::vec_to_blob;
+
+    let Some(client) = ServerInferenceClient::from_config(cfg) else {
+        return Some("no embedder was reachable".to_string());
+    };
+    let sp = super::super::ui::spinner("Embedding…");
+    // Dropping the future cancels the request rather than leaving it racing the
+    // caller, so giving up adds nothing further to an embedder that is already
+    // saturated, and no second attempt is made against it.
+    let result = tokio::time::timeout(INTERACTIVE_EMBED_BUDGET, client.embed_text(doc)).await;
+    sp.finish_and_clear();
+
+    let vec = match result {
+        Ok(Ok(vec)) => vec,
+        Ok(Err(e)) => {
+            tracing::warn!("embedding entry {id} failed: {e:#}");
+            return Some("embedding it failed".to_string());
+        }
+        Err(_elapsed) => {
+            return Some(format!(
+                "embedding it did not finish within {}s",
+                INTERACTIVE_EMBED_BUDGET.as_secs()
+            ));
+        }
+    };
+
+    match MemoryStore::open(mem_path)
+        .and_then(|store| store.insert_embedding(id, &vec_to_blob(&vec)))
+    {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::warn!("storing the embedding for entry {id} failed: {e:#}");
+            Some("its vector could not be stored".to_string())
+        }
+    }
 }
 
 async fn fetch_url_content(url: &str) -> Result<(String, String)> {

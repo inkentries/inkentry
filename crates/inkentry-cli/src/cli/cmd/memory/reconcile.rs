@@ -644,17 +644,33 @@ const INIT_GIT_NOTES_SOURCE: &str = "init:git-notes";
 /// a warning and is truncated anyway.
 const GIT_NOTES_IMPORT_LIMIT: usize = 500;
 
+/// What a git-notes import did: entries taken from the carrier, and what became
+/// of the graph edges the carrier records alongside them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GitNotesImport {
+    /// Entries this pass inserted into `memory.db`.
+    pub imported: usize,
+    /// Carried edges that became a new `memory_edges` row here.
+    pub edges_applied: usize,
+    /// Carried edges naming an entry this store does not hold, so they were
+    /// skipped rather than failing the import. A later import, after a fetch
+    /// that brings the missing entry, resolves them.
+    pub edges_unresolved: usize,
+}
+
 /// Import git-notes memory entries into the project `memory.db` during `init`.
 ///
 /// Reads every entry from the enclosing repo's git-notes backend
 /// (`refs/notes/inkentry`) and inserts those absent from `memory.db`, without
 /// embeddings (git-notes entries carry none). Dedup uses the same content hash
-/// as `memory reconcile`, so a re-run imports nothing. Returns how many were
-/// imported. An empty/absent notes ref is a no-op (returns 0).
+/// as `memory reconcile`, so a re-run imports nothing. The `relates_to` and
+/// `contradicts` edges the records carry are applied afterwards, which is what
+/// reconstructs the graph on a clone (ADR-086). An empty/absent notes ref is a
+/// no-op.
 pub(crate) async fn import_git_notes_into_memory(
     git_root: &std::path::Path,
     mem_path: &std::path::Path,
-) -> Result<usize> {
+) -> Result<GitNotesImport> {
     use crate::storage::{GitNotesBackend, MemoryBackend, NotesRefs};
 
     let backend = GitNotesBackend::with_root(git_root.to_path_buf());
@@ -680,7 +696,7 @@ pub(crate) async fn import_git_notes_into_memory(
         {
             let _ = store.set_notes_imported_working_oid(working_oid.as_deref());
         }
-        return Ok(0);
+        return Ok(GitNotesImport::default());
     }
 
     let store = MemoryStore::open(mem_path)
@@ -698,18 +714,28 @@ pub(crate) async fn import_git_notes_into_memory(
         .iter()
         .filter(|&n| existing.insert(note_entity_id(n)))
         .collect();
-    if to_import.is_empty() {
+    // Read the graph the records carry before opening the transaction, since
+    // this is a git read and the write below holds a lock. Edges name their
+    // endpoints by `entity_id` and `memory_edges` has foreign keys onto
+    // `notes`, so they can only be applied once every entry this pass adds is
+    // in the store (ADR-086 D4).
+    let carried = backend
+        .carried_edges()
+        .await
+        .context("reading the edges carried on the notes ref")?;
+
+    if to_import.is_empty() && carried.is_empty() {
         // Everything on the ref is already imported: advance the marker (so the
         // gate stops re-walking) without inserting a row.
         let _ = store.set_notes_imported_working_oid(working_oid.as_deref());
-        return Ok(0);
+        return Ok(GitNotesImport::default());
     }
 
     // Single all-or-nothing transaction, mirroring reconcile's import_batch.
     store
         .execute_batch("BEGIN IMMEDIATE")
         .context("beginning git-notes import transaction")?;
-    let result: Result<usize> = (|| {
+    let result: Result<GitNotesImport> = (|| {
         for note in &to_import {
             let tags: Vec<&str> = note.tags.iter().map(String::as_str).collect();
             let files: Vec<&str> = note.linked_files.iter().map(String::as_str).collect();
@@ -729,17 +755,24 @@ pub(crate) async fn import_git_notes_into_memory(
                 note.created_at,
             )?;
         }
+        // After every insert above, so an edge between two entries arriving in
+        // the same pass finds both of them.
+        let edges = store.import_carried_edges(&carried)?;
         // Crash-atomic with the inserts above (ADR-077 D2).
         store.set_notes_imported_working_oid(working_oid.as_deref())?;
-        Ok(to_import.len())
+        Ok(GitNotesImport {
+            imported: to_import.len(),
+            edges_applied: edges.applied,
+            edges_unresolved: edges.unresolved,
+        })
     })();
 
     match result {
-        Ok(n) => {
+        Ok(outcome) => {
             store
                 .execute_batch("COMMIT")
                 .context("committing git-notes import transaction")?;
-            Ok(n)
+            Ok(outcome)
         }
         Err(e) => {
             let _ = store.execute_batch("ROLLBACK");
@@ -959,6 +992,191 @@ mod init_import_tests {
         dir
     }
 
+    fn note_input(title: &str) -> NoteInput {
+        NoteInput {
+            kind: "decision".to_string(),
+            title: title.to_string(),
+            body: format!("body of {title}"),
+            tags: vec![],
+            linked_files: vec![],
+            embedding: None,
+            source_ref: None,
+            valid_at: None,
+            supersedes: None,
+        }
+    }
+
+    /// Every edge in `mem_path`'s store as `(from title, kind, to title)`.
+    /// Titles, not ids: the ids a clone mints are its own.
+    fn edge_triples(mem_path: &std::path::Path) -> Vec<(String, String, String)> {
+        let store = MemoryStore::open(mem_path).expect("open memory.db");
+        let notes = store.list(None, 100, true).expect("list");
+        let titles: HashMap<String, String> = notes
+            .iter()
+            .map(|n| (n.id.to_string(), n.title.clone()))
+            .collect();
+        let name = |id: &NoteId| {
+            titles
+                .get(&id.to_string())
+                .cloned()
+                .unwrap_or_else(|| id.to_string())
+        };
+
+        let mut rows: Vec<(String, String, String)> = Vec::new();
+        for note in &notes {
+            let (outgoing, _) = store.get_edges(&note.id).expect("get_edges");
+            rows.extend(
+                outgoing
+                    .iter()
+                    .map(|e| (name(&e.from_id), e.kind.clone(), name(&e.to_id))),
+            );
+        }
+        rows.sort();
+        rows.dedup();
+        rows
+    }
+
+    /// D4: the edges a record carries are applied after the entries, so an
+    /// edge between two entries arriving in the same import finds both of them.
+    #[tokio::test]
+    async fn init_import_applies_carried_edges_after_the_entries_they_join() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+        let backend = GitNotesBackend::with_root(git_root.to_path_buf());
+
+        let (from, _) = backend.add(note_input("the claim")).await.expect("add a");
+        let (to, _) = backend.add(note_input("the answer")).await.expect("add b");
+        backend
+            .add_edge(&from, &to, "relates_to")
+            .await
+            .expect("relates_to");
+        backend
+            .add_edge(&from, &to, "contradicts")
+            .await
+            .expect("contradicts");
+
+        let mem_path = git_root.join(".inkentry").join("memory.db");
+        let outcome = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(outcome.imported, 2);
+        assert_eq!(outcome.edges_applied, 2);
+        assert_eq!(outcome.edges_unresolved, 0);
+        assert_eq!(
+            edge_triples(&mem_path),
+            vec![
+                (
+                    "the claim".to_string(),
+                    "contradicts".to_string(),
+                    "the answer".to_string()
+                ),
+                (
+                    "the claim".to_string(),
+                    "relates_to".to_string(),
+                    "the answer".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// D4: an edge naming an entry this store does not hold is counted, not
+    /// fatal, and resolves on a later import once that entry arrives. The
+    /// second pass also proves the edges already applied are not duplicated.
+    #[tokio::test]
+    async fn init_import_counts_a_dangling_edge_then_resolves_it_without_duplicating() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+        let backend = GitNotesBackend::with_root(git_root.to_path_buf());
+        let mem_path = git_root.join(".inkentry").join("memory.db");
+
+        let (from, _) = backend.add(note_input("the claim")).await.expect("add a");
+        let (to, _) = backend.add(note_input("the answer")).await.expect("add b");
+        backend
+            .add_edge(&from, &to, "relates_to")
+            .await
+            .expect("relates_to");
+
+        // The target is on the ref but kept out of this store, which is the
+        // shape a partial fetch produces.
+        let store = MemoryStore::open(&mem_path).expect("open memory.db");
+        let carried = backend.carried_edges().await.expect("carried_edges");
+        store
+            .add_note_with_created_at(
+                "decision",
+                "the claim",
+                "body of the claim",
+                &[],
+                &[],
+                None,
+                "active",
+                1,
+            )
+            .expect("seed the source only");
+        let partial = store.import_carried_edges(&carried).expect("partial");
+        assert_eq!(partial.unresolved, 1, "the absent target must be counted");
+        assert_eq!(partial.applied, 0);
+        assert!(
+            edge_triples(&mem_path).is_empty(),
+            "no dangling row is left"
+        );
+        drop(store);
+
+        // A fuller read of the ref brings the target, and the same edge lands.
+        let outcome = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(outcome.imported, 1, "only the missing entry is new");
+        assert_eq!(outcome.edges_applied, 1);
+        assert_eq!(outcome.edges_unresolved, 0);
+
+        let after_first = edge_triples(&mem_path);
+        assert_eq!(after_first.len(), 1);
+
+        let again = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("re-import");
+        assert_eq!(again.edges_applied, 0, "nothing new on a re-run");
+        assert_eq!(
+            edge_triples(&mem_path),
+            after_first,
+            "re-importing the carrier must not duplicate an edge"
+        );
+    }
+
+    /// An edge appended for two entries that were both imported by an earlier
+    /// pass still lands: the edge-only append is not skipped just because no
+    /// entry is new.
+    #[tokio::test]
+    async fn init_import_applies_an_edge_appended_after_both_entries_were_hydrated() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+        let backend = GitNotesBackend::with_root(git_root.to_path_buf());
+        let mem_path = git_root.join(".inkentry").join("memory.db");
+
+        let (from, _) = backend.add(note_input("the claim")).await.expect("add a");
+        let (to, _) = backend.add(note_input("the answer")).await.expect("add b");
+        let first = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("import");
+        assert_eq!(first.imported, 2);
+        assert!(edge_triples(&mem_path).is_empty());
+
+        backend
+            .add_edge(&from, &to, "relates_to")
+            .await
+            .expect("relates_to");
+
+        let second = import_git_notes_into_memory(git_root, &mem_path)
+            .await
+            .expect("re-import");
+        assert_eq!(second.imported, 0, "no new entries, only a new edge");
+        assert_eq!(second.edges_applied, 1);
+        assert_eq!(edge_triples(&mem_path).len(), 1);
+    }
+
     /// Happy path: a note recorded via git notes before `init` is imported into
     /// memory.db, is visible via the SQLite store, and a re-run adds nothing.
     #[tokio::test]
@@ -986,7 +1204,8 @@ mod init_import_tests {
         let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
+            .expect("import")
+            .imported;
         assert_eq!(imported, 1, "pre-init git-notes entry must import");
 
         let store = MemoryStore::open(&mem_path).expect("open memory.db");
@@ -997,7 +1216,8 @@ mod init_import_tests {
 
         let again = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("re-import");
+            .expect("re-import")
+            .imported;
         assert_eq!(again, 0, "re-import must be a no-op");
         assert_eq!(
             store.list(None, 10, false).expect("list again").len(),
@@ -1034,6 +1254,7 @@ mod init_import_tests {
             remote_id: None,
             entity_id: None,
             superseded_by_entity_id: None,
+            edges: Vec::new(),
         };
         crate::storage::append_to_git_notes(Some(git_root), &legacy)
             .await
@@ -1068,7 +1289,8 @@ mod init_import_tests {
 
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
+            .expect("import")
+            .imported;
         assert_eq!(
             imported, 0,
             "legacy blob must recompute its id and dedup against the stored row"
@@ -1085,7 +1307,8 @@ mod init_import_tests {
         let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
+            .expect("import")
+            .imported;
         assert_eq!(imported, 0, "no notes ref → nothing imported");
     }
 
@@ -1102,7 +1325,8 @@ mod init_import_tests {
 
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
+            .expect("import")
+            .imported;
         assert_eq!(imported, 0, "no HEAD / no notes ref → nothing imported");
         assert!(
             !mem_path.exists(),
@@ -1121,7 +1345,8 @@ mod init_import_tests {
 
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
+            .expect("import")
+            .imported;
         assert_eq!(imported, 0);
         assert!(
             !mem_path.exists(),
@@ -1160,7 +1385,8 @@ mod init_import_tests {
         let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
+            .expect("import")
+            .imported;
         assert_eq!(imported, 1, "archived git-notes entry must import");
 
         let store = MemoryStore::open(&mem_path).expect("open memory.db");
@@ -1178,7 +1404,8 @@ mod init_import_tests {
         // content key excludes status), so nothing re-imports and no duplicate.
         let again = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("re-import");
+            .expect("re-import")
+            .imported;
         assert_eq!(again, 0, "archived entry must not double-import");
         assert_eq!(
             store.list(None, 10, true).expect("full list again").len(),
@@ -1259,7 +1486,8 @@ mod init_import_tests {
 
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .context("import")?;
+            .context("import")?
+            .imported;
         anyhow::ensure!(
             imported == 1,
             "only the entry absent from memory.db imports, got {imported}"
@@ -1434,7 +1662,8 @@ mod init_import_tests {
         let mem_path = git_root.join(".inkentry").join("memory.db");
         let imported = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("import");
+            .expect("import")
+            .imported;
         assert_eq!(imported, N, "all seeded entries import in one batch");
 
         let store = MemoryStore::open(&mem_path).expect("open memory.db");
@@ -1442,7 +1671,8 @@ mod init_import_tests {
 
         let again = import_git_notes_into_memory(git_root, &mem_path)
             .await
-            .expect("re-import");
+            .expect("re-import")
+            .imported;
         assert_eq!(again, 0, "the whole batch dedups on re-run");
         assert_eq!(
             store.list(None, 100, false).expect("list again").len(),

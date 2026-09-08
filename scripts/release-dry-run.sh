@@ -45,7 +45,6 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 TARGET="x86_64-unknown-linux-gnu"
-FEATURES="rich-formats"
 BUILD_IMAGE="debian:11"
 SMOKE_IMAGES="${SMOKE_IMAGES:-debian:11 ubuntu:20.04 ubuntu:24.04}"
 # Every container below must run as amd64, matching the amd64 target/.deb --
@@ -190,7 +189,7 @@ build_in_floor_container() {
           | sh -s -- -y --profile minimal --default-toolchain stable
       fi
       export PATH="$HOME/.cargo/bin:$PATH"
-      cargo build --release --target '"${TARGET}"' --features '"${FEATURES}"'
+      cargo build --release --target '"${TARGET}"'
       strip "target/'"${TARGET}"'/release/inkentry"
       strip "target/'"${TARGET}"'/release/inkentry-server"
     ' || die "container build failed (see docker output above)"

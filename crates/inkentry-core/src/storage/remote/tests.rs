@@ -414,3 +414,116 @@ async fn a_rejected_credential_names_the_set_key_command() {
         "must name the fix, got: {err}"
     );
 }
+
+// ── an unreachable server is named as such, on both the read and write path ───
+
+// A loopback address with nothing listening: bind an ephemeral port, read it
+// back, then drop the listener. Connecting there is refused immediately, so a
+// test exercises the refused path without spending wall-clock time.
+fn closed_loopback_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    let port = listener.local_addr().expect("read the bound port").port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}")
+}
+
+fn note_input(title: &str) -> NoteInput {
+    NoteInput {
+        kind: "note".to_string(),
+        title: title.to_string(),
+        body: "b".to_string(),
+        tags: vec![],
+        linked_files: vec![],
+        embedding: None,
+        source_ref: None,
+        valid_at: None,
+        supersedes: None,
+    }
+}
+
+#[tokio::test]
+async fn a_refused_connection_on_the_write_path_names_the_server_unreachable() {
+    let base_url = closed_loopback_url();
+    let err = backend_at(base_url.clone())
+        .add(note_input("t"))
+        .await
+        .expect_err("a write to a closed port must fail");
+
+    // The headline is what a user reads first, so the diagnosis belongs there
+    // rather than under the route label.
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "team server unreachable at {base_url} (connection refused); mode is cloud_first, \
+             which does not fall back to the local store"
+        )
+    );
+    // The route and the transport error stay in the chain for diagnosis.
+    assert!(
+        format!("{err:#}").contains("POST /memory"),
+        "the chain must still name the failed request, got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_connection_on_the_read_path_names_the_server_unreachable() {
+    let base_url = closed_loopback_url();
+    let err = backend_at(base_url.clone())
+        .list(None, 10, false, None)
+        .await
+        .expect_err("a read from a closed port must fail");
+
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "team server unreachable at {base_url} (connection refused); mode is cloud_first, \
+             which does not fall back to the local store"
+        )
+    );
+    assert!(
+        format!("{err:#}").contains("GET /memory"),
+        "the chain must still name the failed request, got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_slow_but_connected_server_is_not_reported_as_unreachable() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // The server accepts the connection and then dawdles past the request
+    // budget. That is a slow server, not an absent one, so it must keep the
+    // wording it had and never claim the server is unreachable.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/proj/memory"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"notes": []}))
+                .set_delay(std::time::Duration::from_millis(400)),
+        )
+        .mount(&server)
+        .await;
+
+    let backend = RemoteMemoryBackend {
+        client: reqwest::Client::builder()
+            .connect_timeout(crate::config::REMOTE_CONNECT_TIMEOUT)
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .expect("build a client with a collapsed request budget"),
+        base_url: server.uri(),
+        project_id: "proj".to_string(),
+        api_key: None,
+    };
+
+    let err = backend
+        .list(None, 10, false, None)
+        .await
+        .expect_err("a response delayed past the request budget must fail");
+    assert_eq!(err.to_string(), "GET /memory");
+    let chain = format!("{err:#}");
+    assert!(
+        !chain.contains("unreachable"),
+        "a connected server must never be reported as unreachable, got: {chain}"
+    );
+}

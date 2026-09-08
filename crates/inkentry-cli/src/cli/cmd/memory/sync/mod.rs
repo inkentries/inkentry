@@ -51,7 +51,7 @@ mod pull_embed_tests;
 mod push;
 mod round;
 #[cfg(test)]
-mod test_support;
+pub(in crate::cli::cmd::memory) mod test_support;
 
 pub(in crate::cli::cmd) use local_embed::LocalEmbedPolicy;
 pub(super) use local_embed::{local_embed_summary, pending_embedding_warning, pull_embed_summary};

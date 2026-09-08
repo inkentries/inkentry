@@ -42,6 +42,11 @@ pub struct BatchNoteItem {
     pub source_commit: Option<String>,
     /// Locally-computed embedding, letting the client skip server-side
     /// embedding. Optional; without it the server embeds the text itself.
+    ///
+    /// A supplied vector must be L2-normalised: its magnitude must fall inside
+    /// `[0.5, 1.5]`. The index ranks by Euclidean distance, which tracks
+    /// similarity only across vectors of equal length, so one of another
+    /// magnitude is refused rather than stored and silently mis-ranked.
     #[serde(default)]
     pub vector: Option<Vec<f32>>,
     /// Model tag for a pushed `vector`. Required whenever `vector` is present.
@@ -112,7 +117,7 @@ pub struct BatchPushResponse {
     request_body = BatchPushRequest,
     responses(
         (status = 207, description = "Per-entry outcomes", body = BatchPushResponse),
-        (status = 400, description = "Bad request (oversized batch, bad field length)", body = ErrorBody),
+        (status = 400, description = "Bad request (oversized batch, bad field length), or a pushed vector that violates the contract: wrong model tag, wrong precision, wrong dimension, a non-finite component, or an L2 magnitude outside [0.5, 1.5]", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 422, description = "Entry rejected: prompt injection detected"),
         (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),

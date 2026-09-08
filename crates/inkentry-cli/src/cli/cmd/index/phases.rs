@@ -817,6 +817,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_memo_ttl_is_short_enough_for_this_poller_to_look_again() {
+        // The upper bound on MEMO_TTL, and the reason it is expressed here
+        // rather than next to the constant: the constant is only "short enough"
+        // relative to this poll loop's schedule.
+        //
+        // The first poll attempts for real and records the miss. Every poll
+        // after it that lands while the entry is still fresh is skipped and
+        // counts against the consecutive-offline tolerance. Polls land at
+        // cumulative 1, 3, 7, 15, 31s (the initial backoff doubling, capped),
+        // so the number of consecutive skips is just the number of those that
+        // fall inside the TTL. Let that grow and a memoised miss stops
+        // deferring the wait and starts ending it, which is the failure this
+        // whole expiry exists to prevent: durable queued embed work abandoned
+        // for a server that came back.
+        let mut skipped = 0u32;
+        let mut since_record = std::time::Duration::ZERO;
+        let mut backoff = EMBED_WAIT_INITIAL_BACKOFF;
+        loop {
+            since_record += backoff;
+            if since_record >= inkentry_core::reachability::MEMO_TTL {
+                break;
+            }
+            skipped += 1;
+            backoff = (backoff * 2).min(EMBED_WAIT_MAX_BACKOFF);
+        }
+
+        assert!(
+            skipped <= 2,
+            "a recorded miss must cost this poller at most two consecutive skipped polls, \
+             leaving most of its tolerance of {EMBED_WAIT_MAX_OFFLINE_PROBES} for real \
+             misses; MEMO_TTL of {:?} would skip {skipped}",
+            inkentry_core::reachability::MEMO_TTL,
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(reachability_memo)]
+    async fn wait_for_embedder_recovers_after_a_real_refusal_was_memoised() {
+        // The readiness poll exists to watch a server that is not up yet come
+        // up, and it can run for as long as a model download takes. Skipping a
+        // redundant connect attempt must never turn into refusing to look
+        // again: one refused poll while the server was still binding its port
+        // would otherwise stand in for every later one, the consecutive-offline
+        // counter would run out, and durable queued embed work would be
+        // abandoned for a server that came back seconds later.
+        //
+        // Driven with a genuine connection refusal rather than a non-2xx
+        // response, because only a refusal is a connect failure and only a
+        // connect failure is memoised. A test that flapped with a 500 would
+        // pass without ever touching the memo.
+        inkentry_core::reachability::clear_for_test();
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}");
+        let cfg = cfg_for(url.clone());
+
+        // A real probe against the closed port: refused, and recorded.
+        let refused = capability::get_inference_tier_fresh(&cfg).await;
+        assert!(
+            matches!(refused, capability::Tier::Offline(_)),
+            "a closed port must probe offline; got {refused:?}"
+        );
+        assert!(
+            inkentry_core::reachability::connect_already_failed(&url),
+            "a genuine refusal must be what lands in the memo, or this test proves nothing"
+        );
+
+        // The server comes up on the same port, and enough time passes for the
+        // recorded miss to stop being worth acting on. Ageing the entry stands
+        // in for that wait so the test does not spend it.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let mock = MockServer::builder().listener(listener).start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(health_body("ready")))
+            .mount(&mock)
+            .await;
+        // A fixed literal, deliberately not expressed in terms of MEMO_TTL:
+        // an offset defined from the constant under test is expired by
+        // construction for any value of it, so it would pin that expiry exists
+        // while saying nothing about whether the TTL is short enough for this
+        // poller, which is the thing that actually matters here. Five seconds
+        // is a point on the poller's own schedule: its polls land at cumulative
+        // 0, 1, 3 and 7s, so a miss recorded at the first must be stale well
+        // before the fourth.
+        inkentry_core::reachability::record_connect_failure_aged(
+            &url,
+            std::time::Duration::from_secs(5),
+        );
+
+        let tier = wait_for_embedder(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
+        assert!(
+            matches!(tier.caps(), Some(c) if c.index_embed),
+            "the poller must look again once the recorded miss has expired, rather than \
+             abandoning a server that came back; got {tier:?}"
+        );
+    }
+
     #[tokio::test]
     async fn wait_for_embedder_gives_up_after_bounded_offline_probes() {
         // A vanished server (crashed after spawning the worker) must not hang

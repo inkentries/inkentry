@@ -820,3 +820,132 @@ async fn an_unanswerable_health_probe_keeps_the_self_hosted_dialect() {
         .unwrap();
     assert_eq!(be.backend_kind(), "remote");
 }
+
+// ── the unreachable memo is never a routing input ────────────────────────────
+
+// The memo exists so a command that already found the server absent can skip
+// redundant connection attempts. If it ever reached backend selection, "the
+// server looks down" would start choosing the local store, which is precisely
+// the silent fallback `cloud_first` refuses to do. These pin that selection is
+// identical with the memo set and unset.
+
+#[tokio::test]
+#[serial_test::serial(reachability_memo)]
+async fn a_memoised_unreachable_server_still_owns_the_store_under_cloud_first() {
+    register_sqlite_vec();
+    // Loopback with nothing listening, so selection cannot depend on reaching
+    // anything either way.
+    let url = "http://127.0.0.1:1";
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mem_path = tmp.path().join("memory.db");
+    let cfg = cloud_first_cfg(url, "11111111-1111-1111-1111-111111111111");
+
+    crate::reachability::clear_for_test();
+    let fresh = open_memory_backend(&cfg, &mem_path, None)
+        .await
+        .expect("open with an empty memo")
+        .backend_kind();
+
+    crate::reachability::record_connect_failure(url);
+    let memoised = open_memory_backend(&cfg, &mem_path, None)
+        .await
+        .expect("open with the server memoised unreachable")
+        .backend_kind();
+
+    assert_eq!(
+        fresh, memoised,
+        "the memo must not change which store cloud_first opens"
+    );
+    assert_eq!(
+        memoised, "remote",
+        "cloud_first keeps the server as the store of record even when it is known absent"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(reachability_memo)]
+async fn a_memoised_unreachable_server_does_not_change_local_first_either() {
+    register_sqlite_vec();
+    let url = "http://127.0.0.1:1";
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mem_path = tmp.path().join("memory.db");
+    let cfg = Config {
+        server_url: Some(url.to_string()),
+        project_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
+        mode: Some(SyncMode::LocalFirst),
+        ..Default::default()
+    };
+
+    crate::reachability::clear_for_test();
+    crate::reachability::record_connect_failure(url);
+    let backend = open_memory_backend(&cfg, &mem_path, None)
+        .await
+        .expect("open the local_first backend");
+
+    assert_eq!(
+        backend.backend_kind(),
+        "sqlite",
+        "local_first is local because of the mode, never because of what the memo holds"
+    );
+}
+
+// ── the connect bound applies on loopback too ────────────────────────────────
+
+// Accept TCP on loopback and then say nothing, holding every connection open.
+// A client that never bounds connecting waits out its whole request budget
+// here, because the TCP connect succeeds and the TLS handshake it is waiting on
+// never arrives. Returns the bound port.
+//
+// This is the portable stand-in for the reported failure. A firewall that drops
+// a SYN cannot be simulated in a test, but it costs a client the same thing: an
+// attempt with nothing to fail on. The connect bound covers the handshake as
+// well as the TCP connect, so this exercises it.
+fn spawn_stalling_loopback_listener() -> u16 {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stall listener");
+    let port = listener.local_addr().expect("local_addr").port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            match stream {
+                // Held, never read from and never written to.
+                Ok(stream) => held.push(stream),
+                Err(_) => break,
+            }
+        }
+    });
+    port
+}
+
+#[tokio::test]
+#[serial_test::serial(reachability_memo)]
+async fn the_memory_client_bounds_connecting_to_a_stalled_loopback_server() {
+    // The reported failure was a loopback team server that never answered, so
+    // an exemption for loopback would have left exactly that case unbounded.
+    // Without the bound this waits out the 30s request budget instead.
+    register_sqlite_vec();
+    crate::reachability::clear_for_test();
+
+    let port = spawn_stalling_loopback_listener();
+    let url = format!("https://127.0.0.1:{port}");
+    let cfg = cloud_first_cfg(&url, "11111111-1111-1111-1111-111111111111");
+
+    let started = std::time::Instant::now();
+    let backend = open_seam(&cfg, &url)
+        .await
+        .expect("open the remote backend");
+    let err = backend
+        .list(None, 10, false, None)
+        .await
+        .expect_err("a stalled server must fail the read");
+    let elapsed = started.elapsed();
+
+    assert!(
+        format!("{err:#}").contains("unreachable"),
+        "a server that never completes a connection is unreachable, got: {err:#}"
+    );
+    // Generous, and still nowhere near the 30s budget this would otherwise cost.
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "connecting must be bounded on loopback, took {elapsed:?}"
+    );
+}

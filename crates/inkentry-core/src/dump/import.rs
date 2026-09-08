@@ -21,7 +21,7 @@ use super::reader::Dump;
 use super::record::{Entity, RelationshipKind};
 use crate::registry::Registry;
 use crate::storage::memory::{MemoryStore, NoteId, uuid_v7_at};
-use crate::storage::note_record::{NoteRecord, now_millis};
+use crate::storage::note_record::{CarriedEdge, NoteRecord, now_millis};
 
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ImportSummary {
@@ -385,6 +385,8 @@ fn carrier_record(
         remote_id: e.remote_id.clone(),
         entity_id: Some(entity_id),
         superseded_by_entity_id: None,
+        // Filled from the dump's relationships, like the supersede field.
+        edges: Vec::new(),
     }
 }
 
@@ -441,12 +443,24 @@ fn insert_relationship(
         }
         (
             RelationshipKind::RelatesTo | RelationshipKind::Contradicts,
-            Landed::Memory { id: a, .. },
-            Landed::Memory { id: b, .. },
+            Landed::Memory {
+                id: a,
+                carrier: a_carrier,
+            },
+            Landed::Memory {
+                id: b,
+                carrier: b_carrier,
+            },
         ) => {
             targets
                 .memory
                 .import_edge(a, b, kind.as_str(), created_at)?;
+            // On the carrier the edge rides the source entry's record, naming
+            // the target by `entity_id`; the dump's own direction is kept.
+            let to_entity_id = carrier_records[*b_carrier].resolve_entity_id();
+            carrier_records[*a_carrier]
+                .edges
+                .push(CarriedEdge::new(kind.as_str(), to_entity_id));
             summary.memory_edges += 1;
             Ok(())
         }
@@ -461,6 +475,7 @@ fn insert_relationship(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dump::reader::ResolvedRelationship;
     use crate::dump::record::{CommandUsage, MemoryEntry};
     use crate::storage::Database;
     use std::sync::OnceLock;
@@ -475,6 +490,109 @@ mod tests {
                 )));
             }
         });
+    }
+
+    fn memory_entry(dump_ref: &str, title: &str) -> Entity {
+        Entity::MemoryEntry(Box::new(MemoryEntry {
+            dump_ref: dump_ref.to_string(),
+            uuid: None,
+            kind: "decision".to_string(),
+            title: title.to_string(),
+            body: format!("body of {title}"),
+            tags: vec![],
+            linked_files: vec![],
+            created_at: 1_700_000_000,
+            status: None,
+            source_ref: None,
+            valid_at: None,
+            invalid_at: None,
+            entity_id: None,
+            remote_id: None,
+            namespace: None,
+        }))
+    }
+
+    /// Import a three-entry dump wired with one relationship of each kind, and
+    /// return the carrier records it produced.
+    fn carrier_records_for(kinds: &[(RelationshipKind, usize, usize)]) -> Vec<NoteRecord> {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let memory = MemoryStore::open(tmp.path()).expect("open memory store");
+        let dump = Dump {
+            entities: vec![
+                memory_entry("e0", "the first"),
+                memory_entry("e1", "the second"),
+                memory_entry("e2", "the third"),
+            ],
+            relationships: kinds
+                .iter()
+                .map(|(kind, from, to)| ResolvedRelationship {
+                    kind: *kind,
+                    from: *from,
+                    to: *to,
+                    created_at: Some(1_700_000_100),
+                })
+                .collect(),
+            merged_memory_entries: 0,
+        };
+        let targets = ImportTargets {
+            memory: &memory,
+            registry: None,
+            index_db: None,
+        };
+        apply(&dump, &targets).expect("apply").carrier_records
+    }
+
+    fn edges_of(record: &NoteRecord) -> Vec<(String, String)> {
+        let mut edges: Vec<(String, String)> = record
+            .edges
+            .iter()
+            .map(|e| (e.kind.clone(), e.to_entity_id.clone()))
+            .collect();
+        edges.sort();
+        edges
+    }
+
+    /// A dump import lands the same graph on the carrier as in the store: both
+    /// carried kinds project onto the SOURCE entry's record, naming the target
+    /// by `entity_id` (ADR-086 D1).
+    #[test]
+    fn relates_to_and_contradicts_project_onto_the_source_carrier_record() {
+        let records = carrier_records_for(&[
+            (RelationshipKind::RelatesTo, 0, 1),
+            (RelationshipKind::Contradicts, 0, 2),
+        ]);
+
+        let second = records[1].resolve_entity_id();
+        let third = records[2].resolve_entity_id();
+        assert_eq!(
+            edges_of(&records[0]),
+            vec![
+                ("contradicts".to_string(), third),
+                ("relates_to".to_string(), second),
+            ]
+        );
+        assert!(
+            edges_of(&records[1]).is_empty() && edges_of(&records[2]).is_empty(),
+            "an edge is carried once, from its source only"
+        );
+    }
+
+    /// D2: supersede keeps its own field and is not also written into the edge
+    /// list, which would give import two independent paths to one row.
+    #[test]
+    fn supersedes_is_not_duplicated_into_the_edge_list() {
+        let records = carrier_records_for(&[(RelationshipKind::Supersedes, 0, 1)]);
+
+        assert!(
+            records.iter().all(|r| r.edges.is_empty()),
+            "supersede must leave the edge list untouched, got {records:#?}"
+        );
+        assert_eq!(
+            records[1].superseded_by_entity_id.as_deref(),
+            Some(records[0].resolve_entity_id().as_str()),
+            "the predecessor still points at its successor by entity id"
+        );
     }
 
     fn command_usage_dump(command: &str, at: i64) -> Dump {

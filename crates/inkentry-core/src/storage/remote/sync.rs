@@ -297,6 +297,7 @@ impl CloudSyncClient {
         // from somewhere less trusted than the local config.
         crate::config::validate_transport_url(base_url).map_err(anyhow::Error::msg)?;
         let client = crate::config::apply_server_ca(reqwest::Client::builder(), server_ca)?
+            .connect_timeout(crate::config::REMOTE_CONNECT_TIMEOUT)
             .timeout(timeout)
             .build()
             .context("building sync HTTP client")?;
@@ -559,6 +560,18 @@ mod tests {
         // in the inference class.
         assert_eq!(SYNC_REQUEST_TIMEOUT, Duration::from_secs(300));
         assert!(SYNC_REQUEST_TIMEOUT > Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_connect_bound_stays_far_below_the_request_budget() {
+        // Two different questions: how long a connection may take to come up,
+        // and how long a live transfer may run once it has. Collapsing them is
+        // what made an unreachable host cost a full request budget.
+        assert_eq!(
+            crate::config::REMOTE_CONNECT_TIMEOUT,
+            Duration::from_secs(2)
+        );
+        assert!(crate::config::REMOTE_CONNECT_TIMEOUT * 10 < SYNC_REQUEST_TIMEOUT);
     }
 
     #[tokio::test]

@@ -16,6 +16,10 @@ keywords = [
 categories = ["command-line-utilities", "development-tools", "text-processing"]
 
 [features]
+# On by default so a source build parses the same file types as every
+# published binary. `--no-default-features` builds the CLI without the PDF,
+# DOCX and spreadsheet readers (lopdf, docx-rs, calamine).
+default = ["rich-formats"]
 rich-formats = ["inkentry-core/rich-formats"]
 
 [[bin]]

@@ -34,20 +34,17 @@ jobs:
           # changing this base image changes the supported floor.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            features: rich-formats
             container: debian:11
           # Native arm64 runner (free for public repos) + arm64 bullseye
           # container. Replaces the old cross-compile + ports-mirror setup.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            features: rich-formats
             container: debian:11
           - os: macos-latest
             target: aarch64-apple-darwin
-            features: rich-formats,metal
+            features: metal
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: rich-formats
 
     steps:
       # Inside the bullseye container nothing is preinstalled. git must be

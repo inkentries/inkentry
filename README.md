@@ -127,7 +127,8 @@ inkentry extracts import, call, extends, and implements edges from the AST at in
 The symbol and path above are real ones from this repository, so the commands
 work as written once you have indexed a clone of it. `graph-edges --file` matches
 the path as it is stored in the index, so pass the full repo-relative path rather
-than a suffix.
+than a suffix. A path the index does not hold exits `2` with the path named on
+stderr, so a mistyped path never reads as a file with no edges.
 
 ### Search
 
@@ -191,12 +192,11 @@ Purpose-built chunkers, without tree-sitter, for **Markdown** (split on headings
 A file whose type is in neither group is skipped, not indexed as text.
 
 **`inkentry languages` prints a build-dependent list.** The languages above are
-the ones every build parses, notebooks included. The optional `rich-formats`
-feature adds **DOCX**, **spreadsheets** and **PDF** on top, and `languages`
-lists those three as well when it is on. Every published release binary is built with it, so if you
-installed from a release you have them. A plain `cargo build` from source does
-not: pass `--features rich-formats` to match a release. See [building from
-source](docs/building.md).
+the ones every build parses, notebooks included. The `rich-formats` feature,
+on by default, adds **DOCX**, **spreadsheets** and **PDF** on top, and
+`languages` lists those three as well. Every published release binary has it,
+and so does a plain `cargo build` from source; only `--no-default-features`
+leaves them out. See [building from source](docs/building.md).
 
 ## Documentation
 

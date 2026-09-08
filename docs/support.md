@@ -32,6 +32,8 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
 - **Disk** — the index lives in `.inkentry/` inside your project; expect it to
   be a fraction of the source tree's size, plus the one-time model download in
   the model cache directory.
+- **Self-hosting a team server:** RAM and disk figures for sizing a host are
+  in [Server setup: Sizing the host](server-setup.md#sizing-the-host).
 
 ## Version support policy
 

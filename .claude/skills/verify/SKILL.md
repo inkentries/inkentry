@@ -79,13 +79,13 @@ and are meant to be run explicitly with the right features, not swept in by a
 workspace-wide command that doesn't grant them).
 
 ```bash
-INKENTRY_SECRET_STORE=file cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
+INKENTRY_SECRET_STORE=file cargo clippy --lib --bins --tests --benches -- -D warnings
 ```
 
 ## 3. Build
 
 ```bash
-INKENTRY_SECRET_STORE=file cargo build --lib --bins --tests --benches --features rich-formats
+INKENTRY_SECRET_STORE=file cargo build --lib --bins --tests --benches
 ```
 
 ## 4. Tests + doctests

@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 15
     env:
       # clippy/check/build in this job need no debug info from the dev
-      # profile; the full workspace build (rich-formats, incl. the embedder
+      # profile; the full workspace build (default features, incl. the embedder
       # dep tree) has been observed to exhaust runner disk (ENOSPC) with debug
       # info on. Mirrors CARGO_PROFILE_TEST_DEBUG below.
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -84,14 +84,14 @@ jobs:
       # (chunk_quality_eval, embed_bench) directly depend on the native
       # embedder and are meant to be run explicitly with the right features,
       # not swept in by a workspace-wide command that doesn't grant them.
-      - name: Clippy (rich-formats)
-        run: cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
+      - name: Clippy
+        run: cargo clippy --lib --bins --tests --benches -- -D warnings
 
-      - name: Check (rich-formats)
-        run: cargo check --lib --bins --tests --benches --features rich-formats
+      - name: Check
+        run: cargo check --lib --bins --tests --benches
 
-      - name: Build (rich-formats)
-        run: cargo build --lib --bins --tests --benches --features rich-formats
+      - name: Build
+        run: cargo build --lib --bins --tests --benches
 
       - name: Disk usage (after build)
         if: always()
@@ -137,6 +137,10 @@ jobs:
             # test. Note candle is an unconditional dep of the inkentry-embed
             # crate, so its native embedder still compiles here as a workspace
             # member. The embedder is EXPERIMENTAL / NOT RECOMMENDED.
+            #
+            # The same flag drops the CLI's default `rich-formats` feature, so
+            # this leg is also what keeps the CLI without the PDF, DOCX and
+            # spreadsheet readers compiling and under test.
             #
             # This leg used to run on macOS. Nothing about the feature
             # combination is platform-specific, so it moved to Linux where the
@@ -260,8 +264,8 @@ jobs:
       # --lib --bins --tests --benches (not --all-targets): examples are
       # never part of the regular build/lint/test gates, see Check & Lint's
       # Clippy step comment.
-      - name: Clippy (rich-formats)
-        run: cargo clippy --lib --bins --tests --benches --features rich-formats -- -D warnings
+      - name: Clippy
+        run: cargo clippy --lib --bins --tests --benches -- -D warnings
 
   release-scripts:
     name: Release script tests

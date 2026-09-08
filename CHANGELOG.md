@@ -9,6 +9,98 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`inkentry search --quiet`** suppresses the informational notices on stderr
+  (stale index, server discovery, ranking availability, embedding coverage).
+  Results and exit codes are unchanged, and it never hides an error or the
+  warning about a server started by another user. Reach for it in Windows
+  PowerShell 5.1, which renders anything a native command writes to stderr as a
+  red error block.
+
+### Changed
+
+- **BREAKING: a pushed memory vector must be near unit length.** Both memory
+  write routes refuse a `vector` whose L2 norm is outside `[0.5, 1.5]` with
+  `400`, matching the hosted API. Clients that compute their own vectors must
+  L2-normalise before pushing, or omit `vector` and let the server embed. The
+  `inkentry` CLI is unaffected: its vectors come from the built-in embedder,
+  which already normalises.
+- **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
+  a sizing section with the RAM and disk figures for a team server.
+- **`inkentry plumbing graph-edges --file` now exits `2` for a path the index
+  does not hold**, naming the path on stderr. It exited `1` before, which a
+  script could not tell apart from an indexed file that genuinely has no edges.
+  Branch on `2` as an error; an indexed file with no edges still exits `1` with
+  no output.
+- **Source builds now parse PDF, DOCX and spreadsheets by default.** The
+  `rich-formats` feature is on by default for `inkentry-cli`, so a plain
+  `cargo build` matches every published binary and no longer needs
+  `--features rich-formats`. To build the CLI without those readers, pass
+  `-p inkentry-cli --no-default-features`.
+
+### Fixed
+
+- **The background indexing log is no longer empty.** `inkentry init` and
+  `inkentry index --detach-embed` point at `index-background.log`, but the
+  detached worker wrote nothing to it, so a run in progress looked exactly like
+  one that never started. The worker now records when it started, how far the
+  embedding has got, and the reason if it stops early. A new run appends to the
+  log instead of overwriting what the last one reported.
+- **A `cloud_first` command against an unreachable team server now fails in
+  about two seconds instead of most of a minute.** The error names the server
+  and says that `cloud_first` does not fall back to the local store. Reads and
+  writes still never fall back, and a server that is slow but reachable is
+  unaffected.
+- **A server with an untrusted certificate is no longer reported as
+  unreachable.** It is running, so the message names the certificate cause and
+  points at `server_ca` instead of sending you to restart a server that is
+  already up.
+
+### Fixed
+
+- **The server log file is plain text.** The daemon coloured its log
+  unconditionally, so `server.log` held raw escape sequences and every reader
+  without VT processing showed litter around each field. Colour is now emitted
+  only when the log is going to a terminal, and `inkentry`'s own `RUST_LOG`
+  output follows the same rule.
+- **`inkentry hooks install` prints one path separator on Windows.** The
+  installed-hook path read as `D:\src\repo\.git/hooks\post-commit`, because git
+  reports its hooks directory with forward slashes.
+
+### Fixed
+
+- **The model cache no longer holds the embedding model twice.** A fresh
+  download now occupies about 350 MB instead of about 690 MB. If your cache was
+  filled by an earlier release, delete the model cache directory and let the
+  next server start refetch to reclaim the duplicate.
+- **Interrupted model downloads are cleaned up.** A partial download is resumed
+  where it left off, and one that nothing can resume is removed instead of
+  sitting in the cache forever. A start that follows an interrupted download is
+  no longer announced as a first run.
+- **The documented model cache path is now correct on every platform.** It is
+  the platform's local-data directory, which is not the same place as config
+  and state. See
+  [Where the model is cached](docs/getting-started.md#where-the-model-is-cached).
+
+### Fixed
+
+- **`relates_to` and `contradicts` links now travel with the repository.** A
+  clone rebuilds the graph the writer had, instead of the entries alone. Older
+  builds still read the new records, and notes already on the ref are
+  unaffected. Re-run `inkentry init`, or any command that reads memory, after a
+  fetch to pick the links up. A link whose other entry has not arrived yet is
+  reported as skipped and applied by a later import.
+
+### Fixed
+
+- **`inkentry memory add` no longer waits on a busy embedder.** Adding an entry
+  during a bulk index pass could block for minutes, and the entry was not saved
+  until the embed came back, so a caller that gave up first lost it. The entry
+  is now saved first and the command returns in seconds. An entry saved before
+  its search vector arrives says so, and is listed and readable straight away;
+  `inkentry memory reindex` adds the vector, and the next `inkentry sync` does
+  it on its own.
 ## [1.0.2] — 2026-09-03
 
 ### Added

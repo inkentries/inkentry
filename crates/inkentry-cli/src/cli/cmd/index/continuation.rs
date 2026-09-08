@@ -21,6 +21,13 @@ pub(super) fn background_log_path(db_path: &std::path::Path) -> Option<std::path
 /// actually in use. Falls back to a null sink when the log cannot be opened,
 /// since diagnostics are best-effort and must never fail the index.
 ///
+/// Each spawn appends a header naming the child's argv and the spawn time,
+/// written before the child exists. A log whose last header is followed by
+/// nothing therefore means the spawn happened and the child never got as far
+/// as its own start line (see `background_log`). Appending also keeps this
+/// open from truncating a log a previous child still holds open and is still
+/// writing to at its own offset.
+///
 /// Inheriting the parent's streams instead is not an option: a pipe reader
 /// (`git commit`, CI) blocks until the detached child exits, and a reader that
 /// closes first SIGPIPEs the child mid-phase.
@@ -28,9 +35,20 @@ pub(super) fn redirect_to_background_log<'a>(
     cmd: &mut std::process::Command,
     log: Option<&'a std::path::Path>,
 ) -> Option<&'a std::path::Path> {
+    use std::io::Write as _;
+    let argv = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
     // stdout and stderr need independent handles onto the same file.
     let opened = log.and_then(|p| {
-        let out = super::super::helpers::open_private_file_for_write(p).ok()?;
+        let mut out = super::super::helpers::open_log_for_append(p).ok()?;
+        let _ = writeln!(
+            out,
+            "\n=== inkentry {argv} ({}) ===",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        );
         let err = out.try_clone().ok()?;
         Some((p, out, err))
     });
@@ -243,6 +261,55 @@ mod tests {
                 "--no-summaries must reach the {mode_flag} child"
             );
         }
+    }
+
+    fn redirect_for(mode_flag: &str, log: &std::path::Path) {
+        let mut cmd = build_detached_child_command(
+            std::path::Path::new("/usr/bin/inkentry"),
+            mode_flag,
+            &sample_index_args(),
+        );
+        assert_eq!(redirect_to_background_log(&mut cmd, Some(log)), Some(log));
+    }
+
+    #[test]
+    fn background_log_header_names_the_argv_and_spawn_time() {
+        // A user opening the log sees which run wrote it and when it was
+        // spawned before the child has said anything at all.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("index-background.log");
+        redirect_for("--_embed-phases", &log);
+
+        let content = std::fs::read_to_string(&log).expect("header written at open");
+        let header = header_lines(&content).next().expect("one header line");
+        assert!(
+            header.starts_with("=== inkentry index some/path --_embed-phases ("),
+            "{header}"
+        );
+        assert!(
+            header.ends_with("Z) ==="),
+            "UTC timestamp closes it: {header}"
+        );
+    }
+
+    #[test]
+    fn a_second_spawn_appends_rather_than_truncating_the_earlier_run() {
+        // The failure reason a user came to the log for was written by an
+        // earlier child, and the next `index` must not take it away.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("index-background.log");
+        redirect_for("--_embed-phases", &log);
+        redirect_for("--_background-phases", &log);
+
+        let content = std::fs::read_to_string(&log).expect("log readable");
+        let headers: Vec<&str> = header_lines(&content).collect();
+        assert_eq!(headers.len(), 2, "both spawns kept: {content}");
+        assert!(headers[0].contains("--_embed-phases"), "{content}");
+        assert!(headers[1].contains("--_background-phases"), "{content}");
+    }
+
+    fn header_lines(content: &str) -> impl Iterator<Item = &str> {
+        content.lines().filter(|l| l.starts_with("=== "))
     }
 
     // ── detach_embed_eligible: the spawn gate must include `loading` ────────────
