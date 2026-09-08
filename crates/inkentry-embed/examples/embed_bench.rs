@@ -26,7 +26,7 @@ use inkentry_embed::{EmbeddingBackend, NativeEmbedder};
 use tokenizers::Tokenizer;
 
 #[cfg(feature = "llama")]
-use inkentry_embed::{DeviceRequest, LlamaEmbedder};
+use inkentry_embed::{DEFAULT_EMBED_POOL_SIZE, DeviceRequest, LlamaEmbedder};
 
 /// Sequence lengths (tokens) to sweep by default. Covers the spike's plateau
 /// region (256-512) plus enough range either side to see the curve bend.
@@ -185,8 +185,14 @@ fn main() -> Result<()> {
         ),
         #[cfg(feature = "llama")]
         "llama" => Box::new(
-            LlamaEmbedder::load_from_path(&args.gguf, DeviceRequest::Auto, None)
-                .context("loading LlamaEmbedder")?,
+            // The bench issues requests sequentially, so the default pool is plenty.
+            LlamaEmbedder::load_from_path(
+                &args.gguf,
+                DeviceRequest::Auto,
+                None,
+                DEFAULT_EMBED_POOL_SIZE,
+            )
+            .context("loading LlamaEmbedder")?,
         ),
         #[cfg(not(feature = "llama"))]
         "llama" => bail!("--backend llama requires building with --features llama"),

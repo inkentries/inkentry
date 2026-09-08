@@ -40,16 +40,17 @@ use crate::vector::l2_normalise;
 /// small-VRAM GPUs loadable at reduced chunk length.
 const UBATCH_LADDER: [u32; 3] = [8192, 4096, 2048];
 
-/// How many persistent embed contexts are kept warm. Serial indexing reuses a
-/// single one batch after batch (no per-call context churn); the second exists
-/// so a concurrent interactive embed (a search query, a `memory add`) checks
-/// out a free context and runs immediately instead of queuing behind a bulk
-/// index batch. Kept deliberately small: each context carries its own KV and
-/// compute buffers, and one hot context plus headroom is all serial indexing
-/// needs. This is a pool of independent contexts, NOT one shared behind a
-/// mutex — a shared context would reintroduce the interactive-embed starvation
-/// the candle path suffers (see ADR-096 / the `EmbedAdmission` notes).
-const EMBED_POOL_SIZE: usize = 2;
+/// Default worker-pool size for direct callers (e.g. the `embed_bench`
+/// example). The server passes its own `pool_size` to `load_from_path` — its
+/// embed-admission capacity — so the two never drift and every admitted
+/// concurrent embed gets its own warm context, instead of an interactive embed
+/// (a search query, a `memory add`) queuing behind a bulk index batch. Each
+/// context carries its own KV and compute buffers, built lazily and dropped
+/// when idle, so a pool sized to admission only holds that many contexts under
+/// real concurrency. Independent contexts, NOT one shared behind a mutex — a
+/// shared context would reintroduce the interactive-embed starvation the candle
+/// path suffers (see ADR-096 / the `EmbedAdmission` notes).
+pub const DEFAULT_EMBED_POOL_SIZE: usize = 2;
 
 /// A warm context is dropped after this long with no work, so a Metal context
 /// never sits idle long enough to lose its `MTLCompilerService` connection (a
@@ -271,10 +272,10 @@ impl Drop for WorkerPool {
 }
 
 /// Pick the worker to run the next job: the first idle one (claiming it), else
-/// — every worker busy, only reachable past the pool size, which the server's
-/// embed admission bounds — the next by rotation, whose queue it joins. Pulled
-/// out of [`WorkerPool::dispatch`] so the preference is unit-testable without a
-/// model.
+/// — with the pool sized to the server's embed-admission capacity, every worker
+/// being busy means admission is saturated (or a direct caller used a smaller
+/// pool) — the next by rotation, whose queue it joins. Pulled out of
+/// [`WorkerPool::dispatch`] so the preference is unit-testable without a model.
 fn claim_worker(busy: &[Arc<AtomicBool>], round_robin: &AtomicUsize) -> usize {
     for (i, flag) in busy.iter().enumerate() {
         if flag
@@ -473,10 +474,16 @@ impl LlamaEmbedder {
     ///
     /// `threads` caps llama.cpp's per-context CPU threadpool; `None` uses all
     /// available parallelism.
+    ///
+    /// `pool_size` is how many persistent contexts (worker threads) back the
+    /// engine. The server passes its embed-admission capacity so every admitted
+    /// concurrent embed has its own context; direct callers can pass
+    /// [`DEFAULT_EMBED_POOL_SIZE`].
     pub fn load_from_path(
         gguf_path: &Path,
         device: DeviceRequest,
         threads: Option<usize>,
+        pool_size: usize,
     ) -> Result<Self> {
         anyhow::ensure!(
             gguf_path.exists(),
@@ -525,15 +532,10 @@ impl LlamaEmbedder {
 
         tracing::info!(
             "F2LLM-v2-330M ready (dim={dim}, Q8_0, engine=llama, device={device_name}); \
-             token cap {token_cap}, {EMBED_POOL_SIZE} warm context(s)"
+             token cap {token_cap}, {pool_size} warm context(s)"
         );
 
-        let pool = WorkerPool::new(
-            Arc::new(model),
-            token_cap as usize,
-            n_threads,
-            EMBED_POOL_SIZE,
-        );
+        let pool = WorkerPool::new(Arc::new(model), token_cap as usize, n_threads, pool_size);
 
         Ok(Self {
             pool,
@@ -726,6 +728,7 @@ mod tests {
             Path::new("/nonexistent/model.gguf"),
             DeviceRequest::Cpu,
             None,
+            DEFAULT_EMBED_POOL_SIZE,
         ) {
             Ok(_) => panic!("load of a nonexistent GGUF must fail"),
             Err(e) => e,

@@ -453,7 +453,16 @@ fn load_llama_from_hub(device: DeviceRequest, embed_threads: usize) -> Result<Ll
         );
     }
 
-    LlamaEmbedder::load_from_path(&gguf_path, device, Some(embed_threads))
+    // Size the context pool to the server's embed-admission capacity so every
+    // admitted concurrent embed gets its own warm context — an interactive
+    // embed never queues behind a bulk index batch. Single-sourced here rather
+    // than a separate constant in inkentry-embed that could drift.
+    LlamaEmbedder::load_from_path(
+        &gguf_path,
+        device,
+        Some(embed_threads),
+        crate::EMBED_QUEUE_CAPACITY,
+    )
 }
 
 /// Air-gapped counterpart of [`load_llama_from_hub`]: reads the canonical
@@ -485,7 +494,16 @@ fn load_llama_from_model_dir(
          (zero network access)",
         dir.display()
     );
-    LlamaEmbedder::load_from_path(&gguf_path, device, Some(embed_threads))
+    // Size the context pool to the server's embed-admission capacity so every
+    // admitted concurrent embed gets its own warm context — an interactive
+    // embed never queues behind a bulk index batch. Single-sourced here rather
+    // than a separate constant in inkentry-embed that could drift.
+    LlamaEmbedder::load_from_path(
+        &gguf_path,
+        device,
+        Some(embed_threads),
+        crate::EMBED_QUEUE_CAPACITY,
+    )
 }
 
 /// Parse [`EMBED_DEVICE_ENV`]; unset or blank means `auto`. An unparseable
