@@ -239,7 +239,7 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
         let cause = describe_rustls_error(&err);
         assert!(
             cause.contains("CA certificate") && cause.contains("leaf"),
-            "got: {cause}"
+            "unexpected rustls error description"
         );
     }
 
