@@ -470,19 +470,22 @@ contains `inkentry-server`, and receive the outbox and the team bearer.
 That path uses no test-only variable: the state directory replaces all three
 recorded facts at once, where the two overrides below weaken one check each.
 
-**It is not the cheapest environment attack, though.** Discovery requires a live
-process the pid names (`ps -p` must succeed) and a live listener on the port
-(`probe_health`), so setting the variable is not sufficient on its own. A
-shorter path skips discovery entirely: `cloud_origin()` reads
-`INKENTRY_CLOUD_URL` (`config/server_keys.rs:53`), and `bearer_for` returns the
-cloud access token whenever the requested origin equals it (`:110-117`). Point
-`INKENTRY_CLOUD_URL` and `INKENTRY_SERVER_URL` at the same host you control and
-a logged-in CLI resolves that host **as** cloud and sends the token outbound. No
-listener, no pid, no state directory.
+**This attack still needs a live process, not just the variable.** Discovery
+requires a live process the pid names (`ps -p` must succeed) and a live listener
+on the port (`probe_health`), so setting `INKENTRY_STATE_DIR` is not sufficient
+on its own.
 
-That path reaches cloud sessions only. A self-hosted key is looked up per
-origin with no global fallback, so an attacker origin resolves to no bearer.
-It predates this section and is recorded here rather than fixed here.
+There is no cheaper environment path to the cloud access token. Cloud is a
+project opt-in with a fixed URL: a project reaches the hosted cloud by setting
+`cloud = true`, not by pointing an address at it, so `INKENTRY_SERVER_URL`
+cannot be turned into cloud. And the access token is released only to the origin
+it was issued for, recorded on `AuthTokens.cloud_origin` at login and enforced
+by `bearer_for` (`config/server_keys.rs`). `INKENTRY_CLOUD_URL` still moves which
+cloud a request reaches, but not which origin a stored token is sent to, so an
+environment override redirects neither the cloud selection nor a stored token:
+point `INKENTRY_CLOUD_URL` and `INKENTRY_SERVER_URL` at a host you control and a
+logged-in CLI sends its production token only to the production origin, never to
+that host.
 
 **This is a residual, not a closed threat.** Recorded state has to live somewhere
 the process is told about, and a caller who controls the environment controls
@@ -513,14 +516,12 @@ So there are two hosts, and this residual means different things on each:
 a devcontainer's `remoteEnv`, a shared host where another account influences a
 profile. Note a devcontainer is the second host above, so an attacker who
 supplies `remoteEnv` there can set or read `INKENTRY_SERVER_KEY` directly and
-never touch discovery at all. Where the distinction between the two paths above
-still matters is the first host:
-
-- The **cloud-origin** path completes on static environment alone, with no
-  execution on the machine.
-- The **state-directory** path additionally needs a process and a listener, so
-  static environment cannot finish it. `direnv` reaches it only because
-  `.envrc` is executed shell, which is already local code execution.
+never touch discovery at all. On the first host, the state-directory path cannot
+be finished from static environment alone: it needs a process and a listener.
+`direnv` reaches it only because `.envrc` is executed shell, which is already
+local code execution. With the cloud-origin disclosure closed (above), no
+remaining path to the token completes on a static environment override by
+itself.
 
 ### Test-only overrides that relax discovery
 

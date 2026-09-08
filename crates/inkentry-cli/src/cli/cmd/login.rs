@@ -48,9 +48,13 @@ use super::org::{persist_tokens, switch_org};
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
-    /// Override the inkentry cloud API URL (default: https://api.inkentry.com).
-    /// Also selects the WorkOS environment (prod host → prod client_id; any
-    /// other host → dev client_id) unless `INKENTRY_WORKOS_CLIENT_ID` is set.
+    /// Development override: points `login` at a development cloud instead of
+    /// the fixed hosted URL (default: https://api.inkentry.com). Not a user
+    /// setting for choosing a cloud (use `cloud = true` in
+    /// `.inkentry/config.toml`), and it does not change which origin a stored
+    /// access token is released to. Also selects the WorkOS environment (prod
+    /// host → prod client_id; any other host → dev client_id) unless
+    /// `INKENTRY_WORKOS_CLIENT_ID` is set.
     #[arg(long, env = "INKENTRY_CLOUD_URL")]
     pub cloud_url: Option<String>,
 
@@ -118,7 +122,9 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
 
         match auth_api::poll_token(&client, &workos_url, &client_id, &device.device_code).await {
-            PollOutcome::Success(token) => break token.into_auth_tokens(),
+            PollOutcome::Success(token) => {
+                break token.into_auth_tokens(config::server_keys::normalize_origin(&cloud_url)?);
+            }
             PollOutcome::Pending => {
                 print!(".");
                 let _ = std::io::stdout().flush();
