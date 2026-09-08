@@ -687,7 +687,17 @@ count at startup.
 
 | Env | Default | Purpose |
 |---|---|---|
+| `INKENTRY_EMBED_DEVICE` | `auto` | Which device the embedder runs on. |
 | `INKENTRY_EMBED_THREADS` | see below | CPU threads the native embedder may use. |
+
+`INKENTRY_EMBED_DEVICE` accepts `auto`, `gpu`, or `cpu`; unset or blank means
+`auto`. `auto` and `gpu` try a GPU (Metal on macOS, Vulkan on Windows/Linux x64)
+and fall back to CPU when no usable GPU driver is present; `cpu` forces the CPU
+path. An unrecognised value — a typo such as `INKENTRY_EMBED_DEVICE=vulkan` — is
+a hard startup error rather than a silent default, reported through `/v1/health`
+as `unavailable`, so a misconfigured device fails loudly instead of quietly
+running somewhere unintended. A build without the GPU embedding engine ignores
+this variable and always runs on CPU.
 
 The default reserves a quarter of the host, capped at two, from each of two
 counts and takes the smaller result: physical cores (embed throughput plateaus

@@ -11,6 +11,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **GPU-accelerated embedding on Windows and Linux (x64).** The server now
+  bundles a second embedding engine (llama.cpp, Vulkan) that runs the same
+  model on NVIDIA, AMD, and Intel GPUs; machines without a usable GPU driver
+  fall back to CPU automatically, and macOS stays on Metal. Same vectors,
+  same indexes — nothing re-embeds. Set `INKENTRY_EMBED_DEVICE=cpu` to opt
+  out. The Windows/Linux-x64 archives now contain engine library files next
+  to the binaries; keep the extracted files together when installing manually.
+- **Faster CPU embedding on Linux arm64.** Where Vulkan can't go, the same
+  new engine also runs on CPU, typically faster than the previous engine, with
+  the previous engine still in the binary as a fallback.
 - **`inkentry search --quiet`** suppresses the informational notices on stderr
   (stale index, server discovery, ranking availability, embedding coverage).
   Results and exit codes are unchanged, and it never hides an error or the
@@ -20,6 +30,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The supported Linux floor is now Ubuntu 22.04 / Debian 12 (glibc 2.35).**
+  Debian 11 reached end of life on 2026-08-31 and release binaries no longer
+  target it; users on Debian 11 or Ubuntu 20.04 should upgrade the OS or
+  build from source.
 - **BREAKING: a pushed memory vector must be near unit length.** Both memory
   write routes refuse a `vector` whose L2 norm is outside `[0.5, 1.5]` with
   `400`, matching the hosted API. Clients that compute their own vectors must

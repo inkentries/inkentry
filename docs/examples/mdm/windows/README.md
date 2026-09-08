@@ -35,8 +35,10 @@ identical on Windows.
 Each laptop autostarts a local, loopback-bound `inkentry-server` on demand.
 There is nothing to provision. Two Windows-specific MDM tasks:
 
-1. **Install the binaries.** Deploy `inkentry.exe` and `inkentry-server.exe` to
-   a machine-wide directory on `PATH` (e.g. `%ProgramData%\inkentry\`), or run
+1. **Install the binaries.** Deploy `inkentry.exe`, `inkentry-server.exe`, and
+   the `ggml*.dll`/`llama*.dll` engine files from the release `.zip` to
+   a machine-wide directory on `PATH` (e.g. `%ProgramData%\inkentry\`), keeping
+   them together — the server will not start without the DLLs. Or run
    the PowerShell install script (see
    [`../../../docs/getting-started.md`](../../../docs/getting-started.md)) as a
    managed script. A winget package is planned as the primary managed path;
@@ -67,8 +69,9 @@ machines) via the environment mechanism below.
 Run one long-lived `inkentry-server` and point every laptop at it.
 
 1. **Install the binaries** on the laptops (Shape A) and on the server host.
-   Copy `inkentry-server.exe` to a machine-wide location such as
-   `%ProgramData%\inkentry\`.
+   Copy `inkentry-server.exe` together with its `ggml*.dll`/`llama*.dll` engine
+   files to a machine-wide location such as `%ProgramData%\inkentry\`; the
+   server will not start without the DLLs.
 2. **Run the server as a Windows Service.** Use
    [`Install-InkentryServerService.ps1`](Install-InkentryServerService.ps1). It
    registers `inkentry-server.exe` under NSSM (a service wrapper), stores the DB
