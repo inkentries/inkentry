@@ -361,6 +361,12 @@ pub struct LoadedEmbedder {
     /// `"cpu"`, `"metal"`, `"vulkan"`, or `"gpu"` — the device the engine
     /// resolved at load.
     pub device: &'static str,
+    /// A non-fatal, actionable note about how the device resolved, surfaced in
+    /// the health body and `inkentry server status`. Set when a GPU was wanted
+    /// but embedding fell back to CPU for a fixable reason (currently: a Linux
+    /// DRM render node present but unopenable for lack of `render`-group
+    /// membership). `None` when the device resolved as expected.
+    pub note: Option<String>,
 }
 
 /// Load the embedding backend, choosing the engine at runtime.
@@ -385,10 +391,22 @@ pub fn load_backend(model_dir: Option<&Path>, embed_threads: usize) -> Result<Lo
             };
             match llama {
                 Ok(embedder) => {
+                    let device = embedder.device();
+                    // A GPU was requested (this branch only runs for non-`cpu`
+                    // DeviceRequest) yet the engine resolved to CPU: no usable
+                    // GPU backend was selected. On Linux this is often a fixable
+                    // permission problem (missing `render`-group membership),
+                    // worth an actionable log and a health/status note.
+                    let note = if device == "cpu" {
+                        gpu_fallback_note()
+                    } else {
+                        None
+                    };
                     return Ok(LoadedEmbedder {
-                        device: embedder.device(),
+                        device,
                         backend: Arc::new(embedder),
                         engine: "llama",
+                        note,
                     });
                 }
                 Err(e) => tracing::warn!(
@@ -414,7 +432,110 @@ pub fn load_backend(model_dir: Option<&Path>, embed_threads: usize) -> Result<Lo
         } else {
             "cpu"
         },
+        note: None,
     })
+}
+
+/// A DRM render node's openability, as it bears on a GPU-to-CPU embed fallback.
+///
+/// The distinction the caller acts on is permission (fixable by joining the
+/// `render` group) versus everything else (a genuinely GPU-less host, or a GPU
+/// the driver rejects for missing features — neither of which the render-group
+/// advice would help).
+#[cfg(feature = "embed-llama")]
+#[derive(Debug, PartialEq, Eq)]
+enum RenderNodeAccess {
+    /// No `renderD*` node in the directory: no GPU render device present.
+    NoNode,
+    /// A render node exists but this process cannot open it (`EACCES`) — the
+    /// `render`-group case. Carries the node path.
+    PermissionDenied(String),
+    /// A render node exists and opens: the GPU is present and reachable, so a
+    /// CPU fallback is not a permission problem (the driver rejected it, or no
+    /// Vulkan module/loader is present). Carries the node path.
+    Reachable(String),
+    /// A render node exists but the open failed for some non-permission reason
+    /// (e.g. the device is busy or vanished mid-probe): nothing actionable.
+    Unknown,
+}
+
+/// Classify the first `renderD*` node under `dri_dir` by whether this process
+/// can open it read+write — what a Vulkan driver needs to use the GPU.
+///
+/// Directory-injected rather than hard-wired to `/dev/dri` so the classification
+/// is unit-testable without a real GPU. The probe is one `open(O_RDWR)` and the
+/// fd is dropped immediately; opening a render node is exactly what a GPU client
+/// does and has no side effect on the device.
+#[cfg(feature = "embed-llama")]
+fn classify_render_nodes(dri_dir: &Path) -> RenderNodeAccess {
+    let node = std::fs::read_dir(dri_dir).ok().and_then(|entries| {
+        entries.flatten().map(|e| e.path()).find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("renderD"))
+        })
+    });
+    let Some(node) = node else {
+        return RenderNodeAccess::NoNode;
+    };
+    let path = node.display().to_string();
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+    {
+        Ok(_) => RenderNodeAccess::Reachable(path),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            RenderNodeAccess::PermissionDenied(path)
+        }
+        Err(_) => RenderNodeAccess::Unknown,
+    }
+}
+
+/// A GPU was requested but the llama engine resolved to CPU. Diagnose why on
+/// Linux and, when it is actionable, log it and return a note for the health
+/// body / `inkentry server status`. Returns `None` (and logs nothing) on a
+/// genuinely GPU-less host, so it never nags a machine that simply has no GPU.
+///
+/// Cheap by construction: one directory read plus a single `open()` probe, no
+/// subprocess and no Vulkan enumeration (the engine already computed the
+/// device; this only explains a CPU outcome).
+#[cfg(feature = "embed-llama")]
+fn gpu_fallback_note() -> Option<String> {
+    // DRM render nodes and the `render` group are a Linux concept; there is
+    // nothing to advise on macOS/Windows. `/dev/dri` is absent there anyway,
+    // but guard explicitly so the intent is clear.
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    match classify_render_nodes(Path::new("/dev/dri")) {
+        RenderNodeAccess::PermissionDenied(node) => {
+            tracing::warn!(
+                "A Vulkan-capable GPU appears present but could not be opened \
+                 (permission denied on {node}). Add your user to the 'render' group — \
+                 `sudo usermod -aG render $USER` — and re-login to enable GPU \
+                 acceleration; embeddings are running on CPU until then."
+            );
+            Some(format!(
+                "GPU blocked: no access to {node}. Add your user to the 'render' group \
+                 (sudo usermod -aG render $USER) and re-login to enable GPU acceleration; \
+                 running on CPU."
+            ))
+        }
+        RenderNodeAccess::Reachable(node) => {
+            // The GPU is reachable but was not selected: a hardware/driver
+            // limit (e.g. ggml rejecting a device that lacks 16-bit storage),
+            // or no Vulkan module/loader. Not fixable by the render group, so
+            // it earns an explanatory log but no actionable status note.
+            tracing::info!(
+                "A GPU render node ({node}) is accessible but no usable Vulkan GPU backend \
+                 was selected — the device likely lacks a required Vulkan feature (e.g. \
+                 16-bit storage) or has no Vulkan driver. Embeddings are running on CPU."
+            );
+            None
+        }
+        RenderNodeAccess::NoNode | RenderNodeAccess::Unknown => None,
+    }
 }
 
 /// Load the llama.cpp engine's canonical GGUF via the Hugging Face Hub —
@@ -547,6 +668,69 @@ fn prequantized_gguf_repo() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── GPU-fallback render-node diagnostic ────────────────────────────────────
+
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    fn classify_render_nodes_no_node_for_empty_or_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(classify_render_nodes(dir.path()), RenderNodeAccess::NoNode);
+        assert_eq!(
+            classify_render_nodes(&dir.path().join("does-not-exist")),
+            RenderNodeAccess::NoNode,
+            "a missing /dev/dri (no DRM at all) is NoNode, not an error"
+        );
+    }
+
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    fn classify_render_nodes_ignores_non_render_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        // A GPU-less host can still have a `card0`/`by-path` under /dev/dri;
+        // only `renderD*` is the compute render node this check is about.
+        std::fs::write(dir.path().join("card0"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("by-path")).unwrap();
+        assert_eq!(classify_render_nodes(dir.path()), RenderNodeAccess::NoNode);
+    }
+
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    fn classify_render_nodes_reachable_for_openable_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("renderD128");
+        std::fs::write(&node, b"").unwrap();
+        assert_eq!(
+            classify_render_nodes(dir.path()),
+            RenderNodeAccess::Reachable(node.display().to_string()),
+            "a render node this process can open read+write is reachable, not a permission case"
+        );
+    }
+
+    #[cfg(all(feature = "embed-llama", unix))]
+    #[test]
+    fn classify_render_nodes_permission_denied_for_inaccessible_node() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("renderD128");
+        std::fs::write(&node, b"").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root bypasses DAC permission bits (CI containers often run as root),
+        // so the open would succeed and there is nothing to assert.
+        if std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&node)
+            .is_ok()
+        {
+            return;
+        }
+        assert_eq!(
+            classify_render_nodes(dir.path()),
+            RenderNodeAccess::PermissionDenied(node.display().to_string())
+        );
+    }
 
     /// `prequantized_gguf_repo()` resolves the GGUF source from
     /// `INKENTRY_EMBEDDER_GGUF_REPO`: unset/blank → the bundled default repo;

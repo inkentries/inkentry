@@ -730,6 +730,35 @@ and a `Retry-After` header, rather than letting a batch queue behind a running
 index until the caller's own timeout fires (see
 `POST /index/embed` in `architecture/server-api.md`).
 
+### Linux GPU acceleration and the `render` group
+
+A `llama-vulkan` build embeds on the GPU across NVIDIA/AMD/Intel. On Linux the
+Vulkan driver reaches the GPU through a DRM render node — `/dev/dri/renderD128`,
+owned `root:render`, mode `crw-rw----`. A process that is **not** in the
+`render` group cannot open it, so Mesa's Vulkan driver fails, only the software
+rasterizer (`llvmpipe`) enumerates, no usable GPU is found, and the server falls
+back to CPU. This bites any Linux host, not just old hardware: a freshly-created
+account is often not in `render`.
+
+Add the user the server runs as to the group, then re-login (or restart the
+service) so the new membership takes effect:
+
+```bash
+sudo usermod -aG render "$USER"
+```
+
+The server does not fail when the GPU is blocked — it embeds on CPU and keeps
+serving. It does tell you: startup logs carry a `WARN` naming the render node
+and this fix, `/v1/health` reports `embedder.device: "cpu"` with the hint in
+`embedder.detail`, and `inkentry server status` shows `Device: cpu` and a
+`Note:` line. If instead the device is reachable but the GPU genuinely lacks a
+required Vulkan feature (e.g. 16-bit storage on some older iGPUs), the log says
+so and there is nothing to fix — CPU is the correct outcome there.
+
+Under `systemd` `DynamicUser=`, add `SupplementaryGroups=render` to the unit so
+the synthetic user is placed in the group. In Docker, pass the render device
+(`--device /dev/dri`) and match the group id with `--group-add`.
+
 ### Non-loopback plaintext binds are refused, no override
 
 `inkentry-server` refuses to bind a non-loopback address over plaintext HTTP,

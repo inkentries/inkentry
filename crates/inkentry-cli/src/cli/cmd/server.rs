@@ -1171,6 +1171,19 @@ async fn cmd_status() -> Result<()> {
                     if let Some(ver) = info.version {
                         println!("  Ver:   {ver}");
                     }
+                    if let Some(engine) = info.engine {
+                        println!("  Engine:{engine}");
+                    }
+                    if let Some(device) = info.device {
+                        println!("  Device:{device}");
+                    }
+                    // A non-fatal readiness note (e.g. a GPU blocked by a
+                    // missing `render`-group membership, so embedding fell back
+                    // to CPU) — highlighted, since it is why the device reads
+                    // `cpu` and it is user-fixable.
+                    if let Some(note) = info.note {
+                        cprintln!("  \x1b[33mNote:  {note}\x1b[0m");
+                    }
                 }
                 None => {
                     cprintln!("  URL:   http://127.0.0.1:{port}  \x1b[31m(unreachable)\x1b[0m");
@@ -1196,6 +1209,12 @@ async fn cmd_status() -> Result<()> {
 struct HealthInfo {
     instance_id: Option<String>,
     version: Option<String>,
+    engine: Option<String>,
+    device: Option<String>,
+    /// A non-fatal readiness note from `embedder.detail` — surfaced only while
+    /// `ready`, where `detail` is a hint (e.g. a GPU blocked by group perms),
+    /// never the load-failure error an `unavailable` embedder reports there.
+    note: Option<String>,
 }
 
 async fn probe_health_verbose(port: u16) -> Option<HealthInfo> {
@@ -1209,14 +1228,30 @@ async fn probe_health_verbose(port: u16) -> Option<HealthInfo> {
         return None;
     }
     #[derive(serde::Deserialize)]
+    struct Embedder {
+        state: Option<String>,
+        detail: Option<String>,
+        engine: Option<String>,
+        device: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
     struct H {
         instance_id: Option<String>,
         version: Option<String>,
+        embedder: Option<Embedder>,
     }
     let body: H = resp.json().await.ok()?;
+    let embedder = body.embedder;
+    let ready = embedder
+        .as_ref()
+        .and_then(|e| e.state.as_deref())
+        .is_some_and(|s| s == "ready");
     Some(HealthInfo {
         instance_id: body.instance_id,
         version: body.version,
+        engine: embedder.as_ref().and_then(|e| e.engine.clone()),
+        device: embedder.as_ref().and_then(|e| e.device.clone()),
+        note: ready.then(|| embedder.and_then(|e| e.detail)).flatten(),
     })
 }
 

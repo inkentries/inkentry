@@ -195,7 +195,7 @@ async fn health_reflects_loading_to_ready_transition() {
 #[tokio::test]
 async fn health_reports_engine_and_device_when_readied_with_identity() {
     let slot = crate::EmbedderSlot::loading();
-    slot.set_ready_with_engine(Arc::new(MockEmbedder { dim: 4 }), "candle", "cpu");
+    slot.set_ready_with_engine(Arc::new(MockEmbedder { dim: 4 }), "candle", "cpu", None);
 
     let app = make_app_with_slot(4, slot);
     let json = get_health_json(app).await;

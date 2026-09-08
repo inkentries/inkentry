@@ -466,7 +466,12 @@ async fn run(budget: ThreadBudget) -> Result<()> {
                         loaded.device,
                         loaded.backend.dimension()
                     );
-                    slot.set_ready_with_engine(loaded.backend, loaded.engine, loaded.device);
+                    slot.set_ready_with_engine(
+                        loaded.backend,
+                        loaded.engine,
+                        loaded.device,
+                        loaded.note,
+                    );
                     // Anything stored while the model was warming up went in
                     // without a vector. This is also the restart recovery
                     // floor: a process that comes up with a working model

@@ -39,7 +39,10 @@ is enough — `spirv-headers` supplies the `SPIRV-Headers` CMake package ggml's
 `vulkan-shaders-gen` looks for, and the build fails at `find_package` without it.
 Nothing Vulkan is required at *runtime*: the Vulkan backend is a runtime-loaded
 module that fails to load, and degrades to CPU, on machines without a driver.
-A default build never touches any of this.
+A default build never touches any of this. One runtime gotcha on Linux: the
+process must be in the `render` group to open the DRM render node, or it
+silently degrades to CPU even with a working driver — see "Linux GPU
+acceleration and the `render` group" in [server-setup.md](server-setup.md).
 
 ## Build
 

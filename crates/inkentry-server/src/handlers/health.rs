@@ -17,8 +17,10 @@ use super::MAX_EMBED_BATCH;
 pub struct EmbedderStatus {
     /// Readiness of the server-side embedder.
     pub state: EmbedderState,
-    /// Optional human-readable detail (e.g. the load-failure summary while
-    /// `unavailable`). `null` when not useful.
+    /// Optional human-readable detail: the load-failure summary while
+    /// `unavailable`, or a non-fatal readiness note while `ready` (e.g. a GPU
+    /// present but blocked, so embedding fell back to CPU). `null` when not
+    /// useful.
     pub detail: Option<String>,
     /// Inference engine serving embeddings: `"candle"` or `"llama"`. `null`
     /// until the embedder is `ready` (and on older servers pre-dating the
