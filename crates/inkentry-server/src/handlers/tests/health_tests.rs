@@ -182,8 +182,34 @@ async fn health_reflects_loading_to_ready_transition() {
     let json = get_health_json(app).await;
     assert_eq!(json["embedder"]["state"], json!("ready"));
     assert_eq!(json["embedding_dim"], json!(4));
+    // Readied through `set_ready` (no identity), so engine/device stay `null`.
+    assert_eq!(json["embedder"]["engine"], json!(null));
+    assert_eq!(json["embedder"]["device"], json!(null));
     let caps = json["capabilities"].as_array().unwrap();
     assert!(caps.iter().any(|c| c == "index.embed"));
+}
+
+// The production load path readies the slot through `set_ready_with_engine`,
+// which fills the engine/device identity `/v1/health` reports (the deliverable
+// that lets a field report name the engine and device without server logs).
+#[tokio::test]
+async fn health_reports_engine_and_device_when_readied_with_identity() {
+    let slot = crate::EmbedderSlot::loading();
+    slot.set_ready_with_engine(Arc::new(MockEmbedder { dim: 4 }), "candle", "cpu");
+
+    let app = make_app_with_slot(4, slot);
+    let json = get_health_json(app).await;
+    assert_eq!(json["embedder"]["state"], json!("ready"));
+    assert_eq!(
+        json["embedder"]["engine"],
+        json!("candle"),
+        "engine identity must reach the health body"
+    );
+    assert_eq!(
+        json["embedder"]["device"],
+        json!("cpu"),
+        "device identity must reach the health body"
+    );
 }
 
 // A failed load flips `loading → unavailable`, carrying the error detail.
