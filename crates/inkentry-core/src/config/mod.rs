@@ -546,7 +546,7 @@ impl Config {
         }
         // `INKENTRY_ORG` outranks the project `org` pin (ADR-074 D2); an explicit
         // `--org` flag outranks even this, but that is a per-command argument, not
-        // a config field, so it is applied at the call site via [`Config::org_pin`].
+        // a config field, so it is applied at the call site via [`org_tokens::resolve_session`].
         if let Ok(v) = std::env::var(org_tokens::ENV_ORG) {
             cfg.org = Some(v);
         }
