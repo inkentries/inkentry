@@ -7,7 +7,7 @@ unset). The flags and defaults below match the installed binary; run
 `inkentry <command> --help` to confirm against your version.
 
 A local `inkentry-server` is autostarted on demand and provides embeddings
-(native, via the candle-served F2LLM-v2-330M model) and, when a chat model is
+(via the llama.cpp-served F2LLM-v2-330M model) and, when a chat model is
 configured, LLM inference. Commands that need semantic search or an LLM (`search`,
 `harvest`) use that server; the
 always-available commands (`search --only-text`, `plumbing graph-edges`,

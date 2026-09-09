@@ -117,14 +117,14 @@ async fn embed_while_ready_returns_200() {
 }
 
 // A ready embedder that fails every request with a Metal device-loss error,
-// standing in for the native embedder after its one in-place device rebuild has
+// standing in for the embedder after its one in-place device rebuild has
 // already failed.
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 struct DeviceLostEmbedder {
     dim: usize,
 }
 
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 #[async_trait::async_trait]
 impl inkentry_core::embeddings::EmbeddingBackend for DeviceLostEmbedder {
     async fn embed(&self, _texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -143,7 +143,7 @@ impl inkentry_core::embeddings::EmbeddingBackend for DeviceLostEmbedder {
 // stable `embedder_device_lost` code, not a generic 500 — so the CLI can point
 // the user at a server restart instead of at batch-size tuning. The raw Metal
 // error text must not leak into the client body.
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 #[tokio::test]
 async fn embed_device_lost_returns_503_with_actionable_code() {
     let slot = crate::EmbedderSlot::ready(std::sync::Arc::new(DeviceLostEmbedder { dim: 4 }));

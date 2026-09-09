@@ -108,8 +108,8 @@ Each file is hashed with blake3. On re-index, unchanged files are skipped entire
 ### Embedding format
 
 Chunks are embedded with **codefuse-ai/F2LLM-v2-330M** (Qwen3 decoder, 896-dim),
-served by `inkentry-server` via the candle runtime (Metal/GPU on macOS, CPU on
-Linux). Documents use the format:
+served by `inkentry-server` via the llama.cpp engine (Metal GPU on macOS, Vulkan
+GPU on Windows/Linux, CPU elsewhere). Documents use the format:
 ```
 title: {name | "none"} | text: {content}
 ```
@@ -158,7 +158,7 @@ not upgraded, it is gone with the file that held it.
 
 ### Backend abstraction
 
-The `EmbeddingBackend` and `LlmBackend` traits (in inkentry-core's `embeddings/` and `llm/`) are the only interface between inkentry and inference. inkentry-core ships **no** concrete implementations. The native F2LLM embedder engine lives in its own `inkentry-embed` library crate (`crates/inkentry-embed/src/embedder_native.rs`, `NativeEmbedder`), which only loads the model from local files already on disk (`load_from_path`) and carries no download dependency. `inkentry-server` depends on that crate, owns the Hugging Face Hub download path that resolves those local files (`crates/inkentry-server/src/embed_hub.rs`), and additionally provides the OpenAI-compatible HTTP clients. The CLI reaches inference only through `ServerInferenceClient` in `crates/inkentry-cli/src/server_client.rs`, with `ServerEmbedAdapter` and `ServerLlmAdapter` as thin trait adapters over it. Embedding and LLM inference are routed by separate rules and can resolve to different servers in a single command, so a caller needing both builds two clients; the LLM rule lives in `crates/inkentry-cli/src/capability/llm_route.rs`.
+The `EmbeddingBackend` and `LlmBackend` traits (in inkentry-core's `embeddings/` and `llm/`) are the only interface between inkentry and inference. inkentry-core ships **no** concrete implementations. The F2LLM embedder engine lives in its own `inkentry-embed` library crate (`crates/inkentry-embed/src/embedder_llama.rs`, `LlamaEmbedder`), which only loads the model from local files already on disk (`LlamaEmbedder::load_from_path`) and carries no download dependency. `inkentry-server` depends on that crate, owns the Hugging Face Hub download path that resolves those local files (`crates/inkentry-server/src/embed_hub.rs`), and additionally provides the OpenAI-compatible HTTP clients. The CLI reaches inference only through `ServerInferenceClient` in `crates/inkentry-cli/src/server_client.rs`, with `ServerEmbedAdapter` and `ServerLlmAdapter` as thin trait adapters over it. Embedding and LLM inference are routed by separate rules and can resolve to different servers in a single command, so a caller needing both builds two clients; the LLM rule lives in `crates/inkentry-cli/src/capability/llm_route.rs`.
 
 To add a new backend: implement the trait (in `inkentry-embed` for an embedder, or in inkentry-server for an LLM/HTTP backend) and wire it into the server's endpoint handlers. Nothing in inkentry-core imports a concrete backend.
 

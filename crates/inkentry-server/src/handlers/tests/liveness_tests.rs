@@ -1,33 +1,25 @@
 // ── Liveness while an embed is in flight ─────────────────────────────────
 //
-// A liveness probe must never be able to wait on the embedder's
-// forward-pass mutex. That mutex is held for a whole batch and is taken
-// synchronously from inside an `async fn`, so a probe that waits on it
-// blocks a tokio worker instead of yielding it: enough concurrent probes
-// park enough workers that unrelated endpoints stop being polled and the
-// server reads as unreachable.
+// A liveness probe must never be able to wait on a backend's embed lock. If a
+// backend takes a forward-pass mutex synchronously from inside an `async fn`,
+// a probe that waits on it blocks a tokio worker instead of yielding it:
+// enough concurrent probes park enough workers that unrelated endpoints stop
+// being polled and the server reads as unreachable.
 //
-// `ParkingEmbedder` reproduces the backend's structure rather than its
-// timing: `embed()` takes a forward-pass mutex inside `spawn_blocking` and
-// parks there on a test-controlled gate, so "an embed is in flight" is a
-// state these tests can assert against, with no sleeps and no wall-clock
-// race. `cap_location` is the mock's one degree of freedom, and
-// `harness_detects_a_cap_read_behind_the_forward_pass_mutex` uses it to
-// prove these bounds actually catch the coupling they guard against.
+// `ParkingEmbedder` reproduces that structure rather than its timing:
+// `embed()` takes a forward-pass mutex inside `spawn_blocking` and parks there
+// on a test-controlled gate, so "an embed is in flight" is a state these tests
+// can assert against, with no sleeps and no wall-clock race. `cap_location` is
+// the mock's one degree of freedom, and
+// `harness_detects_a_cap_read_behind_the_forward_pass_mutex` uses it to prove
+// these bounds actually catch the coupling they guard against.
 //
-// Know what this module does NOT do before you rely on it. Every test here
-// runs against `ParkingEmbedder`, so re-coupling the real
-// `NativeEmbedder::token_cap()` to its forward-pass mutex leaves all of
-// them green: verified by mutation, all pass with the accessor put back
-// behind the lock. That is structural and not fixable here, because these
-// tests cannot construct a `NativeEmbedder` without a model on disk. What
-// this module gates is the server-side property (health, and endpoints
+// What this module gates is the server-side property: health, and endpoints
 // that need no embedder, stay prompt given a backend whose cap read is
-// lock-free) plus the sensitivity of the bound itself. The regression
-// guard for the accessor is `inkentry_embed::embedder_native`'s
-// `token_cap_returns_while_the_forward_pass_lock_is_held` and
-// `token_cap_is_independent_of_embedder_busyness`. If you change the cap's
-// storage, those are the tests that must fail.
+// lock-free. The shipped `LlamaEmbedder` reads its cap from a field (no lock)
+// and dispatches embeds to worker threads over a channel, so it never holds
+// such a lock on an async task; these tests keep that server-side guarantee
+// honest against any backend.
 mod liveness_under_embed {
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};

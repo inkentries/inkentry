@@ -20,7 +20,7 @@ pub enum EmbedderState {
     Ready,
     /// Background load failed (download error, OOM, …). Terminal for that process.
     Unavailable,
-    /// Server built without the native embedder (`embed-native` feature): no
+    /// Server built without the bundled embedder (`embed-llama` feature): no
     /// in-process model to load, ever. Embed endpoints return a permanent 400.
     Disabled,
     /// Field absent from the health body (server pre-dates it), or set to a

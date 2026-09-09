@@ -1,4 +1,4 @@
-//! Vector helpers shared by the candle and llama.cpp embedders.
+//! Vector helpers for the llama.cpp embedder.
 
 pub(crate) fn l2_normalise(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();

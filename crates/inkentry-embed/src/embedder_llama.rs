@@ -1,18 +1,13 @@
-//! llama.cpp-backed embedder for the same F2LLM-v2-330M model the candle
-//! engine runs.
+//! llama.cpp-backed embedder for the F2LLM-v2-330M model — inkentry's sole
+//! embedding engine.
 //!
-//! Why a second engine: candle has no cross-vendor GPU path on Windows or
-//! Linux, so every non-Mac user runs CPU-only. llama.cpp's Vulkan backend
-//! covers NVIDIA/AMD/Intel there with a single binary (`llama-vulkan`
-//! feature); its Metal build doubles as the parity/bench reference on macOS.
-//! Cross-engine vector drift was measured equal to the already-shipped candle
-//! CPU↔Metal drift, which is what lets both engines serve one `MODEL_ID`
-//! without a re-index.
+//! llama.cpp's Vulkan backend gives NVIDIA/AMD/Intel GPUs a single cross-vendor
+//! binary on Windows/Linux (`llama-vulkan` feature); its Metal build serves
+//! macOS (`llama-metal`); the bare feature runs on CPU everywhere else.
 //!
-//! Loads the *canonical* llama.cpp GGUF (`blk.N.*` tensor names, tokenizer
-//! and last-token pooling baked into metadata) — NOT the HF-named GGUF the
-//! candle loader reads. The two artifacts coexist in the same model repo and
-//! cache; `inkentry-server`'s `embed_hub` resolves the right file per engine.
+//! Loads the canonical llama.cpp GGUF (`blk.N.*` tensor names, tokenizer and
+//! last-token pooling baked into metadata), 896-dim, Q8_0-quantized, under a
+//! fixed `MODEL_ID`. `inkentry-server`'s `embed_hub` resolves the file.
 
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -36,7 +31,7 @@ use crate::vector::l2_normalise;
 
 /// Context sizes tried at load, largest first. A sequence is truncated to the
 /// resolved rung and must fit one micro-batch, so the rung IS the token cap.
-/// 8192 matches the candle engine's large-RAM cap; the lower rungs keep
+/// 8192 is the large-RAM cap; the lower rungs keep
 /// small-VRAM GPUs loadable at reduced chunk length.
 const UBATCH_LADDER: [u32; 3] = [8192, 4096, 2048];
 
@@ -48,8 +43,9 @@ const UBATCH_LADDER: [u32; 3] = [8192, 4096, 2048];
 /// context carries its own KV and compute buffers, built lazily and dropped
 /// when idle, so a pool sized to admission only holds that many contexts under
 /// real concurrency. Independent contexts, NOT one shared behind a mutex — a
-/// shared context would reintroduce the interactive-embed starvation the candle
-/// path suffers (see ADR-096 / the `EmbedAdmission` notes).
+/// shared context would serialize every embed and reintroduce the
+/// interactive-embed starvation ADR-096's admission control addresses (see the
+/// `EmbedAdmission` notes).
 pub const DEFAULT_EMBED_POOL_SIZE: usize = 2;
 
 /// A warm context is dropped after this long with no work, so a Metal context
@@ -143,15 +139,24 @@ fn load_backend_modules() {
 /// Module filenames are `libggml-<backend>.so` on unix (macOS included) and
 /// `ggml-<backend>.dll` on Windows, with `<backend>` varying by build
 /// (vulkan, cpu-haswell, cpu-apple_m1, …) — so probe by prefix, not name.
+/// `libggml-base` is the core library, not a runtime-loaded backend module, and
+/// shares the `libggml-` prefix, so it is excluded: a directory holding only
+/// core libs has no backend to load and must not be selected.
 #[cfg(feature = "llama-vulkan")]
 fn dir_has_ggml_modules(dir: &Path) -> bool {
     std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.flatten().any(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| n.starts_with("libggml-") || n.starts_with("ggml-"))
-        })
+        entries
+            .flatten()
+            .any(|e| e.file_name().to_str().is_some_and(is_ggml_backend_module))
     })
+}
+
+/// A ggml backend-module filename (not a core lib). See [`dir_has_ggml_modules`].
+#[cfg(feature = "llama-vulkan")]
+fn is_ggml_backend_module(name: &str) -> bool {
+    (name.starts_with("libggml-") || name.starts_with("ggml-"))
+        && !name.starts_with("libggml-base")
+        && !name.starts_with("ggml-base")
 }
 
 /// Name of the first registered GPU-class backend, if any. Resolved from the
@@ -407,9 +412,8 @@ fn run_job(
     let mut token_lists: Vec<Vec<LlamaToken>> = Vec::with_capacity(total);
     for text in texts {
         // llama.cpp tokenizes through a C string, which cannot carry interior
-        // NUL bytes (the HF tokenizer on the candle path can); such input
-        // surfaces as a Tokenization error rather than silently embedding
-        // different text.
+        // NUL bytes; such input surfaces as a Tokenization error rather than
+        // silently embedding different text.
         let mut toks = model
             .str_to_token(text, AddBos::Never)
             .map_err(|e| EmbedError::Tokenization(e.to_string()))?;
@@ -470,7 +474,7 @@ pub struct LlamaEmbedder {
 impl LlamaEmbedder {
     /// Load the F2LLM embedder from a canonical llama.cpp GGUF already on
     /// disk, with zero network access — the tokenizer and model config travel
-    /// inside the GGUF, so unlike the candle loader this takes one file.
+    /// inside the GGUF, so this takes just the one file.
     ///
     /// `threads` caps llama.cpp's per-context CPU threadpool; `None` uses all
     /// available parallelism.
@@ -522,6 +526,17 @@ impl LlamaEmbedder {
             .with_context(|| format!("loading llama.cpp GGUF {}", gguf_path.display()))?;
 
         let dim = usize::try_from(model.n_embd()).context("model reports negative n_embd")?;
+        // The no-re-index guarantee rests on every shipped GGUF producing
+        // 896-dim vectors in one vector space under a fixed MODEL_ID. A GGUF with
+        // a different hidden size would otherwise load `ready` and emit
+        // wrong-width vectors; refuse it up front rather than serve them.
+        anyhow::ensure!(
+            dim == crate::DIM,
+            "GGUF reports embedding dim {dim}, but this build ships {} ({}); refusing to \
+             load a different-width model under an unchanged MODEL_ID",
+            crate::DIM,
+            crate::MODEL_ID,
+        );
 
         let n_threads = i32::try_from(threads.unwrap_or_else(|| {
             std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
@@ -734,5 +749,22 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.to_string().contains("GGUF file not found"));
+    }
+
+    #[cfg(feature = "llama-vulkan")]
+    #[test]
+    fn ggml_backend_module_detection_excludes_the_core_base_lib() {
+        // Real runtime-loaded backend modules qualify.
+        assert!(is_ggml_backend_module("libggml-vulkan.so"));
+        assert!(is_ggml_backend_module("libggml-cpu-haswell.so.0"));
+        assert!(is_ggml_backend_module("ggml-vulkan.dll"));
+        // The core base library shares the `libggml-` prefix but is not a
+        // backend module, so a directory holding only it must not be selected.
+        assert!(!is_ggml_backend_module("libggml-base.so.0"));
+        assert!(!is_ggml_backend_module("ggml-base.dll"));
+        // Other core libs and unrelated files don't match the prefix at all.
+        assert!(!is_ggml_backend_module("libggml.so"));
+        assert!(!is_ggml_backend_module("libllama.so"));
+        assert!(!is_ggml_backend_module("tokenizer.json"));
     }
 }

@@ -232,7 +232,7 @@ legitimate batch can genuinely take minutes on slow or CPU-only hardware. See
 If the server has no embedder, it returns 400:
 
 ```json
-{ "error": { "code": "bad_request", "message": "index.embed requires an embedder, but this server was built without the native embedder (embed-native feature)." } }
+{ "error": { "code": "bad_request", "message": "index.embed requires an embedder, but this server was built without the embedder (embed-llama feature)." } }
 ```
 
 **Response `429`:** the embedder is serialized behind a single mutex (GPU

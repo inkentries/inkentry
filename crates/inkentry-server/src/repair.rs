@@ -183,9 +183,8 @@ pub async fn repair_missing_embeddings(
         }
         drop(db);
 
-        // The native embedder is serialized behind one mutex, so a large
-        // backlog must give interactive search traffic a turn between pages
-        // rather than queuing every page back to back.
+        // Repair is bulk backlog work; yield between pages so interactive
+        // search traffic gets a turn rather than queuing behind every page.
         tokio::task::yield_now().await;
     }
 }

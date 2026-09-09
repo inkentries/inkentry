@@ -103,8 +103,8 @@ async fn health_embedding_dim_with_embedder() {
         "embedder.state must be 'ready' when the embedder is loaded"
     );
     // `MockEmbedder` doesn't override `token_cap()`, so it gets the
-    // trait's default `None`: same as any non-native backend. Only
-    // `NativeEmbedder` has a real, host-derived cap to report.
+    // trait's default `None`: same as any backend with no known cap. Only
+    // the real `LlamaEmbedder` has a host-derived cap to report.
     assert!(
         json["limits"]["embedder_token_cap"].is_null(),
         "embedder_token_cap must be null for a backend with no known cap"
@@ -195,14 +195,14 @@ async fn health_reflects_loading_to_ready_transition() {
 #[tokio::test]
 async fn health_reports_engine_and_device_when_readied_with_identity() {
     let slot = crate::EmbedderSlot::loading();
-    slot.set_ready_with_engine(Arc::new(MockEmbedder { dim: 4 }), "candle", "cpu", None);
+    slot.set_ready_with_engine(Arc::new(MockEmbedder { dim: 4 }), "llama", "cpu", None);
 
     let app = make_app_with_slot(4, slot);
     let json = get_health_json(app).await;
     assert_eq!(json["embedder"]["state"], json!("ready"));
     assert_eq!(
         json["embedder"]["engine"],
-        json!("candle"),
+        json!("llama"),
         "engine identity must reach the health body"
     );
     assert_eq!(

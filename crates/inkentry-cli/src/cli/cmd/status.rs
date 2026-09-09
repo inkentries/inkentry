@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn embedder_line_disabled_notes_no_native_embedder() {
         // `Disabled` now means only one thing: this server binary was built
-        // without the `embed-native` feature. The external-relocation
+        // without the `embed-llama` feature. The external-relocation
         // backend this line used to describe no longer exists, so the line
         // must not claim it does.
         let line =

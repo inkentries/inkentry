@@ -14,12 +14,12 @@ use super::support::{
 // prove actual wire behaviour: hyper genuinely drops the in-flight
 // handler future on disconnect, and that drop must reach into the
 // embedder's `embed_with_cancel`  -  modeled here via a fake backend since a
-// real `NativeEmbedder` needs model weights this crate doesn't ship.
+// real `LlamaEmbedder` needs model weights this crate doesn't ship.
 
 // An embedder that loops `iterations` times, checking `cancel` before each
 // `step`-long sleep and bumping `progress` after it  -  models
-// `NativeEmbedder::embed_with_cancel`'s sub-batch loop. Flags
-// `observed_cancel` the moment it sees `cancel` set, so a test can assert
+// `LlamaEmbedder::embed_with_cancel`, whose work runs on pool worker threads.
+// Flags `observed_cancel` the moment it sees `cancel` set, so a test can assert
 // cancellation was actually observed rather than the counter merely
 // stopping for an unrelated reason.
 //
@@ -30,10 +30,9 @@ use super::support::{
 // (ordinary Rust cancellation-on-drop  -  the behavior any embedder
 // gets for free as long as it doesn't detach its work onto a separate
 // task, so there'd be nothing here to test). Dropping a `JoinHandle`
-// does **not** abort the task it points to  -  the same
-// "detached" property `spawn_blocking` has in `NativeEmbedder`  -  so this
-// loop only stops if it observes `cancel` itself, which is exactly what's
-// under test.
+// does **not** abort the task it points to  -  the same "detached" property
+// `LlamaEmbedder`'s worker threads have  -  so this loop only stops if it
+// observes `cancel` itself, which is exactly what's under test.
 struct CancelAwareEmbedder {
     iterations: usize,
     step: std::time::Duration,
@@ -159,8 +158,8 @@ async fn client_disconnect_stops_embedder_progress() {
     );
 }
 
-// An embedder that serializes on an internal async mutex (mirroring
-// `NativeEmbedder`'s `Arc<Mutex<EmbedderInner>>`) and checks `cancel`
+// An embedder that serializes on an internal async mutex (modeling a caller
+// queued behind the server's embed-admission capacity) and checks `cancel`
 // immediately after acquiring it, before doing any work  -  the "cascade
 // killer" check. `iterations_done` is shared across every call through
 // this embedder, so if a queued call is cancelled before it starts, it
@@ -169,8 +168,8 @@ async fn client_disconnect_stops_embedder_progress() {
 // As with `CancelAwareEmbedder`, the lock-and-loop runs in a **detached
 // `tokio::spawn`** so dropping the caller's future (client disconnect)
 // doesn't auto-cancel it via ordinary Rust drop semantics  -  only the
-// explicit `cancel` check does, matching `NativeEmbedder`'s
-// `spawn_blocking`.
+// explicit `cancel` check does, matching how `LlamaEmbedder`'s worker threads
+// run detached from the request future.
 struct QueuedCancelEmbedder {
     lock: Arc<tokio::sync::Mutex<()>>,
     iterations: usize,

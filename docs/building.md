@@ -19,14 +19,14 @@ Rust 1.80 or later is required (inkentry uses the 2024 edition).
 
 ### No external inference server required
 
-From v0.9.0, `inkentry-server` bundles a native embedder
-(codefuse-ai/F2LLM-v2-330M, 896-dim, via candle). No LM Studio, Ollama, or
+From v0.9.0, `inkentry-server` bundles the embedder
+(codefuse-ai/F2LLM-v2-330M, 896-dim, via llama.cpp). No LM Studio, Ollama, or
 other external inference server is needed. The CLI auto-starts the server on
 first use; model weights are downloaded once, into the platform's own
 local-data directory (see
 [Where the model is cached](getting-started.md#where-the-model-is-cached)).
 
-If you want GPU acceleration on macOS, build `inkentry-server` with the `metal`
+If you want GPU acceleration on macOS, build `inkentry-server` with the `llama-metal`
 feature (see [Build feature flags](#build-feature-flags) below).
 
 ### Vulkan SDK (only for `llama-vulkan` builds)
@@ -93,17 +93,15 @@ cargo build --release -p inkentry-server
 
 | Feature | Default | Description |
 |---|---|---|
-| `embed-native` | yes | Bundle the F2LLM-v2-330M native embedder via candle (CPU). Disabling it builds a server with no embedding capability at all: embed endpoints return a permanent 400 (there is no external-endpoint fallback). |
-| `metal` | no | Enable Metal GPU acceleration (candle engine) on macOS. Requires the `embed-native` feature. Add when building the macOS release binary for best performance. |
-| `embed-llama` | no | Additionally bundle the llama.cpp engine for the same model (CPU with this bare feature). Implies `embed-native`: candle stays in the binary as the fallback engine, selected at runtime (`INKENTRY_EMBED_DEVICE=auto\|gpu\|cpu`). |
-| `llama-metal` | no | llama.cpp engine with Metal — parity/bench builds on macOS. |
-| `llama-vulkan` | no | llama.cpp engine with Vulkan + runtime-loaded backend modules — the cross-vendor Windows/Linux GPU target shipped in release binaries. Needs the Vulkan SDK at build time (see Prerequisites); produces shared libraries and `ggml` modules that must ship next to the binary. |
+| `embed-llama` | yes | Bundle the F2LLM-v2-330M embedder (llama.cpp engine, CPU) and its Hugging Face Hub download path. Disabling it builds a server with no embedding capability at all: embed endpoints return a permanent 400 (there is no external-endpoint fallback). The device is selected at runtime (`INKENTRY_EMBED_DEVICE=auto\|gpu\|cpu`). |
+| `llama-metal` | no | llama.cpp engine with Metal GPU acceleration on macOS — the macOS release target. Implies `embed-llama`. |
+| `llama-vulkan` | no | llama.cpp engine with Vulkan + runtime-loaded backend modules — the cross-vendor Windows/Linux GPU target shipped in release binaries. Implies `embed-llama`. Needs the Vulkan SDK at build time (see Prerequisites); produces shared libraries and `ggml` modules that must ship next to the binary. |
 
 Enable non-default features with `--features`:
 
 ```bash
 # macOS release build with Metal GPU acceleration
-cargo build --release -p inkentry-server --features metal
+cargo build --release -p inkentry-server --features llama-metal
 
 # Windows/Linux build with the llama.cpp Vulkan engine (needs the Vulkan SDK)
 cargo build --release -p inkentry-server --features llama-vulkan

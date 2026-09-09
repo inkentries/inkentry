@@ -9,8 +9,8 @@ server-handler tests, CLI end-to-end tests, property-based tests, an upgrade
 corpus of artifacts written by real released binaries, and a scheduled fuzzing
 job.
 
-The embedder stack is the native candle F2LLM path (`inkentry-embed`, gated by
-the `embed-native` feature), not an external OpenAI-compatible endpoint. See
+The embedder stack is the llama.cpp F2LLM path (`inkentry-embed`, gated by
+the `embed-llama` feature), not an external OpenAI-compatible endpoint. See
 `CLAUDE.md` for the full inference-backend picture.
 
 ---
@@ -27,7 +27,7 @@ This is what to run before pushing, and matches CI's own invocation
 the workspace, plus `cargo test --doc` as a separate pass since nextest
 does not run doctests. `--lib --bins --tests --benches` (not nextest's
 default) keeps examples out of the regular test gate: several depend on
-the native embedder and are meant to be run explicitly with the right
+the bundled embedder and are meant to be run explicitly with the right
 features, not swept in by a workspace-wide command that doesn't grant
 them. Some CI legs add `--no-default-features` (see the workflow file for
 exactly which); reach for that flag locally if you need to reproduce a
@@ -347,7 +347,7 @@ file itself stays accurate.
   separate steps rather than one chained command.
 
 - **Build time.** Vendored OpenSSL (pulled in transitively by `native-tls`,
-  via `hf-hub`/`reqwest` in the `embed-native` stack) compiles from C source.
+  via `hf-hub`/`reqwest` in the `embed-llama` stack) compiles from C source.
   Strawberry Perl is pre-installed on `windows-latest` runners so the build
   succeeds, but it adds several minutes.
 
@@ -366,7 +366,7 @@ file itself stays accurate.
   PID is still running. This backs the `inkentry server status/stop` live-PID
   check on Windows.
 
-- **Model download.** The `embed-native` feature bundles the candle F2LLM
+- **Model download.** The `embed-llama` feature bundles the F2LLM
   embedder; the model weights are fetched via `hf-hub` at runtime on first
   use, not at build time. Server tests run with the embedder slot disabled,
   so no model download happens during `cargo build` or the test run.

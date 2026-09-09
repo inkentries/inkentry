@@ -22,10 +22,9 @@ pub struct EmbedderStatus {
     /// present but blocked, so embedding fell back to CPU). `null` when not
     /// useful.
     pub detail: Option<String>,
-    /// Inference engine serving embeddings: `"candle"` or `"llama"`. `null`
-    /// until the embedder is `ready` (and on older servers pre-dating the
-    /// field). Both engines produce the same vector space; this exists so a
-    /// field report can name the engine without reading server logs.
+    /// Inference engine serving embeddings: `"llama"`. `null` until the
+    /// embedder is `ready` (and on older servers pre-dating the field). Exists
+    /// so a field report can name the engine without reading server logs.
     pub engine: Option<&'static str>,
     /// Device the engine resolved at load: `"cpu"`, `"metal"`, `"vulkan"`,
     /// or `"gpu"` (another GPU-class backend). `null` until the embedder is

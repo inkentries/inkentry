@@ -20,7 +20,7 @@ inkentry has two distinct operational modes with different attack surfaces:
 5. Maintains a `memory.db` of structured notes with semantic search. **`memory.db` is the single authoritative memory store at the CLI tier** (ADR-004). All `inkentry memory` operations (add, list, search, timeline, harvest) read from and write to `memory.db`.
 6. **When `store_in_git_notes = true` (the default):** each `inkentry memory add` also appends the note as a JSON line to `refs/notes/inkentry` on HEAD (PR #339). Git notes in this namespace travel with the repository on `git push` and are available to anyone who clones the repo — see [git-notes memory](#git-notes-memory-refsnotesinkentry) below.
 
-**Auto-discovered loopback inkentry-server (v0.8.0+):** inkentry auto-starts a local `inkentry-server` daemon (bound to `127.0.0.1`) to provide a native embedder and LLM backend. This server is **inference-only**: it receives query text or chunk text for embedding, and completion prompts for LLM calls. It does **not** receive note text for storage and is **not** a memory backend. Only an explicit `server_url` in config (pointing at a team or cloud server) moves the memory store of record away from `memory.db`.
+**Auto-discovered loopback inkentry-server (v0.8.0+):** inkentry auto-starts a local `inkentry-server` daemon (bound to `127.0.0.1`) to provide an embedder and LLM backend. This server is **inference-only**: it receives query text or chunk text for embedding, and completion prompts for LLM calls. It does **not** receive note text for storage and is **not** a memory backend. Only an explicit `server_url` in config (pointing at a team or cloud server) moves the memory store of record away from `memory.db`.
 
 **A third role on the same daemon — the local relay (ADR-037 P2).** When a project is
 configured with a team `server_url`, that same loopback daemon also acts as the
@@ -665,7 +665,7 @@ cross to that server), or a `inkentry-server` operator has set an external
 
 **Mitigations (documentation, not code):**
 - Document the data-egress implications prominently in `docs/getting-started.md` and the `config.toml` comments
-- The default (no `server_url`, auto loopback server, native embedder) keeps all code and memory on-machine; reaching a third party is an explicit operator choice
+- The default (no `server_url`, auto loopback server, embedder) keeps all code and memory on-machine; reaching a third party is an explicit operator choice
 - Secret scanning reduces but does not eliminate the risk — it only drops chunks matching known credential patterns
 
 **Recommended future control:** Add a `data_classification = "local-only"` config flag that refuses to configure a non-loopback `server_url`, with an explicit opt-in override.

@@ -61,15 +61,16 @@ Figures below were measured on `inkentry-server` v1.0.0-rc1, at idle, before
 any database or request load. Treat them as the floor.
 
 - **RAM: about 523 MB resident.** Every published `inkentry-server` binary
-  bundles the native embedder (the `embed-native` build feature), and the
+  bundles the embedder (the `embed-llama` build feature), and the
   server loads it at startup. It does this whether or not `--llm-url` is set
   and before any client asks for an embedding, because server-side semantic
   search over memory needs the embeddings. A server run as nothing more than a
   shared memory store (`--db` plus a key) still sits at this figure. There is
   no switch to skip the load.
-- **Disk: about 350 MB for the model.** The embedder is a pre-quantized Q8_0
-  GGUF (`f2llm-v2-330m-q8_0.gguf`, about 339 MB) fetched once into the model
-  cache, alongside the tokenizer and a small config file. The download is hard
+- **Disk: about 345 MB for the model.** The embedder is a pre-quantized Q8_0
+  GGUF (`f2llm-v2-330m-llama-q8_0.gguf`, about 345 MB) fetched once into the model
+  cache. The GGUF is self-contained: it embeds its own tokenizer and config, so
+  it is the only artifact. The download is hard
   linked into place rather than copied, so the cache holds a single copy of the
   GGUF; on a filesystem that cannot hard link, it is copied and the cache holds
   both. See
@@ -374,8 +375,8 @@ traffic to the container's routable interface, not into its private loopback, so
 nothing published reaches a loopback-only bind.
 
 **What's on the `/data` volume.** Both the SQLite database (`/data/inkentry.db`)
-and the native embedder's downloaded model cache (`/data/inkentry/models/`, a
-one-time pull of about 350 MB; see
+and the bundled embedder's downloaded model cache (`/data/inkentry/models/`, a
+one-time pull of about 345 MB; see
 [Sizing the host](#sizing-the-host)) live on the same named volume. Size it
 accordingly, and when backing it up, only the database needs your normal
 database backup process (per [Production deployment](#production-deployment) below); the model
@@ -680,15 +681,15 @@ environment.
 
 ### Embedding CPU thread budget
 
-On a CPU-only host the bundled native embedder (candle) would otherwise fan a
+On a CPU-only host the bundled embedder would otherwise fan a
 single embed batch across every core, leaving the server's own request handling
-to compete with it for CPU. To leave headroom, the server caps candle's thread
+to compete with it for CPU. To leave headroom, the server caps the embedder's thread
 count at startup.
 
 | Env | Default | Purpose |
 |---|---|---|
 | `INKENTRY_EMBED_DEVICE` | `auto` | Which device the embedder runs on. |
-| `INKENTRY_EMBED_THREADS` | see below | CPU threads the native embedder may use. |
+| `INKENTRY_EMBED_THREADS` | see below | CPU threads the embedder may use. |
 
 `INKENTRY_EMBED_DEVICE` accepts `auto`, `gpu`, or `cpu`; unset or blank means
 `auto`. `auto` and `gpu` try a GPU (Metal on macOS, Vulkan on Windows/Linux x64)
@@ -839,7 +840,7 @@ Hugging Face Hub the first time it's needed (see [Getting
 started](getting-started.md)). On a host with no route to `huggingface.co`,
 an air-gapped network, a strict corp firewall, a build image with no egress,
 that download has nothing to reach. `--model-dir` (or `INKENTRY_MODEL_DIR`)
-points the bundled native embedder at a directory you provisioned out of
+points the bundled embedder at a directory you provisioned out of
 band instead, with zero network access at startup or at runtime:
 
 ```bash
@@ -849,8 +850,8 @@ export INKENTRY_MODEL_DIR=/srv/inkentry/models
 inkentry-server
 ```
 
-Only consulted when the bundled native embedder is enabled (the
-`embed-native` build feature); ignored otherwise.
+Only consulted when the bundled embedder is enabled (the
+`embed-llama` build feature); ignored otherwise.
 
 ### Directory layout
 
@@ -858,11 +859,9 @@ Only consulted when the bundled native embedder is enabled (the
 
 | File | Required | Notes |
 |---|---|---|
-| `f2llm-v2-330m-q8_0.gguf` | yes | pre-quantized Q8_0 embedder weights |
-| `tokenizer.json` | yes | matching tokenizer |
-| `config.json` | no | auto-written from an embedded copy if absent; supply it only to override that default |
+| `f2llm-v2-330m-llama-q8_0.gguf` | yes | pre-quantized Q8_0 embedder weights; the GGUF embeds its own tokenizer and config, so it is the only file needed |
 
-A missing directory, or a missing GGUF or tokenizer inside it, fails fast
+A missing directory, or a missing GGUF inside it, fails fast
 with an error naming the missing piece and pointing back at this section.
 
 ### Fetch-and-transfer procedure
@@ -874,22 +873,15 @@ carry it to the air-gapped host:
    This populates the normal online cache, which lives in the platform's
    local-data directory and so differs per OS (see
    [Where the model is cached](getting-started.md#where-the-model-is-cached)).
-   It ends up holding:
-   - `f2llm-v2-330m-q8_0.gguf`
-   - `config.json`
-   - a nested `tokenizer.json`, under
-     `models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF/snapshots/<rev>/tokenizer.json`
-     (hf-hub's own cache layout)
-2. Copy the GGUF and that nested `tokenizer.json` into a new, flat directory.
-   `config.json` doesn't need to come along; a missing one is regenerated on
-   the air-gapped host.
+   It ends up holding `f2llm-v2-330m-llama-q8_0.gguf`, which embeds its own
+   tokenizer and config.
+2. Copy the GGUF into a new, flat directory. It is the only artifact the engine
+   needs.
    ```bash
    mkdir -p offline-model
    # Linux path shown; on macOS use ~/Library/Application\ Support/inkentry/models
    MODELS=~/.local/share/inkentry/models
-   cp "$MODELS/f2llm-v2-330m-q8_0.gguf" offline-model/
-   cp "$MODELS"/models--spelunk-cloud--F2LLM-v2-330M-Q8_0-GGUF/snapshots/*/tokenizer.json \
-      offline-model/
+   cp "$MODELS/f2llm-v2-330m-llama-q8_0.gguf" offline-model/
    ```
 3. Transfer `offline-model/` to the air-gapped host by whatever out-of-band
    means your environment allows (removable media, an internal artifact
@@ -897,30 +889,29 @@ carry it to the air-gapped host:
 
 ### Verifying integrity
 
-Both files come from the first-party `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`
+The GGUF comes from the first-party `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`
 Hugging Face repo; see [Model attribution](model-attribution.md) for
-provenance and license. As fetched at time of writing, their SHA-256 sums are:
+provenance and license. As fetched at time of writing, its SHA-256 sum is:
 
 | File | SHA-256 |
 |---|---|
-| `f2llm-v2-330m-q8_0.gguf` | `2c12aad2951f1d9a3b457f890a2586d1ee19b755b377c0fb424e856e615b8f2b` |
-| `tokenizer.json` | `7e295e5bb91a3d35335f92fa4294a6e4e0ab4aa586db853e14312a62135bfddc` |
+| `f2llm-v2-330m-llama-q8_0.gguf` | `22698bfd4d0b35fc8ede8d1eaa984ab56ef7952d67e4a2df72d5e9a8348290af` |
 
 `inkentry-server` fetches from that repo's `main` branch rather than a pinned
-commit, so these values track whatever is currently published there. Treat
-them as a convenience check, not a permanent guarantee: for integrity
-verification on artifacts fetched later, recompute and compare against the
-source's own published hash instead of trusting this table indefinitely.
+commit, so this value tracks whatever is currently published there. Treat it
+as a convenience check, not a permanent guarantee: for integrity verification
+on artifacts fetched later, recompute and compare against the source's own
+published hash instead of trusting this table indefinitely.
 
 ```bash
-shasum -a 256 f2llm-v2-330m-q8_0.gguf tokenizer.json
+shasum -a 256 f2llm-v2-330m-llama-q8_0.gguf
 ```
 
-Hugging Face also serves each file's hash directly, in the `x-linked-etag`
+Hugging Face also serves the file's hash directly, in the `x-linked-etag`
 response header:
 
 ```bash
-curl -sI https://huggingface.co/spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF/resolve/main/f2llm-v2-330m-q8_0.gguf \
+curl -sI https://huggingface.co/spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF/resolve/main/f2llm-v2-330m-llama-q8_0.gguf \
   | grep -i x-linked-etag
 ```
 

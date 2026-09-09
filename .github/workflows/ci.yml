@@ -80,10 +80,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       # --lib --bins --tests --benches (not --all-targets): examples are never
-      # part of the regular build/lint/test gates. Several examples
-      # (chunk_quality_eval, embed_bench) directly depend on the native
-      # embedder and are meant to be run explicitly with the right features,
-      # not swept in by a workspace-wide command that doesn't grant them.
+      # part of the regular build/lint/test gates. The embed_bench example
+      # depends on the llama.cpp engine (its `required-features = ["llama"]`) and
+      # is linted under the llama-vulkan job's --all-targets clippy instead.
       - name: Clippy
         run: cargo clippy --lib --bins --tests --benches -- -D warnings
 
@@ -127,16 +126,15 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            # Default features: builds the native embedder (candle F2LLM) so
-            # the `embed-native` path stays under test.
+            # Default features: builds the bundled embedder (llama.cpp CPU) so
+            # the `embed-llama` path stays under test.
             test-flags: ""
           - os: ubuntu-latest
-            # Drops the server's `embed-native` feature: this builds the
-            # external-endpoint-only server (no hf-hub download path, no candle
-            # in inkentry-server) and keeps that shipped configuration under
-            # test. Note candle is an unconditional dep of the inkentry-embed
-            # crate, so its native embedder still compiles here as a workspace
-            # member. The embedder is EXPERIMENTAL / NOT RECOMMENDED.
+            # Drops the server's `embed-llama` feature: this builds the
+            # external-endpoint-only server (no bundled embedder, no hf-hub
+            # download path) and keeps that shipped configuration under test.
+            # With no default features the workspace also builds inkentry-embed
+            # trait-only, so no llama.cpp engine is compiled here.
             #
             # The same flag drops the CLI's default `rich-formats` feature, so
             # this leg is also what keeps the CLI without the PDF, DOCX and
@@ -150,8 +148,8 @@ jobs:
           - os: macos-latest
             test-flags: ""
           - os: windows-latest
-            # Windows keeps default features: the embed-native default builds
-            # the candle (CPU) embedder, which links cleanly. The
+            # Windows keeps default features: the embed-llama default builds
+            # the llama.cpp (CPU) embedder, which links cleanly. The
             # inkentry-server tests use embedder: None and never load the model.
             test-flags: ""
     steps:
@@ -304,7 +302,9 @@ jobs:
           key: llama-vulkan
 
       - name: Clippy (llama-vulkan)
-        run: cargo clippy -p inkentry-server -p inkentry-embed --lib --bins --tests --features llama-vulkan -- -D warnings
+        # --all-targets so the embed_bench example (llama-gated) is linted under
+        # the llama features too, matching the repo's other clippy gates.
+        run: cargo clippy -p inkentry-server -p inkentry-embed --all-targets --features llama-vulkan -- -D warnings
 
       - name: Build (llama-vulkan)
         run: cargo build -p inkentry-server --features llama-vulkan
@@ -331,8 +331,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # The image compiles the release server (candle embedder) from scratch with
-    # no cargo cache, so allow a generous ceiling.
+    # The image compiles the release server (llama.cpp embedder) from scratch
+    # with no cargo cache, so allow a generous ceiling.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -354,8 +354,8 @@ jobs:
       # `/v1/health` from a sidecar sharing its network namespace (the
       # pattern documented at the top of the Dockerfile, since the server
       # only binds loopback). This only needs the embedder's model-cache
-      # `mkdir` to succeed, not the full ~339 MB download: `create_dir_all`
-      # runs before any network I/O in `load_from_hub()`, so a cache-dir
+      # `mkdir` to succeed, not the full ~345 MB download: `create_dir_all`
+      # runs before any network I/O in `load_llama_from_hub()`, so a cache-dir
       # failure surfaces as an `unavailable` state within a couple of
       # seconds, well before "loading" would ever complete.
       - name: Check embedder initializes against the persistent volume

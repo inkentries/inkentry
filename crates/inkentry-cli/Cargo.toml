@@ -93,5 +93,5 @@ rcgen = "0.14"
 # in-process (`inkentry_server::router`) to exercise `outbox.rs`'s local relay
 # client against the actual `/local/relay/push`/`/local/relay/poll` wire
 # shapes, not a hand-mocked stand-in. `default-features = false` skips the
-# native embedder (candle/hf-hub) build, irrelevant to these tests.
+# bundled embedder (llama.cpp/hf-hub) build, irrelevant to these tests.
 inkentry-server = { path = "../inkentry-server", default-features = false }

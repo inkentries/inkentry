@@ -1,13 +1,12 @@
 // Real-hardware confirmation that the local server stays usable while it is
-// embedding, run against the actual native embedder rather than a mock.
+// embedding, run against the actual llama embedder rather than a mock.
 //
 // **Not a CI gate.** It is `#[ignore]`d: it needs the F2LLM model artifacts on
 // disk (downloading them on first run), real GPU/CPU inference, and it
 // measures wall-clock latency, none of which belong on a shared runner. The
 // deterministic gate for the same property is
 // `handlers::tests::liveness_under_embed` (mock embedder parked on a
-// test-controlled signal, no model, no timing race), plus
-// `inkentry_embed::embedder_native`'s accessor tests.
+// test-controlled signal, no model, no timing race).
 //
 // Run it with:
 //   INKENTRY_SECRET_STORE=file cargo test -p inkentry-server \
@@ -23,7 +22,7 @@
 // /v1/projects/{id}/memory/search` is the request `inkentry memory search`
 // issues, so the assertions below are the same contract those commands see.
 
-#![cfg(feature = "embed-native")]
+#![cfg(feature = "embed-llama")]
 
 use crate::common;
 
@@ -184,8 +183,9 @@ async fn sample_health(client: &reqwest::Client, base: &str) -> HealthSample {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the F2LLM model and real inference hardware; not a CI gate"]
 async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
-    let embedder = inkentry_server::embed_hub::load_from_hub().expect("load F2LLM-v2-330M");
-    let base = spawn_server(inkentry_server::EmbedderSlot::ready(Arc::new(embedder))).await;
+    let loaded =
+        inkentry_server::embed_hub::load_backend(None, 4).expect("load F2LLM-v2-330M (llama)");
+    let base = spawn_server(inkentry_server::EmbedderSlot::ready(loaded.backend)).await;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))

@@ -23,21 +23,20 @@ plus its tokenizer, distributed for use as the bundled embedding model in
   precision at negligible size). They differ only in packaging, not in the
   vectors they produce:
   - `f2llm-v2-330m-q8_0.gguf` keeps Hugging Face tensor names
-    (`model.layers.N.*`) and is read by Inkentry's candle engine together
-    with `tokenizer.json`.
+    (`model.layers.N.*`) and pairs with the separate `tokenizer.json`.
   - `f2llm-v2-330m-llama-q8_0.gguf` is the canonical llama.cpp build
     (`blk.N.*` tensor names, tokenizer and last-token pooling metadata
     embedded in the file) produced by llama.cpp's `convert_hf_to_gguf.py`
     from the same pinned upstream revision, read by Inkentry's llama.cpp
-    engine as a single file.
+    engine as a single file — the build Inkentry loads.
 - The **unmodified** upstream `tokenizer.json`, redistributed as-is (same
   Apache-2.0 terms) so Inkentry has no runtime dependency on the third-party
   upstream repo. (`config.json` is small enough that Inkentry embeds it
   directly in the binary instead of fetching it from here.)
 
-Distributing the GGUFs pre-quantized keeps the first-run download and
-steady-state disk use at one ~340 MB file per engine, with no on-device
-quantization step; Inkentry fetches only the file for the engine it runs.
+Distributing the GGUF pre-quantized keeps the first-run download and
+steady-state disk use to a single file, with no on-device
+quantization step; Inkentry fetches only the canonical llama.cpp GGUF it loads.
 
 | File | Approx. size | sha256 |
 |------|--------------|--------|
@@ -67,6 +66,6 @@ is redistributed **unmodified**. No other modifications were made.
 
 ## Usage in Inkentry
 
-`inkentry-server` downloads the GGUF and tokenizer directly from here by
-default. Set `INKENTRY_EMBEDDER_GGUF_REPO` to a different repo to fetch both
-from there instead (it must host both files).
+`inkentry-server` downloads `f2llm-v2-330m-llama-q8_0.gguf` directly from here by
+default. Set `INKENTRY_EMBEDDER_GGUF_REPO` to a different repo to fetch it
+from there instead (it must host that file).

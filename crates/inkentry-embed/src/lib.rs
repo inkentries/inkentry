@@ -1,27 +1,18 @@
-//! Native F2LLM-v2-330M embedder for inkentry.
+//! F2LLM-v2-330M embedder for inkentry.
 //!
-//! This crate owns the candle-based embedding engine (Qwen3 decoder,
-//! 896-dim, Q8_0-quantized GGUF, Metal/GPU on macOS). It is a library so both
-//! the bundled `inkentry-server` binary and downstream consumers that need a
-//! local embedder can depend on it directly.
+//! This crate owns the llama.cpp-based embedding engine (F2LLM-v2-330M, 896-dim,
+//! canonical llama.cpp GGUF; GPU via Metal on macOS and Vulkan on Windows/Linux,
+//! CPU everywhere else). It is a library so both the bundled `inkentry-server`
+//! binary and downstream consumers that need a local embedder can depend on it.
 //!
-//! The sole load entry point is [`NativeEmbedder::load_from_path`], which loads
-//! the model from local files already on disk with **zero network access** —
-//! callers fetch the GGUF, tokenizer, and config themselves. This crate
-//! deliberately carries no download/fetch dependency of its own (no `hf-hub`),
-//! so anything that depends on `inkentry-embed` — e.g. a minimal embedding
-//! engine bundled elsewhere — inherits the smallest possible dependency
-//! surface. `inkentry-server` resolves the artifacts via its own Hugging Face
-//! Hub acquisition path (`embed_hub` module) and then calls `load_from_path`.
-//!
-//! The result is a [`NativeEmbedder`], which implements the crate's own
-//! [`EmbeddingBackend`] trait (re-exported by inkentry-core at
-//! `inkentry_core::embeddings::EmbeddingBackend`). `NativeEmbedder` itself, and
-//! candle/tokenizers with it, live behind the default-on `native` feature: a
-//! consumer that only needs the trait + [`MODEL_ID`] (inkentry-core, so
-//! inkentry-cli doesn't statically link an embedder it only ever calls over
-//! HTTP) depends on this crate with `default-features = false`. Add the
-//! `metal` feature for Metal GPU acceleration on macOS.
+//! The [`LlamaEmbedder`] implements the crate's own [`EmbeddingBackend`] trait
+//! (re-exported by inkentry-core at `inkentry_core::embeddings::EmbeddingBackend`).
+//! The engine lives behind the default-on `llama` feature: a consumer that only
+//! needs the trait + [`MODEL_ID`] (inkentry-core, so inkentry-cli doesn't
+//! statically link an embedder it only ever calls over HTTP) depends on this
+//! crate with `default-features = false`. Add `llama-metal` or `llama-vulkan`
+//! for GPU acceleration; `inkentry-server` resolves the GGUF via its own Hugging
+//! Face Hub acquisition path (`embed_hub` module) and constructs the embedder.
 
 mod backend;
 pub use backend::EmbeddingBackend;
@@ -39,20 +30,18 @@ pub use backend::EmbeddingBackend;
 /// acceptance criteria that work must meet.
 pub const MODEL_ID: &str = "F2LLM-v2-330M@896";
 
-#[cfg(feature = "native")]
-mod embedder_native;
-#[cfg(feature = "native")]
-pub use embedder_native::{DIM, NativeEmbedder};
+/// Embedding dimension of the sole shipped model (F2LLM-v2-330M, 896-dim).
+pub const DIM: usize = 896;
 
 #[cfg(feature = "llama")]
 mod embedder_llama;
 #[cfg(feature = "llama")]
 pub use embedder_llama::{DEFAULT_EMBED_POOL_SIZE, DeviceRequest, LlamaEmbedder};
 
-#[cfg(any(feature = "native", feature = "llama"))]
+#[cfg(feature = "llama")]
 mod error;
-#[cfg(any(feature = "native", feature = "llama"))]
+#[cfg(feature = "llama")]
 pub use error::EmbedError;
 
-#[cfg(any(feature = "native", feature = "llama"))]
+#[cfg(feature = "llama")]
 mod vector;
