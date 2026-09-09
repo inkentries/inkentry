@@ -1,6 +1,6 @@
 [package]
 name = "inkentry-core"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 description = "Core library for inkentry — storage, indexer, search, embeddings"
 license = "MIT"
@@ -66,7 +66,7 @@ tree-sitter = "0.26"
 ast-grep-language = "0.45"
 # In-process structural search fallback (replaces the external `ast-grep` binary).
 # proto + sql grammars are not shipped by ast-grep-language — kept standalone.
-tree-sitter-proto = "0.4"
+tree-sitter-proto = "0.5"
 tree-sitter-sequel = "0.3"
 
 uuid = { workspace = true }

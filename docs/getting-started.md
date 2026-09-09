@@ -58,8 +58,10 @@ inkentry --version
 Download the `.zip` for your platform from the
 [releases page](https://github.com/inkentries/inkentry/releases). The Windows
 archive is named `inkentry-<version>-x86_64-pc-windows-msvc.zip`. Extract it and
-place `inkentry.exe` and `inkentry-server.exe` anywhere on your `PATH`
-(e.g. `C:\Users\<you>\bin\`).
+place the **entire archive contents** — `inkentry.exe`, `inkentry-server.exe`,
+and the `ggml*.dll`/`llama*.dll` engine files — together in one directory on
+your `PATH` (e.g. `C:\Users\<you>\bin\`). The DLLs are the GPU embedding
+engine; the server will not start without them.
 
 > **winget:** deferred, available on request. Track the
 > [releases page](https://github.com/inkentries/inkentry/releases) or the repo
@@ -131,9 +133,9 @@ binaries on your `$PATH`. Supported targets:
 | Platform | Archive name | Notes |
 |----------|-------------|-------|
 | macOS (Apple Silicon) | `inkentry-<version>-aarch64-apple-darwin.tar.gz` | |
-| Linux x86_64 | `inkentry-<version>-x86_64-unknown-linux-gnu.tar.gz` | Requires glibc 2.31 (Debian 11 Bullseye or newer / Ubuntu 20.04 or newer); on minimal images, install `libdbus-1-3` |
-| Linux ARM64 | `inkentry-<version>-aarch64-unknown-linux-gnu.tar.gz` | Requires glibc 2.31 (Debian 11 Bullseye or newer / Ubuntu 20.04 or newer); on minimal images, install `libdbus-1-3` |
-| Windows x86_64 | `inkentry-<version>-x86_64-pc-windows-msvc.zip` | |
+| Linux x86_64 | `inkentry-<version>-x86_64-unknown-linux-gnu.tar.gz` | Requires glibc 2.35 (Ubuntu 22.04 or newer / Debian 12 or newer); on minimal images, install `libdbus-1-3`. Also contains `lib*.so*` files (the GPU embedding engine); install them alongside the binaries |
+| Linux ARM64 | `inkentry-<version>-aarch64-unknown-linux-gnu.tar.gz` | Requires glibc 2.35 (Ubuntu 22.04 or newer / Debian 12 or newer); on minimal images, install `libdbus-1-3` |
+| Windows x86_64 | `inkentry-<version>-x86_64-pc-windows-msvc.zip` | Also contains `ggml*.dll`/`llama*.dll` (the GPU embedding engine); keep them next to the `.exe`s |
 
 > **Intel Macs (`x86_64-apple-darwin`):** prebuilt binaries are not published for
 > this target — Apple deprecated the architecture and Apple Silicon replaced it on
@@ -435,11 +437,12 @@ Built-in works with nothing installed but the binary (the always-available
 commands in section 3). The local semantic server is auto-discovered on loopback
 (`127.0.0.1`) and started for you the first time a command needs it; it embeds
 queries and runs LLM calls, but a project's memory stays in `memory.db`
-regardless of whether it is running. Memory moves off the local machine only when
-you point at a team server, self-hosted via an explicit `server_url` or the
-managed inkentry cloud (see
-[Team setup](#team-setup-shared-memory-with-inkentry-server)); each developer's
-code still stays local.
+regardless of whether it is running. Memory moves off the local machine only
+when you opt a project into a team server, self-hosted via an explicit
+`server_url` ([Team setup](#team-setup-shared-memory-with-inkentry-server)) or
+into the managed inkentry cloud via `cloud = true`
+([Using inkentry cloud](#using-inkentry-cloud)); each developer's code still
+stays local.
 
 To stay fully offline (CI, air-gapped, or you just don't want a background
 process), set `INKENTRY_NO_SERVER=1`: inkentry then runs built-in only, and
@@ -702,6 +705,39 @@ now rather than in the background, such as a CI job that needs entries pushed
 before it exits. Code never travels; only memory does.
 
 For full setup and deployment guide: **[Server setup](server-setup.md)**: Docker, configuration, API reference.
+
+### Using inkentry cloud
+
+Prefer not to run a server yourself? inkentry cloud is the managed alternative:
+same shared memory, nothing to deploy.
+
+Add `.inkentry/config.toml` at your repo root (commit it):
+
+```toml
+# .inkentry/config.toml (commit this, no secrets)
+cloud = true
+project_id = "my-awesome-app"
+```
+
+`cloud` and `server_url` are mutually exclusive: a project uses one or the
+other, and setting both is a configuration error. Like `server_url`, `cloud` is
+a project-wide choice, so it is read only from this file, never from your
+personal `~/.config/inkentry/config.toml`.
+
+Each developer then authenticates once:
+
+```bash
+inkentry login
+```
+
+This opens a browser-based device login; on success, short-lived tokens are
+stored in your personal config and refreshed automatically, so you do not need
+to log in again until the refresh token expires. After that, `inkentry memory`
+and `inkentry sync` transparently use the cloud, the same as a self-hosted
+`server_url` above. See [`inkentry login`](commands.md#inkentry-login) and
+[`inkentry org`](commands.md#inkentry-org) for multi-org accounts, and the
+[`cloud` config reference](config-reference.md#cloud) for the full field
+description.
 
 ### Enterprise / MDM deployment
 

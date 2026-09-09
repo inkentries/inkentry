@@ -20,6 +20,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   took. Quote the entity id whenever you name an entry outside the machine that
   recorded it, in a document, a handoff or a script: the `id` beside it is
   minted per machine and does not travel.
+- **GPU-accelerated embedding on Windows and Linux (x64).** The server now
+  bundles a second embedding engine (llama.cpp, Vulkan) that runs the same
+  model on NVIDIA, AMD, and Intel GPUs; machines without a usable GPU driver
+  fall back to CPU automatically, and macOS stays on Metal. Same vectors,
+  same indexes — nothing re-embeds. Set `INKENTRY_EMBED_DEVICE=cpu` to opt
+  out. The Windows/Linux-x64 archives now contain engine library files next
+  to the binaries; keep the extracted files together when installing manually.
+- **Faster CPU embedding on Linux arm64.** Where Vulkan can't go, the same
+  new engine also runs on CPU, typically faster than the previous engine, with
+  the previous engine still in the binary as a fallback.
 - **`inkentry search --quiet`** suppresses the informational notices on stderr
   (stale index, server discovery, ranking availability, embedding coverage).
   Results and exit codes are unchanged, and it never hides an error or the
@@ -29,6 +39,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The supported Linux floor is now Ubuntu 22.04 / Debian 12 (glibc 2.35).**
+  Debian 11 reached end of life on 2026-08-31 and release binaries no longer
+  target it; users on Debian 11 or Ubuntu 20.04 should upgrade the OS or
+  build from source.
+- **BREAKING: a pushed memory vector must be near unit length.** Both memory
+  write routes refuse a `vector` whose L2 norm is outside `[0.5, 1.5]` with
+  `400`, matching the hosted API. Clients that compute their own vectors must
+  L2-normalise before pushing, or omit `vector` and let the server embed. The
+  `inkentry` CLI is unaffected: its vectors come from the built-in embedder,
+  which already normalises.
 - **Server setup now says what self-hosting costs.** `docs/server-setup.md` has
   a sizing section with the RAM and disk figures for a team server.
 - **`inkentry plumbing graph-edges --file` now exits `2` for a path the index
@@ -104,6 +124,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   its search vector arrives says so, and is listed and readable straight away;
   `inkentry memory reindex` adds the vector, and the next `inkentry sync` does
   it on its own.
+## [1.0.2] — 2026-09-03
+
+### Added
+
+- **A project can opt into inkentry cloud with `cloud = true` in `.inkentry/config.toml`.** Cloud is a fixed hosted service, so it is a flag rather than a URL; `server_url` is for a self-hosted team server and the two cannot both be set.
+
+### Security
+
+- **The cloud access token is sent only to the host you logged in against.** It is bound to that host at login, so a `server_url` or environment setting can no longer direct it to a different origin.
 
 ## [1.0.1] — 2026-08-28
 

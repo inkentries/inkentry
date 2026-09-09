@@ -86,7 +86,7 @@ inkentry keeps that why-layer beside the code and hands it back on demand.
 | See what calls a function | `inkentry search validate_token --graph` |
 | Remember why a decision was made | `inkentry search "why sqlite-vec" --only-memory` |
 | Store a design decision for future sessions | `inkentry memory add --kind decision ...` |
-| Share context across a team | `inkentry-server` + `server_url` |
+| Share context across a team | `inkentry-server` + `server_url`, or `cloud = true` for the hosted service |
 
 ## Core features
 
@@ -108,7 +108,7 @@ Memory is stored in local SQLite and written through to git notes by default
 opt-in: `inkentry init` sets up the fetch side, so teammates' entries reach you
 automatically, but your own stay local until you run `inkentry hooks install
 --pre-push` to publish them on `git push`. Set `server_url` instead to share
-through a team server.
+through a team server, or `cloud = true` to use the hosted inkentry cloud.
 
 ### Code graph
 

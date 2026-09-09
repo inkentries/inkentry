@@ -39,7 +39,7 @@
 # same shape without a container.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM rust:1.97.1-slim AS builder
+FROM rust:1.98.0-slim AS builder
 
 WORKDIR /build
 

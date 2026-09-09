@@ -25,9 +25,9 @@ Load order (later overrides earlier):
    discarded even if present here: a team server is a project-wide choice,
    never a single developer's.
 3. `.inkentry/config.toml`, discovered by walking up from the current
-   directory (project-level, team-wide). Only `server_url`, `project_id`,
-   `server_ca`, `mode`, `llm_url`, and `[index]` are read from this file; any
-   other key in it is named in a warning on stderr and ignored.
+   directory (project-level, team-wide). Only `server_url`, `cloud`,
+   `project_id`, `server_ca`, `mode`, `llm_url`, and `[index]` are read from
+   this file; any other key in it is named in a warning on stderr and ignored.
 4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_PROJECT_ID`,
    `INKENTRY_SERVER_CA`, `INKENTRY_LLM_URL`, `INKENTRY_LLM_MODEL`,
    `INKENTRY_MODE`.
@@ -194,6 +194,22 @@ never a memory store; it does not require this field to be set. See the
 [server setup guide](server-setup.md) for putting TLS in front of a deployed
 team server.
 
+### `cloud`
+
+- **Type:** boolean, optional
+- **Default:** `false`
+- **Env override:** none
+
+Opt this project into inkentry cloud, the hosted service. The cloud lives at a
+fixed address, so opting in is a flag rather than a URL: set `cloud = true` and
+the CLI targets the hosted cloud for the remote memory and inference it would
+otherwise send to a `server_url`.
+
+`cloud` and `server_url` are **mutually exclusive**: a project uses either the
+hosted cloud or a self-hosted team server, and setting both is a configuration
+error. Like `server_url`, this is a project-wide choice, so a value in the
+personal config is discarded on load; set it in `.inkentry/config.toml`.
+
 ### `mode`
 
 - **Type:** string, optional (`offline` / `local_first` / `cloud_first`)
@@ -279,18 +295,19 @@ Store the credential in the secret store instead:
 
 ### How the bearer is resolved
 
-Two tiers, branched by the target server's origin:
+Two tiers, branched by whether the target origin is the one recorded in
+`[auth].cloud_origin`, not by whether it looks like a cloud address (ADR-095):
 
 | Target | Order |
 |--------|-------|
-| inkentry cloud | `INKENTRY_SERVER_KEY`, then `[auth].access_token` from `inkentry login` |
-| any other `server_url` (self-hosted / team) | `INKENTRY_SERVER_KEY`, then the per-origin key store |
+| origin equals `[auth].cloud_origin` | `INKENTRY_SERVER_KEY`, then `[auth].access_token` from `inkentry login` |
+| any other `server_url` (self-hosted / team, or a cloud origin you are not logged into) | `INKENTRY_SERVER_KEY`, then the per-origin key store |
 
-Each kind consults only its own tier: a cloud request never reads the
-per-origin store, and a self-hosted request never reads `[auth]`. The
-per-origin scoping (ADR-071) is what lets one developer hold keys for two
-different self-hosted servers without them colliding or leaking into each
-other.
+Each kind consults only its own tier: a request matching the recorded cloud
+origin never reads the per-origin store, and any other request never reads
+`[auth]`. The per-origin scoping (ADR-071) is what lets one developer hold keys
+for two different self-hosted servers without them colliding or leaking into
+each other.
 
 An origin with no stored key resolves to **no bearer**. If the server requires
 one, the request fails and the error names
@@ -342,14 +359,19 @@ access_token = "..."
 refresh_token = "..."
 expires_at = 1234567890
 org_id = "org_..."
+cloud_origin = "https://api.inkentry.com"
 ```
 
-While `access_token` is unexpired, it is the source of the `Authorization:
-Bearer` token every inkentry cloud request sends; it does not apply to a
-self-hosted `server_url`, which resolves its own credential separately (see
-[How the bearer is resolved](#how-the-bearer-is-resolved) above).
-`refresh_token` rotates an expired access token and backs organization
-switching. The file is written with `0600` permissions. This
+While `access_token` is unexpired **and** the request's target origin equals
+`cloud_origin`, it is the source of the `Authorization: Bearer` token an
+inkentry cloud request sends; it does not apply to a self-hosted `server_url`,
+which resolves its own credential separately (see [How the bearer is
+resolved](#how-the-bearer-is-resolved) above). `cloud_origin` is the origin
+`inkentry login` (or `inkentry org switch`) authenticated against, recorded at
+that time and preserved across a token refresh; the access token is never
+released to a different origin, including one `INKENTRY_CLOUD_URL` points at
+(ADR-095). `refresh_token` rotates an expired access token and backs
+organization switching. The file is written with `0600` permissions. This
 table is not read from `.inkentry/config.toml`.
 
 Every field is optional: a partial table (for example a login without an org,
@@ -357,7 +379,8 @@ which omits `org_id`, or a hand-trimmed file) is tolerated and never blocks
 commands that need no credentials. A missing or empty `access_token` is read as
 "not logged in" (no bearer is sent); a missing `expires_at` is treated as
 expired (forcing a refresh); a missing `org_id` applies no organization
-scoping.
+scoping; a missing or empty `cloud_origin` matches no origin, so no bearer is
+ever released for that table.
 
 ### `[index]`
 
@@ -391,8 +414,8 @@ value in place.
 
 ## `.inkentry/config.toml` (project-level)
 
-Safe to commit; contains no secrets by design. Six keys are read from this
-file - `server_url`, `project_id`, `server_ca`, `mode`, `llm_url`, and
+Safe to commit; contains no secrets by design. Seven keys are read from this
+file - `server_url`, `cloud`, `project_id`, `server_ca`, `mode`, `llm_url`, and
 `[index]` - and anything else (including any personal field documented above)
 is ignored, with one warning line per key naming it and this file.
 
@@ -491,7 +514,7 @@ effect.
 | `INKENTRY_LLM_KEY` | Credential for the `llm_url` endpoint (takes precedence over the secret-store entry written by `inkentry auth set-key --llm`). Not a `config.toml` field. |
 | `INKENTRY_MODE` | `mode` (`offline` / `local_first` / `cloud_first`; an unrecognized value is a hard error) |
 | `INKENTRY_NO_SERVER=1` | Kill-switch: forces `offline` mode and disables server autostart, regardless of `mode` or `server_url` |
-| `INKENTRY_CLOUD_URL` | inkentry cloud API URL used by `login` / `org` (default `https://api.inkentry.com`) |
+| `INKENTRY_CLOUD_URL` | Development override that points a build at a development cloud instead of the fixed hosted URL. Not a user setting for choosing a cloud, and it does not decide which origin the access token is sent to (that is the origin the token was issued for). |
 | `INKENTRY_SECRET_STORE` | Secret-store backend: `auto` (default), `keychain`, or `file` |
 | `AGENT=true` | Forces JSON output for commands that support it (not a config field) |
 

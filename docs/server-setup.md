@@ -687,7 +687,17 @@ count at startup.
 
 | Env | Default | Purpose |
 |---|---|---|
+| `INKENTRY_EMBED_DEVICE` | `auto` | Which device the embedder runs on. |
 | `INKENTRY_EMBED_THREADS` | see below | CPU threads the native embedder may use. |
+
+`INKENTRY_EMBED_DEVICE` accepts `auto`, `gpu`, or `cpu`; unset or blank means
+`auto`. `auto` and `gpu` try a GPU (Metal on macOS, Vulkan on Windows/Linux x64)
+and fall back to CPU when no usable GPU driver is present; `cpu` forces the CPU
+path. An unrecognised value — a typo such as `INKENTRY_EMBED_DEVICE=vulkan` — is
+a hard startup error rather than a silent default, reported through `/v1/health`
+as `unavailable`, so a misconfigured device fails loudly instead of quietly
+running somewhere unintended. A build without the GPU embedding engine ignores
+this variable and always runs on CPU.
 
 The default reserves a quarter of the host, capped at two, from each of two
 counts and takes the smaller result: physical cores (embed throughput plateaus
@@ -719,6 +729,35 @@ embedder: when it is full the server sheds the request immediately with `429`
 and a `Retry-After` header, rather than letting a batch queue behind a running
 index until the caller's own timeout fires (see
 `POST /index/embed` in `architecture/server-api.md`).
+
+### Linux GPU acceleration and the `render` group
+
+A `llama-vulkan` build embeds on the GPU across NVIDIA/AMD/Intel. On Linux the
+Vulkan driver reaches the GPU through a DRM render node — `/dev/dri/renderD128`,
+owned `root:render`, mode `crw-rw----`. A process that is **not** in the
+`render` group cannot open it, so Mesa's Vulkan driver fails, only the software
+rasterizer (`llvmpipe`) enumerates, no usable GPU is found, and the server falls
+back to CPU. This bites any Linux host, not just old hardware: a freshly-created
+account is often not in `render`.
+
+Add the user the server runs as to the group, then re-login (or restart the
+service) so the new membership takes effect:
+
+```bash
+sudo usermod -aG render "$USER"
+```
+
+The server does not fail when the GPU is blocked — it embeds on CPU and keeps
+serving. It does tell you: startup logs carry a `WARN` naming the render node
+and this fix, `/v1/health` reports `embedder.device: "cpu"` with the hint in
+`embedder.detail`, and `inkentry server status` shows `Device: cpu` and a
+`Note:` line. If instead the device is reachable but the GPU genuinely lacks a
+required Vulkan feature (e.g. 16-bit storage on some older iGPUs), the log says
+so and there is nothing to fix — CPU is the correct outcome there.
+
+Under `systemd` `DynamicUser=`, add `SupplementaryGroups=render` to the unit so
+the synthetic user is placed in the group. In Docker, pass the render device
+(`--device /dev/dri`) and match the group id with `--group-add`.
 
 ### Non-loopback plaintext binds are refused, no override
 

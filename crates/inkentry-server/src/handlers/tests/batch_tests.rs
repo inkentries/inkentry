@@ -225,7 +225,8 @@ async fn note_id_routes_still_work_alongside_batch_route() {
         "seed: {batch_body}"
     );
 
-    let embedding = vec![1.0; dim as usize];
+    let mut embedding = vec![0.0; dim as usize];
+    embedding[0] = 1.0;
     let (note_status, note_body) = post_note(app.clone(), "sibling-proj", "B", embedding).await;
     assert_eq!(note_status, http::StatusCode::CREATED, "seed: {note_body}");
     let id = note_body["id"].as_str().expect("created id");
@@ -463,6 +464,101 @@ fn validation_rejects_a_nan_component() {
     );
 }
 
+// The magnitude window's boundaries are inclusive, and a boundary value is not
+// expressible as a route-level fixture with the same precision, so the window
+// is pinned on the validator directly. Norms are exact in f32 here: 0.5 and 1.5
+// both square and re-root without rounding.
+#[test]
+fn validation_accepts_a_vector_on_either_edge_of_the_magnitude_window() {
+    for (norm, vector) in [
+        (0.5, [0.5_f32, 0.0, 0.0, 0.0]),
+        (1.5, [1.5_f32, 0.0, 0.0, 0.0]),
+    ] {
+        let result = super::super::validate_pushed_vector(
+            Some(&vector),
+            Some(pushed_vector_model_tag()),
+            Some(PUSHED_VECTOR_PRECISION),
+            4,
+        );
+        assert!(
+            result.is_ok(),
+            "a vector of L2 norm {norm} sits on the window edge and must be accepted"
+        );
+    }
+}
+
+#[test]
+fn validation_rejects_a_vector_just_outside_the_magnitude_window() {
+    for (norm, vector) in [
+        (0.4999, [0.4999_f32, 0.0, 0.0, 0.0]),
+        (1.5001, [1.5001_f32, 0.0, 0.0, 0.0]),
+    ] {
+        let err = super::super::validate_pushed_vector(
+            Some(&vector),
+            Some(pushed_vector_model_tag()),
+            Some(PUSHED_VECTOR_PRECISION),
+            4,
+        )
+        .expect_err("a vector outside the magnitude window must be refused");
+        let crate::AppError::BadRequest(message) = err else {
+            panic!("a magnitude violation must be a bad request, not another error kind");
+        };
+        assert!(
+            message.contains("L2 magnitude"),
+            "the refusal for norm {norm} must name the magnitude rule; got: {message}"
+        );
+    }
+}
+
+// The finite check runs before the magnitude check, so a NaN component reports
+// the non-finite error. Order matters: a NaN component makes the norm itself
+// NaN, and a NaN norm would otherwise be reported as a magnitude violation,
+// which names the wrong defect for the caller.
+#[test]
+fn validation_reports_a_nan_component_as_non_finite_not_as_a_magnitude_violation() {
+    let vector = [f32::NAN, 0.0, 0.0, 0.0];
+    let err = super::super::validate_pushed_vector(
+        Some(&vector),
+        Some(pushed_vector_model_tag()),
+        Some(PUSHED_VECTOR_PRECISION),
+        4,
+    )
+    .expect_err("a vector carrying NaN must be refused");
+    let crate::AppError::BadRequest(message) = err else {
+        panic!("a non-finite component must be a bad request, not another error kind");
+    };
+    assert!(
+        message.contains("NaN or infinite"),
+        "a NaN component must report the non-finite rule; got: {message}"
+    );
+    assert!(
+        !message.contains("L2 magnitude"),
+        "a NaN component must not be reported as a magnitude violation; got: {message}"
+    );
+}
+
+// The vectors the built-in embedder produces must pass unchanged. Its output is
+// divided by its own L2 norm, so it arrives at length 1 up to floating-point
+// error; this reproduces that division at the dimension the shipped model uses.
+#[test]
+fn validation_accepts_a_full_dimension_vector_normalised_the_way_the_embedder_normalises() {
+    let dim = 896;
+    let mut vector: Vec<f32> = (0..dim).map(|i| (i % 17) as f32 - 8.0).collect();
+    let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    vector.iter_mut().for_each(|x| *x /= norm);
+
+    let result = super::super::validate_pushed_vector(
+        Some(&vector),
+        Some(pushed_vector_model_tag()),
+        Some(PUSHED_VECTOR_PRECISION),
+        dim,
+    );
+    assert!(
+        result.is_ok(),
+        "an L2-normalised vector at the shipped model's dimension must be accepted"
+    );
+}
+
 // A vector with no model tag or no precision is refused rather than stored:
 // an untagged vector cannot be checked against what this server embeds with,
 // so storing it would put a vector of unknown provenance in the index.
@@ -497,6 +593,59 @@ async fn batch_rejects_a_pushed_vector_with_a_foreign_model_or_precision() {
             "a pushed vector whose `{field}` is `{value}` must be refused; body: {body}"
         );
     }
+}
+
+// The magnitude rule reaches the batch route through the same up-front
+// validation pass as the other pushed-vector checks, so one bad vector rejects
+// the whole batch and the valid entries ahead of it are not written either.
+#[tokio::test]
+async fn batch_rejects_a_pushed_vector_outside_the_magnitude_window_and_writes_nothing() {
+    let (app, _dim) = make_app(0.92);
+    let entries = json!([
+        pushed_entry("g1", "good", json!([1.0, 0.0, 0.0, 0.0])),
+        pushed_entry("b1", "unnormalised", json!([3.0, 0.0, 0.0, 0.0])),
+        pushed_entry("g2", "also good", json!([0.0, 1.0, 0.0, 0.0])),
+    ]);
+    let (status, body) = post_batch(app.clone(), "magnitude-proj", entries).await;
+    assert_eq!(
+        status,
+        http::StatusCode::BAD_REQUEST,
+        "a pushed vector of L2 norm 3 must be refused; body: {body}"
+    );
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("L2 magnitude"),
+        "the refusal must name the magnitude rule; got: {message}"
+    );
+
+    let notes = list_notes_via_http(app, "magnitude-proj").await;
+    assert!(
+        notes.is_empty(),
+        "a magnitude violation must write NOTHING, not even the valid entries: {notes:?}"
+    );
+}
+
+#[tokio::test]
+async fn batch_rejects_a_zero_pushed_vector_and_writes_nothing() {
+    let (app, _dim) = make_app(0.92);
+    let entries = json!([pushed_entry("z1", "zero", json!([0.0, 0.0, 0.0, 0.0]))]);
+    let (status, body) = post_batch(app.clone(), "zerovec-proj", entries).await;
+    assert_eq!(
+        status,
+        http::StatusCode::BAD_REQUEST,
+        "a zero pushed vector must be refused; body: {body}"
+    );
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("L2 magnitude"),
+        "the refusal must name the magnitude rule; got: {message}"
+    );
+
+    let notes = list_notes_via_http(app, "zerovec-proj").await;
+    assert!(
+        notes.is_empty(),
+        "a refused batch must write nothing: {notes:?}"
+    );
 }
 
 // Non-regression: a text-only push is unchanged by any of the above.

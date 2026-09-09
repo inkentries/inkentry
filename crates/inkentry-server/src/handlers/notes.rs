@@ -33,6 +33,11 @@ pub struct AddNoteRequest {
     /// and the server's embedder is ready, the server embeds the entry.
     /// If neither is available, the entry is stored without a vector (text
     /// search only).
+    ///
+    /// A supplied vector must be L2-normalised: its magnitude must fall inside
+    /// `[0.5, 1.5]`. The index ranks by Euclidean distance, which tracks
+    /// similarity only across vectors of equal length, so one of another
+    /// magnitude is refused rather than stored and silently mis-ranked.
     pub vector: Option<Vec<f32>>,
     /// Model tag for a pushed `vector`. Required whenever `vector` is present.
     pub vector_model: Option<String>,
@@ -138,7 +143,7 @@ pub struct SupersedeRequest {
     request_body = AddNoteRequest,
     responses(
         (status = 201, description = "Note created", body = AddNoteResponse),
-        (status = 400, description = "Embedding dimension mismatch", body = ErrorBody),
+        (status = 400, description = "Invalid request, or a pushed vector that violates the contract: wrong model tag, wrong precision, wrong dimension, a non-finite component, or an L2 magnitude outside [0.5, 1.5]", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 409, description = "Note stored but conflicts with existing entries", body = AddNoteResponse),
         (status = 422, description = "Entry rejected: prompt injection detected"),

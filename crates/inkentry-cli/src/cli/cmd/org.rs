@@ -23,7 +23,10 @@ use super::auth_api::{self, DEFAULT_CLOUD_URL, MeOrg};
 
 #[derive(Args, Debug)]
 pub struct OrgArgs {
-    /// Override the inkentry cloud API URL (default: https://api.inkentry.com)
+    /// Development override: points `org` at a development cloud instead of the
+    /// fixed hosted URL (default: https://api.inkentry.com). Not a user setting
+    /// for choosing a cloud (use `cloud = true` in `.inkentry/config.toml`), and
+    /// it does not change which origin a stored access token is released to.
     #[arg(long, env = "INKENTRY_CLOUD_URL", global = true)]
     pub cloud_url: Option<String>,
 
@@ -104,7 +107,11 @@ pub async fn switch_org(
         Some(&workos_org_id),
     )
     .await?;
-    Ok(success.into_auth_tokens())
+    Ok(
+        success.into_auth_tokens(inkentry_core::config::server_keys::normalize_origin(
+            cloud_url,
+        )?),
+    )
 }
 
 /// Resolve `arg` to a **WorkOS org id** (`org_…`).
@@ -244,6 +251,7 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
+        use crate::cli::cmd::auth_api::DEFAULT_CLOUD_URL;
         use crate::cli::cmd::org::switch_org;
         use inkentry_core::config::AuthTokens;
 
@@ -259,6 +267,7 @@ mod tests {
                 refresh_token: "rt-current".into(),
                 expires_at: 4_000_000_000,
                 org_id: "00000000-0000-0000-0000-000000000000".into(),
+                cloud_origin: DEFAULT_CLOUD_URL.to_string(),
             }
         }
 
