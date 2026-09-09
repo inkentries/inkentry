@@ -73,8 +73,10 @@ pub(super) struct NoteResponse {
 
 impl From<NoteResponse> for Note {
     fn from(r: NoteResponse) -> Self {
+        let entity_id = crate::storage::entity_id(&r.kind, &r.title, &r.body);
         Note {
             id: r.id,
+            entity_id,
             kind: r.kind,
             title: r.title,
             body: r.body,

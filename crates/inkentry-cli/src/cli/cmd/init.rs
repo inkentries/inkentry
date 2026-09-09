@@ -300,13 +300,23 @@ fn git_notes_import_line(outcome: &GitNotesImport) -> Option<String> {
     match (outcome.imported, outcome.edges_unresolved) {
         (0, 0) => None,
         (0, u) => Some(skipped(u)),
-        (n, 0) => Some(format!("imported {n} entries from git notes")),
+        (n, 0) => Some(format!(
+            "imported {n} entries from git notes\n{SUMMARY_CONTINUATION}{MINTED_HERE}"
+        )),
         (n, u) => Some(format!(
-            "imported {n} entries from git notes, {}",
+            "imported {n} entries from git notes, {}\n{SUMMARY_CONTINUATION}{MINTED_HERE}",
             skipped(u)
         )),
     }
 }
+
+/// Import mints a fresh local id for every entry it takes off the ref, so a
+/// count alone would report every visible id silently changing (ADR-093 D5).
+const MINTED_HERE: &str = "the ids these entries show were minted on this machine; \
+     quote the entity id from `inkentry memory show` to name an entry anywhere else";
+
+/// Indent for a continuation line under the summary's `Memory:` value.
+const SUMMARY_CONTINUATION: &str = "           ";
 
 /// Write `.inkentry/.gitignore` covering the machine-specific SQLite, the
 /// per-run index lock (+ its pid sidecar), and log files. The `*` glob covers
@@ -540,9 +550,14 @@ mod git_notes_import_line_tests {
             edges_applied: 2,
             edges_unresolved: 0,
         };
+        let line = git_notes_import_line(&entries_only).expect("entries must be reported");
+        // Spelled out in one piece, with no line continuation of its own: the
+        // bug this pins was a run of spaces that a continuation left in the
+        // rendered sentence, which an expected value built the same way would
+        // reproduce instead of catching.
         assert_eq!(
-            git_notes_import_line(&entries_only).as_deref(),
-            Some("imported 3 entries from git notes")
+            line,
+            "imported 3 entries from git notes\n           the ids these entries show were minted on this machine; quote the entity id from `inkentry memory show` to name an entry anywhere else"
         );
 
         let edges_only = GitNotesImport {
@@ -561,6 +576,12 @@ mod git_notes_import_line_tests {
         let line = git_notes_import_line(&both).expect("both halves must be reported");
         assert!(line.contains("imported 2 entries"), "{line}");
         assert!(line.contains("2 edges skipped"), "{line}");
+        assert!(line.contains("minted on this machine"), "{line}");
+        // A run of spaces mid-sentence reaches real output and no `contains`
+        // assertion would see it; only the alignment indent may repeat one.
+        for rendered in line.lines().map(|l| l.trim_start()) {
+            assert!(!rendered.contains("  "), "doubled space in {rendered:?}");
+        }
     }
 }
 

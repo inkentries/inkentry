@@ -457,6 +457,7 @@ mod tests {
     fn note(id: i64, kind: &str, title: &str, body: &str) -> Note {
         Note {
             id: test_id(id),
+            entity_id: crate::storage::entity_id(kind, title, body),
             kind: kind.to_string(),
             title: title.to_string(),
             body: body.to_string(),

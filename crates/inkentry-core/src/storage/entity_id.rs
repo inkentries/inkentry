@@ -46,6 +46,36 @@ pub fn note_entity_id(n: &Note) -> String {
     entity_id(&n.kind, &n.title, &n.body)
 }
 
+/// How many characters of an `entity_id` a person sees and quotes (ADR-093 D2).
+///
+/// Wide enough that two entries in a project-sized store sharing it is
+/// negligible, narrow enough to type and to compare by eye. A display width,
+/// not a stored one: it can change without touching the column.
+pub const ENTITY_ID_HANDLE_LEN: usize = 12;
+
+/// The shortest prefix that is looked up as an `entity_id` (ADR-093 D2).
+///
+/// Below this an accidental match against unrelated input stops being
+/// implausible, so a shorter token is not tried as a handle at all.
+pub const ENTITY_ID_MIN_PREFIX_LEN: usize = 8;
+
+/// The handle of an entry: the leading [`ENTITY_ID_HANDLE_LEN`] characters of
+/// its `entity_id`.
+pub fn entity_id_handle(entity_id: &str) -> &str {
+    &entity_id[..entity_id.len().min(ENTITY_ID_HANDLE_LEN)]
+}
+
+/// Whether `token` can be looked up as an `entity_id` or a prefix of one.
+///
+/// `entity_id` is lowercase hex, and a UUIDv7 carries hyphens, so the two id
+/// forms can never claim the same token.
+pub fn is_entity_id_lookup(token: &str) -> bool {
+    (ENTITY_ID_MIN_PREFIX_LEN..=64).contains(&token.len())
+        && token
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +145,27 @@ mod tests {
             entity_id("decision", "t", "b"),
             entity_id("decision", "t", "b ")
         );
+    }
+
+    #[test]
+    fn the_handle_is_the_leading_twelve_characters() {
+        let id = entity_id("decision", "HTTP layer", "use axum");
+        assert_eq!(entity_id_handle(&id), "cc308a1ca5d8");
+        assert_eq!(entity_id_handle(&id).len(), ENTITY_ID_HANDLE_LEN);
+    }
+
+    #[test]
+    fn a_token_shorter_than_the_floor_is_not_a_handle() {
+        let id = entity_id("decision", "HTTP layer", "use axum");
+        assert!(!is_entity_id_lookup(&id[..ENTITY_ID_MIN_PREFIX_LEN - 1]));
+        assert!(is_entity_id_lookup(&id[..ENTITY_ID_MIN_PREFIX_LEN]));
+        assert!(is_entity_id_lookup(&id));
+    }
+
+    #[test]
+    fn a_uuid_is_never_read_as_a_handle() {
+        assert!(!is_entity_id_lookup("0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33"));
+        assert!(!is_entity_id_lookup("cc308a1ca5d8ZZ"));
+        assert!(!is_entity_id_lookup("CC308A1CA5D8"));
     }
 }

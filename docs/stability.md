@@ -111,6 +111,16 @@ none of it is covered by the plumbing golden schema.
 | `inkentry search --format json`/`jsonl` | **Best-effort**, and documented field by field, because it is the surface agents and retrieval harnesses consume. Each result is a typed envelope (`{type, fused_rank, fused_score, corpus_rank, code\|memory}`) whose shape is fixed by [ADR-081](adr/081-unified-search-rank-fusion.md). Fields may be added; the documented ones are not renamed or retyped without a changelog entry, and consumers must ignore fields they do not recognise. The full contract, including which fields are guaranteed and which are conditional, is [JSON output: the envelope contract](commands.md#json-output-the-envelope-contract). |
 | Every other `--format json` or `--format jsonl` mode | **Best-effort**. Structured, and reasonable to script against, but not enforced by a golden schema. Changes are avoided and go in the changelog; pin your version if you depend on the exact shape. |
 
+Every memory entry in a structured payload carries both of its ids. `entity_id`
+is the entry's portable identity, a SHA-256 over its kind, title and body: it
+travels on `refs/notes/inkentry` and in a portable dump, and it is the same on
+every machine that holds the entry, which is why it is the one to quote in a
+document, a script or a handoff. `id` is the token the store that answered
+minted, is per machine, and an import mints a new one. `entity_id` is an
+additive field on a best-effort surface: nothing else in those payloads changed
+with it, and a consumer that does not know it ignores it as it must ignore any
+field it does not recognise.
+
 A consumer that reads the wrong shape here does not get an error. It matches
 nothing on every result and reports an empty set at full query latency, which is
 indistinguishable from a codebase that genuinely holds no match. That is why the

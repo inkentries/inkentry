@@ -97,8 +97,10 @@ pub fn carrier_token(id: i64) -> NoteId {
 }
 
 pub fn record_to_note(r: NoteRecord) -> Note {
+    let entity_id = super::entity_id::entity_id(&r.kind, &r.title, &r.body);
     Note {
         id: carrier_token(r.id),
+        entity_id,
         kind: r.kind,
         title: r.title,
         body: r.body,

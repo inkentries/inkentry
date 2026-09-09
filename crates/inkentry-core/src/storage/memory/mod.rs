@@ -69,6 +69,10 @@ pub struct MemoryEdge {
 #[derive(Debug, Serialize)]
 pub struct Note {
     pub id: NoteId,
+    /// The entry's portable identity: `sha256` over its kind, title and body
+    /// (ADR-068), the same on every machine that holds the entry. `id` is this
+    /// store's own token for it and is minted per machine (ADR-093 D1).
+    pub entity_id: String,
     pub kind: String,
     pub title: String,
     pub body: String,

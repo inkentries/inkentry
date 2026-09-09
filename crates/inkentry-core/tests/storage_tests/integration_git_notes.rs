@@ -98,6 +98,45 @@ async fn git_notes_add_and_list_round_trip() {
     assert_eq!(notes[0].kind, "decision");
 }
 
+// The carrier resolves a quoted handle from the same folded records its `get`
+// reads, and reports the read as exhaustive: the fold walks every blob
+// reachable from the ref, so there is nothing past it to miss.
+#[tokio::test]
+#[serial]
+async fn git_notes_resolves_a_handle_from_the_whole_ref() {
+    let dir = make_temp_git_repo();
+    let backend = GitNotesBackend::with_root(dir.path().to_path_buf());
+
+    let (id, _) = backend
+        .add(note_input("decision", "carried entry"))
+        .await
+        .expect("add");
+    let entity_id =
+        inkentry_core::storage::entity_id("decision", "carried entry", "body for carried entry");
+
+    for token in [entity_id.as_str(), &entity_id[..12], &entity_id[..8]] {
+        let lookup = backend
+            .note_ids_for_entity_id_prefix(token)
+            .await
+            .expect("lookup");
+        assert_eq!(
+            lookup,
+            inkentry_core::storage::EntityIdLookup::Complete(vec![id.clone()]),
+            "token {token} must resolve to the carrier token"
+        );
+    }
+
+    let absent = inkentry_core::storage::entity_id("decision", "never written", "body");
+    assert_eq!(
+        backend
+            .note_ids_for_entity_id_prefix(&absent)
+            .await
+            .expect("lookup"),
+        inkentry_core::storage::EntityIdLookup::Complete(vec![]),
+        "a miss on a fully read ref is a definite miss"
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn git_notes_list_without_kind_returns_all() {
@@ -3718,11 +3757,13 @@ use inkentry_core::storage::memory::Note;
 /// A `Note` as `backend.get()` would hand back right after an entry is
 /// created — the shape `append_state_update`'s `base` parameter expects.
 fn note_for(title: &str, id: i64, created_at: i64) -> Note {
+    let body = format!("body for {title}");
     Note {
         id: carrier_token(id),
+        entity_id: inkentry_core::storage::entity_id("decision", title, &body),
         kind: "decision".to_string(),
         title: title.to_string(),
-        body: format!("body for {title}"),
+        body,
         tags: vec![],
         linked_files: vec![],
         created_at,

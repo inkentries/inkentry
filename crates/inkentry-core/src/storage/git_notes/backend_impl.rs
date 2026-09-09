@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
 
-use super::super::backend::{MemoryBackend, NoteInput};
+use super::super::backend::{EntityIdLookup, MemoryBackend, NoteInput};
 use super::super::memory::{MemoryEdge, Note, NoteId};
 use super::super::note_record::{CarriedEdge, NoteRecord, now_millis, now_secs, record_to_note};
 use super::GitNotesBackend;
@@ -104,6 +104,23 @@ impl MemoryBackend for GitNotesBackend {
             .into_iter()
             .find(|record| record.id == id)
             .map(record_to_note))
+    }
+
+    /// Reads the same folded records `get` does, so a handle resolves to the
+    /// carrier token that backend's other methods accept.
+    ///
+    /// Complete rather than bounded: the fold reads every blob reachable from
+    /// the ref, so there is nothing beyond it to miss.
+    async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
+        Ok(EntityIdLookup::Complete(
+            self.folded_records()
+                .await?
+                .into_iter()
+                .map(record_to_note)
+                .filter(|note| note.entity_id.starts_with(prefix))
+                .map(|note| note.id)
+                .collect(),
+        ))
     }
 
     async fn count(&self) -> Result<i64> {

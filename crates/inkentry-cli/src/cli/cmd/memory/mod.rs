@@ -315,6 +315,7 @@ mod list;
 pub(crate) mod outbox;
 pub(crate) mod reconcile;
 pub(crate) mod reindex;
+mod resolve;
 mod show;
 mod supersede;
 pub mod sync;
@@ -496,7 +497,7 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         .unwrap_or_default();
     cprintln!(
         "\x1b[1m#{id}\x1b[0m  \x1b[33m[{kind}]\x1b[0m  {title}{archived}{dist_fmt}{source}",
-        id = n.id,
+        id = crate::storage::entity_id_handle(&n.entity_id),
         kind = n.kind,
         title = n.title,
         archived = archived_badge,

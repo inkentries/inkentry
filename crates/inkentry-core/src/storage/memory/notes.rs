@@ -8,7 +8,7 @@ use std::str::FromStr;
 /// can index positionally. `uuid` leads: it is the identity, and `id` is a
 /// storage surrogate that never reaches a `Note`.
 pub(super) const NOTE_COLUMNS: &str = "uuid, kind, title, body, tags, linked_files, \
-     created_at, status, superseded_by, source_ref, valid_at, invalid_at";
+     created_at, status, superseded_by, source_ref, valid_at, invalid_at, entity_id";
 
 fn note_id_at(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<NoteId> {
     let raw: String = row.get(idx)?;
@@ -39,6 +39,7 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         source_ref: row.get(9)?,
         valid_at: row.get(10)?,
         invalid_at: row.get(11)?,
+        entity_id: row.get(12)?,
         distance: None,
         score: None,
         source_project: None,
@@ -68,7 +69,8 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
         source_ref: row.get(9)?,
         valid_at: row.get(10)?,
         invalid_at: row.get(11)?,
-        distance: Some(row.get(12)?),
+        entity_id: row.get(12)?,
+        distance: Some(row.get(13)?),
         score: None,
         source_project: None,
         source_project_path: None,

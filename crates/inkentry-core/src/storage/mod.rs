@@ -17,10 +17,13 @@ mod specs;
 mod sql;
 mod stats;
 
-pub use backend::{LocalMemoryBackend, MemoryBackend, NoteInput};
+pub use backend::{EntityIdLookup, LocalMemoryBackend, MemoryBackend, NoteInput};
 pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
 pub use db::Database;
-pub use entity_id::{entity_id, note_entity_id};
+pub use entity_id::{
+    ENTITY_ID_HANDLE_LEN, ENTITY_ID_MIN_PREFIX_LEN, entity_id, entity_id_handle,
+    is_entity_id_lookup, note_entity_id,
+};
 pub use files::FileRecord;
 pub use git_notes::{
     AppendOutcome, BatchAppendOutcome, GitNotesBackend, LOCK_WAIT_BUDGET, LockAttempt, NotesLock,

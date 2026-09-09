@@ -527,3 +527,93 @@ async fn a_slow_but_connected_server_is_not_reported_as_unreachable() {
         "a connected server must never be reported as unreachable, got: {chain}"
     );
 }
+
+// ── entity id lookup ─────────────────────────────────────────────────────────
+
+// The team server's listing takes a limit but no offset or cursor, so this
+// backend reads one page and has to say whether that page was the whole store.
+
+fn team_note(n: usize, title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("{n:08x}-0000-7000-8000-000000000000"),
+        "kind": "decision",
+        "title": title,
+        "body": "b",
+        "tags": [],
+        "linked_files": [],
+        "created_at": 1_700_000_000,
+        "status": "active",
+        "superseded_by": null,
+    })
+}
+
+async fn team_backend_listing(
+    count: usize,
+    last_title: &str,
+) -> (wiremock::MockServer, RemoteMemoryBackend) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let mut entries: Vec<serde_json::Value> = (0..count.saturating_sub(1))
+        .map(|n| team_note(n, &format!("filler {n}")))
+        .collect();
+    entries.push(team_note(count, last_title));
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/team/memory"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(entries))
+        .mount(&server)
+        .await;
+
+    let backend = RemoteMemoryBackend {
+        client: reqwest::Client::new(),
+        base_url: server.uri(),
+        project_id: "team".to_string(),
+        api_key: None,
+    };
+    (server, backend)
+}
+
+// The blocking case: a listing that came back full was cut off at the limit, so
+// entries older than it were never read. Reporting "no match" as a fact would
+// deny an entry that was never looked for, and the listing is newest-first, so
+// what falls outside is exactly the oldest entries a long-lived document cites.
+#[tokio::test]
+async fn a_full_page_reports_the_lookup_as_bounded_not_as_a_miss() {
+    let limit = crate::storage::backend::ENTITY_ID_SCAN_LIMIT;
+    let (_server, backend) = team_backend_listing(limit, "newest").await;
+
+    let absent = crate::storage::entity_id("decision", "an entry this server never returned", "b");
+    let lookup = backend
+        .note_ids_for_entity_id_prefix(&absent)
+        .await
+        .unwrap();
+
+    match lookup {
+        EntityIdLookup::Bounded { matches, examined } => {
+            assert!(matches.is_empty());
+            assert_eq!(examined, limit);
+        }
+        EntityIdLookup::Complete(_) => {
+            panic!("a saturated listing must not be reported as an exhaustive read")
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_short_page_is_an_exhaustive_read() {
+    let (_server, backend) = team_backend_listing(3, "findable").await;
+
+    let target = crate::storage::entity_id("decision", "findable", "b");
+    let lookup = backend
+        .note_ids_for_entity_id_prefix(&target[..12])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        lookup,
+        EntityIdLookup::Complete(vec![
+            "00000003-0000-7000-8000-000000000000".parse().unwrap()
+        ])
+    );
+}
