@@ -39,9 +39,9 @@ pub trait EmbeddingBackend: Send + Sync {
     /// an external OpenAI-compatible embedding server, which truncates or
     /// rejects oversized inputs on its own terms that this process can't see).
     ///
-    /// The one concrete backend with a real, host-derived cap is
-    /// [`LlamaEmbedder`](crate::LlamaEmbedder) (see its `probe_ubatch`), which
-    /// overrides this. It is
+    /// The one concrete backend with a real, fixed cap is
+    /// [`LlamaEmbedder`](crate::LlamaEmbedder) (its single context size, see
+    /// `ensure_embed_context_fits`), which overrides this. It is
     /// surfaced so a client can size a request's *total* token budget
     /// realistically instead of assuming every chunk is small (see
     /// `HealthResponse.limits.embedder_token_cap` in inkentry-server).
