@@ -472,28 +472,71 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(Some(note.into()))
     }
 
-    /// The team server has no route keyed on `entity_id` and no offset or
-    /// cursor on its listing, so this reads one page and reports honestly
-    /// whether that page was the whole store.
+    /// The team server pages its listing by `offset`, so a handle resolves
+    /// against the whole store rather than one page: walk it, collecting every
+    /// match so an ambiguous prefix is still caught when its entries fall on
+    /// different pages. A store read to its empty tail is `Complete`; the walk
+    /// advances by the count actually returned, since the server caps a page
+    /// below what is asked for, and ends on the empty page, not a short one.
     ///
-    /// A full page back means the listing was cut off at the limit and older
-    /// entries were never read, so the result is
-    /// [`EntityIdLookup::Bounded`]: without paging there is no way to reach
-    /// them, and claiming the entry is absent would deny one that was never
-    /// looked for. A short page means the store ended inside it, so the answer
-    /// is exhaustive.
+    /// Two guards keep the walk finite when a peer does not page as asked. A
+    /// server one release behind has no `offset` on its list route, and an
+    /// unknown query parameter is dropped rather than refused, so it returns the
+    /// same first page for every request and the empty tail never comes. A page
+    /// that adds no entry not already seen means the offset is not advancing, so
+    /// the read is reported `Bounded` rather than looped; a hard page ceiling
+    /// backstops that guard. Either way an older peer degrades to the same
+    /// honest bounded result the single-page read once gave, never a hang.
     async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
-        let limit = crate::storage::backend::ENTITY_ID_SCAN_LIMIT;
-        let notes = self.list(None, limit, true, None).await?;
-        let saturated = notes.len() >= limit;
-        let matches = crate::storage::backend::ids_with_entity_id_prefix(notes, prefix);
-        Ok(if saturated {
-            EntityIdLookup::Bounded {
-                matches,
-                examined: limit,
+        // Far above any project-sized store; the no-progress guard is what
+        // actually stops a non-paging peer, this only backstops it.
+        const MAX_PAGES: usize = 1_000;
+        let page = crate::storage::backend::ENTITY_ID_PAGE_SIZE;
+        let mut matches = Vec::new();
+        let mut seen: HashSet<NoteId> = HashSet::new();
+        let mut offset = 0usize;
+        for _ in 0..MAX_PAGES {
+            let req = self.client.get(self.url("memory")).query(&[
+                ("limit", page.to_string().as_str()),
+                ("offset", offset.to_string().as_str()),
+                ("archived", "true"),
+            ]);
+            let notes: Vec<Note> = self
+                .send(req, "GET /memory")
+                .await?
+                .checked(&self.base_url)
+                .context("server returned error for GET /memory")?
+                .json::<NoteListPayload>()
+                .await
+                .context("parsing list response")?
+                .into_notes()
+                .into_iter()
+                .map(Into::into)
+                .collect();
+            if notes.is_empty() {
+                return Ok(EntityIdLookup::Complete(matches));
             }
-        } else {
-            EntityIdLookup::Complete(matches)
+            let drained = notes.len();
+            let mut progressed = false;
+            for note in notes {
+                if seen.insert(note.id.clone()) {
+                    progressed = true;
+                    if note.entity_id.starts_with(prefix) {
+                        matches.push(note.id);
+                    }
+                }
+            }
+            if !progressed {
+                return Ok(EntityIdLookup::Bounded {
+                    matches,
+                    examined: seen.len(),
+                });
+            }
+            offset += drained;
+        }
+        Ok(EntityIdLookup::Bounded {
+            matches,
+            examined: seen.len(),
         })
     }
 

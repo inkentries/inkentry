@@ -23,20 +23,10 @@ pub struct NoteInput {
     pub supersedes: Option<NoteId>,
 }
 
-/// How many entries a backend with no index over `entity_id` reads to resolve a
-/// quoted handle. Bounded so a lookup cannot pull an unbounded listing across a
-/// network; a store larger than this resolves the full value, not a prefix.
-pub(crate) const ENTITY_ID_SCAN_LIMIT: usize = 1_000;
-
-/// The ids among `notes` whose `entity_id` starts with `prefix`, for a backend
-/// that can only answer the lookup by reading its own listing.
-pub(crate) fn ids_with_entity_id_prefix(notes: Vec<Note>, prefix: &str) -> Vec<NoteId> {
-    notes
-        .into_iter()
-        .filter(|n| n.entity_id.starts_with(prefix))
-        .map(|n| n.id)
-        .collect()
-}
+/// The page size the team client asks for per request when walking a listing to
+/// resolve a quoted handle — the size of one page, not a bound on the walk,
+/// which reads every page. The server may return fewer (it caps a page).
+pub(crate) const ENTITY_ID_PAGE_SIZE: usize = 1_000;
 
 /// What a handle lookup found, and whether the backend could see far enough to
 /// mean it.

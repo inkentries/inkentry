@@ -20,7 +20,9 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   id or any prefix of 8 or more characters, as well as the id they already
   took. Quote the entity id whenever you name an entry outside the machine that
   recorded it, in a document, a handoff or a script: the `id` beside it is
-  minted per machine and does not travel.
+  minted per machine and does not travel. On a self-hosted team server a quoted
+  handle now resolves against the whole store, reaching an old entry however
+  large the store has grown, rather than only the most recent page.
 - **GPU-accelerated embedding.** The embedder now runs on llama.cpp — GPU
   wherever a driver allows (Metal on macOS, Vulkan on NVIDIA/AMD/Intel on
   Windows and Linux x64) and CPU otherwise. Same vectors, same indexes —
