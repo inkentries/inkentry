@@ -444,8 +444,14 @@ fn run_job(
             .into());
         }
         batch.clear();
+        // `true` marks the tokens as output-bearing. A pooling embedder needs
+        // logits at the pooled positions, so with `false` llama.cpp overrides
+        // the flag on every decode and logs a WARN per forward pass ("some input
+        // tokens were not marked as outputs") — ~one line per chunk, thousands
+        // per index. Marking them up front is what it does anyway; the pooled
+        // read (`embeddings_seq_ith`) and the vectors are unchanged.
         batch
-            .add_sequence(toks, 0, false)
+            .add_sequence(toks, 0, true)
             .map_err(|e| EmbedError::Inference(format!("batching chunk {i}: {e}")))?;
         ctx.clear_kv_cache();
         ctx.decode(batch)
