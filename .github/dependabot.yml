@@ -13,6 +13,14 @@ updates:
       ast-grep:
         patterns:
           - "ast-grep-*"
+      # llama-cpp-2 and llama-cpp-sys-2 are a pinned pair (both `=` in the
+      # workspace manifest) that breaks across releases if their versions
+      # diverge, so they must always bump together in one PR. See the pin
+      # comment in Cargo.toml.
+      llama-cpp:
+        patterns:
+          - "llama-cpp-2"
+          - "llama-cpp-sys-2"
 
   - package-ecosystem: github-actions
     directory: /

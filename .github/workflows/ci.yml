@@ -299,7 +299,14 @@ jobs:
         with:
           # Keyed apart from the default ubuntu legs: this cache carries the
           # ggml/vulkan C++ objects, which never refingerprint on features.
-          key: llama-vulkan
+          # The `-vN` suffix is a manual reset: a llama.cpp version bump changes
+          # the engine's shared-object sonames, so the cache Swatinem restores by
+          # prefix still holds the previous version's `lib*.so`. Those symlinks
+          # now dangle, and llama-cpp-sys-2's build script trips on them —
+          # `exists()` follows the dead link and reports absent, then `hard_link`
+          # fails EEXIST because the path is occupied (build.rs:1415). Bump this
+          # suffix whenever the pinned llama-cpp-2/-sys-2 version moves.
+          key: llama-vulkan-v2
 
       - name: Clippy (llama-vulkan)
         # --all-targets so the embed_bench example (llama-gated) is linted under
