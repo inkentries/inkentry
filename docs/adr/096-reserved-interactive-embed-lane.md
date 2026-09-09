@@ -164,37 +164,54 @@ and that cost is what the budget below bounds against the machine it runs on.
 
 A separate change fixes the embedder's micro-batch at its largest rung, 8192
 tokens, on every machine, so that identical source yields identical vectors
-regardless of host. At that rung a warm context costs roughly 2 GB of KV and
-compute buffers, and the pool's contexts are the dominant memory the embedder
-holds, so the budget is counted in whole contexts.
+regardless of host. At that rung the cost of a warm context splits sharply into
+what it reserves and what it actually occupies, and the two are an order of
+magnitude apart.
 
-The pool's high-water mark is `EMBED_QUEUE_CAPACITY + EMBED_INTERACTIVE_CAPACITY`
-contexts — one per admittable request. What is actually resident depends on the
-workload, and the asymmetric lifecycle is what keeps the ordinary cases far below
-that mark:
+- **Reserved address space, per context: roughly 5.5 GiB** — a 512 MiB KV cache,
+  a 4904 MiB compute buffer sized for the 8192-token batch, and a 184 MiB
+  CPU-side buffer. A context maps this up front.
+- **Resident memory, per context: roughly 0.6 to 0.7 GB.** On Apple Silicon's
+  unified memory the compute buffer is committed sparsely — only the pages a
+  forward pass actually touches are backed by physical memory — so almost none of
+  the 5.5 GiB reservation is ever resident.
 
-- **At rest:** one context, ~2 GB — the interactive lane's hot context, once it
-  has served a first request. Every bulk context and every on-demand interactive
-  context has idle-dropped.
-- **A single index pass** (the ordinary bulk workload, whose batches are issued
-  serially): the one hot interactive context plus one warm bulk context, ~4 GB. A
-  single pass does not materialise four bulk contexts on its own; four is the
-  ceiling for four genuinely concurrent bulk callers.
-- **Absolute peak:** `(EMBED_QUEUE_CAPACITY + EMBED_INTERACTIVE_CAPACITY) × ~2 GB`,
-  reached only when that many bulk and interactive requests are in flight at the
-  same instant, and released within the idle timeout once they are not.
+The memory that scales is the reservation, and its multiplier is the number of
+contexts the pool has mapped: at most `EMBED_QUEUE_CAPACITY +
+EMBED_INTERACTIVE_CAPACITY`, one per admittable request. The asymmetric lifecycle
+keeps the count mapped at any moment far below that ceiling — one interactive
+context at rest, that context plus one bulk context during a serial index pass,
+and the full high-water only under genuinely concurrent load, released within the
+idle timeout. With four contexts mapped at once the process reserves roughly 23 GB
+of writable address space while holding well under a gigabyte resident — about
+580 MB, some 2% of the reservation — for a physical footprint that peaks near
+2.7 GB.
 
-The memory gate keeps the peak proportionate to the machine. On a machine that
-reports under 8 GB available, `EMBED_INTERACTIVE_CAPACITY` is 1, so the
-interactive lane adds a single ~2 GB context on top of the pre-existing bulk pool,
-and its resting cost is that one context — not three. The bulk pool reaches its
-4 × ~2 GB only under four-way concurrent bulk load; being lazy and idle-dropped at
-30 s, it does not hold those contexts between passes, which is what stops an idle
-server from pinning 8 GB of bulk contexts. A machine that qualifies for capacity 3
-is by definition one the gate measured as having the headroom. And a lazily-built
-context that cannot allocate on the device fails that one request rather than the
-process, so the peak is a ceiling the engine degrades under, not one it must
-always fit.
+That gap is what reframes the small-machine budget. The ~2.7 GB physical footprint
+fits a small machine comfortably; the reservation does not. Roughly 23 GB of mapped
+address space drives the memory compressor and swap even though little of it is
+resident — enough that an 18 GB machine swapped ~2.2 GB at the peak of a
+four-context pass. So the constraint the gate answers is the reservation, and its
+lever is the pool's context count. Below 8 GB of available memory
+`EMBED_INTERACTIVE_CAPACITY` is 1, holding the high-water to `EMBED_QUEUE_CAPACITY
++ 1` and the resting cost to the single hot interactive context; at or above 8 GB
+the pool may reach `EMBED_QUEUE_CAPACITY + 3`, and the bulk lane's lazy build plus
+30 s idle-drop keep those contexts — and the address space they map — from being
+held between passes. A context that cannot map its reservation fails its own build
+rather than the process, so the high-water is a ceiling the engine degrades under,
+not one it must always fit.
+
+The resident-versus-reserved split is Apple-unified-memory behaviour. The Linux
+and CPU backends may commit more of the compute buffer resident, so the ~0.6 GB
+resident figure is Metal-specific; the ~5.5 GiB reservation is the portable
+number, and off-Metal hosts should be budgeted closer to it.
+
+The split strengthens the reserved, kept-warm interactive lane rather than
+weakening it. Holding one interactive context permanently hot costs only ~0.6 to
+0.7 GB resident — cheap insurance against the roughly 2 s cold-context build an
+interactive embed would otherwise pay after an idle spell or a saturated pool —
+and the address space it reserves is bounded by the same gate as the rest of the
+pool.
 
 ### Why fairness lives at admission and pool sizing, not inside the engine
 
@@ -223,11 +240,12 @@ chunk boundary.
   reserved lane on the `/index/embed` and memory search `429` responses.
 - The engine's context pool grows by `EMBED_INTERACTIVE_CAPACITY` contexts at its
   high-water mark — gated to 1 below 8 GB of available memory and 3 at or above
-  it, at roughly 2 GB per context. One interactive context stays resident at rest;
+  it. On Apple Silicon each context reserves ~5.5 GiB of address space but holds
+  only ~0.6 to 0.7 GB resident; one interactive context stays warm at rest, while
   bulk contexts and any on-demand interactive contexts are built lazily and
-  dropped after 30 s of idle, so beyond that single resident context the added
-  memory is paid only while a bulk pass and interactive work overlap, not between
-  passes.
+  dropped after 30 s of idle, so the reserved address space — and the swap
+  pressure it drives — is paid only while a bulk pass and interactive work
+  overlap, not between passes.
 - The 5 s budget on `memory add` stops being the thing that hides this. It
   stays, as the guard for an embedder that is genuinely unavailable rather than
   merely busy.
