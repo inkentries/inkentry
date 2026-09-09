@@ -975,6 +975,27 @@ impl GitNotesBackend {
             .collect())
     }
 
+    /// Every supersede on the ref as `(OLD/subject entity_id, NEW/successor
+    /// entity_id)` pairs. The carrier records a supersede on the subject's
+    /// `superseded_by_entity_id` rather than in the `edges` list (which
+    /// [`carried_edges`] reads), so this is its own projection; a clone rebuilds
+    /// the `supersedes` row by resolving both ends against its rows. Read off the
+    /// folded records so a supersede appended on any copy of an entity counts
+    /// once.
+    pub async fn carried_supersede_edges(&self) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .folded_records()
+            .await?
+            .into_iter()
+            .filter_map(|record| {
+                record
+                    .superseded_by_entity_id
+                    .as_deref()
+                    .map(|successor| (record.resolve_entity_id(), successor.to_string()))
+            })
+            .collect())
+    }
+
     /// Every inkentry record on the ref, each paired with the commit its note is
     /// anchored to (newest commit first). Unlike [`folded_records`] this keeps
     /// the per-commit provenance the `--source-ref` anchor lookup needs, so it

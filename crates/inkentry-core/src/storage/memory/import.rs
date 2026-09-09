@@ -208,6 +208,43 @@ impl MemoryStore {
         Ok(outcome)
     }
 
+    /// Apply supersede edges that arrived as `(OLD/subject entity_id,
+    /// NEW/successor entity_id)` pairs — the shape the git-notes carrier records
+    /// on each superseded entry's `superseded_by_entity_id`, one per pair.
+    ///
+    /// The row is written `from = successor, to = subject`, the direction the
+    /// writer records a supersede in (`add_note_superseding`/`supersede`), so a
+    /// clone reconstructs the same row the writer holds. Supersede stays out of
+    /// the carrier's `relates_to`/`contradicts` edge list, so
+    /// [`import_carried_edges`] never sees it; this is its dedicated projection.
+    /// Same rules otherwise: both endpoints resolve through `entity_id`, an
+    /// absent endpoint is counted unresolved rather than failing the batch, and
+    /// `import_edge`'s `INSERT OR IGNORE` makes a re-run add nothing.
+    pub fn import_supersede_edges(&self, pairs: &[(String, String)]) -> Result<CarriedEdgeImport> {
+        let mut outcome = CarriedEdgeImport::default();
+        for (old_entity_id, new_entity_id) in pairs {
+            let (Some(from), Some(to)) = (
+                self.note_id_for_entity_id(new_entity_id)?,
+                self.note_id_for_entity_id(old_entity_id)?,
+            ) else {
+                outcome.unresolved += 1;
+                continue;
+            };
+            // A supersede pair whose two entries share identical text collapses
+            // to one entity; the self-edge that would leave is a cycle, not a
+            // chain — the same guard `add_note_superseding` applies.
+            if from == to {
+                continue;
+            }
+            if self.import_edge(&from, &to, "supersedes", None)? {
+                outcome.applied += 1;
+            } else {
+                outcome.already_present += 1;
+            }
+        }
+        Ok(outcome)
+    }
+
     /// The id of the entry already holding `entity_id`, if any. Lets an import
     /// recognise an entry it has already seen without depending on the uuid,
     /// which a second dump of the same store may not have carried.
@@ -340,6 +377,54 @@ mod tests {
         let (_c, ec) = add(&store, "not-here-yet");
         let late = vec![(ea, CarriedEdge::new("relates_to", ec))];
         assert_eq!(store.import_carried_edges(&late).expect("late").applied, 1);
+    }
+
+    // The supersede projection's contract in one pass: a resolvable pair lands
+    // as the writer's own (successor -> subject) row, a pair with either end
+    // missing is counted rather than failing the batch, a pair whose two ends
+    // are one entity is skipped (uncounted), and a re-apply changes nothing.
+    #[test]
+    fn import_supersede_edges_writes_the_writer_direction_counts_dangling_and_is_idempotent() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let store = MemoryStore::open(tmp.path()).expect("open");
+        let (old, e_old) = add(&store, "old");
+        let (new, e_new) = add(&store, "new");
+        let (_only, e_self) = add(&store, "self");
+
+        // Pairs are (subject entity_id, successor entity_id), the shape
+        // `carried_supersede_edges` emits.
+        let pairs = vec![
+            (e_old.clone(), e_new.clone()),
+            (e_old.clone(), "not-here".to_string()),
+            ("not-here".to_string(), e_new.clone()),
+            (e_self.clone(), e_self.clone()),
+        ];
+        let first = store.import_supersede_edges(&pairs).expect("apply");
+        assert_eq!(
+            first,
+            CarriedEdgeImport {
+                applied: 1,
+                already_present: 0,
+                unresolved: 2,
+            }
+        );
+        assert_eq!(
+            edge_rows(&store),
+            vec![(new.to_string(), old.to_string(), "supersedes".to_string())],
+            "the row is from the successor to the subject, as the writer records it"
+        );
+
+        let again = store.import_supersede_edges(&pairs).expect("re-apply");
+        assert_eq!(
+            again,
+            CarriedEdgeImport {
+                applied: 0,
+                already_present: 1,
+                unresolved: 2,
+            }
+        );
+        assert_eq!(edge_rows(&store).len(), 1, "re-applying adds no row");
     }
 
     /// The prefix read is what tells a quoted handle from an ambiguous one, so

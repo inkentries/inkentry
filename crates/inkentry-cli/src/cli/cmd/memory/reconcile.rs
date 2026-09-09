@@ -650,12 +650,22 @@ const GIT_NOTES_IMPORT_LIMIT: usize = 500;
 pub(crate) struct GitNotesImport {
     /// Entries this pass inserted into `memory.db`.
     pub imported: usize,
-    /// Carried edges that became a new `memory_edges` row here.
+    /// Carried `relates_to`/`contradicts` edges that became a new `memory_edges`
+    /// row here.
     pub edges_applied: usize,
-    /// Carried edges naming an entry this store does not hold, so they were
-    /// skipped rather than failing the import. A later import, after a fetch
-    /// that brings the missing entry, resolves them.
+    /// Carried `relates_to`/`contradicts` edges naming an entry this store does
+    /// not hold, so they were skipped rather than failing the import. A later
+    /// import, after a fetch that brings the missing entry, resolves them.
     pub edges_unresolved: usize,
+    /// Supersede edges (carried on each subject's `superseded_by_entity_id`)
+    /// that became a new `memory_edges` row here. Counted apart from
+    /// `edges_applied` because supersede rides its own carrier field, not the
+    /// edge list, and so reconstructs through a separate projection.
+    pub supersede_edges_applied: usize,
+    /// Supersede edges whose subject or successor is absent from this store, so
+    /// they were skipped. Resolves on a later import once the missing entry
+    /// arrives.
+    pub supersede_edges_unresolved: usize,
 }
 
 /// Import git-notes memory entries into the project `memory.db` during `init`.
@@ -723,8 +733,14 @@ pub(crate) async fn import_git_notes_into_memory(
         .carried_edges()
         .await
         .context("reading the edges carried on the notes ref")?;
+    // Supersede rides its own carrier field, so it is read (and applied below)
+    // separately from the `relates_to`/`contradicts` edge list.
+    let supersede_pairs = backend
+        .carried_supersede_edges()
+        .await
+        .context("reading the supersede edges carried on the notes ref")?;
 
-    if to_import.is_empty() && carried.is_empty() {
+    if to_import.is_empty() && carried.is_empty() && supersede_pairs.is_empty() {
         // Everything on the ref is already imported: advance the marker (so the
         // gate stops re-walking) without inserting a row.
         let _ = store.set_notes_imported_working_oid(working_oid.as_deref());
@@ -758,12 +774,17 @@ pub(crate) async fn import_git_notes_into_memory(
         // After every insert above, so an edge between two entries arriving in
         // the same pass finds both of them.
         let edges = store.import_carried_edges(&carried)?;
+        // Same ordering requirement: the foreign keys refuse a supersede row
+        // until both its endpoints are in the store.
+        let supersedes = store.import_supersede_edges(&supersede_pairs)?;
         // Crash-atomic with the inserts above (ADR-077 D2).
         store.set_notes_imported_working_oid(working_oid.as_deref())?;
         Ok(GitNotesImport {
             imported: to_import.len(),
             edges_applied: edges.applied,
             edges_unresolved: edges.unresolved,
+            supersede_edges_applied: supersedes.applied,
+            supersede_edges_unresolved: supersedes.unresolved,
         })
     })();
 
@@ -1175,6 +1196,127 @@ mod init_import_tests {
         assert_eq!(second.imported, 0, "no new entries, only a new edge");
         assert_eq!(second.edges_applied, 1);
         assert_eq!(edge_triples(&mem_path).len(), 1);
+    }
+
+    // ── supersede-edge hydration ─────────────────────────────────────────────
+
+    const SUPERSEDE_OLD_TITLE: &str = "the retired approach";
+    const SUPERSEDE_NEW_TITLE: &str = "the chosen approach";
+
+    // Build a git-notes ref carrying two entries where NEW supersedes OLD,
+    // exactly as `memory add` + `memory supersede`'s carrier write-through would:
+    // OLD and NEW added, then an archived state-update on OLD naming NEW as its
+    // successor via `superseded_by_entity_id`. Returns NEW's entity_id.
+    async fn seed_supersede_carrier(git_root: &std::path::Path) -> String {
+        let backend = GitNotesBackend::with_root(git_root.to_path_buf());
+        backend
+            .add(note_input(SUPERSEDE_OLD_TITLE))
+            .await
+            .expect("add old");
+        backend
+            .add(note_input(SUPERSEDE_NEW_TITLE))
+            .await
+            .expect("add new");
+        let old_note = backend
+            .list(None, 10, true, None)
+            .await
+            .expect("list ref")
+            .into_iter()
+            .find(|n| n.title == SUPERSEDE_OLD_TITLE)
+            .expect("old on ref");
+        let new_eid = entity_id(
+            "decision",
+            SUPERSEDE_NEW_TITLE,
+            &format!("body of {SUPERSEDE_NEW_TITLE}"),
+        );
+        crate::storage::append_state_update(
+            Some(git_root),
+            &old_note,
+            "archived",
+            Some(1),
+            Some(new_eid.clone()),
+        )
+        .await
+        .expect("carry supersede edge");
+        new_eid
+    }
+
+    /// Two-clone round trip: a writer records NEW superseding OLD (its memory.db
+    /// gains the authoritative `supersedes` row and the carrier gains OLD's
+    /// `superseded_by_entity_id`); a clone hydrated only from the carrier must
+    /// reconstruct the identical edge. Expected is derived from the writer's own
+    /// rows, mapped through the shared titles, not pasted from output. A re-import
+    /// proves the edge is not duplicated.
+    #[tokio::test]
+    async fn init_import_reconstructs_supersede_edge_matching_the_writer() {
+        register_sqlite_vec();
+        let repo = make_temp_git_repo();
+        let git_root = repo.path();
+        seed_supersede_carrier(git_root).await;
+
+        // The writer's authoritative store: OLD and NEW added, then superseded.
+        // `supersede` writes the edge as (from = NEW, to = OLD), the direction a
+        // clone must match.
+        let writer_mem = git_root.join(".inkentry").join("writer.db");
+        let writer = MemoryStore::open(&writer_mem).expect("open writer.db");
+        let (old_local, _) = writer
+            .add_note(
+                "decision",
+                SUPERSEDE_OLD_TITLE,
+                &format!("body of {SUPERSEDE_OLD_TITLE}"),
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .expect("writer add old");
+        let (new_local, _) = writer
+            .add_note(
+                "decision",
+                SUPERSEDE_NEW_TITLE,
+                &format!("body of {SUPERSEDE_NEW_TITLE}"),
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .expect("writer add new");
+        assert!(
+            writer.supersede(&old_local, &new_local).expect("supersede"),
+            "OLD must archive under the writer's supersede"
+        );
+        let writer_edges = edge_triples(&writer_mem);
+        assert_eq!(
+            writer_edges,
+            vec![(
+                SUPERSEDE_NEW_TITLE.to_string(),
+                "supersedes".to_string(),
+                SUPERSEDE_OLD_TITLE.to_string(),
+            )],
+            "the writer holds exactly one supersede edge, NEW → OLD"
+        );
+
+        // The clone hydrates from the carrier alone.
+        let clone_mem = git_root.join(".inkentry").join("clone.db");
+        import_git_notes_into_memory(git_root, &clone_mem)
+            .await
+            .expect("clone import");
+
+        assert_eq!(
+            edge_triples(&clone_mem),
+            writer_edges,
+            "the clone must reconstruct the writer's supersede edge"
+        );
+
+        // Re-importing the same carrier adds no second edge.
+        import_git_notes_into_memory(git_root, &clone_mem)
+            .await
+            .expect("clone re-import");
+        assert_eq!(
+            edge_triples(&clone_mem),
+            writer_edges,
+            "re-import must not duplicate the supersede edge"
+        );
     }
 
     /// Happy path: a note recorded via git notes before `init` is imported into
