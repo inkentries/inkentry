@@ -807,11 +807,10 @@ fn expand_graph_pulls_in_related_memory_neighbours() {
             "frobnicator design",
         ],
     );
-    // "Stored [decision] #<uuid>: <title>"
+    // The per-machine id is on its own `id:` line under the handle-led lead line.
     let a_id: String = a
-        .split('#')
-        .nth(1)
-        .and_then(|s| s.split(':').next())
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("id:"))
         .map(|s| s.trim().to_string())
         .expect("stored output carries an id");
     assert!(
