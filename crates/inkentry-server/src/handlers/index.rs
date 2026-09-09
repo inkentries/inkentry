@@ -47,15 +47,15 @@ pub struct EmbedResponse {
 }
 
 /// Observability guard for an in-flight `/index/embed` call (GH#631 /
-/// GH#631). Created armed right before the `embed_with_cancel` await and
+/// GH#631). Created armed right before the `embed_lane` await and
 /// disarmed right after it returns. If the surrounding handler future is
 /// dropped while still armed  -  client disconnect or the router's
 /// `TimeoutLayer` firing a 408, both of which drop the handler future rather
 /// than running it to completion  -  `Drop` fires instead: it flips the shared
-/// cancellation flag (which `embed_with_cancel` polls from inside its detached
-/// `spawn_blocking` task, the only way to reach in there) and logs the
-/// abandonment, since today the server otherwise cannot distinguish a slow
-/// client from a gone one.
+/// cancellation flag (which the pool worker running `embed_lane`'s forward
+/// passes checks between chunks, the only way to reach into that running work)
+/// and logs the abandonment, since today the server otherwise cannot
+/// distinguish a slow client from a gone one.
 pub(crate) struct EmbedAbandonGuard {
     pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) armed: bool,
@@ -162,10 +162,11 @@ pub async fn index_embed(
     // Cancellation seam (GH#631): if this handler's future is
     // dropped mid-embed  -  client disconnect or the router's `TimeoutLayer`
     // firing a 408  -  `cancel_guard` drops while still armed and flips
-    // `cancel_flag`, which `embed_with_cancel` polls from inside its detached
-    // `spawn_blocking` task (a plain `.await` drop does not otherwise reach in
-    // there). Disarmed once the embed call returns on its own, so an ordinary
-    // completed request (success or a real embed error) never logs abandonment.
+    // `cancel_flag`, which the pool worker running `embed_lane`'s forward passes
+    // checks between chunks (a plain `.await` drop does not otherwise reach into
+    // that running work). Disarmed once the embed call returns on its own, so
+    // an ordinary completed request (success or a real embed error) never logs
+    // abandonment.
     let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut cancel_guard = EmbedAbandonGuard {
         cancel: Arc::clone(&cancel_flag),

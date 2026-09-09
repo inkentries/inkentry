@@ -360,11 +360,11 @@ fn worker_idle_timeout(lane: EmbedLane, index_in_lane: usize) -> Option<Duration
 }
 
 /// The lane to actually dispatch on. Normally the requested one, but a lane can
-/// have no workers when a direct caller sizes it to zero (cloud-api on Cloud Run
-/// builds a single-context embedder with `interactive_capacity = 0`). Falling
-/// back to the other lane keeps `claim_worker`'s `% busy.len()` from dividing by
-/// zero. A pool always has at least one worker overall (guaranteed at
-/// construction), so at most one lane is ever empty.
+/// have no workers when a direct caller sizes it to zero — a single-context
+/// embedder built with `interactive_capacity = 0`. Falling back to the other
+/// lane keeps `claim_worker`'s `% busy.len()` from dividing by zero. A pool
+/// always has at least one worker overall (guaranteed at construction), so at
+/// most one lane is ever empty.
 fn effective_lane(
     requested: EmbedLane,
     interactive_workers: usize,
@@ -876,7 +876,7 @@ mod tests {
         assert_eq!(
             effective_lane(EmbedLane::Interactive, 0, 1),
             EmbedLane::Bulk
-        ); // cloud-api (1,0)
+        ); // single-context embedder: interactive lane sized to zero
         assert_eq!(
             effective_lane(EmbedLane::Bulk, 1, 0),
             EmbedLane::Interactive
