@@ -249,8 +249,9 @@ Beyond those three:
 - **Credential resolution is two tiers, and the order is part of the
   contract.** For a request to `server_url`: `INKENTRY_SERVER_KEY`, then the
   per-origin key store written by `inkentry auth set-key --server <url>` (for a
-  request whose origin matches the one the `[auth]` token pair was issued for,
-  that token pair takes that second place instead, per ADR-095). There is no
+  request whose origin matches the one the resolved org's cloud session was
+  issued for, that session's access token takes that second place instead, per
+  ADR-095). There is no
   third tier and no fallback below those: an origin with no stored key
   resolves to no bearer, and the resulting authentication failure names
   `inkentry auth set-key --server <url>`. No key

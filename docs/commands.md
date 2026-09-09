@@ -927,12 +927,16 @@ resolves one for you instead of leaving a session that needs a follow-up
 - Zero orgs → a clear onboarding message and a non-zero exit; no dangling
   no-org session is persisted.
 
-Tokens are written to the `[auth]` table of `~/.config/inkentry/config.toml`
-(file mode `0600`). Existing setups that use a self-hosted server key (stored via
-`inkentry auth set-key`, or the `INKENTRY_SERVER_KEY` environment variable) keep
-working unchanged; `INKENTRY_SERVER_KEY` continues to take precedence, which is
-handy for CI. See `inkentry auth` below for the self-hosted credential itself;
-`inkentry login` only ever manages the `[auth]` cloud token pair.
+The session is stored in the OS secret store, one entry per organization keyed
+by org id, with an `active` pointer for the org an invocation uses by default
+(ADR-074); it is **not** kept in plaintext in `config.toml`. A legacy `[auth]`
+table from an older client is migrated into the secret store and stripped from
+the file the first time a config with one is loaded. Existing setups that use a
+self-hosted server key (stored via `inkentry auth set-key`, or the
+`INKENTRY_SERVER_KEY` environment variable) keep working unchanged;
+`INKENTRY_SERVER_KEY` continues to take precedence, which is handy for CI. See
+`inkentry auth` below for the self-hosted credential itself; `inkentry login`
+only ever manages the cloud session.
 
 ### Where the self-hosted server key is stored
 
@@ -977,7 +981,7 @@ The credential is never logged.
 Store credentials in the OS secret store: the per-server bearers a self-hosted
 `server_url` resolves through (ADR-071), and the credential for a configured
 `llm_url` endpoint. Distinct from `inkentry login`, which manages the
-inkentry cloud `[auth]` token pair.
+inkentry cloud session (also in the secret store, keyed by org — ADR-074).
 
 ```
 inkentry auth set-key    (--server <url> | --llm)
@@ -1026,9 +1030,10 @@ inkentry auth remove-key --llm
 
 Resolution precedence for a given request's `server_url`: the `INKENTRY_SERVER_KEY`
 environment variable (if set, always wins, regardless of origin) takes priority
-over the per-origin store; a request whose origin matches the one the `[auth]`
-token pair from `inkentry login` was issued for resolves through that token
-pair instead, and is never sent to any other origin (ADR-095). This lets CI pin
+over the per-origin store; a request whose origin matches the one the resolved
+org's cloud session from `inkentry login` was issued for resolves through that
+session's access token instead, and is never sent to any other origin (ADR-095).
+This lets CI pin
 a single key for the one server it talks to without touching the keychain,
 while a developer's machine holds separate keys per self-hosted server.
 
@@ -1042,40 +1047,61 @@ it in its environment and never opens the secret store itself. See
 
 ## inkentry org
 
-Manage the active organization for an authenticated session.
+Manage the cached organization sessions (ADR-074). Each org you log into or
+switch to keeps its own cached WorkOS session, so a consultant serving two
+clients can move between them without re-authenticating.
 
 ```
-inkentry org switch <slug|uuid>
+inkentry org switch <slug|uuid|org-id>
+inkentry org list
 ```
 
 `inkentry org switch` re-scopes your session to another organization you belong
-to, reusing the stored credentials — no new device login is required. Accepts an
-org slug or its UUID.
+to. When that org already has a cached session it is a **local** operation — it
+just moves the active pointer, with no WorkOS call and no effect on any other
+org's session. An org with no cached session yet is onboarded from your current
+session's refresh token (or run `inkentry login --org <slug>` to onboard it on
+an independent session that leaves the current org untouched). Accepts an org
+slug, its local UUID, or its WorkOS org id.
+
+`inkentry org list` prints each cached org, marking the active one. It never
+prints token material.
 
 ```bash
 inkentry org switch acme
+inkentry org list
 ```
+
+A repo can pin itself to one org with `org = "<slug>"` in
+`.inkentry/config.toml` (see [`org`](config-reference.md#org)); `INKENTRY_ORG`
+overrides that for one invocation, above which an explicit `login --org` /
+`org switch` scopes by making that org active.
 
 ---
 
 ## inkentry logout
 
-Remove stored inkentry cloud credentials. `inkentry logout` clears **only** the
-`[auth]` token pair written by `inkentry login`; it does not touch any
-self-hosted server key, so recovering from a broken cloud login never costs
-you the keys you use on other projects (ADR-071 D3). Removing server keys is a
-separate, explicit action, spelled [`inkentry auth
+Remove stored inkentry cloud credentials. Bare `inkentry logout` clears **every**
+cached org session (and strips any legacy plaintext `[auth]` remnant); it does
+not touch any self-hosted server key, so recovering from a broken cloud login
+never costs you the keys you use on other projects (ADR-071 D3). Removing server
+keys is a separate, explicit action, spelled [`inkentry auth
 remove-key`](#inkentry-auth) (ADR-090).
 
 ```
-inkentry logout
+inkentry logout [--org <slug|org-id>]
 ```
 
-It takes no flags. If any server keys are still stored, it prints how many and
-names the command that removes them.
+| Flag | Notes |
+|------|-------|
+| `--org <target>` | Clear only that organization's cached session, leaving every other cached org intact (ADR-074 D4). |
+
+If any server keys are still stored, a bare logout prints how many and names the
+command that removes them.
 
 ```bash
 inkentry logout
+inkentry logout --org acme
 ```
 
 ---

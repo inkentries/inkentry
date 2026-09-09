@@ -8,7 +8,7 @@
 //! This is the ONLY place in inkentry-cli that calls AI inference routes.
 //! All prompt orchestration remains CLI-side; the server is a raw-inference peer.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::cli::cmd::auth_api;
 use crate::config::Config;
 use inkentry_core::config::AuthTokens;
+use inkentry_core::config::secret_store::SecretStore;
 
 /// Characters that must be percent-encoded inside a single URL **path segment**.
 ///
@@ -126,25 +127,27 @@ pub struct ServerInferenceClient {
 struct BearerState {
     /// The token sent as `Authorization: Bearer`. `None` in Tier-0 / unauthed.
     bearer: Option<String>,
-    /// WorkOS refresh state, present only when `inkentry login` wrote `[auth]`
-    /// tokens. Enables the refresh-on-expiry / refresh-on-401 path; absent for
-    /// a per-origin server key (which cannot be refreshed).
+    /// WorkOS refresh state, present only when the bearer is a cached WorkOS
+    /// login session (ADR-074). Enables the refresh-on-expiry / refresh-on-401
+    /// path; absent for a per-origin server key (which cannot be refreshed).
     refresh: Option<RefreshState>,
 }
 
 /// State needed to rotate an expired/rejected WorkOS access token.
 ///
-/// Refresh now goes DIRECTLY to WorkOS, so the WorkOS base URL and the
-/// embedded public `client_id` are carried here alongside the rotating tokens.
+/// Refresh goes DIRECTLY to WorkOS, so the WorkOS base URL and the embedded
+/// public `client_id` are carried here alongside the rotating tokens.
 struct RefreshState {
     tokens: AuthTokens,
     /// WorkOS User Management base URL (`https://api.workos.com` by default).
     workos_url: String,
     /// Embedded WorkOS public `client_id` for the active environment.
     client_id: String,
-    /// Where rotated tokens are persisted. `None` ⇒ the global config path
-    /// (`~/.config/inkentry/config.toml`); tests inject a temp path.
-    config_path: Option<std::path::PathBuf>,
+    /// Secret store the rotated session is written back into (ADR-074): the
+    /// org's own slot, leaving the active pointer and every sibling org
+    /// untouched. Shared (`Arc`) so a test can hold the same store and assert
+    /// the write.
+    store: Arc<dyn SecretStore>,
 }
 
 impl ServerInferenceClient {
@@ -156,17 +159,30 @@ impl ServerInferenceClient {
     /// team `server_url` is used for both.
     ///
     /// The bearer is resolved per-origin via `Config::bearer_for` (ADR-071
-    /// D2): a self-hosted server never receives a cloud `[auth]` token meant
+    /// D2): a self-hosted server never receives a cloud session token meant
     /// for a different origin, and vice versa.
     pub fn from_config(cfg: &Config) -> Option<Self> {
+        let store: Arc<dyn SecretStore> = Arc::from(
+            inkentry_core::config::default_secret_store().expect("resolving the secret store"),
+        );
+        Self::from_config_with_arc_store(cfg, store)
+    }
+
+    /// Shared construction from a resolved secret store: the store backs bearer
+    /// resolution, the cached cloud session, and the refresh write-back, so all
+    /// three see one store rather than each resolving its own.
+    fn from_config_with_arc_store(cfg: &Config, store: Arc<dyn SecretStore>) -> Option<Self> {
         let base_url = cfg
             .resolve_inference_url()?
             .trim_end_matches('/')
             .to_string();
         let bearer = cfg
-            .bearer_for(&base_url)
+            .bearer_for_with_store(&base_url, store.as_ref())
             .expect("resolving per-server bearer credential");
-        Some(Self::build(cfg, base_url, bearer))
+        let session = cfg
+            .cloud_session_with_store(store.as_ref())
+            .expect("resolving the cached cloud session");
+        Some(Self::build(cfg, base_url, bearer, session, store))
     }
 
     /// Build a client for an explicitly configured remote `server_url` that is
@@ -188,22 +204,19 @@ impl ServerInferenceClient {
     /// in-process tests can exercise bearer resolution without touching the
     /// real default secret store.
     #[cfg(test)]
-    fn from_config_with_store(
-        cfg: &Config,
-        store: &dyn inkentry_core::config::secret_store::SecretStore,
-    ) -> Option<Self> {
-        let base_url = cfg
-            .resolve_inference_url()?
-            .trim_end_matches('/')
-            .to_string();
-        let bearer = cfg
-            .bearer_for_with_store(&base_url, store)
-            .expect("resolving per-server bearer credential");
-        Some(Self::build(cfg, base_url, bearer))
+    fn from_config_with_store(cfg: &Config, store: Arc<dyn SecretStore>) -> Option<Self> {
+        Self::from_config_with_arc_store(cfg, store)
     }
 
-    /// Shared construction once `base_url` and `bearer` are resolved.
-    fn build(cfg: &Config, base_url: String, bearer: Option<String>) -> Self {
+    /// Shared construction once `base_url`, `bearer`, and the cached `session`
+    /// are resolved. `store` is captured for the refresh write-back.
+    fn build(
+        cfg: &Config,
+        base_url: String,
+        bearer: Option<String>,
+        session: Option<AuthTokens>,
+        store: Arc<dyn SecretStore>,
+    ) -> Self {
         if let Err(msg) = inkentry_core::config::validate_transport_url(&base_url) {
             // Fail loudly and immediately: the alternative is silently sending a
             // bearer token in the clear. No opt-out: the fix is always "use
@@ -229,21 +242,20 @@ impl ServerInferenceClient {
         .build()
         .expect("building HTTP client for server inference");
 
-        // Carry WorkOS refresh state only when the resolved bearer came from
-        // `[auth]`, i.e. `base_url`'s origin is the cloud kind (ADR-071 D2).
-        // A self-hosted server-key / env token is not refreshable here.
-        // Refresh targets WorkOS directly: the WorkOS base URL and the
-        // embedded public client_id (derived from the default cloud host)
-        // are captured here.
-        let refresh = cfg
-            .auth
-            .as_ref()
+        // Carry WorkOS refresh state only when the resolved bearer came from the
+        // cached cloud session, i.e. `base_url`'s origin is the cloud kind
+        // (ADR-071 D2). A self-hosted server-key / env token is not refreshable
+        // here. Refresh targets WorkOS directly: the WorkOS base URL and the
+        // embedded public client_id (derived from the default cloud host) are
+        // captured here, along with the store the rotated session is written
+        // back into.
+        let refresh = session
             .filter(|a| Some(a.access_token.as_str()) == bearer.as_deref())
             .map(|tokens| RefreshState {
-                tokens: tokens.clone(),
+                tokens,
                 workos_url: auth_api::workos_url(),
                 client_id: auth_api::workos_client_id(auth_api::DEFAULT_CLOUD_URL),
-                config_path: None,
+                store,
             });
 
         Self {
@@ -271,7 +283,7 @@ impl ServerInferenceClient {
         base_url: &str,
         project_id: &str,
         bearer: Option<String>,
-        refresh: Option<(AuthTokens, String, std::path::PathBuf)>,
+        refresh: Option<(AuthTokens, String, Arc<dyn SecretStore>)>,
     ) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -281,12 +293,13 @@ impl ServerInferenceClient {
             auth: Mutex::new(BearerState {
                 bearer,
                 // `workos_url` is the second tuple element (tests point it at a
-                // mock WorkOS server); the client_id is a fixed test value.
-                refresh: refresh.map(|(tokens, workos_url, config_path)| RefreshState {
+                // mock WorkOS server); the third is the store the rotated session
+                // is written back into; the client_id is a fixed test value.
+                refresh: refresh.map(|(tokens, workos_url, store)| RefreshState {
                     tokens,
                     workos_url,
                     client_id: "client_test".to_string(),
-                    config_path: Some(config_path),
+                    store,
                 }),
             }),
         }
@@ -297,7 +310,7 @@ impl ServerInferenceClient {
     #[cfg(test)]
     fn from_config_explicit_remote_with_store(
         cfg: &Config,
-        store: &dyn inkentry_core::config::secret_store::SecretStore,
+        store: Arc<dyn SecretStore>,
     ) -> Option<Self> {
         let mut client = Self::from_config_with_store(cfg, store)?;
         client.is_explicit_remote = true;
@@ -348,7 +361,7 @@ impl ServerInferenceClient {
     /// is no refresh state (a per-origin server key, nothing to refresh). Errors
     /// carry a clear "re-run `inkentry login`" message.
     async fn refresh_access_token(&self) -> Result<bool> {
-        let (refresh_token, org_id, cloud_origin, workos_url, client_id, config_path) = {
+        let (refresh_token, org_id, cloud_origin, workos_url, client_id, store) = {
             let guard = self.auth.lock().expect("auth mutex poisoned");
             match &guard.refresh {
                 Some(r) => (
@@ -357,7 +370,7 @@ impl ServerInferenceClient {
                     r.tokens.cloud_origin.clone(),
                     r.workos_url.clone(),
                     r.client_id.clone(),
-                    r.config_path.clone(),
+                    r.store.clone(),
                 ),
                 None => return Ok(false),
             }
@@ -379,12 +392,10 @@ impl ServerInferenceClient {
         })?;
         let new_tokens = rotated.into_auth_tokens(cloud_origin);
 
-        // Persist rotated tokens so the next process starts authenticated.
-        match &config_path {
-            Some(p) => inkentry_core::config::save_auth_tokens_to(&new_tokens, p),
-            None => inkentry_core::config::save_auth_tokens(&new_tokens),
-        }
-        .context("persisting refreshed auth tokens")?;
+        // Persist the rotated session back into its own org's slot (ADR-074 D3):
+        // the active pointer and every sibling org are left untouched.
+        inkentry_core::config::org_tokens::update_in_place(store.as_ref(), &new_tokens)
+            .context("persisting refreshed auth tokens")?;
 
         let mut guard = self.auth.lock().expect("auth mutex poisoned");
         guard.bearer = Some(new_tokens.access_token.clone());
@@ -392,7 +403,7 @@ impl ServerInferenceClient {
             tokens: new_tokens,
             workos_url,
             client_id,
-            config_path,
+            store,
         });
         Ok(true)
     }
@@ -722,8 +733,16 @@ pub fn harvest_requires_server() -> anyhow::Error {
 mod tests {
     use super::*;
     use inkentry_core::config::AuthTokens;
+    use inkentry_core::config::org_tokens;
+    use inkentry_core::config::secret_store::MemoryStore;
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // An empty org-token cache wrapped in an `Arc`, for the refresh/persistence
+    // path (RefreshState owns the store it writes rotated sessions into).
+    fn arc_store() -> Arc<dyn SecretStore> {
+        Arc::new(MemoryStore::default())
+    }
 
     fn expiring_tokens(expires_at: i64) -> AuthTokens {
         AuthTokens {
@@ -771,8 +790,6 @@ mod tests {
     async fn refresh_on_401_retries_once_and_persists() {
         let inference = MockServer::start().await;
         let cloud = MockServer::start().await;
-        let tmp = tempfile::TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.toml");
 
         let at_new = jwt("new", "org_1", 5_000_000_000);
 
@@ -810,11 +827,14 @@ mod tests {
             .await;
 
         let token = expiring_tokens(5_000_000_000); // not locally expired
+        let store = arc_store();
+        // Seed the org as the active session so a no-pin resolution finds it.
+        org_tokens::set_active(store.as_ref(), &token, None).unwrap();
         let client = ServerInferenceClient::for_test(
             &inference.uri(),
             "proj",
             Some("at-old".to_string()),
-            Some((token, cloud.uri(), config_path.clone())),
+            Some((token, cloud.uri(), store.clone())),
         );
 
         let vec = client
@@ -823,18 +843,12 @@ mod tests {
             .expect("search should succeed after one refresh+retry");
         assert_eq!(vec, Some(vec![0.1_f32, 0.2, 0.3]));
 
-        // Rotated tokens were persisted to the injected config path.
-        // Inject an in-memory secret store so the test never touches the real
-        // OS keychain (DI; cf. config.rs tests). #473 only isolated the
-        // spawned-binary integration tests in tests/*, not these in-process ones.
-        let cfg = inkentry_core::config::Config::load_with_store(
-            Some(&config_path),
-            &inkentry_core::config::secret_store::MemoryStore::default(),
-        )
-        .unwrap();
-        let auth = cfg.auth.expect("rotated [auth] tokens were persisted");
-        assert_eq!(auth.access_token, at_new);
-        assert_eq!(auth.refresh_token, "rt-new");
+        // The rotated session was written back into the org's cached slot.
+        let session = org_tokens::resolve_session(store.as_ref(), None)
+            .unwrap()
+            .expect("rotated session cached");
+        assert_eq!(session.access_token, at_new);
+        assert_eq!(session.refresh_token, "rt-new");
     }
 
     /// A locally-expired access token is refreshed proactively before the first
@@ -843,8 +857,6 @@ mod tests {
     async fn proactive_refresh_when_locally_expired() {
         let inference = MockServer::start().await;
         let cloud = MockServer::start().await;
-        let tmp = tempfile::TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.toml");
 
         let at_fresh = jwt("fresh", "org_1", 5_000_000_000);
 
@@ -883,7 +895,7 @@ mod tests {
             &inference.uri(),
             "proj",
             Some("at-old".to_string()),
-            Some((token, cloud.uri(), config_path)),
+            Some((token, cloud.uri(), arc_store())),
         );
 
         let vec = client.search_query("q", "semantic", 1).await.unwrap();
@@ -931,8 +943,6 @@ mod tests {
     async fn refresh_retry_caps_at_one_and_does_not_loop() {
         let inference = MockServer::start().await;
         let cloud = MockServer::start().await;
-        let tmp = tempfile::TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.toml");
 
         // EVERY /search call returns 401 — both the original and the retry.
         // `.expect(2)` is the loop guard: a third hit (i.e. a second retry)
@@ -962,7 +972,7 @@ mod tests {
             &inference.uri(),
             "proj",
             Some("at-old".to_string()),
-            Some((token, cloud.uri(), config_path)),
+            Some((token, cloud.uri(), arc_store())),
         );
 
         // The persistent 401 surfaces as an error, NOT a hang.
@@ -978,17 +988,15 @@ mod tests {
     }
 
     /// `from_config` carries refresh state ONLY when the bearer was resolved from
-    /// the `[auth]` access token, so a `inkentry login` session can refresh. That
+    /// the cached cloud session, so a `inkentry login` session can refresh. That
     /// only happens for a cloud-origin target (ADR-071 D2); a self-hosted origin
-    /// never resolves to the cloud token, whatever `[auth]` holds.
+    /// never resolves to the cloud token, whatever the cache holds.
     #[test]
     #[serial_test::serial]
-    fn from_config_attaches_refresh_state_for_auth_token_bearer() {
+    fn from_config_attaches_refresh_state_for_cloud_session_bearer() {
         unsafe {
             std::env::remove_var("INKENTRY_SERVER_KEY");
         }
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
         let tokens = AuthTokens {
             access_token: "at-login".into(),
             refresh_token: "rt-login".into(),
@@ -996,19 +1004,21 @@ mod tests {
             org_id: "org_1".into(),
             cloud_origin: auth_api::DEFAULT_CLOUD_URL.to_string(),
         };
-        inkentry_core::config::save_auth_tokens_to(&tokens, &path).unwrap();
+        let store = arc_store();
+        org_tokens::set_active(store.as_ref(), &tokens, None).unwrap();
 
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
-        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
         // The cloud kind only applies for the cloud origin (ADR-071 D2).
-        cfg.inference_url = Some(auth_api::DEFAULT_CLOUD_URL.to_string());
+        let cfg = crate::config::Config {
+            inference_url: Some(auth_api::DEFAULT_CLOUD_URL.to_string()),
+            ..Default::default()
+        };
         let client =
-            ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
+            ServerInferenceClient::from_config_with_store(&cfg, store).expect("client builds");
 
         let guard = client.auth.lock().unwrap();
         assert!(
             guard.refresh.is_some(),
-            "an [auth]-derived bearer must carry refresh state so it can rotate"
+            "a cloud-session bearer must carry refresh state so it can rotate"
         );
         assert_eq!(guard.bearer.as_deref(), Some("at-login"));
     }
@@ -1023,21 +1033,19 @@ mod tests {
         unsafe {
             std::env::remove_var("INKENTRY_SERVER_KEY");
         }
-        let tmp = tempfile::TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "").unwrap();
-
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
+        let store = arc_store();
         inkentry_core::config::server_keys::set_key_for_origin(
             "http://127.0.0.1:4655",
             "sk-team",
-            &store,
+            store.as_ref(),
         )
         .unwrap();
-        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
-        cfg.inference_url = Some("http://127.0.0.1:4655".into());
+        let cfg = crate::config::Config {
+            inference_url: Some("http://127.0.0.1:4655".into()),
+            ..Default::default()
+        };
         let client =
-            ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
+            ServerInferenceClient::from_config_with_store(&cfg, store).expect("client builds");
 
         let guard = client.auth.lock().unwrap();
         assert!(
@@ -1086,9 +1094,9 @@ mod tests {
         // made this test (and the whole module) appear to hang "even in
         // isolation" without `INKENTRY_SECRET_STORE=file` set in the
         // environment.
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
+        let store = arc_store();
         let client =
-            ServerInferenceClient::from_config_with_store(&cfg, &store).expect("client builds");
+            ServerInferenceClient::from_config_with_store(&cfg, store).expect("client builds");
         assert!(
             client.is_explicit_remote,
             "an explicitly configured server_url must count as explicit even when it is loopback"
@@ -1118,9 +1126,9 @@ mod tests {
             cfg.resolve_mode(),
             inkentry_core::config::SyncMode::LocalFirst
         );
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
+        let store = arc_store();
         assert!(
-            ServerInferenceClient::from_config_with_store(&cfg, &store).is_none(),
+            ServerInferenceClient::from_config_with_store(&cfg, store).is_none(),
             "local_first must not build an inference client aimed at a bare server_url"
         );
     }
@@ -1166,8 +1174,8 @@ mod tests {
             mode: Some(inkentry_core::config::SyncMode::CloudFirst),
             ..Default::default()
         };
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
-        let client = ServerInferenceClient::from_config_with_store(&cfg, &store)
+        let store = arc_store();
+        let client = ServerInferenceClient::from_config_with_store(&cfg, store)
             .expect("cloud_first builds an inference client aimed at server_url");
 
         let started = std::time::Instant::now();
@@ -1221,8 +1229,8 @@ mod tests {
             inkentry_core::config::SyncMode::LocalFirst
         );
 
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
-        let client = ServerInferenceClient::from_config_with_store(&cfg, &store)
+        let store = arc_store();
+        let client = ServerInferenceClient::from_config_with_store(&cfg, store)
             .expect("client must build from inference_url (the loopback server)");
         assert!(
             !client.is_explicit_remote,
@@ -1378,11 +1386,11 @@ mod tests {
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
-        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
+        let store = arc_store();
+        let mut cfg = crate::config::Config::load_with_store(Some(&path), store.as_ref()).unwrap();
         cfg.inference_url = Some("http://127.0.0.1:4655".into());
         assert!(
-            ServerInferenceClient::from_config_with_store(&cfg, &store).is_some(),
+            ServerInferenceClient::from_config_with_store(&cfg, store).is_some(),
             "loopback http:// inference URL must be accepted"
         );
     }
@@ -1395,11 +1403,11 @@ mod tests {
         }
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
-        let mut cfg = crate::config::Config::load_with_store(Some(&path), &store).unwrap();
+        let store = arc_store();
+        let mut cfg = crate::config::Config::load_with_store(Some(&path), store.as_ref()).unwrap();
         cfg.inference_url = Some("https://team-server:4655".into());
         assert!(
-            ServerInferenceClient::from_config_with_store(&cfg, &store).is_some(),
+            ServerInferenceClient::from_config_with_store(&cfg, store).is_some(),
             "https:// inference URL (any host) must be accepted"
         );
     }
@@ -1423,15 +1431,15 @@ mod tests {
             project_id: Some("proj".to_string()),
             ..Default::default()
         };
-        let store = inkentry_core::config::secret_store::MemoryStore::default();
+        let store = arc_store();
         assert!(
-            !ServerInferenceClient::from_config_with_store(&cfg, &store)
+            !ServerInferenceClient::from_config_with_store(&cfg, store.clone())
                 .expect("client builds")
                 .is_explicit_remote,
             "the plain constructor derives the flag and cannot see through this shape"
         );
         assert!(
-            ServerInferenceClient::from_config_explicit_remote_with_store(&cfg, &store)
+            ServerInferenceClient::from_config_explicit_remote_with_store(&cfg, store)
                 .expect("client builds")
                 .is_explicit_remote,
             "the remote LLM branch must carry the flag rather than re-derive it"

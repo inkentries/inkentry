@@ -295,19 +295,22 @@ Store the credential in the secret store instead:
 
 ### How the bearer is resolved
 
-Two tiers, branched by whether the target origin is the one recorded in
-`[auth].cloud_origin`, not by whether it looks like a cloud address (ADR-095):
+Two tiers, branched by whether the target origin is the one the resolved org's
+cloud session was issued for, not by whether it looks like a cloud address
+(ADR-095):
 
 | Target | Order |
 |--------|-------|
-| origin equals `[auth].cloud_origin` | `INKENTRY_SERVER_KEY`, then `[auth].access_token` from `inkentry login` |
+| origin equals the resolved org session's `cloud_origin` | `INKENTRY_SERVER_KEY`, then that session's `access_token` from `inkentry login` |
 | any other `server_url` (self-hosted / team, or a cloud origin you are not logged into) | `INKENTRY_SERVER_KEY`, then the per-origin key store |
 
-Each kind consults only its own tier: a request matching the recorded cloud
-origin never reads the per-origin store, and any other request never reads
-`[auth]`. The per-origin scoping (ADR-071) is what lets one developer hold keys
-for two different self-hosted servers without them colliding or leaking into
-each other.
+The resolved org is the one this invocation is scoped to (see
+[`org`](#org)): the `--org`/`INKENTRY_ORG`/project-`org` pin, else the cache's
+active org. Each kind consults only its own tier: a request matching that
+session's origin never reads the per-origin store, and any other request never
+reads a cloud session. The per-origin scoping (ADR-071) is what lets one
+developer hold keys for two different self-hosted servers without them colliding
+or leaking into each other.
 
 An origin with no stored key resolves to **no bearer**. If the server requires
 one, the request fails and the error names
@@ -331,6 +334,23 @@ derives a stable id from the project's git remote, or from a hash of the local
 path if there is no remote. Normally set in `.inkentry/config.toml` alongside
 `server_url`.
 
+### `org`
+
+- **Type:** string, optional
+- **Default:** unset (fall back to the cache's active org)
+- **Env override:** `INKENTRY_ORG`
+
+Pins this repo to one inkentry cloud organization (ADR-074 D2), so an invocation
+inside it always uses that org's cached session regardless of whichever org is
+globally active elsewhere on the machine. Accepts the same forms `org switch`
+does — a slug, a local org UUID, or a WorkOS org id. Not a secret: an org
+identifier is exactly as shareable as the `project_id` it sits beside, so it
+belongs in the committed `.inkentry/config.toml`. Resolution order, highest
+first: an explicit `--org` flag (where a command accepts one) or an
+`inkentry org switch` that makes an org active, then `INKENTRY_ORG`, then this
+`org` field, then the cache's active org. The session itself is never in this
+file — it lives in the secret store (see [`login`](#login-session-and-org-cache)).
+
 ### `server_ca`
 
 - **Type:** path, optional
@@ -344,43 +364,40 @@ checks. Valid in either config file. See
 [trusting the server's certificate](server-setup.md#trusting-the-servers-certificate-on-the-client)
 for the full walkthrough.
 
-### `[auth]`
+### Login session and org cache
 
-- **Type:** table, optional
-- **Default:** absent
-- **Managed by:** `inkentry login`, `inkentry org switch` - do not hand-edit
+- **Where:** the OS secret store, **not** `config.toml`
+- **Managed by:** `inkentry login`, `inkentry org switch`, `inkentry logout`
 
-WorkOS device-flow tokens for inkentry cloud, written by `inkentry login` under
-the global config's `[auth]` table:
+The WorkOS session `inkentry login` obtains is stored in the secret store
+(ADR-074), the same OS keychain / owner-only file fallback the self-hosted
+server keys use — never in plaintext in `config.toml`. One secret-store entry
+holds a session per organization, keyed by WorkOS org id, plus an `active`
+pointer for the org an invocation uses by default; each session carries its own
+`access_token`, `refresh_token`, `expires_at`, and the `cloud_origin` it was
+issued for.
 
-```toml
-[auth]
-access_token = "..."
-refresh_token = "..."
-expires_at = 1234567890
-org_id = "org_..."
-cloud_origin = "https://api.inkentry.com"
-```
-
-While `access_token` is unexpired **and** the request's target origin equals
-`cloud_origin`, it is the source of the `Authorization: Bearer` token an
-inkentry cloud request sends; it does not apply to a self-hosted `server_url`,
+While an org's `access_token` is unexpired **and** the request's target origin
+equals its `cloud_origin`, it is the source of the `Authorization: Bearer` token
+an inkentry cloud request sends; it does not apply to a self-hosted `server_url`,
 which resolves its own credential separately (see [How the bearer is
-resolved](#how-the-bearer-is-resolved) above). `cloud_origin` is the origin
-`inkentry login` (or `inkentry org switch`) authenticated against, recorded at
-that time and preserved across a token refresh; the access token is never
-released to a different origin, including one `INKENTRY_CLOUD_URL` points at
-(ADR-095). `refresh_token` rotates an expired access token and backs
-organization switching. The file is written with `0600` permissions. This
-table is not read from `.inkentry/config.toml`.
+resolved](#how-the-bearer-is-resolved) above). `cloud_origin` is the origin the
+session authenticated against, recorded at login and preserved across refreshes;
+the access token is never released to a different origin, including one
+`INKENTRY_CLOUD_URL` points at (ADR-095). An expired token is refreshed with its
+own org's refresh token, scoped to that same org, and written back to its own
+slot only — a switch to another org never disturbs it.
 
-Every field is optional: a partial table (for example a login without an org,
-which omits `org_id`, or a hand-trimmed file) is tolerated and never blocks
-commands that need no credentials. A missing or empty `access_token` is read as
-"not logged in" (no bearer is sent); a missing `expires_at` is treated as
-expired (forcing a refresh); a missing `org_id` applies no organization
-scoping; a missing or empty `cloud_origin` matches no origin, so no bearer is
-ever released for that table.
+Which org a given invocation uses is the [`org`](#org) pin, or the `active`
+org when nothing pins one. `inkentry org list` shows the cached orgs (never
+token material); `inkentry logout` clears them all (plus any legacy `[auth]`
+remnant), and `inkentry logout --org <target>` clears one.
+
+**Migration.** A legacy plaintext `[auth]` table written by an older client is
+lifted into the secret store and stripped from `config.toml` the first time a
+config with one is loaded; it is tolerant of a partial or hand-trimmed table
+(an empty `access_token` reads as "not logged in", a missing `expires_at` as
+expired, a missing `org_id` as no scoping).
 
 ### `[index]`
 
@@ -477,9 +494,9 @@ llm_context_length = 8192
 store_in_git_notes = true
 ```
 
-The `[auth]` table is written for you by `inkentry login`; you don't normally
-hand-edit it. Nothing else writes this file on your behalf: credentials go to
-the secret store via `inkentry auth set-key`, never here.
+Nothing writes credentials to this file on your behalf: the cloud login session
+goes to the secret store via `inkentry login`, and self-hosted server keys via
+`inkentry auth set-key`, never here.
 
 ---
 

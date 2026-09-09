@@ -11,6 +11,7 @@ mod team_target;
 mod tls;
 
 pub mod llm_key;
+pub mod org_tokens;
 pub mod secret_store;
 pub mod server_keys;
 
@@ -20,10 +21,7 @@ use secret_store::SecretStore;
 pub use paths::{
     find_project_db, find_project_dir, require_project_db, require_project_db_at, resolve_db,
 };
-pub use persist::{
-    remove_auth_tokens, remove_auth_tokens_from, save_auth_tokens, save_auth_tokens_to,
-    write_project_slug,
-};
+pub use persist::{remove_auth_tokens, remove_auth_tokens_from, write_project_slug};
 pub use predicates::{
     is_loopback_url, is_loopback_url_missing_port, no_server_env_set, validate_transport_url,
 };
@@ -132,6 +130,10 @@ struct ProjectConfig {
     /// Opt into the hosted inkentry cloud. Mutually exclusive with `server_url`.
     cloud: Option<bool>,
     project_id: Option<String>,
+    /// Organization to pin this repo to (ADR-074 D2): a WorkOS org id, a slug,
+    /// or a local org UUID. Not a secret, so it belongs in the committed file
+    /// next to `project_id`.
+    org: Option<String>,
     /// Base URL of the inference endpoint. A team pointing at one approved
     /// provider states it once here rather than in every developer's own file.
     /// The credential it is presented to is not a config key in either file.
@@ -260,16 +262,18 @@ pub struct Config {
     #[serde(default = "Config::default_store_in_git_notes")]
     pub store_in_git_notes: bool,
 
-    /// WorkOS device-flow tokens persisted by `inkentry login`, stored under the
-    /// `[auth]` table in the global config.
-    ///
-    /// When present and the access token is unexpired, it is the source of the
-    /// `Authorization: Bearer` token every cloud-origin request sends, via
-    /// [`Config::bearer_for`]. A self-hosted `server_url` never consults this
-    /// field (ADR-071 D2). The `refresh_token` is used to rotate an expired
-    /// access token and to silently switch organisations.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<AuthTokens>,
+    /// Organization this repo is pinned to (ADR-074 D2). Accepts the same forms
+    /// `org switch` does — a WorkOS org id, a slug, or a local org UUID — and
+    /// selects which cached WorkOS session cloud requests use, above the cache's
+    /// `active` pointer. Not a secret: an org identifier is exactly as shareable
+    /// as the `project_id` it sits beside, so it lives in the committed
+    /// `.inkentry/config.toml`, never in the secret store. `INKENTRY_ORG`
+    /// overrides it at load; an explicit `login --org` / `org switch` scopes an
+    /// invocation above even this by making that org the cache's active one. The
+    /// WorkOS session itself lives in the org-token cache (see
+    /// [`org_tokens`](crate::config::org_tokens)).
+    #[serde(default)]
+    pub org: Option<String>,
 
     /// `[index]` table: built-in index-time file filter settings. Project
     /// `.inkentry/config.toml` overrides the global value per field (see
@@ -278,17 +282,18 @@ pub struct Config {
     pub index: IndexConfig,
 }
 
-/// WorkOS tokens persisted under the `[auth]` table of the global config.
+/// One organization's WorkOS session.
 ///
-/// Written by `inkentry login` / `inkentry org switch`; rotated by the token
-/// refresh path. The file is written `0600` (see [`save_auth_tokens_to`]).
+/// Written by `inkentry login` / `inkentry org switch` and rotated by the token
+/// refresh path, cached per organization in the secret store keyed by
+/// `org_id` (ADR-074; see [`org_tokens`](crate::config::org_tokens)). A legacy
+/// plaintext `[auth]` table is migrated into that cache and stripped on the
+/// first load that finds one.
 ///
-/// Every field is `#[serde(default)]`, so a partial `[auth]` table never fails
-/// the whole config load. `--org` is a documented optional scoping flag and
-/// hand-editing the config is a documented workflow, so a login without an org
-/// (no `org_id`) or a trimmed table must not brick commands that need no
-/// credentials. An absent field is read as its "unset" form, which the
-/// consumers already treat sensibly:
+/// Every field is `#[serde(default)]`, so a partial session never fails the
+/// whole load. A login without an org (no `org_id`) or a trimmed table must not
+/// brick commands that need no credentials. An absent field is read as its
+/// "unset" form, which the consumers already treat sensibly:
 /// * missing `access_token` ⇒ empty ⇒ not logged in (no bearer resolved, see
 ///   [`server_keys::bearer_for`]);
 /// * missing `expires_at` ⇒ `0` ⇒ [`AuthTokens::is_expired_at`] reports
@@ -371,7 +376,7 @@ impl Default for Config {
             inference_url: None,
             llm_context_length: Self::default_llm_context_length(),
             store_in_git_notes: Self::default_store_in_git_notes(),
-            auth: None,
+            org: None,
             index: IndexConfig::default(),
         }
     }
@@ -438,7 +443,7 @@ impl Config {
     /// always passes the CWD via [`load_with_store`].
     pub(crate) fn load_with_store_from(
         path: Option<&Path>,
-        _store: &dyn SecretStore,
+        store: &dyn SecretStore,
         project_root: Option<&Path>,
     ) -> Result<Self> {
         // ── 1. Load global personal config ───────────────────────────────────
@@ -452,6 +457,21 @@ impl Config {
             let parsed = parse_global_config(&raw, &global_path)?;
             if let Some(warning) = personal_config_credential_warning(&raw, &global_path) {
                 eprintln!("{warning}");
+            }
+            // ADR-074 migration: lift a legacy plaintext `[auth]` session into
+            // the org-token cache and strip it from the file. 1.1 is the removal
+            // window, so this is migrate-then-strip with no indefinite dual-read.
+            // Best-effort: a store that cannot be written (a locked keychain)
+            // must not brick every command, so the session is left in place to be
+            // retried on a later load rather than lost.
+            if let Some(legacy) = legacy_auth_tokens(&raw)
+                && let Err(e) = migrate_legacy_auth(store, &global_path, &legacy)
+            {
+                eprintln!(
+                    "Warning: could not migrate the stored cloud session out of {} into the \
+                     secret store; it will be retried on the next run: {e:#}",
+                    global_path.display()
+                );
             }
             parsed
         } else {
@@ -490,6 +510,9 @@ impl Config {
             if let Some(v) = proj.project_id {
                 cfg.project_id = Some(v);
             }
+            if let Some(v) = proj.org {
+                cfg.org = Some(v);
+            }
             if let Some(v) = proj.server_ca {
                 cfg.server_ca = Some(v);
             }
@@ -520,6 +543,12 @@ impl Config {
         }
         if let Ok(v) = std::env::var("INKENTRY_PROJECT_ID") {
             cfg.project_id = Some(v);
+        }
+        // `INKENTRY_ORG` outranks the project `org` pin (ADR-074 D2); an explicit
+        // `--org` flag outranks even this, but that is a per-command argument, not
+        // a config field, so it is applied at the call site via [`Config::org_pin`].
+        if let Ok(v) = std::env::var(org_tokens::ENV_ORG) {
+            cfg.org = Some(v);
         }
         // Env wins over either config file (personal or project-level).
         if let Ok(v) = std::env::var("INKENTRY_SERVER_CA") {
@@ -576,15 +605,36 @@ impl Config {
     /// Same as [`Config::bearer_for`] but with an injected [`SecretStore`]
     /// (tests, and callers that already resolved a store).
     ///
-    /// Branches on credential kind by `server_url`'s origin before touching
-    /// any store (cloud vs. self-hosted server-key: see
-    /// [`server_keys::bearer_for`] for the full precedence).
+    /// `INKENTRY_SERVER_KEY` outranks everything and is checked before the store
+    /// is touched at all, so an env-supplied key costs no keychain read. The
+    /// cloud credential is the resolved org's cached session (ADR-074 D3); it and
+    /// the self-hosted server-key kind are then branched on `server_url`'s origin
+    /// by [`server_keys::bearer_for`].
     pub fn bearer_for_with_store(
         &self,
         server_url: &str,
         store: &dyn SecretStore,
     ) -> Result<Option<String>> {
-        server_keys::bearer_for(self.auth.as_ref(), server_url, store)
+        if let Ok(v) = std::env::var(server_keys::ENV_SERVER_KEY) {
+            return Ok(Some(v));
+        }
+        let session = org_tokens::resolve_session(store, self.org.as_deref())?;
+        server_keys::bearer_for(session.as_ref(), server_url, store)
+    }
+
+    /// The cached WorkOS session this invocation resolves to — its pinned
+    /// ([`Config::org`]) or the cache's active org (ADR-074 D3) — read from
+    /// `store`. `None` when not logged in for that org. Used by the refresh and
+    /// org-switch paths that need the whole session, not just the bearer.
+    pub fn cloud_session_with_store(&self, store: &dyn SecretStore) -> Result<Option<AuthTokens>> {
+        org_tokens::resolve_session(store, self.org.as_deref())
+    }
+
+    /// [`Config::cloud_session_with_store`] against the host's default secret
+    /// store.
+    pub fn cloud_session(&self) -> Result<Option<AuthTokens>> {
+        let store = secret_store::default_store(&inkentry_config_dir())?;
+        self.cloud_session_with_store(store.as_ref())
     }
 }
 
@@ -596,6 +646,44 @@ impl Config {
 /// [`Config::bearer_for`] use internally.
 pub fn default_secret_store() -> Result<Box<dyn SecretStore>> {
     secret_store::default_store(&inkentry_config_dir())
+}
+
+/// Cache `tokens` as the active org's WorkOS session (ADR-074 D4) in the host's
+/// default secret store — what `inkentry login` / `inkentry org switch` persist
+/// once a session is minted. `slug` records the human identifier so a repo can
+/// later pin `org = "<slug>"`.
+pub fn store_active_session(tokens: &AuthTokens, slug: Option<&str>) -> Result<()> {
+    let store = default_secret_store()?;
+    org_tokens::set_active(store.as_ref(), tokens, slug)
+}
+
+/// Write `tokens` back into their own org's cached slot without moving the active
+/// pointer or touching any sibling org (ADR-074 D3) — the refresh rotation
+/// persistence, against the host's default secret store.
+pub fn update_org_session(tokens: &AuthTokens) -> Result<()> {
+    let store = default_secret_store()?;
+    org_tokens::update_in_place(store.as_ref(), tokens)
+}
+
+/// Deserialize a legacy plaintext `[auth]` table out of a raw `config.toml`, or
+/// `None` when the file has none. Used only on the migration path (ADR-074).
+fn legacy_auth_tokens(raw: &str) -> Option<AuthTokens> {
+    let table = raw.parse::<toml::Table>().ok()?;
+    let auth = table.get("auth")?.clone();
+    auth.try_into::<AuthTokens>().ok()
+}
+
+/// Move a legacy `[auth]` session into the org-token cache and strip the table
+/// from `config_path` (ADR-074 migration). The cache write happens first so a
+/// failure to rewrite the file after it leaves the session recoverable and the
+/// next load simply re-runs an idempotent migration.
+fn migrate_legacy_auth(
+    store: &dyn SecretStore,
+    config_path: &Path,
+    legacy: &AuthTokens,
+) -> Result<()> {
+    org_tokens::migrate_legacy(store, legacy)?;
+    persist::remove_auth_tokens_from(config_path)
 }
 
 /// Build the warning line for a loopback `server_url` with no port, or
@@ -680,6 +768,7 @@ const PROJECT_CONFIG_KEYS: &[&str] = &[
     "server_url",
     "cloud",
     "project_id",
+    "org",
     "server_ca",
     "mode",
     "llm_url",
@@ -1554,6 +1643,61 @@ mode = "cloud_first"
         assert_eq!(cfg.resolve_mode(), SyncMode::CloudFirst);
     }
 
+    // ── org pin precedence (ADR-074 D2) ─────────────────────────────────────
+
+    #[test]
+    #[serial_test::serial]
+    fn org_pin_loads_from_project_config() {
+        clear_inkentry_env();
+        let (_tmp, cfg) = load_layered("", Some("project_id = \"p\"\norg = \"acme\"\n"));
+        assert_eq!(cfg.unwrap().org.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_inkentry_org_overrides_project_org() {
+        clear_inkentry_env();
+        unsafe { std::env::set_var("INKENTRY_ORG", "from-env") };
+        let (_tmp, cfg) = load_layered("", Some("org = \"from-project\"\n"));
+        unsafe { std::env::remove_var("INKENTRY_ORG") };
+        assert_eq!(cfg.unwrap().org.as_deref(), Some("from-env"));
+    }
+
+    // The lower half of D2's precedence: a pinned org resolves over the cache's
+    // `active` pointer, and with no pin the active session is used.
+    #[test]
+    #[serial_test::serial]
+    fn bearer_resolves_the_pinned_org_over_active() {
+        clear_inkentry_env();
+        let store = MemoryStore::default();
+        let cloud_origin = server_keys::normalize_origin(server_keys::DEFAULT_CLOUD_URL).unwrap();
+        let a = AuthTokens {
+            access_token: "at-a".into(),
+            refresh_token: "rt-a".into(),
+            expires_at: 4_000_000_000,
+            org_id: "org_a".into(),
+            cloud_origin: cloud_origin.clone(),
+        };
+        let b = AuthTokens {
+            access_token: "at-b".into(),
+            org_id: "org_b".into(),
+            ..a.clone()
+        };
+        org_tokens::set_active(&store, &a, None).unwrap();
+        org_tokens::set_active(&store, &b, None).unwrap(); // active is now org_b
+
+        // No pin → the active org's token.
+        let cfg = Config::default();
+        assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at-b"));
+
+        // A pin selects that org over the active pointer.
+        let cfg = Config {
+            org: Some("org_a".into()),
+            ..Default::default()
+        };
+        assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at-a"));
+    }
+
     #[test]
     #[serial_test::serial]
     fn mode_precedence_across_personal_project_and_env() {
@@ -1787,7 +1931,7 @@ mode = "cloud_first"
         assert!(err.contains(SyncMode::valid_values()), "got: {err}");
     }
 
-    // ── [auth] WorkOS tokens ───────────────────────────────────────────────────
+    // ── legacy [auth] migration into the org-token cache (ADR-074) ──────────────
 
     fn sample_tokens() -> AuthTokens {
         AuthTokens {
@@ -1799,36 +1943,64 @@ mode = "cloud_first"
         }
     }
 
-    // Persisted `[auth]` tokens round-trip and the access token becomes the
-    // effective cloud-origin bearer.
+    // Seed a legacy plaintext `[auth]` table into a config file — the shape the
+    // pre-ADR-074 client wrote, and what the migration path lifts out.
+    fn write_legacy_auth(path: &Path, tokens: &AuthTokens) {
+        let mut doc = if path.exists() {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .parse::<toml::Table>()
+                .unwrap()
+        } else {
+            toml::Table::new()
+        };
+        doc.insert("auth".to_string(), toml::Value::try_from(tokens).unwrap());
+        std::fs::write(path, toml::to_string_pretty(&doc).unwrap()).unwrap();
+    }
+
+    fn file_has_auth_table(path: &Path) -> bool {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .parse::<toml::Table>()
+            .unwrap()
+            .contains_key("auth")
+    }
+
+    // A legacy `[auth]` table is migrated into the cache on load, resolves as the
+    // cloud bearer, and is stripped from the file (no indefinite dual-read).
     #[test]
     #[serial_test::serial]
-    fn auth_tokens_resolve_to_the_cloud_bearer() {
+    fn legacy_auth_is_migrated_into_the_cache_and_stripped_from_disk() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+        write_legacy_auth(&path, &sample_tokens());
 
         let store = MemoryStore::default();
         let cfg = load_hermetic_with(&path, &store).unwrap();
+
+        // Resolves as the cloud bearer, now sourced from the cache.
         assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at-sample"));
-        let auth = cfg.auth.expect("auth table should load");
-        assert_eq!(auth.refresh_token, "rt-sample");
-        assert_eq!(auth.org_id, "org_sample");
+        let session = org_tokens::resolve_session(&store, None).unwrap().unwrap();
+        assert_eq!(session.refresh_token, "rt-sample");
+        assert_eq!(session.org_id, "org_sample");
+        // The plaintext table is gone from the file.
+        assert!(
+            !file_has_auth_table(&path),
+            "migration must strip the [auth] table from disk"
+        );
     }
 
-    // ── [auth] partial-table tolerance ─────────────────────────────────────────
+    // ── migration tolerates a partial/hand-trimmed [auth] table ─────────────────
     //
-    // `--org` is an optional scoping flag and hand-editing the config is a
-    // documented workflow, so a login-without-org or a trimmed `[auth]` table
-    // must not brick every command with a parse error. Each field is tolerated
-    // when absent (missing token ⇒ not logged in, missing expiry ⇒ expired).
+    // Hand-editing the config is a documented workflow and a login without an org
+    // leaves `org_id` empty, so a trimmed `[auth]` table must migrate rather than
+    // brick the load. Each field is tolerated when absent (missing token ⇒ not
+    // logged in, missing expiry ⇒ expired, missing org ⇒ no scoping).
 
-    // A `[auth]` table missing `org_id` still loads: the access token resolves
-    // as the bearer and the org is simply empty (no scoping).
     #[test]
     #[serial_test::serial]
-    fn auth_block_missing_org_id_still_loads() {
+    fn migrating_a_table_without_org_id_leaves_the_session_unscoped() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -1844,17 +2016,18 @@ mode = "cloud_first"
 
         let store = MemoryStore::default();
         let cfg = load_hermetic_with(&path, &store)
-            .expect("a [auth] table without org_id must still parse");
+            .expect("a [auth] table without org_id must still migrate");
         assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at"));
-        let auth = cfg.auth.expect("auth table should load");
-        assert_eq!(auth.org_id, "", "missing org_id is treated as no scoping");
+        let session = org_tokens::resolve_session(&store, None).unwrap().unwrap();
+        assert_eq!(
+            session.org_id, "",
+            "missing org_id is treated as no scoping"
+        );
     }
 
-    // A `[auth]` table missing `expires_at` loads and the token is treated as
-    // expired (an unknown expiry must never read as "still valid").
     #[test]
     #[serial_test::serial]
-    fn auth_block_missing_expires_at_is_treated_as_expired() {
+    fn migrating_a_table_without_expires_at_treats_the_session_as_expired() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -1863,23 +2036,24 @@ mode = "cloud_first"
             "[auth]\n\
              access_token = \"at\"\n\
              refresh_token = \"rt\"\n\
-             org_id = \"org_x\"\n",
+             org_id = \"org_x\"\n\
+             cloud_origin = \"https://api.inkentry.com\"\n",
         )
         .unwrap();
 
-        let cfg = load_hermetic(&path).expect("a [auth] table without expires_at must still parse");
-        let auth = cfg.auth.expect("auth table should load");
+        let store = MemoryStore::default();
+        load_hermetic_with(&path, &store)
+            .expect("a [auth] table without expires_at must still migrate");
+        let session = org_tokens::resolve_session(&store, None).unwrap().unwrap();
         assert!(
-            auth.is_expired_at(1),
+            session.is_expired_at(1),
             "a token with no expiry must be treated as expired"
         );
     }
 
-    // A `[auth]` table with no access token means "not logged in": no bearer is
-    // resolved (an empty token must never become a `Some("")` bearer).
     #[test]
     #[serial_test::serial]
-    fn auth_block_missing_access_token_means_not_logged_in() {
+    fn migrating_a_table_without_access_token_means_not_logged_in() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -1893,7 +2067,7 @@ mode = "cloud_first"
 
         let store = MemoryStore::default();
         let cfg = load_hermetic_with(&path, &store)
-            .expect("a [auth] table without access_token must parse");
+            .expect("a [auth] table without access_token must migrate");
         assert_eq!(
             cloud_bearer(&cfg, &store),
             None,
@@ -1902,7 +2076,8 @@ mode = "cloud_first"
     }
 
     // The reported failure mode: an otherwise-fine config with a bare `[auth]`
-    // header (every field trimmed away) must still load rather than error.
+    // header (every field trimmed away) must still load rather than error, and
+    // the empty table is stripped.
     #[test]
     #[serial_test::serial]
     fn bare_auth_header_does_not_brick_load() {
@@ -1916,6 +2091,10 @@ mode = "cloud_first"
             .expect("a bare [auth] header must not brick the load");
         assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
         assert_eq!(cloud_bearer(&cfg, &store), None);
+        assert!(
+            !file_has_auth_table(&path),
+            "the empty table is stripped too"
+        );
     }
 
     // ── actionable parse-error messages ────────────────────────────────────────
@@ -1963,38 +2142,44 @@ mode = "cloud_first"
         );
     }
 
-    /// `INKENTRY_SERVER_KEY` (CI) overrides the `[auth]` access token.
+    /// `INKENTRY_SERVER_KEY` (CI) overrides a migrated cloud session.
     #[test]
     #[serial_test::serial]
-    fn env_server_key_wins_over_auth_tokens() {
+    fn env_server_key_wins_over_cloud_session() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+        write_legacy_auth(&path, &sample_tokens());
 
         unsafe { std::env::set_var("INKENTRY_SERVER_KEY", "ci-token") };
         let store = MemoryStore::default();
         let cfg = load_hermetic_with(&path, &store).unwrap();
         assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("ci-token"));
-        // The refresh token is still available for the refresh path.
-        assert_eq!(cfg.auth.unwrap().refresh_token, "rt-sample");
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
+        // The migrated refresh token is still available for the refresh path.
+        assert_eq!(
+            org_tokens::resolve_session(&store, None)
+                .unwrap()
+                .unwrap()
+                .refresh_token,
+            "rt-sample"
+        );
     }
 
-    // The `[auth]` access token (cloud kind) and a stored per-origin key
-    // (self-hosted kind) resolve independently by target origin (ADR-071 D2):
-    // they do not compete in a single flat precedence chain.
+    // The cloud session (cloud kind) and a stored per-origin key (self-hosted
+    // kind) resolve independently by target origin (ADR-071 D2): they do not
+    // compete in a single flat precedence chain.
     #[test]
     #[serial_test::serial]
-    fn auth_token_and_per_origin_key_resolve_by_kind_not_precedence() {
+    fn cloud_session_and_per_origin_key_resolve_by_kind_not_precedence() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+        write_legacy_auth(&path, &sample_tokens());
 
         let store = MemoryStore::default();
         server_keys::set_key_for_origin("https://team.example:4655", "sk-team", &store).unwrap();
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        let cfg = Config::load_with_store_from(Some(&path), &store, None).unwrap();
 
         assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at-sample"));
         assert_eq!(
@@ -2005,25 +2190,32 @@ mode = "cloud_first"
         );
     }
 
-    // Writing auth tokens preserves other top-level keys (e.g. `llm_model`).
-    // Not `server_url`: the global config no longer surfaces that field (see
-    // `load_with_store`), so it is not a useful "other key" for this test.
+    // Migration preserves other top-level keys (e.g. `llm_model`) while lifting
+    // the session out and stripping the table.
     #[test]
     #[serial_test::serial]
-    fn save_auth_tokens_preserves_other_keys() {
+    fn migration_preserves_other_keys() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "llm_model = \"gpt-oss\"\n").unwrap();
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+        write_legacy_auth(&path, &sample_tokens());
 
-        let cfg = load_hermetic(&path).unwrap();
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&path, &store).unwrap();
         assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
-        assert_eq!(cfg.auth.unwrap().access_token, "at-sample");
+        assert_eq!(
+            org_tokens::resolve_session(&store, None)
+                .unwrap()
+                .unwrap()
+                .access_token,
+            "at-sample"
+        );
+        assert!(!file_has_auth_table(&path));
     }
 
-    // `remove_auth_tokens_from` clears the `[auth]` table and nothing else:
-    // the per-origin server keys are a separate store with its own command.
+    // `remove_auth_tokens_from` clears the `[auth]` table and nothing else: the
+    // per-origin server keys are a separate store with its own command.
     #[test]
     #[serial_test::serial]
     fn remove_auth_tokens_clears_only_auth_table() {
@@ -2031,14 +2223,16 @@ mode = "cloud_first"
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
         std::fs::write(&path, "llm_model = \"gpt-oss\"\n").unwrap();
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+        write_legacy_auth(&path, &sample_tokens());
 
         let store = MemoryStore::default();
         server_keys::set_key_for_origin("https://team.example:4655", "sk-team", &store).unwrap();
 
         remove_auth_tokens_from(&path).unwrap();
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
-        assert!(cfg.auth.is_none());
+        // With the table already stripped there is nothing to migrate, so the
+        // cloud kind resolves to nothing while the server key is untouched.
+        let cfg = Config::load_with_store_from(Some(&path), &store, None).unwrap();
+        assert!(!file_has_auth_table(&path));
         assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
         assert_eq!(cloud_bearer(&cfg, &store), None);
         assert_eq!(
@@ -2047,20 +2241,6 @@ mode = "cloud_first"
                 .as_deref(),
             Some("sk-team")
         );
-    }
-
-    /// On Unix, the config file is written `0600` after persisting tokens.
-    #[cfg(unix)]
-    #[test]
-    #[serial_test::serial]
-    fn save_auth_tokens_sets_0600() {
-        use std::os::unix::fs::PermissionsExt;
-        clear_inkentry_env();
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("config.toml");
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "config must be owner-only after save");
     }
 
     /// Expiry uses a 30 s skew margin.
@@ -2351,19 +2531,21 @@ project_id = "team/new"
         );
     }
 
-    /// A WorkOS `[auth]` access token outranks the personal store the same
-    /// way the env var does: the store must never be queried for
-    /// `server_key` when `[auth]` already resolves the bearer.
+    /// The cloud session now lives in the secret store (ADR-074), so resolving
+    /// the cloud bearer necessarily reads the store — the opposite of the
+    /// pre-ADR-074 invariant, where the token sat in the config file. The env-var
+    /// escape hatch is what still skips the store entirely (see
+    /// `env_server_key_skips_store_read_entirely`).
     #[test]
     #[serial_test::serial]
-    fn auth_token_skips_store_read_entirely() {
+    fn cloud_bearer_resolves_from_the_store_after_migration() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+        write_legacy_auth(&path, &sample_tokens());
 
         let store = CountingStore::default();
-        let cfg = Config::load_with_store(Some(&path), &store).unwrap();
+        let cfg = Config::load_with_store_from(Some(&path), &store, None).unwrap();
 
         assert_eq!(
             cfg.bearer_for_with_store(server_keys::DEFAULT_CLOUD_URL, &store)
@@ -2371,11 +2553,9 @@ project_id = "team/new"
                 .as_deref(),
             Some("at-sample")
         );
-        assert_eq!(
-            store.get_calls.load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "the personal secret store must not be read when a WorkOS [auth] \
-             token already resolves the bearer"
+        assert!(
+            store.get_calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the cloud session lives in the store now, so resolving it reads the store"
         );
     }
 
@@ -2589,7 +2769,7 @@ project_id = "team/new"
 
     #[test]
     #[serial_test::serial]
-    fn save_auth_tokens_preserves_llm_url() {
+    fn migration_preserves_llm_url_and_llm_model() {
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");
@@ -2598,12 +2778,19 @@ project_id = "team/new"
             "llm_model = \"gpt-oss\"\nllm_url = \"http://127.0.0.1:1234\"\n",
         )
         .unwrap();
-        save_auth_tokens_to(&sample_tokens(), &path).unwrap();
+        write_legacy_auth(&path, &sample_tokens());
 
-        let cfg = load_hermetic(&path).unwrap();
+        let store = MemoryStore::default();
+        let cfg = load_hermetic_with(&path, &store).unwrap();
         assert_eq!(cfg.llm_url.as_deref(), Some("http://127.0.0.1:1234"));
         assert_eq!(cfg.llm_model.as_deref(), Some("gpt-oss"));
-        assert_eq!(cfg.auth.unwrap().access_token, "at-sample");
+        assert_eq!(
+            org_tokens::resolve_session(&store, None)
+                .unwrap()
+                .unwrap()
+                .access_token,
+            "at-sample"
+        );
     }
 
     // The daemon-spawn path is the only reader of the LLM credential, so a

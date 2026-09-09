@@ -42,7 +42,7 @@ use clap::Args;
 use inkentry_core::config::{self, AuthTokens};
 
 use super::auth_api::{self, DEFAULT_CLOUD_URL, MeOrg, PollOutcome};
-use super::org::{persist_tokens, switch_org};
+use super::org::switch_org;
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
@@ -82,9 +82,16 @@ pub async fn login(args: LoginArgs) -> Result<()> {
     // Already logged in with a valid refresh token + `--org`: silent re-scope.
     if let Some(org_slug) = &args.org {
         let cfg = config::Config::load(None).context("loading config")?;
-        if let Some(auth) = cfg.auth.as_ref() {
-            let tokens =
-                switch_org(&client, &workos_url, &cloud_url, &client_id, auth, org_slug).await?;
+        if let Some(auth) = cfg.cloud_session()? {
+            let tokens = switch_org(
+                &client,
+                &workos_url,
+                &cloud_url,
+                &client_id,
+                &auth,
+                org_slug,
+            )
+            .await?;
             return finish_login(&cloud_url, tokens, Some(org_slug)).await;
         }
     }
@@ -322,8 +329,9 @@ async fn finish_login(
     org_slug_hint: Option<&str>,
 ) -> Result<()> {
     // Write before printing so a write error surfaces before the user believes
-    // they are logged in.
-    persist_tokens(&tokens)?;
+    // they are logged in. The session is cached as the active org (ADR-074 D4),
+    // recording the resolved slug so a repo can later pin `org = "<slug>"`.
+    config::store_active_session(&tokens, org_slug_hint)?;
     println!();
     // Best-effort: resolve the WorkOS org id to a display name.
     let display =

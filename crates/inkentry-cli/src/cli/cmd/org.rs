@@ -36,8 +36,11 @@ pub struct OrgArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum OrgCommand {
-    /// Switch the active organization (silently, using the stored refresh token)
+    /// Switch the active organization. Local (no WorkOS call) when the target is
+    /// already cached; otherwise onboards it with the current session.
     Switch(OrgSwitchArgs),
+    /// List the organizations with a cached session and mark the active one.
+    List,
 }
 
 #[derive(Args, Debug)]
@@ -62,19 +65,52 @@ pub async fn org(args: OrgArgs) -> Result<()> {
         OrgCommand::Switch(switch_args) => {
             org_switch(&workos_url, &cloud_url, &client_id, &switch_args.org).await
         }
+        OrgCommand::List => org_list(),
     }
 }
 
 async fn org_switch(workos_url: &str, cloud_url: &str, client_id: &str, org: &str) -> Result<()> {
+    let store = config::default_secret_store()?;
+
+    // Local switch (ADR-074 D4): a target that already has a cached session just
+    // moves the active pointer — no WorkOS call, and no other org's session is
+    // touched.
+    if config::org_tokens::set_active_local(store.as_ref(), org)? {
+        println!("Switched to organization '{org}'.");
+        return Ok(());
+    }
+
+    // Not cached: onboard it from the current session's refresh token (the
+    // fork path, D3.4), then cache it as the active org.
     let cfg = config::Config::load(None).context("loading config")?;
-    let auth = cfg.auth.as_ref().ok_or_else(|| {
+    let auth = cfg.cloud_session()?.ok_or_else(|| {
         anyhow::anyhow!("Not logged in. Run `inkentry login` before switching organizations.")
     })?;
 
     let client = auth_api::build_client()?;
-    let tokens = switch_org(&client, workos_url, cloud_url, client_id, auth, org).await?;
-    persist_tokens(&tokens)?;
+    let tokens = switch_org(&client, workos_url, cloud_url, client_id, &auth, org).await?;
+    config::store_active_session(&tokens, slug_hint(org))?;
     println!("Switched to organization '{org}'.");
+    Ok(())
+}
+
+/// `inkentry org list`: print each cached org, marking the active one (ADR-074
+/// D4). Never prints token material.
+fn org_list() -> Result<()> {
+    let store = config::default_secret_store()?;
+    let orgs = config::org_tokens::list(store.as_ref())?;
+    if orgs.is_empty() {
+        println!("No organizations cached. Run `inkentry login` to sign in.");
+        return Ok(());
+    }
+    for org in orgs {
+        let marker = if org.is_active { "* " } else { "  " };
+        let label = match &org.slug {
+            Some(slug) => format!("{} ({})", slug, org.org_id),
+            None => org.org_id.clone(),
+        };
+        println!("{marker}{label}");
+    }
     Ok(())
 }
 
@@ -137,8 +173,14 @@ async fn resolve_workos_org_id(
         return Ok(arg.to_string());
     }
 
-    let fresh =
-        auth_api::ensure_fresh_token(client, workos_url, client_id, auth, persist_tokens).await?;
+    let fresh = auth_api::ensure_fresh_token(
+        client,
+        workos_url,
+        client_id,
+        auth,
+        config::update_org_session,
+    )
+    .await?;
     let me = auth_api::fetch_me(client, cloud_url, &fresh.access_token).await?;
     resolve_arg_to_workos_org_id(&me.orgs, arg)
 }
@@ -167,9 +209,22 @@ fn resolve_arg_to_workos_org_id(orgs: &[MeOrg], arg: &str) -> Result<String> {
     })
 }
 
-/// Persist rotated/issued tokens to the `[auth]` table (written `0600`).
-pub fn persist_tokens(tokens: &AuthTokens) -> Result<()> {
-    config::save_auth_tokens(tokens).context("saving auth tokens to ~/.config/inkentry/config.toml")
+/// The human slug to record for a cache entry: the switch/login target when it
+/// is a slug rather than a WorkOS org id or a local UUID (which carry no display
+/// value). Recording it lets a repo later pin `org = "<slug>"` (ADR-074 D2).
+pub fn slug_hint(arg: &str) -> Option<&str> {
+    (!is_workos_org_id(arg) && !looks_like_uuid(arg)).then_some(arg)
+}
+
+/// Whether `s` has the 8-4-4-4-12 hexadecimal shape of a UUID (a local org id),
+/// so it is not mistaken for a human slug.
+fn looks_like_uuid(s: &str) -> bool {
+    let groups: Vec<&str> = s.split('-').collect();
+    groups.len() == 5
+        && [8usize, 4, 4, 4, 12]
+            .iter()
+            .zip(&groups)
+            .all(|(len, part)| part.len() == *len && part.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 #[cfg(test)]
@@ -238,6 +293,49 @@ mod tests {
         assert!(
             err.to_string().contains("WorkOS org id"),
             "error should explain the missing WorkOS org id: {err}"
+        );
+    }
+
+    // ── slug_hint / looks_like_uuid ────────────────────────────────────────────
+
+    #[test]
+    fn slug_hint_recorded_only_for_a_slug() {
+        // A slug carries display value and enables an offline `org = "<slug>"`
+        // pin; a WorkOS org id or a local UUID does not.
+        assert_eq!(slug_hint("acme"), Some("acme"));
+        assert_eq!(slug_hint("org_01ABC"), None);
+        assert_eq!(slug_hint("11111111-1111-1111-1111-111111111111"), None);
+    }
+
+    // The ADR-074 spike's live-WorkOS check: two independently-onboarded orgs
+    // for one user must refresh without touching each other's session (the
+    // cross-session isolation the spike inferred from WorkOS's session model).
+    // It needs real WorkOS credentials and cannot run in CI, so it is #[ignore]d.
+    // Run it by hand with INKENTRY_TEST_WORKOS_CLIENT_ID and a single-use refresh
+    // token per org in INKENTRY_TEST_WORKOS_RT_A / _RT_B (each obtained from an
+    // independent `login --org`).
+    #[tokio::test]
+    #[ignore = "requires live WorkOS credentials; run manually"]
+    async fn live_two_orgs_refresh_on_independent_lineages() {
+        let (Ok(client_id), Ok(rt_a), Ok(rt_b)) = (
+            std::env::var("INKENTRY_TEST_WORKOS_CLIENT_ID"),
+            std::env::var("INKENTRY_TEST_WORKOS_RT_A"),
+            std::env::var("INKENTRY_TEST_WORKOS_RT_B"),
+        ) else {
+            return; // no creds provisioned; nothing to exercise
+        };
+        let client = auth_api::build_client().unwrap();
+        let workos = auth_api::workos_url();
+        let a = auth_api::refresh_token(&client, &workos, &client_id, &rt_a, None)
+            .await
+            .expect("org A refresh should succeed");
+        let b = auth_api::refresh_token(&client, &workos, &client_id, &rt_b, None)
+            .await
+            .expect("org B refresh should succeed on its own lineage");
+        assert!(!a.refresh_token.is_empty() && !b.refresh_token.is_empty());
+        assert_ne!(
+            a.refresh_token, b.refresh_token,
+            "each org must rotate its own refresh lineage"
         );
     }
 

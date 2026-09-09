@@ -407,12 +407,12 @@ pub async fn refresh_token(
 /// Ensure the access token in `auth` is fresh before a cloud-api call.
 ///
 /// WorkOS access tokens are short-lived (~5 min), so a token read straight from
-/// the stored `[auth]` table is frequently already expired by the time the CLI
-/// runs — every cloud-api call would then `401`. This guard refreshes proactively
-/// when the token is at/past expiry (with a small skew window, see
+/// the cached session is frequently already expired by the time the CLI runs —
+/// every cloud-api call would then `401`. This guard refreshes proactively when
+/// the token is at/past expiry (with a small skew window, see
 /// [`AuthTokens::is_expired`]) using the stored refresh token directly against
-/// WorkOS (refresh grant), persists the rotated tokens to `[auth]`, and
-/// returns the tokens to use.
+/// WorkOS (refresh grant), hands the rotated tokens to `persist`, and returns
+/// the tokens to use.
 ///
 /// The refresh re-sends `auth.org_id` as `organization_id` so a prior `org
 /// switch` survives rotation — WorkOS's refresh grant otherwise reverts to the
@@ -481,12 +481,10 @@ pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
 pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<Option<String>> {
     let resolved = cfg.bearer_for(server_url)?;
 
-    // Only the WorkOS-login bearer (the cloud kind, resolved from
-    // [auth].access_token) is refreshable; a self-hosted server-key is
-    // returned as-is.
+    // Only the WorkOS-login bearer (the cloud kind, the resolved org's cached
+    // session) is refreshable; a self-hosted server-key is returned as-is.
     let Some(auth) = cfg
-        .auth
-        .as_ref()
+        .cloud_session()?
         .filter(|a| Some(a.access_token.as_str()) == resolved.as_deref())
     else {
         return Ok(resolved);
@@ -502,8 +500,8 @@ pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<O
         &client,
         &workos_url(),
         &client_id,
-        auth,
-        inkentry_core::config::save_auth_tokens,
+        &auth,
+        inkentry_core::config::update_org_session,
     )
     .await?;
     Ok(Some(fresh.access_token))

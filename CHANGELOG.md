@@ -11,6 +11,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The cloud login session no longer lives in plaintext config, and each
+  organization keeps its own.** `inkentry login` now stores the WorkOS session
+  (including the long-lived refresh token) in the OS secret store, keyed per
+  organization, instead of the `[auth]` table of
+  `~/.config/inkentry/config.toml`; a legacy `[auth]` table is migrated into the
+  store and stripped from the file automatically on first use, so nothing needs
+  doing. A repo can pin itself to one org with `org = "<slug>"` in
+  `.inkentry/config.toml` (or `INKENTRY_ORG`). `inkentry org list` shows the
+  cached orgs, `inkentry org switch` between already-cached orgs is now local
+  (no network call), and `inkentry logout --org <target>` signs out of one org
+  while leaving the others.
 - **Memory entries now show the id that travels with the repo.** `memory add`,
   `memory list`, `memory show` and `context` lead each entry with a 12-character
   handle taken from its entity id; `memory add` and `memory show` print the full
