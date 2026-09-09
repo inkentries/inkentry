@@ -8,8 +8,8 @@ versions receive fixes.
 | Platform | Requirement | Notes |
 |----------|-------------|-------|
 | macOS (Apple Silicon) | — | Embedding runs GPU-accelerated via Metal |
-| Linux x86_64 (glibc) | glibc 2.31+ (Debian 11 / Ubuntu 20.04 era or newer) | Release binaries are built in a Debian 11 container |
-| Linux arm64 (glibc) | glibc 2.31+ | Same baseline as x86_64 |
+| Linux x86_64 (glibc) | glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer) | Release binaries are built in an Ubuntu 22.04 container |
+| Linux arm64 (glibc) | glibc 2.35+ | Same baseline as x86_64 |
 | Windows x86_64 | — | `.zip` archive with `.exe` binaries |
 
 Intel Macs are not shipped as prebuilt binaries; they build from source — see

@@ -42,6 +42,23 @@ dirs        = "6"
 candle-core = "0.11.0"
 candle-nn   = "0.11.0"
 tokenizers  = "0.23"
+# llama.cpp embedder backend (portable GPU: Vulkan on Windows/Linux, Metal on
+# macOS). Optional deps of `inkentry-embed`, gated behind its off-by-default
+# `llama` feature. Pinned exact: the crate tracks llama.cpp weekly and its
+# 0.1.x line makes no API-stability promise, so upgrades are deliberate and
+# re-verified against the vector-parity suite. The sys crate must be pinned
+# too — llama-cpp-2 only declares a caret requirement on it, and the pair
+# breaks across releases (0.1.154 + sys 0.1.155 fails to compile), so
+# inkentry-embed carries a direct sys dependency purely as a resolution
+# anchor. Bump both together.
+# Default features are off to drop `openmp`: with it, ggml links libgomp.so.1
+# wherever the build toolchain carries an OpenMP runtime, adding a shared-lib
+# dependency that bare distro installs don't have. ggml's internal threadpool
+# serves the CPU path instead (all shipped CPU benchmarks were measured on
+# it). `common` stays on: it builds libllama-common, one of the core libs the
+# dynamic-backends binary hard-links.
+llama-cpp-2 = { version = "=0.1.154", default-features = false, features = ["common"] }
+llama-cpp-sys-2 = "=0.1.154"
 # OS keychain for the CLI bearer credential (macOS Keychain, Linux Secret
 # Service via zbus, Windows Credential Manager). `v1` is keyring 4's
 # compatibility shim: same Entry::new/get_password/set_password/

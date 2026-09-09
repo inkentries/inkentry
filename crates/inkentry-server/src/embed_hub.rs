@@ -22,10 +22,13 @@
 //! were derived from.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use hf_hub::{Cache, Repo, RepoType, api::sync::ApiBuilder};
 use inkentry_embed::NativeEmbedder;
+#[cfg(feature = "embed-llama")]
+use inkentry_embed::{DeviceRequest, LlamaEmbedder};
 
 /// `config.json` for F2LLM-v2-330M (Qwen3 architecture config; ~1 KB).
 /// Embedded directly in the binary — it's tiny and never changes independent
@@ -68,6 +71,23 @@ const DEFAULT_GGUF_REPO: &str = "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF";
 /// that publishes `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` (see
 /// `docs/third-party-models.md`), not built on device.
 const QUANT_GGUF: &str = "f2llm-v2-330m-q8_0.gguf";
+
+/// Filename of the *canonical llama.cpp* GGUF for the same model, hosted in
+/// the same repo as [`QUANT_GGUF`]. The two are not interchangeable: this one
+/// carries llama.cpp tensor names (`blk.N.*`), arch metadata, and the baked
+/// tokenizer + last-token pooling config that `LlamaEmbedder` needs, while
+/// [`QUANT_GGUF`] keeps HF-style names only the candle loader reads. Both are
+/// Q8_0 quantizations of the same pinned upstream revision, so they share the
+/// vector space and `MODEL_ID`.
+#[cfg(feature = "embed-llama")]
+const LLAMA_GGUF: &str = "f2llm-v2-330m-llama-q8_0.gguf";
+
+/// Env var selecting where the embedder runs: `auto` (default), `gpu`, or
+/// `cpu`. Deliberately API-agnostic values — no `vulkan`/`metal` — so the
+/// same setting means the same thing on every platform. `cpu` is the escape
+/// hatch that skips the llama engine entirely and keeps today's candle path.
+#[cfg(feature = "embed-llama")]
+const EMBED_DEVICE_ENV: &str = "INKENTRY_EMBED_DEVICE";
 
 /// Load the F2LLM-v2-330M model, quantized to Q8_0, via the Hugging Face Hub.
 ///
@@ -331,6 +351,296 @@ fn staging_path(gguf_path: &Path) -> PathBuf {
     gguf_path.with_file_name(name)
 }
 
+/// A ready embedding backend plus the identity facts `/v1/health` surfaces
+/// about it. `engine`/`device` exist so a field report can say *which* engine
+/// on *which* device produced a problem without reading server logs.
+pub struct LoadedEmbedder {
+    pub backend: Arc<dyn inkentry_core::embeddings::EmbeddingBackend>,
+    /// `"candle"` or `"llama"`.
+    pub engine: &'static str,
+    /// `"cpu"`, `"metal"`, `"vulkan"`, or `"gpu"` — the device the engine
+    /// resolved at load.
+    pub device: &'static str,
+    /// A non-fatal, actionable note about how the device resolved, surfaced in
+    /// the health body and `inkentry server status`. Set when a GPU was wanted
+    /// but embedding fell back to CPU for a fixable reason (currently: a Linux
+    /// DRM render node present but unopenable for lack of `render`-group
+    /// membership). `None` when the device resolved as expected.
+    pub note: Option<String>,
+}
+
+/// Load the embedding backend, choosing the engine at runtime.
+///
+/// With the `embed-llama` feature and `INKENTRY_EMBED_DEVICE` not `cpu`, the
+/// llama.cpp engine (GPU) is tried first; any failure *loading or running* it
+/// — missing artifact, no usable driver, out of device memory — logs a warning
+/// and falls back to the candle engine, so such a failure never leaves the
+/// server embedding less than a build without the feature. The one exception is
+/// a malformed `INKENTRY_EMBED_DEVICE`: that is a deliberate hard error (see
+/// [`embed_device_request`]) that leaves no embedder, where a build without
+/// `embed-llama` ignores the variable entirely. `cpu` (or a build without
+/// `embed-llama`) is exactly today's candle path.
+pub fn load_backend(model_dir: Option<&Path>, embed_threads: usize) -> Result<LoadedEmbedder> {
+    #[cfg(feature = "embed-llama")]
+    {
+        let device = embed_device_request()?;
+        if !matches!(device, DeviceRequest::Cpu) {
+            let llama = match model_dir {
+                Some(dir) => load_llama_from_model_dir(dir, device, embed_threads),
+                None => load_llama_from_hub(device, embed_threads),
+            };
+            match llama {
+                Ok(embedder) => {
+                    let device = embedder.device();
+                    // A GPU was requested (this branch only runs for non-`cpu`
+                    // DeviceRequest) yet the engine resolved to CPU: no usable
+                    // GPU backend was selected. On Linux this is often a fixable
+                    // permission problem (missing `render`-group membership),
+                    // worth an actionable log and a health/status note.
+                    let note = if device == "cpu" {
+                        gpu_fallback_note()
+                    } else {
+                        None
+                    };
+                    return Ok(LoadedEmbedder {
+                        device,
+                        backend: Arc::new(embedder),
+                        engine: "llama",
+                        note,
+                    });
+                }
+                Err(e) => tracing::warn!(
+                    "llama embedding engine failed to load ({e:#}); falling back to candle"
+                ),
+            }
+        }
+    }
+    #[cfg(not(feature = "embed-llama"))]
+    let _ = embed_threads;
+
+    let native = match model_dir {
+        Some(dir) => load_from_model_dir(dir),
+        None => load_from_hub(),
+    }?;
+    Ok(LoadedEmbedder {
+        backend: Arc::new(native),
+        engine: "candle",
+        // Compile-time flavor: the candle loader's rare runtime
+        // Metal-init fallback to CPU is logged but not surfaced here.
+        device: if cfg!(feature = "metal") {
+            "metal"
+        } else {
+            "cpu"
+        },
+        note: None,
+    })
+}
+
+/// A DRM render node's openability, as it bears on a GPU-to-CPU embed fallback.
+///
+/// The distinction the caller acts on is permission (fixable by joining the
+/// `render` group) versus everything else (a genuinely GPU-less host, or a GPU
+/// the driver rejects for missing features — neither of which the render-group
+/// advice would help).
+#[cfg(feature = "embed-llama")]
+#[derive(Debug, PartialEq, Eq)]
+enum RenderNodeAccess {
+    /// No `renderD*` node in the directory: no GPU render device present.
+    NoNode,
+    /// A render node exists but this process cannot open it (`EACCES`) — the
+    /// `render`-group case. Carries the node path.
+    PermissionDenied(String),
+    /// A render node exists and opens: the GPU is present and reachable, so a
+    /// CPU fallback is not a permission problem (the driver rejected it, or no
+    /// Vulkan module/loader is present). Carries the node path.
+    Reachable(String),
+    /// A render node exists but the open failed for some non-permission reason
+    /// (e.g. the device is busy or vanished mid-probe): nothing actionable.
+    Unknown,
+}
+
+/// Classify the first `renderD*` node under `dri_dir` by whether this process
+/// can open it read+write — what a Vulkan driver needs to use the GPU.
+///
+/// Directory-injected rather than hard-wired to `/dev/dri` so the classification
+/// is unit-testable without a real GPU. The probe is one `open(O_RDWR)` and the
+/// fd is dropped immediately; opening a render node is exactly what a GPU client
+/// does and has no side effect on the device.
+#[cfg(feature = "embed-llama")]
+fn classify_render_nodes(dri_dir: &Path) -> RenderNodeAccess {
+    let node = std::fs::read_dir(dri_dir).ok().and_then(|entries| {
+        entries.flatten().map(|e| e.path()).find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("renderD"))
+        })
+    });
+    let Some(node) = node else {
+        return RenderNodeAccess::NoNode;
+    };
+    let path = node.display().to_string();
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+    {
+        Ok(_) => RenderNodeAccess::Reachable(path),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            RenderNodeAccess::PermissionDenied(path)
+        }
+        Err(_) => RenderNodeAccess::Unknown,
+    }
+}
+
+/// A GPU was requested but the llama engine resolved to CPU. Diagnose why on
+/// Linux and, when it is actionable, log it and return a note for the health
+/// body / `inkentry server status`. Returns `None` (and logs nothing) on a
+/// genuinely GPU-less host, so it never nags a machine that simply has no GPU.
+///
+/// Cheap by construction: one directory read plus a single `open()` probe, no
+/// subprocess and no Vulkan enumeration (the engine already computed the
+/// device; this only explains a CPU outcome).
+#[cfg(feature = "embed-llama")]
+fn gpu_fallback_note() -> Option<String> {
+    // DRM render nodes and the `render` group are a Linux concept; there is
+    // nothing to advise on macOS/Windows. `/dev/dri` is absent there anyway,
+    // but guard explicitly so the intent is clear.
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    match classify_render_nodes(Path::new("/dev/dri")) {
+        RenderNodeAccess::PermissionDenied(node) => {
+            tracing::warn!(
+                "A Vulkan-capable GPU appears present but could not be opened \
+                 (permission denied on {node}). Add your user to the 'render' group — \
+                 `sudo usermod -aG render $USER` — and re-login to enable GPU \
+                 acceleration; embeddings are running on CPU until then."
+            );
+            Some(format!(
+                "GPU blocked: no access to {node}. Add your user to the 'render' group \
+                 (sudo usermod -aG render $USER) and re-login to enable GPU acceleration; \
+                 running on CPU."
+            ))
+        }
+        RenderNodeAccess::Reachable(node) => {
+            // The GPU is reachable but was not selected: a hardware/driver
+            // limit (e.g. ggml rejecting a device that lacks 16-bit storage),
+            // or no Vulkan module/loader. Not fixable by the render group, so
+            // it earns an explanatory log but no actionable status note.
+            tracing::info!(
+                "A GPU render node ({node}) is accessible but no usable Vulkan GPU backend \
+                 was selected — the device likely lacks a required Vulkan feature (e.g. \
+                 16-bit storage) or has no Vulkan driver. Embeddings are running on CPU."
+            );
+            None
+        }
+        RenderNodeAccess::NoNode | RenderNodeAccess::Unknown => None,
+    }
+}
+
+/// Load the llama.cpp engine's canonical GGUF via the Hugging Face Hub —
+/// same repo, cache, and flat-copy layout as [`load_from_hub`], but a single
+/// file: the canonical GGUF embeds its own tokenizer and config.
+#[cfg(feature = "embed-llama")]
+fn load_llama_from_hub(device: DeviceRequest, embed_threads: usize) -> Result<LlamaEmbedder> {
+    let cache_dir = model_cache_dir()?;
+    std::fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("creating model cache dir {}", cache_dir.display()))?;
+    let gguf_path = cache_dir.join(LLAMA_GGUF);
+
+    if !gguf_path.exists() {
+        let gguf_repo = prequantized_gguf_repo();
+        tracing::info!("fetching canonical llama.cpp GGUF from {gguf_repo} (first run)…");
+        let api = ApiBuilder::new()
+            .with_cache_dir(cache_dir)
+            .build()
+            .context("building HuggingFace Hub API client")?;
+        let repo = api.repo(Repo::new(gguf_repo.clone(), RepoType::Model));
+        let downloaded = repo
+            .get(LLAMA_GGUF)
+            .with_context(|| format!("downloading {LLAMA_GGUF} from {gguf_repo}"))?;
+        if downloaded != gguf_path {
+            std::fs::copy(&downloaded, &gguf_path).with_context(|| {
+                format!(
+                    "caching {} -> {}",
+                    downloaded.display(),
+                    gguf_path.display()
+                )
+            })?;
+        }
+        tracing::info!(
+            "fetched canonical llama.cpp GGUF to {}",
+            gguf_path.display()
+        );
+    }
+
+    // Size the context pool to the server's embed-admission capacity so every
+    // admitted concurrent embed gets its own warm context — an interactive
+    // embed never queues behind a bulk index batch. Single-sourced here rather
+    // than a separate constant in inkentry-embed that could drift.
+    LlamaEmbedder::load_from_path(
+        &gguf_path,
+        device,
+        Some(embed_threads),
+        crate::EMBED_QUEUE_CAPACITY,
+    )
+}
+
+/// Air-gapped counterpart of [`load_llama_from_hub`]: reads the canonical
+/// llama.cpp GGUF from the operator-provisioned `--model-dir`. Zero network
+/// access, no `hf_hub` involvement.
+#[cfg(feature = "embed-llama")]
+fn load_llama_from_model_dir(
+    dir: &Path,
+    device: DeviceRequest,
+    embed_threads: usize,
+) -> Result<LlamaEmbedder> {
+    anyhow::ensure!(
+        dir.is_dir(),
+        "--model-dir {} is not a directory. See \"Air-gapped / no-egress install\" in \
+         docs/server-setup.md for the offline provisioning procedure.",
+        dir.display()
+    );
+    let gguf_path = dir.join(LLAMA_GGUF);
+    anyhow::ensure!(
+        gguf_path.exists(),
+        "offline model artifact missing: {} not found in --model-dir {}. See \
+         \"Air-gapped / no-egress install\" in docs/server-setup.md for the fetch-and-transfer \
+         procedure.",
+        LLAMA_GGUF,
+        dir.display()
+    );
+    tracing::info!(
+        "loading F2LLM-v2-330M (Q8_0) via llama.cpp from offline --model-dir {} \
+         (zero network access)",
+        dir.display()
+    );
+    // Size the context pool to the server's embed-admission capacity so every
+    // admitted concurrent embed gets its own warm context — an interactive
+    // embed never queues behind a bulk index batch. Single-sourced here rather
+    // than a separate constant in inkentry-embed that could drift.
+    LlamaEmbedder::load_from_path(
+        &gguf_path,
+        device,
+        Some(embed_threads),
+        crate::EMBED_QUEUE_CAPACITY,
+    )
+}
+
+/// Parse [`EMBED_DEVICE_ENV`]; unset or blank means `auto`. An unparseable
+/// value is a load error (surfaced through `/v1/health` as `unavailable`)
+/// rather than a silent default: a typo'd `INKENTRY_EMBED_DEVICE=vulkan`
+/// quietly running on some other device would be worse than failing loudly.
+#[cfg(feature = "embed-llama")]
+fn embed_device_request() -> Result<DeviceRequest> {
+    match std::env::var(EMBED_DEVICE_ENV) {
+        Ok(v) if !v.trim().is_empty() => v
+            .parse()
+            .with_context(|| format!("parsing {EMBED_DEVICE_ENV}")),
+        _ => Ok(DeviceRequest::Auto),
+    }
+}
+
 fn model_cache_dir() -> Result<PathBuf> {
     dirs::data_local_dir()
         .map(|d| d.join("inkentry").join("models"))
@@ -358,6 +668,69 @@ fn prequantized_gguf_repo() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── GPU-fallback render-node diagnostic ────────────────────────────────────
+
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    fn classify_render_nodes_no_node_for_empty_or_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(classify_render_nodes(dir.path()), RenderNodeAccess::NoNode);
+        assert_eq!(
+            classify_render_nodes(&dir.path().join("does-not-exist")),
+            RenderNodeAccess::NoNode,
+            "a missing /dev/dri (no DRM at all) is NoNode, not an error"
+        );
+    }
+
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    fn classify_render_nodes_ignores_non_render_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        // A GPU-less host can still have a `card0`/`by-path` under /dev/dri;
+        // only `renderD*` is the compute render node this check is about.
+        std::fs::write(dir.path().join("card0"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("by-path")).unwrap();
+        assert_eq!(classify_render_nodes(dir.path()), RenderNodeAccess::NoNode);
+    }
+
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    fn classify_render_nodes_reachable_for_openable_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("renderD128");
+        std::fs::write(&node, b"").unwrap();
+        assert_eq!(
+            classify_render_nodes(dir.path()),
+            RenderNodeAccess::Reachable(node.display().to_string()),
+            "a render node this process can open read+write is reachable, not a permission case"
+        );
+    }
+
+    #[cfg(all(feature = "embed-llama", unix))]
+    #[test]
+    fn classify_render_nodes_permission_denied_for_inaccessible_node() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("renderD128");
+        std::fs::write(&node, b"").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root bypasses DAC permission bits (CI containers often run as root),
+        // so the open would succeed and there is nothing to assert.
+        if std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&node)
+            .is_ok()
+        {
+            return;
+        }
+        assert_eq!(
+            classify_render_nodes(dir.path()),
+            RenderNodeAccess::PermissionDenied(node.display().to_string())
+        );
+    }
 
     /// `prequantized_gguf_repo()` resolves the GGUF source from
     /// `INKENTRY_EMBEDDER_GGUF_REPO`: unset/blank → the bundled default repo;
@@ -772,6 +1145,148 @@ mod tests {
             "GQA-fixed embeddings must discriminate related from unrelated: \
              related={related:.3} vs unrelated={unrelated:.3} (inkentry-oss#19)"
         );
+    }
+
+    /// Cross-engine vector-space parity gate: the llama.cpp engine must land in
+    /// the same vector space as the candle engine, within the drift the product
+    /// already ships between candle-CPU and candle-Metal. The thresholds
+    /// asserted below — median cosine ≥ 0.999, worst chunk ≥ 0.99 — are the
+    /// envelope the Phase-0 study measured over 300+ real repo chunks; this
+    /// test is a reduced smoke version of that study, applying those same
+    /// thresholds to the eight representative strings below plus one retrieval
+    /// query. That is enough to catch a vector-space move after a `llama-cpp-2`
+    /// bump without carrying the full corpus. Staying inside the envelope is
+    /// what lets both engines serve one `MODEL_ID` with no re-index. Ignored by
+    /// default: needs both GGUFs on disk — the HF-named one via
+    /// [`load_from_hub`] and the canonical llama.cpp one in the model cache
+    /// (published alongside it, or placed manually before the repo carries it).
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    #[ignore = "requires both F2LLM GGUFs and runs inference on both engines"]
+    fn llama_engine_matches_candle_vector_space() {
+        use inkentry_core::embeddings::EmbeddingBackend;
+
+        let candle = load_from_hub().expect("load candle engine");
+        let llama = load_llama_from_hub(DeviceRequest::Auto, 4)
+            .expect("load llama engine (canonical GGUF)");
+        assert_eq!(
+            candle.dimension(),
+            llama.dimension(),
+            "engines must agree on dim"
+        );
+
+        let texts: [&str; 8] = [
+            "title: load_from_hub | text: pub fn load_from_hub() -> Result<NativeEmbedder> { \
+             let cache_dir = model_cache_dir()?; }",
+            "title: none | text: The server binds its listener before the model warms up so \
+             health stays live during the download.",
+            "title: l2_normalise | text: fn l2_normalise(v: &mut [f32]) { let norm = \
+             v.iter().map(|x| x * x).sum::<f32>().sqrt(); }",
+            "title: none | text: 埋め込みモデルは起動時にバックグラウンドで読み込まれます。",
+            "title: none | text: SELECT id, title FROM notes WHERE archived = 0 ORDER BY \
+             created_at DESC LIMIT 20;",
+            "title: none | text: the fall of the roman empire and the rise of byzantium",
+            "title: token_cap | text: the memory-budget-derived bound that keeps the \
+             single-chunk attention scratch within RAM",
+            "title: none | text: cosine similarity between L2-normalised vectors is their \
+             dot product",
+        ];
+        let query = "Instruct: Given a code search query, retrieve the relevant code \
+                     snippets\nQuery: normalise an embedding vector in place";
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let candle_vecs = rt.block_on(candle.embed(&texts)).expect("candle embed");
+        let llama_vecs = rt.block_on(llama.embed(&texts)).expect("llama embed");
+
+        // Embeddings are L2-normalised, so dot product == cosine similarity.
+        let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+
+        let mut cosines: Vec<f32> = candle_vecs
+            .iter()
+            .zip(&llama_vecs)
+            .map(|(c, l)| cos(c, l))
+            .collect();
+        cosines.sort_by(|a, b| a.partial_cmp(b).expect("finite cosines"));
+        let min = cosines[0];
+        let median = cosines[cosines.len() / 2];
+        assert!(
+            min >= 0.99 && median >= 0.999,
+            "cross-engine drift exceeds the shipped candle CPU↔Metal envelope: \
+             min={min:.5} (≥0.99 required), median={median:.5} (≥0.999 required) — \
+             if this regressed after a llama-cpp-2 upgrade, the vector space moved \
+             and MODEL_ID must change (forcing a re-index)"
+        );
+
+        // Retrieval agreement: both engines must rank the same best chunk for
+        // a real query (the contract that actually matters to search).
+        let candle_q = &rt.block_on(candle.embed(&[query])).expect("candle query")[0];
+        let llama_q = &rt.block_on(llama.embed(&[query])).expect("llama query")[0];
+        let argmax = |q: &[f32], vecs: &[Vec<f32>]| {
+            (0..vecs.len())
+                .max_by(|&a, &b| {
+                    cos(q, &vecs[a])
+                        .partial_cmp(&cos(q, &vecs[b]))
+                        .expect("finite cosines")
+                })
+                .expect("non-empty corpus")
+        };
+        assert_eq!(
+            argmax(candle_q, &candle_vecs),
+            argmax(llama_q, &llama_vecs),
+            "engines disagree on the top-1 chunk for the same query"
+        );
+    }
+
+    // The pooled worker reuses one warm context across calls, clearing the KV
+    // cache between chunks. That reuse must not change the vectors: many chunks
+    // run through one reused context (a multi-chunk call, then repeated calls on
+    // the now-warm context) must match each chunk decoded on its own. A leaked
+    // KV state between chunks — the failure mode context reuse could introduce —
+    // would surface here as drift on the later chunks. Ignored by default: needs
+    // the canonical GGUF on disk and runs inference.
+    #[cfg(feature = "embed-llama")]
+    #[test]
+    #[ignore = "requires the canonical F2LLM GGUF and runs inference"]
+    fn llama_reused_context_matches_isolated_chunks() {
+        use inkentry_core::embeddings::EmbeddingBackend;
+
+        let llama = load_llama_from_hub(DeviceRequest::Auto, 4)
+            .expect("load llama engine (canonical GGUF)");
+
+        // Mixed lengths and scripts so a KV leak between neighbours of differing
+        // size would show up.
+        let texts: [&str; 6] = [
+            "title: none | text: a",
+            "title: l2_normalise | text: fn l2_normalise(v: &mut [f32]) { let norm = \
+             v.iter().map(|x| x * x).sum::<f32>().sqrt(); for x in v { *x /= norm; } }",
+            "title: none | text: SELECT id, title FROM notes WHERE archived = 0;",
+            "title: none | text: 埋め込みは起動時にバックグラウンドで読み込まれます。",
+            "title: none | text: the fall of the roman empire and the rise of byzantium",
+            "title: none | text: cosine similarity between L2-normalised vectors is their dot product",
+        ];
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // One multi-chunk call: all six run through one reused context in order.
+        let batched = rt.block_on(llama.embed(&texts)).expect("multi-chunk embed");
+        // Then each on its own, reusing the same now-warm pooled context.
+        let singles: Vec<Vec<f32>> = texts
+            .iter()
+            .map(|t| {
+                rt.block_on(llama.embed(&[*t]))
+                    .expect("single embed")
+                    .remove(0)
+            })
+            .collect();
+
+        let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        for (i, (b, s)) in batched.iter().zip(&singles).enumerate() {
+            let c = cos(b, s);
+            assert!(
+                c >= 0.9999,
+                "chunk {i}: vector from the reused context drifts from the isolated decode \
+                 (cos={c:.6}); the KV cache is not being cleared cleanly between chunks"
+            );
+        }
     }
 
     /// End-to-end proof that an oversized single chunk no longer OOMs/aborts
