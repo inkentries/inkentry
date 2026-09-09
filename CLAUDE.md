@@ -48,7 +48,7 @@ Full reference: `docs/agent-guide.md`, and the agent skill at https://github.com
 
 **Built-in (no inference server or cloud dependency):** git-notes memory, full-text search, code graph (AST + call edges), tree-sitter chunking. `search` requires an index: an uninitialised directory funnels to `inkentry init`. Once `init` has parsed the tree, full-text search is available immediately (over both code and memory) while semantic ranking builds in the background; the call graph is surfaced through `search --graph` and `inkentry plumbing graph-edges`.
 
-**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles a native embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, candle runtime, Metal/GPU on macOS) — no external embedding endpoint required. Semantic search and `inkentry harvest` route through the server's inference endpoints (`harvest` is the only feature that needs an LLM at all; chunk summaries are composed offline with no model); the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
+**Semantic search via inkentry-server:** from v0.9.0 the default UX runs a local `inkentry-server` (auto-bound on `127.0.0.1`). The server bundles an embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, llama.cpp engine; Metal on macOS, Vulkan on Windows/Linux, CPU elsewhere) — no external embedding endpoint required. Semantic search and `inkentry harvest` route through the server's inference endpoints (`harvest` is the only feature that needs an LLM at all; chunk summaries are composed offline with no model); the CLI talks to it via `server_client.rs`. Manage the daemon with `inkentry server start|stop|status|logs`. This **auto-discovered loopback server is an inference backend only** — it embeds queries and runs LLM calls, but it is **never** a memory store. A project's memory always lives in its local `memory.db`; the loopback server holds no authoritative memory.
 
 **Optional: team memory server** (`server_url` *explicitly* set in config, pointing at a shared instance): share memory (decisions, requirements) across a team. Setting an explicit `server_url`, or setting `cloud = true` to opt into the hosted inkentry cloud instead (mutually exclusive with `server_url`; resolves to the fixed cloud URL internally, ADR-095), is the **only** way memory moves off the local `memory.db`, and how it moves is governed by the `mode` config (see `SyncMode` in `sync_mode.rs`): the default `local_first` keeps reads and writes in the local store with the server as a converging replica; `mode = "cloud_first"` relocates the store of record to the shared server, and reads/writes fail loudly when it is unreachable (no silent local fallback; `cloud = true` defaults to `cloud_first` unless `mode` is set explicitly). Each developer's code stays local. (Note the distinction: an auto-discovered loopback server provides inference and never owns memory; an explicit team `server_url` does own memory. They must not be conflated.) `project_id` is sent to the server exactly as configured, slug or UUID: both a self-hosted inkentry-server and the hosted cloud API accept either, so there is no resolution step and nothing is cached (see ADR-005).
 
@@ -66,7 +66,7 @@ Cargo.toml                    — workspace root; [workspace.dependencies] for s
 crates/
   inkentry-core/               — library: storage, indexer, embeddings, LLM, search, config, registry
   inkentry-cli/                — `inkentry` binary; depends on inkentry-core
-  inkentry-embed/              — library: native F2LLM-v2-330M embedder (candle); depends on inkentry-core
+  inkentry-embed/              — library: F2LLM-v2-330M embedder (llama.cpp); depends on inkentry-core
   inkentry-server/             — `inkentry-server` binary + lib; depends on inkentry-core + inkentry-embed
 ```
 
@@ -279,9 +279,9 @@ server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind
                      plus resolve_llm_key (--llm-key / --llm-key-file / INKENTRY_LLM_KEY) and
                      check_llm_transport, which refuses to start when a credential would
                      travel in the clear
-embed_hub.rs       — Hugging Face Hub download path for the bundled native embedder (gated by
-                     `embed-native`); fetches the pre-quantized GGUF/tokenizer/config to disk, then
-                     calls inkentry-embed's `NativeEmbedder::load_from_path`. The only place in the
+embed_hub.rs       — Hugging Face Hub download path for the bundled embedder (gated by
+                     `embed-llama`); fetches the canonical llama.cpp GGUF to disk, then
+                     calls inkentry-embed's `LlamaEmbedder::load_from_path`. The only place in the
                      workspace that depends on `hf-hub`.
 
 migrations/  (crates/inkentry-server/migrations/)
@@ -289,29 +289,30 @@ migrations/  (crates/inkentry-server/migrations/)
   server_002.sql — server memory FTS
 ```
 
-The native embedder engine lives in the `inkentry-embed` crate (below). The
-server's `embed-native` feature enables the optional `inkentry-embed` dep (and
-the server's own hf-hub download path); `metal` forwards to `inkentry-embed`'s
-`metal` feature. `inkentry-embed` gates candle/tokenizers behind its own
-default-on `native` feature. `inkentry-core` depends on it with
+The embedder engine lives in the `inkentry-embed` crate (below). The
+server's `embed-llama` feature enables the optional `inkentry-embed` dep (and
+the server's own hf-hub download path); `llama-metal`/`llama-vulkan` add the GPU
+backends. `inkentry-embed` gates the llama.cpp engine behind its own
+default-on `llama` feature. `inkentry-core` depends on it with
 `default-features = false` to get only the `EmbeddingBackend` trait + `MODEL_ID`
-(no candle): inkentry-cli only ever calls inference over HTTP via
-`server_client.rs`, never constructs a `NativeEmbedder`, so it has no reason to
-statically link candle. inkentry-server keeps `native` on, since it's the one
-binary that actually constructs one.
+(no engine): inkentry-cli only ever calls inference over HTTP via
+`server_client.rs`, never constructs a `LlamaEmbedder`, so it has no reason to
+statically link the C++ engine. inkentry-server keeps `embed-llama` on, since
+it's the one binary that actually constructs one.
 
 ### inkentry-embed (`crates/inkentry-embed/src/`)
 
 ```
-lib.rs             - crate root; re-exports NativeEmbedder + DIM behind the default-on
-                     `native` feature (candle/tokenizers gated with it); trait +
-                     MODEL_ID stay available with `default-features = false`
-embedder_native.rs — native embedder (F2LLM-v2-330M via candle, 896-dim, Metal/GPU on macOS).
-                     NativeEmbedder::load_from_path(gguf, tokenizer, config) loads local files
-                     already on disk with zero network access — the crate's only load entry
-                     point, and it carries no download/fetch dependency. Implements
+lib.rs             - crate root; re-exports LlamaEmbedder + DIM behind the default-on
+                     `llama` feature; trait + MODEL_ID stay available with
+                     `default-features = false`
+embedder_llama.rs  — llama.cpp embedder (F2LLM-v2-330M, 896-dim; Metal on macOS,
+                     Vulkan on Windows/Linux, CPU elsewhere).
+                     LlamaEmbedder::load_from_path(gguf, ...) loads a canonical llama.cpp
+                     GGUF already on disk with zero network access — the crate's only load
+                     entry point, and it carries no download/fetch dependency. Implements
                      inkentry-core's EmbeddingBackend. inkentry-server's embed_hub module (above)
-                     resolves those local files via the Hugging Face Hub before calling it.
+                     resolves the GGUF via the Hugging Face Hub before calling it.
 ```
 
 ---
@@ -328,8 +329,8 @@ those names are long gone.)
 
 `inkentry-core` defines the `EmbeddingBackend` and `LlmBackend` traits
 (`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
-The native embedding *engine* lives in the `inkentry-embed` crate
-(`NativeEmbedder`, local-path load only); inkentry-server's `embed_hub` module
+The embedding *engine* lives in the `inkentry-embed` crate
+(`LlamaEmbedder`, local-path load only); inkentry-server's `embed_hub` module
 owns the Hugging Face Hub download path that resolves the (pre-quantized)
 model artifacts before handing them to it. There is no external embedder
 backend: embedding always runs through the bundled native engine. The LLM

@@ -18,11 +18,10 @@ pub trait EmbeddingBackend: Send + Sync {
     /// (returning an error) once it is set. Default delegates to [`Self::embed`]
     /// and ignores `cancel`  -  correct for any backend whose own work already
     /// cancels on future drop (e.g. a pure-async HTTP shim). The one backend
-    /// whose work does NOT stop on drop is [`NativeEmbedder`](crate::NativeEmbedder),
-    /// which moves its forward passes into a detached `spawn_blocking` task and
-    /// overrides this method to check the flag from inside that task (see
-    /// GH#631: without this, an abandoned request keeps
-    /// computing to completion).
+    /// whose work does NOT stop on drop is [`LlamaEmbedder`](crate::LlamaEmbedder),
+    /// which runs its forward passes on a pool of worker threads and overrides
+    /// this method to check the flag between chunks (see GH#631: without this,
+    /// an abandoned request keeps computing to completion).
     async fn embed_with_cancel(
         &self,
         texts: &[&str],
@@ -41,8 +40,8 @@ pub trait EmbeddingBackend: Send + Sync {
     /// rejects oversized inputs on its own terms that this process can't see).
     ///
     /// The one concrete backend with a real, host-derived cap is
-    /// [`NativeEmbedder`](crate::NativeEmbedder) (see its
-    /// `derive_token_cap`/`single_chunk_budget`), which overrides this. It is
+    /// [`LlamaEmbedder`](crate::LlamaEmbedder) (see its `probe_ubatch`), which
+    /// overrides this. It is
     /// surfaced so a client can size a request's *total* token budget
     /// realistically instead of assuming every chunk is small (see
     /// `HealthResponse.limits.embedder_token_cap` in inkentry-server).

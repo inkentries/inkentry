@@ -21,7 +21,7 @@
 // ## embed_hub (Hugging Face download) coverage
 //
 // `embed_hub`/`hf-hub` live only in `inkentry-server` behind the optional
-// `embed-native` feature; `inkentry-cli`'s production `[dependencies]` do not
+// `embed-llama` feature; `inkentry-cli`'s production `[dependencies]` do not
 // depend on `inkentry-server` at all (only a `[dev-dependencies]` entry with
 // `default-features = false`, used by unrelated relay tests). So "CLI local
 // flows never trigger embed_hub" is a compile-time property of the
@@ -677,7 +677,7 @@ fn embed_hub_unreachable_from_cli_binary() {
     // `cargo tree --edges normal` walks the *production* dependency graph
     // (dev-dependencies excluded), which is exactly the graph the shipped
     // `inkentry` binary links. `hf-hub` lives only behind inkentry-server's
-    // optional `embed-native` feature; asserting it is absent here is a
+    // optional `embed-llama` feature; asserting it is absent here is a
     // structural guarantee, not a runtime sample.
     let out = std::process::Command::new("cargo")
         .args([
@@ -701,7 +701,7 @@ fn embed_hub_unreachable_from_cli_binary() {
         !tree.contains("hf-hub"),
         "hf-hub is reachable from the inkentry-cli production dependency graph: \
          embed_hub's Hugging Face download path must stay confined to inkentry-server's \
-         embed-native feature, never linked into the CLI binary local-tier commands run in.\n{tree}",
+         embed-llama feature, never linked into the CLI binary local-tier commands run in.\n{tree}",
     );
 }
 

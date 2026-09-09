@@ -122,14 +122,18 @@ function buildFormula({ version, shaAarch64Darwin, shaAarch64Linux, shaX86_64Lin
   end
 
   def install
-    bin.install "inkentry"
-    bin.install "inkentry-server"
-    # x64 Linux archives carry the llama.cpp GPU embedding engine: core shared
-    # libs the server links via an $ORIGIN rpath, plus dlopen'd ggml backend
-    # modules probed from the binary's own directory — both resolve correctly
-    # only if the files sit beside the real binary in the Cellar. Empty glob
-    # (macOS, arm64 Linux) is a no-op.
-    bin.install Dir["lib*.so*"]
+    # Keep the binaries and the engine libs together in libexec (not bin): x64
+    # Linux archives carry the llama.cpp GPU engine — core shared libs the
+    # server links via an $ORIGIN rpath, plus dlopen'd ggml backend modules
+    # probed from the binary's own directory — and both resolve only if the .so
+    # files sit beside the real binary. The bin symlinks put the two binaries on
+    # the PATH; $ORIGIN and the binary's own dir resolve through them to libexec.
+    # Empty glob (macOS, arm64 Linux) is a no-op.
+    libexec.install "inkentry"
+    libexec.install "inkentry-server"
+    libexec.install Dir["lib*.so*"]
+    bin.install_symlink libexec/"inkentry"
+    bin.install_symlink libexec/"inkentry-server"
   end
 
   def caveats

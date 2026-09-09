@@ -73,11 +73,11 @@ ignore = [
     # RUSTSEC-2026-0097: affects rand 0.10.0 via lopdf 0.40.0 (the rich-formats feature, on by default).
     # lopdf is at the latest release with no patched version available.
     { id = "RUSTSEC-2026-0097", reason = "no fix available; lopdf 0.40.0 is the latest release" },
-    # RUSTSEC-2024-0436: paste 1.0.15 is unmaintained; pulled in transitively by the
-    # `embed-native` build via candle (gemm) and tokenizers → macro_rules_attribute.
-    # No patched version available and the crate is only used in proc-macro context
-    # (compile-time only, no runtime risk).
-    { id = "RUSTSEC-2024-0436", reason = "compile-time only transitive dep via candle/tokenizers; no runtime risk, no fix available" },
+    # RUSTSEC-2024-0436: paste 1.0.15 is unmaintained; pulled in transitively by
+    # tokenizers (a dev-only dependency — the embed_bench example's tokenizer-exact
+    # sweep) → macro_rules_attribute. No patched version available and the crate is
+    # only used in proc-macro context (compile-time only, no runtime risk).
+    { id = "RUSTSEC-2024-0436", reason = "compile-time only transitive dep via tokenizers (dev-only); no runtime risk, no fix available" },
     # RUSTSEC-2026-0194 / RUSTSEC-2026-0195: quick-xml DoS (quadratic run time on duplicate
     # attribute names; unbounded namespace-declaration allocation in NsReader). Fixed in
     # quick-xml >= 0.41.0, but pulled transitively via calamine 0.35.0 (^0.39, XLSX/ODS) and

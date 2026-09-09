@@ -1,7 +1,7 @@
 pub mod auth;
 pub mod client_ip;
 pub mod db;
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 pub mod embed_hub;
 pub mod handlers;
 pub mod rate_limiter;
@@ -65,13 +65,12 @@ const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 /// waiting on the embedder) before the server sheds load with `429` instead
 /// of letting a request join an unbounded wait.
 ///
-/// The embedder itself only ever runs one request at a time (see
-/// `NativeEmbedder`'s `Mutex` in `inkentry-embed`, intentional and correct —
-/// GPU memory and CPU thread-budget reasons); this bound is unrelated to that
-/// concurrency-of-one, it caps how many callers are allowed to *wait* for
-/// their turn. A handful is enough for the normal case (one big index batch
-/// plus a couple of interactive `search`/`memory search` queries) without
-/// letting a slow index turn every other request into a silent hang.
+/// This also sizes the llama engine's warm-context pool
+/// (`LlamaEmbedder::load_from_path`'s `pool_size`), so every admitted caller
+/// gets its own context and an interactive `search`/`memory search` never
+/// queues behind a bulk index batch. A handful is enough for the normal case
+/// (one big index batch plus a couple of interactive queries) without letting
+/// a slow index turn every other request into a silent hang.
 pub const EMBED_QUEUE_CAPACITY: usize = 4;
 
 /// `Retry-After` (seconds) sent with a `429` when the embed admission queue is
@@ -269,7 +268,7 @@ mod embed_admission_tests {
 
 /// Readiness state of the server-side embedder.
 ///
-/// The native embedder loads on a background task after the listener binds, so
+/// The embedder loads on a background task after the listener binds, so
 /// `/v1/health` is live while the model warms up. Single source of truth for
 /// that readiness; the health body carries it and the embed endpoints branch on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema)]
@@ -284,7 +283,7 @@ pub enum EmbedderState {
     /// process; embed endpoints return `503` and the CLI should stop polling.
     Unavailable,
     /// No in-process model to load — the server was built without the
-    /// `embed-native` feature. Embed endpoints return `400` (permanent
+    /// `embed-llama` feature. Embed endpoints return `400` (permanent
     /// misconfiguration for that request).
     Disabled,
 }
@@ -299,7 +298,7 @@ struct EmbedderSlotInner {
     /// responses: the load error while `unavailable`, or a non-fatal readiness
     /// note while `ready` (e.g. a GPU-fell-back-to-CPU hint).
     detail: Option<String>,
-    /// Inference engine identity (`"candle"`/`"llama"`) and resolved device
+    /// Inference engine identity (`"llama"`) and resolved device
     /// (`"cpu"`/`"metal"`/`"vulkan"`/`"gpu"`) surfaced in the health body.
     /// `None` for slots readied without them (test backends).
     engine: Option<&'static str>,
@@ -316,7 +315,7 @@ struct EmbedderSlotInner {
 pub struct EmbedderSlot(Arc<RwLock<EmbedderSlotInner>>);
 
 impl EmbedderSlot {
-    /// A slot that starts in `loading` — the native embedder is being built on
+    /// A slot that starts in `loading` — the embedder is being built on
     /// a background task and will publish itself via [`EmbedderSlot::set_ready`].
     pub fn loading() -> Self {
         Self(Arc::new(RwLock::new(EmbedderSlotInner {
@@ -340,7 +339,7 @@ impl EmbedderSlot {
         })))
     }
 
-    /// A slot with no embedder at all (built without the `embed-native`
+    /// A slot with no embedder at all (built without the `embed-llama`
     /// feature). Embed endpoints treat this as a permanent `400` misconfiguration.
     pub fn disabled() -> Self {
         Self(Arc::new(RwLock::new(EmbedderSlotInner {
@@ -415,7 +414,7 @@ impl EmbedderSlot {
             .clone()
     }
 
-    /// Engine identity (`"candle"`/`"llama"`), when the ready backend has one.
+    /// Engine identity (`"llama"`), when the ready backend has one.
     pub fn engine(&self) -> Option<&'static str> {
         self.0.read().expect("embedder slot poisoned").engine
     }
@@ -435,10 +434,10 @@ pub struct AppState {
     /// Cosine similarity threshold above which a new entry is flagged as conflicting (0.0–1.0).
     /// Default: 0.92. Set to 1.0 to disable conflict detection.
     pub conflict_threshold: f32,
-    /// Server-side embedder readiness cell. The native embedder loads on a
+    /// Server-side embedder readiness cell. The embedder loads on a
     /// background task after the listener binds, flipping this slot
     /// `loading → ready | unavailable`; a server built without the
-    /// `embed-native` feature starts `disabled`. Handlers read the current
+    /// `embed-llama` feature starts `disabled`. Handlers read the current
     /// state without blocking. See [`EmbedderSlot`].
     pub embedder: EmbedderSlot,
     /// Bounded admission gate in front of the embedder, shared by every
@@ -930,22 +929,22 @@ impl ErrorBody {
 /// apart from a genuine request-budget/batch-size rejection, so it can print a
 /// server-restart hint instead of a batch-size one. The CLI carries the same
 /// literal in `response_signals_device_lost` (it cannot depend on this crate).
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 pub(crate) const EMBEDDER_DEVICE_LOST_CODE: &str = "embedder_device_lost";
 
 /// Fixed, path-free client message for the Metal-device-lost case. The raw
-/// candle/Metal error is logged server-side (see `embedder_device_lost_response`)
+/// llama.cpp/Metal error is logged server-side (see `embedder_device_lost_response`)
 /// but never returned in the body, matching the no-raw-text rule the generic
 /// internal path follows.
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 pub(crate) const EMBEDDER_DEVICE_LOST_MESSAGE: &str = "the server's embedder lost its GPU device and could not re-establish it; \
      restart the server to recover";
 
 /// Map an embedder device-loss error to a distinct, actionable `503` rather
 /// than a generic `500` that reads as a server bug (and that the CLI misreads as
 /// a batch-size problem). Recognised via the typed `EmbedError::DeviceLost` the
-/// native embedder returns once its one in-place device rebuild has failed.
-#[cfg(feature = "embed-native")]
+/// embedder returns once its one in-place device rebuild has failed.
+#[cfg(feature = "embed-llama")]
 fn embedder_device_lost_response(e: &anyhow::Error) -> Option<Response> {
     match e.downcast_ref::<inkentry_embed::EmbedError>() {
         Some(inkentry_embed::EmbedError::DeviceLost(detail)) => {
@@ -969,9 +968,9 @@ fn embedder_device_lost_response(e: &anyhow::Error) -> Option<Response> {
     }
 }
 
-/// Without the native embedder there is no in-process device to lose, so no
+/// Without the embedder there is no in-process device to lose, so no
 /// error can be a device loss.
-#[cfg(not(feature = "embed-native"))]
+#[cfg(not(feature = "embed-llama"))]
 fn embedder_device_lost_response(_e: &anyhow::Error) -> Option<Response> {
     None
 }

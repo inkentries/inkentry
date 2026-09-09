@@ -1,32 +1,28 @@
-// Sequence-length perf sweep for the bundled embedders: no `inkentry` CLI or
-// `inkentry-server`/HTTP in the path, constructs a backend directly.
+// Sequence-length perf sweep for the bundled embedder: no `inkentry` CLI or
+// `inkentry-server`/HTTP in the path, constructs the `LlamaEmbedder` directly.
 //
-// `--backend candle` (default) sweeps `NativeEmbedder`; `--backend llama`
-// sweeps `LlamaEmbedder` (needs the `llama` feature and the *canonical*
-// llama.cpp GGUF as `--gguf`; `--config` is then ignored, the GGUF embeds it).
+// Needs the `llama` feature (default) and the canonical llama.cpp GGUF as
+// `--gguf`; `--tokenizer` is used only to build tokenizer-exact sweep points.
 //
-// Device is chosen at compile time via the crate's features (`metal` for
-// candle; `llama-metal`/`llama-vulkan` for llama): build each combination and
-// diff the tables to compare devices/engines.
+// Device is chosen at compile time via the crate's features
+// (`llama-metal`/`llama-vulkan`): build each combination and diff the tables to
+// compare devices.
 //
 // x-axis is tokenizer-exact (real `tokenizer.json` output), not the `chars/4`
 // estimate `inkentry-core` uses at index time, which carries ~±25% per-chunk
 // error and produced non-monotonic artifacts in an earlier profiling pass.
 //
 // Usage:
-//   cargo run --release -p inkentry-embed --example embed_bench -- \
-//       --gguf <path> --tokenizer <path> --config <path> \
+//   cargo run --release -p inkentry-embed --features llama --example embed_bench -- \
+//       --gguf <path> --tokenizer <path> \
 //       [--sizes 128,256,512,1024] [--batches 1,8] [--repeat 5] [--csv out.csv]
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use inkentry_embed::{EmbeddingBackend, NativeEmbedder};
+use inkentry_embed::{DEFAULT_EMBED_POOL_SIZE, DeviceRequest, EmbeddingBackend, LlamaEmbedder};
 use tokenizers::Tokenizer;
-
-#[cfg(feature = "llama")]
-use inkentry_embed::{DEFAULT_EMBED_POOL_SIZE, DeviceRequest, LlamaEmbedder};
 
 /// Sequence lengths (tokens) to sweep by default. Covers the spike's plateau
 /// region (256-512) plus enough range either side to see the curve bend.
@@ -35,8 +31,7 @@ const DEFAULT_SIZES: &[usize] = &[
     4096,
 ];
 
-/// Batch sizes to sweep by default: 1 (sequential) vs 8 (the CPU batching
-/// path's sub-batch size, `EMBED_BATCH_SIZE` in `embedder_native.rs`).
+/// Batch sizes to sweep by default: 1 (sequential) vs 8.
 const DEFAULT_BATCHES: &[usize] = &[1, 8];
 
 /// Repeats per (size, batch) point; the reported latency is the median.
@@ -47,16 +42,14 @@ const DEFAULT_REPEAT: usize = 5;
 /// copy provides.
 const CORPUS_SOURCES: &[&str] = &[
     include_str!("../src/lib.rs"),
-    include_str!("../src/embedder_native.rs"),
+    include_str!("../src/embedder_llama.rs"),
     include_str!("../src/backend.rs"),
     include_str!("../src/error.rs"),
 ];
 
 struct Args {
-    backend: String,
     gguf: PathBuf,
     tokenizer: PathBuf,
-    config: PathBuf,
     sizes: Vec<usize>,
     batches: Vec<usize>,
     repeat: usize,
@@ -65,14 +58,11 @@ struct Args {
 
 fn print_usage() {
     eprintln!(
-        "embed_bench – sequence-length perf sweep for the native embedder\n\n\
+        "embed_bench – sequence-length perf sweep for the llama.cpp embedder\n\n\
          Required:\n\
-         \x20 --gguf <path>       Q8_0 GGUF weights\n\
-         \x20 --tokenizer <path>  tokenizer.json\n\
-         \x20 --config <path>     Qwen3 config.json (ignored with --backend llama)\n\
+         \x20 --gguf <path>       canonical llama.cpp GGUF weights\n\
+         \x20 --tokenizer <path>  tokenizer.json (sweep-point construction only)\n\
          Optional:\n\
-         \x20 --backend <name>    candle (default) or llama (needs the `llama` feature;\n\
-         \x20                     --gguf must then be the canonical llama.cpp GGUF)\n\
          \x20 --sizes a,b,c       token-count sweep points (default: {:?})\n\
          \x20 --batches a,b       batch sizes to sweep (default: {:?})\n\
          \x20 --repeat N          repeats per point, median reported (default: {})\n\
@@ -82,10 +72,8 @@ fn print_usage() {
 }
 
 fn parse_args() -> Result<Args> {
-    let mut backend = "candle".to_string();
     let mut gguf = None;
     let mut tokenizer = None;
-    let mut config = None;
     let mut sizes = None;
     let mut batches = None;
     let mut repeat = DEFAULT_REPEAT;
@@ -99,10 +87,8 @@ fn parse_args() -> Result<Args> {
                 .with_context(|| format!("{flag} requires a value"))
         };
         match arg.as_str() {
-            "--backend" => backend = it.next().context("--backend requires a value")?,
             "--gguf" => gguf = Some(next_path("--gguf")?),
             "--tokenizer" => tokenizer = Some(next_path("--tokenizer")?),
-            "--config" => config = Some(next_path("--config")?),
             "--csv" => csv = Some(next_path("--csv")?),
             "--sizes" => {
                 let raw = it.next().context("--sizes requires a value")?;
@@ -125,10 +111,8 @@ fn parse_args() -> Result<Args> {
     }
 
     Ok(Args {
-        backend,
         gguf: gguf.context("--gguf is required")?,
         tokenizer: tokenizer.context("--tokenizer is required")?,
-        config: config.context("--config is required")?,
         sizes: sizes.unwrap_or_else(|| DEFAULT_SIZES.to_vec()),
         batches: batches.unwrap_or_else(|| DEFAULT_BATCHES.to_vec()),
         repeat: repeat.max(1),
@@ -171,34 +155,21 @@ fn main() -> Result<()> {
     let args = parse_args()?;
 
     println!(
-        "features: metal={} llama-metal={} llama-vulkan={} (see the loader log line above for \
+        "features: llama-metal={} llama-vulkan={} (see the loader log line above for \
          whether it actually got a GPU device or fell back to CPU)",
-        cfg!(feature = "metal"),
         cfg!(feature = "llama-metal"),
         cfg!(feature = "llama-vulkan"),
     );
 
-    let embedder: Box<dyn EmbeddingBackend> = match args.backend.as_str() {
-        "candle" => Box::new(
-            NativeEmbedder::load_from_path(&args.gguf, &args.tokenizer, &args.config)
-                .context("loading NativeEmbedder")?,
-        ),
-        #[cfg(feature = "llama")]
-        "llama" => Box::new(
-            // The bench issues requests sequentially, so the default pool is plenty.
-            LlamaEmbedder::load_from_path(
-                &args.gguf,
-                DeviceRequest::Auto,
-                None,
-                DEFAULT_EMBED_POOL_SIZE,
-            )
-            .context("loading LlamaEmbedder")?,
-        ),
-        #[cfg(not(feature = "llama"))]
-        "llama" => bail!("--backend llama requires building with --features llama"),
-        other => bail!("unrecognised --backend {other} (expected candle or llama)"),
-    };
-    let embedder = embedder.as_ref();
+    // The bench issues requests sequentially, so the default pool is plenty.
+    let embedder = LlamaEmbedder::load_from_path(
+        &args.gguf,
+        DeviceRequest::Auto,
+        None,
+        DEFAULT_EMBED_POOL_SIZE,
+    )
+    .context("loading LlamaEmbedder")?;
+    let embedder: &dyn EmbeddingBackend = &embedder;
     let tokenizer = Tokenizer::from_file(&args.tokenizer)
         .map_err(|e| anyhow::anyhow!("loading measurement tokenizer copy: {e}"))?;
 
@@ -265,9 +236,8 @@ fn corpus_token_ids(tokenizer: &Tokenizer, min_tokens: usize) -> Result<Vec<u32>
 
 /// Slices `batch` circularly-wrapped windows from `corpus_ids`, decodes to
 /// text, then re-measures the actual token count via the same
-/// `add_special_tokens=true` encode `NativeEmbedder` uses internally:
-/// decode/encode isn't perfectly bijective, so slice length isn't what
-/// actually gets embedded.
+/// `add_special_tokens=true` encode the embedder uses internally: decode/encode
+/// isn't perfectly bijective, so slice length isn't what actually gets embedded.
 fn build_batch_texts(
     tokenizer: &Tokenizer,
     corpus_ids: &[u32],

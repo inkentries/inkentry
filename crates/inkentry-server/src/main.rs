@@ -16,9 +16,9 @@ use inkentry_server::{
 };
 use utoipa::OpenApi;
 
-// Via inkentry-core (always linked); inkentry_embed is only present under embed-native.
+// Via inkentry-core (always linked); inkentry_embed is only present under embed-llama.
 use inkentry_core::embeddings::MODEL_ID as NATIVE_MODEL_ID;
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 use inkentry_server::embed_hub;
 
 mod server_llm;
@@ -107,10 +107,10 @@ struct Args {
 
     /// Directory holding a pre-provisioned F2LLM-v2-330M GGUF + tokenizer (see
     /// "Air-gapped / no-egress install" in docs/server-setup.md), for hosts
-    /// with no route to huggingface.co. When set, the bundled native embedder
+    /// with no route to huggingface.co. When set, the bundled embedder
     /// loads from this directory instead of the Hugging Face Hub: zero
     /// network access, at startup or at runtime. Only consulted when the
-    /// bundled native embedder is the active backend; ignored otherwise.
+    /// bundled embedder is the active backend; ignored otherwise.
     #[arg(long, env = "INKENTRY_MODEL_DIR", value_name = "PATH")]
     model_dir: Option<PathBuf>,
 
@@ -173,20 +173,10 @@ fn normalize_reasoning_effort(v: &str) -> Option<String> {
 }
 
 fn main() -> Result<()> {
-    // Bound candle's CPU threads BEFORE the runtime / first candle op: candle
-    // reads RAYON_NUM_THREADS live for gemm and caches its private rayon pool in
-    // a OnceLock on first use, so the env must be set while still single-threaded
-    // (set_var is unsafe in edition 2024 for that reason). Setting only an
-    // already-unset var keeps a user's RAYON_NUM_THREADS authoritative.
+    // The embed CPU-thread budget is handed to the llama engine explicitly at
+    // load (`LlamaEmbedder::load_from_path`'s `n_threads`), so there is no env
+    // var to set here before the runtime starts.
     let budget = resolve_embed_thread_budget();
-    unsafe {
-        if std::env::var_os("RAYON_NUM_THREADS").is_none() {
-            std::env::set_var("RAYON_NUM_THREADS", budget.threads.to_string());
-        }
-        if std::env::var_os("CANDLE_NUM_THREADS").is_none() {
-            std::env::set_var("CANDLE_NUM_THREADS", budget.threads.to_string());
-        }
-    }
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -303,20 +293,20 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     let auth: Arc<dyn inkentry_server::auth::AuthProvider> =
         Arc::new(ApiKeyAuth::new(api_key.clone()));
 
-    // Build the server-side embedder readiness slot. The bundled native
-    // embedder is CPU-/download-heavy, so the slot starts `loading` and the
-    // actual `embed_hub::load_from_hub()` is deferred to a background task
+    // Build the server-side embedder readiness slot. The bundled embedder is
+    // CPU-/download-heavy, so the slot starts `loading` and the actual
+    // `embed_hub::load_backend()` is deferred to a background task
     // spawned *after* the listener binds (below) — that way `/v1/health` is
     // live immediately with `embedder.state = "loading"` instead of being
     // dark for the whole first-run model download. A server built without the
-    // `embed-native` feature has no embed path at all, so the slot is
+    // `embed-llama` feature has no embed path at all, so the slot is
     // `disabled` (embed endpoints return a permanent 400).
     let (embedder, load_native): (EmbedderSlot, bool) = {
-        #[cfg(feature = "embed-native")]
+        #[cfg(feature = "embed-llama")]
         {
             (EmbedderSlot::loading(), true)
         }
-        #[cfg(not(feature = "embed-native"))]
+        #[cfg(not(feature = "embed-llama"))]
         {
             (EmbedderSlot::disabled(), false)
         }
@@ -391,7 +381,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     let embedder_slot = state.embedder.clone();
     let repair_signal = state.repair_signal.clone();
     let model_dir = args.model_dir.clone();
-    #[cfg_attr(not(feature = "embed-native"), allow(unused_variables))]
+    #[cfg_attr(not(feature = "embed-llama"), allow(unused_variables))]
     let embed_threads = state.embed_threads;
 
     tokio::spawn(inkentry_server::repair::run_repair_worker(
@@ -443,17 +433,17 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     };
     tracing::info!("inkentry-server listening on {scheme}://{addr}");
 
-    // Load the native embedder on a background task now that health is live.
-    // Both `embed_hub::load_from_hub()` (network) and `load_from_model_dir()`
-    // (offline, when `--model-dir`/`INKENTRY_MODEL_DIR` is set) are
-    // blocking/CPU-heavy, so run whichever applies on the blocking pool;
+    // Load the embedder on a background task now that health is live.
+    // `embed_hub::load_backend()` resolves the GGUF from the Hub (network) or,
+    // when `--model-dir`/`INKENTRY_MODEL_DIR` is set, from disk (offline) and is
+    // blocking/CPU-heavy, so run it on the blocking pool;
     // publish the backend into the slot on success (state → ready) or record
     // the failure (state → unavailable) either way: an offline host with no
     // (or bad) provisioned artifacts reaches the same terminal `unavailable`
     // state as a failed Hub download, just with an error naming the offline
     // docs instead of a connection failure. Only the native path warms up
     // here: disabled slots are already in a terminal state.
-    #[cfg(feature = "embed-native")]
+    #[cfg(feature = "embed-llama")]
     if load_native {
         let slot = embedder_slot.clone();
         tokio::spawn(async move {
@@ -495,8 +485,8 @@ async fn run(budget: ThreadBudget) -> Result<()> {
             }
         });
     }
-    // Silence "unused" for the non-embed-native build (no background load).
-    #[cfg(not(feature = "embed-native"))]
+    // Silence "unused" for the non-embed-llama build (no background load).
+    #[cfg(not(feature = "embed-llama"))]
     let _ = (load_native, &embedder_slot, &model_dir, &repair_signal);
 
     let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
@@ -525,14 +515,14 @@ async fn run(budget: ThreadBudget) -> Result<()> {
 /// reads unambiguously as terminal: the underlying `anyhow::Context` message
 /// (e.g. "creating model cache dir ...") otherwise reads like in-progress
 /// bootstrap text rather than a failure.
-#[cfg(feature = "embed-native")]
+#[cfg(feature = "embed-llama")]
 fn embedder_load_failure_message(context: impl std::fmt::Display) -> String {
     format!("failed: {context}")
 }
 
 // ── Embed CPU thread budget ───────────────────────────────────────────────────
 
-/// Resolved candle CPU-thread budget plus the source it came from, for the
+/// Resolved embed CPU-thread budget plus the source it came from, for the
 /// startup log line.
 struct ThreadBudget {
     threads: usize,
@@ -543,7 +533,7 @@ struct ThreadBudget {
 /// reservation this budget used to apply at every size.
 const MAX_RESERVED: usize = 2;
 
-/// CPU threads candle may use for a forward pass, so a running embed leaves
+/// CPU threads the embedder may use for a forward pass, so a running embed leaves
 /// capacity to serve requests. Precedence: `INKENTRY_EMBED_THREADS` > an
 /// already-set `RAYON_NUM_THREADS` > the computed default. A zero or
 /// unparseable override is `None`/`Some(0)` here and falls through.
@@ -1122,7 +1112,7 @@ mod arg_tests {
     /// `anyhow::Context` message, e.g. "creating model cache dir ...", reads
     /// like progress on its own).
     #[test]
-    #[cfg(feature = "embed-native")]
+    #[cfg(feature = "embed-llama")]
     fn embedder_load_failure_message_is_prefixed() {
         assert_eq!(
             super::embedder_load_failure_message(

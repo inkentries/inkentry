@@ -103,7 +103,7 @@ pub async fn project_search(
     let embedder = require_embedder(
         &state,
         "semantic/hybrid search requires an embedder, but this server was built \
-         without the native embedder (embed-native feature); use mode=text.",
+         without the embedder (embed-llama feature); use mode=text.",
     )?;
 
     // Admission control: a query embed sharing the mutex-serialized

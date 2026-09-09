@@ -1,6 +1,6 @@
 # Third-party models
 
-`inkentry-server` bundles a native embedding model, so semantic search works
+`inkentry-server` bundles an embedding model, so semantic search works
 with no external endpoint and no way to relocate it: the embedding model and
 its compute path are both pinned product-wide. LLM-backed features are
 different: the server has no LLM of its own, and proxies those calls to an
@@ -328,20 +328,20 @@ Every client already sets an explicit `server_url` to reach a team server, so
 `harvest` and index-time summaries are all unlocked with no
 extra client-side configuration.
 
-## Native embedder artifact source
+## Embedder artifact source
 
 Embeddings have no external endpoint or config: the model is pinned
 product-wide to F2LLM-v2-330M at 896 dimensions, computed only by the bundled
-native embedder. `INKENTRY_EMBEDDER_GGUF_REPO` points that *bundled native*
-embedder at an alternate source for the same F2LLM-v2-330M GGUF and tokenizer
-artifacts, not a different model. See [Model attribution](model-attribution.md).
+embedder. `INKENTRY_EMBEDDER_GGUF_REPO` points that *bundled*
+embedder at an alternate source for the same F2LLM-v2-330M GGUF,
+not a different model. See [Model attribution](model-attribution.md).
 
 ## Running with no network access at all
 
 `INKENTRY_EMBEDDER_GGUF_REPO` above still calls out over the network, just to a
 different (self-hosted) source. For a host with no route out at all, not
 even to an alternate source, `--model-dir` / `INKENTRY_MODEL_DIR` loads the
-bundled native embedder from a directory you provision ahead of time instead
+bundled embedder from a directory you provision ahead of time instead
 of fetching it from Hugging Face Hub. See [Server setup → Air-gapped /
 no-egress install](server-setup.md#air-gapped--no-egress-install) for the
 directory layout and the fetch-and-transfer procedure.

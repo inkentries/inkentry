@@ -43,19 +43,19 @@ FROM rust:1.98.0-slim AS builder
 
 WORKDIR /build
 
-# System build deps the slim image lacks: a C/C++ toolchain for tokenizers'
-# esaxx-rs build script (embed-native default), and libdbus-1-dev to satisfy
-# libdbus-sys's build script (pulled via keyring's sync-secret-service backend).
-# Build-time only — the linker strips the unused lib, so the runtime image
-# needs no dbus package.
+# System build deps the slim image lacks: a C/C++ toolchain and cmake to compile
+# the llama.cpp engine (ggml) that the default `embed-llama` feature bundles,
+# libclang for its bindgen step, and libdbus-1-dev to satisfy libdbus-sys's
+# build script (pulled via keyring's sync-secret-service backend). Build-time
+# only — the linker strips the unused lib, so the runtime image needs no dbus.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config libdbus-1-dev \
+    build-essential pkg-config cmake clang libclang-dev libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependency compilation separately from source changes. This is a
 # virtual Cargo workspace (no root package), so prime the cache from the
 # workspace manifests plus a placeholder source per member crate; the heavy
-# third-party deps (candle, etc.) then land in a layer that only busts when a
+# third-party deps (llama.cpp, etc.) then land in a layer that only busts when a
 # Cargo.toml / Cargo.lock changes. Every member manifest must be present and
 # its declared target source must exist, or cargo refuses to load the
 # workspace — even members the server bin doesn't depend on, and even targets
@@ -68,15 +68,15 @@ COPY crates/inkentry-embed/Cargo.toml  crates/inkentry-embed/Cargo.toml
 COPY crates/inkentry-server/Cargo.toml crates/inkentry-server/Cargo.toml
 RUN mkdir -p crates/inkentry-core/src crates/inkentry-cli/src \
              crates/inkentry-embed/src crates/inkentry-server/src \
-             crates/inkentry-core/examples && \
+             crates/inkentry-embed/examples && \
     : > crates/inkentry-core/src/lib.rs && \
     : > crates/inkentry-embed/src/lib.rs && \
     : > crates/inkentry-server/src/lib.rs && \
     echo 'fn main(){}' > crates/inkentry-cli/src/main.rs && \
     echo 'fn main(){}' > crates/inkentry-server/src/main.rs && \
-    echo 'fn main(){}' > crates/inkentry-core/examples/chunk_quality_eval.rs && \
+    echo 'fn main(){}' > crates/inkentry-embed/examples/embed_bench.rs && \
     cargo build --release --bin inkentry-server && \
-    rm -rf crates/*/src crates/inkentry-core/examples
+    rm -rf crates/*/src crates/inkentry-embed/examples
 
 # Now copy the real source and build properly. BuildKit normalizes COPY mtimes
 # to a constant OLDER than the cached placeholder artifacts, so cargo's
@@ -89,8 +89,11 @@ RUN find crates -name '*.rs' -exec touch {} + && \
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM debian:trixie-slim
 
+# ca-certificates for the HTTPS model fetch; libstdc++6 for the llama.cpp
+# engine's C++ runtime (the binary statically links ggml but links libstdc++
+# dynamically).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 # `-m -d /data` gives the service user a real home at the same path the
@@ -104,7 +107,7 @@ COPY --from=builder /build/target/release/inkentry-server /usr/local/bin/inkentr
 
 # Primary fix: point the embedder's model cache at the persistent /data
 # volume instead of the default $HOME/.local/share resolution. Without this,
-# a fresh container re-downloads the ~339 MB model into the container layer
+# a fresh container re-downloads the ~345 MB model into the container layer
 # on every `docker rm`/recreate even once $HOME itself is writable (see
 # useradd above).
 ENV XDG_DATA_HOME=/data

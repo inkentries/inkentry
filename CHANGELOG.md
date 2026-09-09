@@ -20,16 +20,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   took. Quote the entity id whenever you name an entry outside the machine that
   recorded it, in a document, a handoff or a script: the `id` beside it is
   minted per machine and does not travel.
-- **GPU-accelerated embedding on Windows and Linux (x64).** The server now
-  bundles a second embedding engine (llama.cpp, Vulkan) that runs the same
-  model on NVIDIA, AMD, and Intel GPUs; machines without a usable GPU driver
-  fall back to CPU automatically, and macOS stays on Metal. Same vectors,
-  same indexes — nothing re-embeds. Set `INKENTRY_EMBED_DEVICE=cpu` to opt
-  out. The Windows/Linux-x64 archives now contain engine library files next
-  to the binaries; keep the extracted files together when installing manually.
+- **GPU-accelerated embedding.** The embedder now runs on llama.cpp — GPU
+  wherever a driver allows (Metal on macOS, Vulkan on NVIDIA/AMD/Intel on
+  Windows and Linux x64) and CPU otherwise. Same vectors, same indexes —
+  nothing re-embeds. `INKENTRY_EMBED_DEVICE=auto` (default), `gpu`, or `cpu`
+  selects the device. The Windows/Linux-x64 archives now contain engine library
+  files next to the binaries; keep the extracted files together when installing
+  manually.
 - **Faster CPU embedding on Linux arm64.** Where Vulkan can't go, the same
-  new engine also runs on CPU, typically faster than the previous engine, with
-  the previous engine still in the binary as a fallback.
+  llama.cpp engine runs on CPU, typically faster than the previous engine.
 - **`inkentry search --quiet`** suppresses the informational notices on stderr
   (stale index, server discovery, ranking availability, embedding coverage).
   Results and exit codes are unchanged, and it never hides an error or the
@@ -39,6 +38,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The embedding engine is now llama.cpp** (it was candle); vectors and
+  `MODEL_ID` are unchanged, so existing indexes and memory need no re-embed.
+  Building from source now needs a C++ toolchain, `cmake`, and `libclang` to
+  compile the engine — see `docs/building.md`.
 - **The supported Linux floor is now Ubuntu 22.04 / Debian 12 (glibc 2.35).**
   Debian 11 reached end of life on 2026-08-31 and release binaries no longer
   target it; users on Debian 11 or Ubuntu 20.04 should upgrade the OS or

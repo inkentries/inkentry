@@ -1,7 +1,7 @@
 use thiserror::Error;
 
-/// Errors raised by the native candle embedding engine
-/// ([`crate::embedder_native`]). Kept distinct from a bare `anyhow::Error` so
+/// Errors raised by the llama.cpp embedding engine
+/// ([`crate::embedder_llama`]). Kept distinct from a bare `anyhow::Error` so
 /// a caller (e.g. `inkentry-server`'s HTTP handlers) can match on the failure
 /// kind instead of string-matching a message.
 #[derive(Error, Debug)]

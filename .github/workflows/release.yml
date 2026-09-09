@@ -38,8 +38,8 @@ jobs:
           # `llama-vulkan`): the Vulkan SDK is installed at build time, and the
           # archive gains the engine's core shared libs plus its runtime-loaded
           # ggml backend modules next to the binaries. x64 Linux and Windows
-          # only: LunarG ships no arm64-linux SDK, and macOS stays on candle
-          # Metal. The rpath makes the binary find its libs beside itself
+          # only: LunarG ships no arm64-linux SDK, and macOS uses llama.cpp
+          # Metal (`llama-metal`, no SDK). The rpath makes the binary find its libs beside itself
           # (tarball) or in ../lib/inkentry (the .deb split layout); Windows
           # resolves DLLs from the exe directory natively.
           - os: ubuntu-latest
@@ -52,15 +52,14 @@ jobs:
           # container. Replaces the old cross-compile + ports-mirror setup.
           # embed-llama without a GPU flavor = the llama.cpp CPU engine,
           # statically linked (no SDK, no extra files): where Vulkan can't go
-          # (LunarG ships no arm64-linux SDK), llama.cpp CPU is still the
-          # faster engine, with candle as the in-binary fallback.
+          # (LunarG ships no arm64-linux SDK), llama.cpp CPU is the engine.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             features: rich-formats,embed-llama
             container: ubuntu:22.04
           - os: macos-latest
             target: aarch64-apple-darwin
-            features: rich-formats,metal
+            features: rich-formats,llama-metal
           # Pinned to windows-2022 (VS 2022): windows-latest now carries a
           # "Visual Studio 18 2026" preview whose MSBuild custom-build step breaks
           # ggml-vulkan's nested vulkan-shaders-gen ExternalProject. VS 2022 is

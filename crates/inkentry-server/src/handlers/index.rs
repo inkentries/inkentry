@@ -130,7 +130,7 @@ pub async fn index_embed(
     let embedder = require_embedder(
         &state,
         "index.embed requires an embedder, but this server was built without the \
-         native embedder (embed-native feature).",
+         embedder (embed-llama feature).",
     )?;
 
     if body.chunks.is_empty() {

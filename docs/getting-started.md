@@ -254,9 +254,9 @@ namespace. `init` deliberately sets no push refspec and never modifies your
 remote, so neither entry publishes anything: sharing your own memory is a
 separate opt-in step, covered in section 5.
 
-No config file, no Docker, no external embedder. The server bundles a native
+No config file, no Docker, no external embedder. The server bundles the
 embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
-via candle); a pre-quantized Q8_0 GGUF (~339 MB) is downloaded once on first
+via llama.cpp); a pre-quantized Q8_0 GGUF (~345 MB) is downloaded once on first
 use. No LM Studio or other external inference server is needed. The next
 section covers commands that work even before you index.
 
@@ -291,12 +291,12 @@ one large machine-local artifact instead, nothing anyone edits or quotes, so
 it goes where each OS already keeps that kind of data and where existing
 backup and sync exclusions expect to find it.
 
-Budget about **350 MB**: the ~339 MB GGUF, an ~8 MB tokenizer, and a 1 KB
-config file. The GGUF is stored once. It is linked into place rather than
+Budget about **345 MB**: a single GGUF that embeds its own tokenizer and
+config. The GGUF is stored once. It is linked into place rather than
 copied, so a cache filled by a fresh download does not hold it twice; on a
 filesystem that cannot hard link, it is copied instead and the cache holds
 both. A cache first filled by an earlier release keeps a second copy of the
-GGUF, about 339 MB, until you delete the cache directory and let the next
+GGUF, about 345 MB, until you delete the cache directory and let the next
 server start download the model again.
 
 ## 3. Start using it inside your project
@@ -454,10 +454,10 @@ For how discovery works and how to point the CLI at a remote server, see
 
 ### Using your own LLM endpoint (advanced)
 
-By default the bundled `inkentry-server` provides embeddings (native, via the
-candle-served F2LLM-v2-330M model, 896-dim) and, when a chat model is
+By default the bundled `inkentry-server` provides embeddings (via the
+llama.cpp-served F2LLM-v2-330M model, 896-dim) and, when a chat model is
 configured, LLM inference. The embedding **model and its compute path are
-both fixed** product-wide: `inkentry` always embeds through the bundled native
+both fixed** product-wide: `inkentry` always embeds through the bundled
 embedder, and there is no way to relocate or swap it. LLM inference is
 different: the server has no LLM of its own, so you point it at your own
 OpenAI-compatible chat-completions endpoint (LM Studio, Ollama, vLLM, a
@@ -532,7 +532,7 @@ the team-server equivalent.
 
 This is an advanced override; most users never set it: `harvest` is the only
 thing unavailable without an LLM configured, and both semantic search and chunk
-summaries work regardless — the native embedder needs no configuration at all,
+summaries work regardless — the bundled embedder needs no configuration at all,
 and the summaries need no inference at all.
 
 ### Index your project for semantic search

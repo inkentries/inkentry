@@ -487,7 +487,7 @@ the secret store via `inkentry auth set-key`, never here.
 
 **The embedding model.** It is pinned product-wide —
 `codefuse-ai/F2LLM-v2-330M`, 896 dimensions — and computed only by the bundled
-native embedder in `inkentry-server`. There is no key for choosing it and no
+embedder in `inkentry-server`. There is no key for choosing it and no
 relocation option.
 
 **`inference_url`.** Populated at runtime when inkentry auto-discovers a
