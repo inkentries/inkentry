@@ -1141,7 +1141,7 @@ Store and query project context, decisions, and requirements. See
 [Memory](memory.md) for full documentation.
 
 ```
-inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs]
+inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs] [--format text|json|jsonl]
 inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
 inkentry memory list [--kind decision] [--limit 20] [--format text|json] [--local-only]
 inkentry memory show <id> [--format text|json]

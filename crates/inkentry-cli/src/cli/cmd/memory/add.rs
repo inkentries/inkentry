@@ -389,7 +389,8 @@ pub(super) async fn memory_add(
         pending_embedding = embed_and_attach(cfg, mem_path, &id, &doc).await;
     }
 
-    match crate::utils::effective_format(&args.format) {
+    let format = crate::utils::effective_format(&args.format);
+    match format {
         // stdout is only the object: the human lead line and the rewrite-ref
         // note would corrupt it, so they are dropped here (the pending-embedding
         // warning already goes to stderr, below).
@@ -401,7 +402,7 @@ pub(super) async fn memory_add(
                 "title": title,
                 "created": created,
             });
-            if crate::utils::effective_format(&args.format) == "jsonl" {
+            if format == "jsonl" {
                 println!("{}", serde_json::to_string(&obj)?);
             } else {
                 println!("{}", serde_json::to_string_pretty(&obj)?);
