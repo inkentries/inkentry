@@ -353,6 +353,11 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         );
     }
 
+    // Reserved interactive embed lane capacity (ADR-096 §4): resolved once from
+    // available memory, then shared by the admission gate and the warm-context
+    // pool so the two never disagree on how many interactive contexts exist.
+    let interactive_capacity = resolve_interactive_capacity();
+
     let state = AppState {
         db: Arc::new(tokio::sync::Mutex::new(db)),
         auth,
@@ -360,6 +365,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         embedder,
         embed_admission: inkentry_server::EmbedAdmission::new(
             inkentry_server::EMBED_QUEUE_CAPACITY,
+            interactive_capacity,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: budget.threads,
@@ -447,7 +453,9 @@ async fn run(budget: ThreadBudget) -> Result<()> {
     if load_native {
         let slot = embedder_slot.clone();
         tokio::spawn(async move {
-            let load = move || embed_hub::load_backend(model_dir.as_deref(), embed_threads);
+            let load = move || {
+                embed_hub::load_backend(model_dir.as_deref(), embed_threads, interactive_capacity)
+            };
             match tokio::task::spawn_blocking(load).await {
                 Ok(Ok(loaded)) => {
                     tracing::info!(
@@ -596,6 +604,28 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
         "default"
     };
     ThreadBudget { threads, source }
+}
+
+// ── Reserved interactive lane capacity ────────────────────────────────────────
+
+/// Resolve the reserved interactive embed lane's capacity from the host's
+/// available memory at load (ADR-096 §4). Each warm context reserves a
+/// non-trivial amount of address space, so a small machine keeps one
+/// persistently-hot interactive context while a larger one may build up to three
+/// under concurrent interactive load. Read once here; the gate itself
+/// ([`inkentry_server::interactive_capacity_for_available_memory`]) is pure so
+/// the threshold is unit-tested without touching the machine.
+fn resolve_interactive_capacity() -> usize {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    let available = sys.available_memory();
+    let capacity = inkentry_server::interactive_capacity_for_available_memory(available);
+    tracing::info!(
+        available_mib = available / (1024 * 1024),
+        capacity,
+        "reserved interactive embed lane capacity resolved from available memory"
+    );
+    capacity
 }
 
 // ── Bind-safety guard ─────────────────────────────────────────────────────────

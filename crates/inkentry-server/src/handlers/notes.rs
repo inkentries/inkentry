@@ -137,7 +137,7 @@ pub struct SupersedeRequest {
 /// The entry is still stored in both cases; the 409 is informational.
 /// Returns **422** when the entry contains prompt-injection patterns.
 /// Returns **429** (with `Retry-After`) when the entry needs server-side
-/// embedding and the embed admission queue is full.
+/// embedding and the interactive embed admission lane is full.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/memory",
@@ -151,7 +151,7 @@ pub struct SupersedeRequest {
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 409, description = "Note stored but conflicts with existing entries", body = AddNoteResponse),
         (status = 422, description = "Entry rejected: prompt injection detected"),
-        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
+        (status = 429, description = "Interactive embed admission lane full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -201,7 +201,8 @@ pub async fn add_note(
     // `embed_for_storage`.
     let server_embedding: Option<Vec<f32>> = if body.vector.is_none() {
         let text = storage_embedding_text(&body.title, &body.body);
-        match embed_for_storage(&state, &[text.as_str()]).await? {
+        // `add_note` is a person waiting on their own write: interactive lane.
+        match embed_for_storage(&state, &[text.as_str()], crate::EmbedLane::Interactive).await? {
             StorageEmbedding::Vectors(mut vectors) => vectors.pop(),
             StorageEmbedding::NotReady | StorageEmbedding::Failed => None,
         }
@@ -369,7 +370,7 @@ pub async fn get_note(
         (status = 400, description = "No embedder configured", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 404, description = "Project not found", body = ErrorBody),
-        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
+        (status = 429, description = "Interactive embed admission lane full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -384,18 +385,25 @@ pub async fn search_notes(
         "This server has no embedder configured. Semantic memory search is unavailable.",
     )?;
 
-    // Admission control: same shared mutex-serialized embedder as
-    // `/index/embed` and `project_search`; shed with 429 once the bounded
-    // queue is full instead of queuing silently.
-    let _admission = state.embed_admission.try_acquire()?;
+    // A memory search query is interactive: it takes the reserved lane and is
+    // never shed nor left waiting behind a bulk index batch (ADR-096); a full
+    // interactive lane still sheds with 429 rather than queuing silently.
+    let _admission = state
+        .embed_admission
+        .try_acquire(crate::EmbedLane::Interactive)?;
 
     // F2LLM QA query prefix: matches the instruction format used for memory documents.
     let query_text = format!(
         "Instruct: Given a question, retrieve passages that answer the question\nQuery: {}",
         body.query
     );
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let query_vecs = embedder
-        .embed(&[query_text.as_str()])
+        .embed_lane(
+            &[query_text.as_str()],
+            cancel,
+            crate::EmbedLane::Interactive,
+        )
         .await
         .map_err(AppError::Internal)?;
     let query_vec = query_vecs

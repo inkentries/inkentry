@@ -208,11 +208,15 @@ pub struct LoadedEmbedder {
 /// and fall back to CPU when none is usable; `cpu` forces the CPU engine. A
 /// malformed value is a deliberate hard error (see [`embed_device_request`]),
 /// surfaced through `/v1/health` as `unavailable`.
-pub fn load_backend(model_dir: Option<&Path>, embed_threads: usize) -> Result<LoadedEmbedder> {
+pub fn load_backend(
+    model_dir: Option<&Path>,
+    embed_threads: usize,
+    interactive_capacity: usize,
+) -> Result<LoadedEmbedder> {
     let requested = embed_device_request()?;
     let embedder = match model_dir {
-        Some(dir) => load_llama_from_model_dir(dir, requested, embed_threads),
-        None => load_llama_from_hub(requested, embed_threads),
+        Some(dir) => load_llama_from_model_dir(dir, requested, embed_threads, interactive_capacity),
+        None => load_llama_from_hub(requested, embed_threads, interactive_capacity),
     }?;
     let device = embedder.device();
     // A GPU was requested (not `cpu`) yet the engine resolved to CPU: no usable
@@ -396,7 +400,11 @@ fn reclaim_candle_artifacts(cache_dir: &Path, repo: &Repo) {
 /// (see [`prune_partial_downloads`]). Subsequent calls read from the local
 /// cache with no network access.
 #[cfg(feature = "embed-llama")]
-fn load_llama_from_hub(device: DeviceRequest, embed_threads: usize) -> Result<LlamaEmbedder> {
+fn load_llama_from_hub(
+    device: DeviceRequest,
+    embed_threads: usize,
+    interactive_capacity: usize,
+) -> Result<LlamaEmbedder> {
     let cache_dir = model_cache_dir()?;
     std::fs::create_dir_all(&cache_dir)
         .with_context(|| format!("creating model cache dir {}", cache_dir.display()))?;
@@ -443,15 +451,17 @@ fn load_llama_from_hub(device: DeviceRequest, embed_threads: usize) -> Result<Ll
         );
     }
 
-    // Size the context pool to the server's embed-admission capacity so every
-    // admitted concurrent embed gets its own warm context — an interactive
-    // embed never queues behind a bulk index batch. Single-sourced here rather
-    // than a separate constant in inkentry-embed that could drift.
+    // Size the context pool to the server's two admission-lane capacities so
+    // every admitted concurrent embed gets its own warm context on its own lane
+    // — an interactive embed never queues behind a bulk index batch (ADR-096).
+    // Single-sourced here rather than separate constants in inkentry-embed that
+    // could drift.
     LlamaEmbedder::load_from_path(
         &gguf_path,
         device,
         Some(embed_threads),
         crate::EMBED_QUEUE_CAPACITY,
+        interactive_capacity,
     )
 }
 
@@ -463,6 +473,7 @@ fn load_llama_from_model_dir(
     dir: &Path,
     device: DeviceRequest,
     embed_threads: usize,
+    interactive_capacity: usize,
 ) -> Result<LlamaEmbedder> {
     anyhow::ensure!(
         dir.is_dir(),
@@ -484,15 +495,17 @@ fn load_llama_from_model_dir(
          (zero network access)",
         dir.display()
     );
-    // Size the context pool to the server's embed-admission capacity so every
-    // admitted concurrent embed gets its own warm context — an interactive
-    // embed never queues behind a bulk index batch. Single-sourced here rather
-    // than a separate constant in inkentry-embed that could drift.
+    // Size the context pool to the server's two admission-lane capacities so
+    // every admitted concurrent embed gets its own warm context on its own lane
+    // — an interactive embed never queues behind a bulk index batch (ADR-096).
+    // Single-sourced here rather than separate constants in inkentry-embed that
+    // could drift.
     LlamaEmbedder::load_from_path(
         &gguf_path,
         device,
         Some(embed_threads),
         crate::EMBED_QUEUE_CAPACITY,
+        interactive_capacity,
     )
 }
 

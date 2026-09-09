@@ -106,8 +106,8 @@ pub struct BatchPushResponse {
 /// a request-level validation failure (oversized batch, a title/body over the
 /// configured caps, or an injection match) rejects the whole batch (4xx/422)
 /// with nothing stored, before any entry is written. A batch needing
-/// server-side embedding is shed with **429** when the embed admission queue is
-/// full, on the same terms as every other embed-consuming route.
+/// server-side embedding is bulk work, shed with **429** when the bulk embed
+/// admission lane is full, on the same terms as every other bulk embed route.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/memory/batch",
@@ -120,7 +120,7 @@ pub struct BatchPushResponse {
         (status = 400, description = "Bad request (oversized batch, bad field length), or a pushed vector that violates the contract: wrong model tag, wrong precision, wrong dimension, a non-finite component, or an L2 magnitude outside [0.5, 1.5]", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
         (status = 422, description = "Entry rejected: prompt injection detected"),
-        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
+        (status = 429, description = "Bulk embed admission lane full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "memory"
@@ -207,7 +207,10 @@ pub async fn push_memory_batch(
         .collect();
     let text_refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let mut server_embeddings: Vec<Option<Vec<f32>>> = vec![None; body.entries.len()];
-    if let StorageEmbedding::Vectors(vectors) = embed_for_storage(&state, &text_refs).await? {
+    // A batch push is a background sync, not a person waiting: bulk lane.
+    if let StorageEmbedding::Vectors(vectors) =
+        embed_for_storage(&state, &text_refs, crate::EmbedLane::Bulk).await?
+    {
         for (&i, vector) in pending.iter().zip(vectors) {
             server_embeddings[i] = Some(vector);
         }

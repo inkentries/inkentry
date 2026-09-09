@@ -87,7 +87,8 @@ impl Drop for EmbedAbandonGuard {
 ///
 /// Returns 400 if no embedder is configured.
 /// Returns 413 if the batch exceeds 256 chunks.
-/// Returns 429 (with `Retry-After`) if the embed admission queue is full.
+/// Returns 429 (with `Retry-After`) if the request's admission lane is full (a
+/// one-chunk request uses the reserved interactive lane, a larger batch the bulk lane).
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/index/embed",
@@ -99,7 +100,7 @@ impl Drop for EmbedAbandonGuard {
         (status = 200, description = "Embedding vectors as raw little-endian f32 bytes, row-major [n_chunks x dim] in request order (not stored server-side)", content_type = "application/octet-stream"),
         (status = 400, description = "No embedder configured", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
-        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
+        (status = 429, description = "Embed admission lane full; retry after the given delay. A one-chunk request uses the reserved interactive lane, a larger batch the bulk lane.", body = ErrorBody),
         (status = 413, description = "Batch exceeds 256 chunks", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
@@ -137,13 +138,23 @@ pub async fn index_embed(
         return Ok(octet_stream(Vec::new()));
     }
 
-    // Admission control: the embedder is mutex-serialized and processes
-    // one request at a time, so a saturated index run must not
-    // let this request join an unbounded wait behind it. Shed with `429`
-    // immediately if the bounded queue is already full, rather than parking
-    // as another blocking-pool thread on the mutex. Held for the whole embed
-    // call so the permit only frees up once this request's turn is done.
-    let _admission = state.embed_admission.try_acquire()?;
+    // The wire carries no intent, so a one-chunk request is the interactive
+    // lane: a single chunk cannot hold a context long enough to matter, so a
+    // bulk client whose calibration batch is one chunk lands there at no cost,
+    // while a query embed (posted as one chunk) gets the reserved lane it needs
+    // (ADR-096). Anything larger is bulk.
+    let lane = if body.chunks.len() == 1 {
+        crate::EmbedLane::Interactive
+    } else {
+        crate::EmbedLane::Bulk
+    };
+
+    // Admission control on that lane: a full lane is shed immediately with
+    // `429` rather than joining an unbounded wait, and the two lanes are
+    // independent, so a saturated index pass never sheds a one-chunk query.
+    // Held for the whole embed call so the slot only frees once this request's
+    // turn is done.
+    let _admission = state.embed_admission.try_acquire(lane)?;
 
     // Collect texts, preserving order for reassembly.
     let texts: Vec<&str> = body.chunks.iter().map(|c| c.content.as_str()).collect();
@@ -163,7 +174,7 @@ pub async fn index_embed(
         batch_size: body.chunks.len(),
         started: std::time::Instant::now(),
     };
-    let embed_result = embedder.embed_with_cancel(&texts, cancel_flag).await;
+    let embed_result = embedder.embed_lane(&texts, cancel_flag, lane).await;
     cancel_guard.armed = false;
     let vectors = embed_result.map_err(AppError::Internal)?;
 

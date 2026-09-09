@@ -322,19 +322,24 @@ fn require_embedder(
 }
 
 /// Embed memory-entry text for the storage routes (`add_note`,
-/// `push_memory_batch`), which store text-only rather than failing when no
-/// vector can be produced.
+/// `push_memory_batch`) and the repair sweep, which store text-only rather than
+/// failing when no vector can be produced.
+///
+/// The `lane` is the caller's, not the text's: `add_note` is a person waiting
+/// (interactive), while a batch push and the repair sweep — including its
+/// per-row fallback, one text at a time — are background work (bulk). The gate
+/// and the embed run on that declared lane.
 ///
 /// Two invariants live here rather than at each call site, where both have been
 /// broken silently:
 ///
-/// - **Never called with the `ServerDb` lock held.** That lock is global and the
-///   embedder is serialized and slow, so an embed awaited under it stalls every
-///   other request on the server — memory CRUD, `/memory/stream`'s poll loop and
-///   liveness alike — until the whole batch finishes.
-/// - **Runs under an [`crate::EmbedAdmission`] permit**, like every other
-///   embed-consuming route, so a storage write cannot bypass the bound on how
-///   many callers may wait on the embedder. The permit is released when this
+/// - **Never called with the `ServerDb` lock held.** That lock is global, so an
+///   embed awaited under it stalls every other request on the server — memory
+///   CRUD, `/memory/stream`'s poll loop and liveness alike — until the whole
+///   batch finishes.
+/// - **Runs under an [`crate::EmbedAdmission`] permit** on `lane`, like every
+///   other embed-consuming route, so a storage write cannot bypass the bound on
+///   how many callers may wait on the embedder. The permit is released when this
 ///   returns.
 ///
 /// The whole slice goes in one call: batching is both what keeps the lock-free
@@ -342,6 +347,7 @@ fn require_embedder(
 pub(crate) async fn embed_for_storage(
     state: &AppState,
     texts: &[&str],
+    lane: crate::EmbedLane,
 ) -> Result<StorageEmbedding, AppError> {
     if texts.is_empty() {
         return Ok(StorageEmbedding::Vectors(Vec::new()));
@@ -351,8 +357,9 @@ pub(crate) async fn embed_for_storage(
     let Some(embedder) = state.embedder.backend() else {
         return Ok(StorageEmbedding::NotReady);
     };
-    let _admission = state.embed_admission.try_acquire()?;
-    match embedder.embed(texts).await {
+    let _admission = state.embed_admission.try_acquire(lane)?;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    match embedder.embed_lane(texts, cancel, lane).await {
         Ok(vectors) if vectors.len() == texts.len() => Ok(StorageEmbedding::Vectors(vectors)),
         Ok(vectors) => {
             tracing::warn!(

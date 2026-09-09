@@ -125,6 +125,7 @@ async fn spawn_server(embedder: inkentry_server::EmbedderSlot) -> String {
         embedder,
         embed_admission: inkentry_server::EmbedAdmission::new(
             inkentry_server::EMBED_QUEUE_CAPACITY,
+            inkentry_server::EMBED_INTERACTIVE_CAPACITY_HIGH,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,
@@ -184,7 +185,7 @@ async fn sample_health(client: &reqwest::Client, base: &str) -> HealthSample {
 #[ignore = "requires the F2LLM model and real inference hardware; not a CI gate"]
 async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
     let loaded =
-        inkentry_server::embed_hub::load_backend(None, 4).expect("load F2LLM-v2-330M (llama)");
+        inkentry_server::embed_hub::load_backend(None, 4, 1).expect("load F2LLM-v2-330M (llama)");
     let base = spawn_server(inkentry_server::EmbedderSlot::ready(loaded.backend)).await;
 
     let client = reqwest::Client::builder()

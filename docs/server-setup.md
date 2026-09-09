@@ -722,13 +722,14 @@ and lowering it will not make a slow probe fast. `/v1/health` and every other
 endpoint that does not itself embed never touch the embedder's forward pass, so
 they stay responsive for the whole of an index whatever this value is set to.
 
-This budget only bounds CPU contention *within* a single embed batch; embed
-requests themselves are still serialized behind a single mutex on both device
-paths (GPU concurrency would blow its memory limit, and a CPU batch already
-uses most of this budget on its own). A bounded admission queue sits in front of the
-embedder: when it is full the server sheds the request immediately with `429`
-and a `Retry-After` header, rather than letting a batch queue behind a running
-index until the caller's own timeout fires (see
+This budget only bounds CPU contention *within* a single embed batch. Embed
+requests run on a pool of warm contexts with no shared lock, so overlapping
+embeds proceed on separate contexts rather than serializing. A bounded admission
+gate sits in front of the pool, split into two lanes — a bulk lane and a
+reserved interactive lane — so an interactive `search` or `memory add` is never
+shed nor left waiting behind a bulk index batch. When a request's lane is full
+the server sheds it immediately with `429` and a `Retry-After` header, rather
+than letting it queue until the caller's own timeout fires (see
 `POST /index/embed` in `architecture/server-api.md`).
 
 ### Linux GPU acceleration and the `render` group

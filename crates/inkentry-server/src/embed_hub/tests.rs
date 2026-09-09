@@ -151,7 +151,7 @@ fn embed_device_request_accepts_documented_values() {
 #[test]
 fn load_llama_from_model_dir_rejects_non_directory() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    let msg = match load_llama_from_model_dir(file.path(), DeviceRequest::Cpu, 1) {
+    let msg = match load_llama_from_model_dir(file.path(), DeviceRequest::Cpu, 1, 1) {
         Ok(_) => panic!("a non-directory --model-dir must be rejected"),
         Err(e) => format!("{e:#}"),
     };
@@ -164,7 +164,7 @@ fn load_llama_from_model_dir_rejects_non_directory() {
 #[test]
 fn load_llama_from_model_dir_missing_gguf_names_the_file_and_docs() {
     let dir = tempfile::tempdir().unwrap();
-    let msg = match load_llama_from_model_dir(dir.path(), DeviceRequest::Cpu, 1) {
+    let msg = match load_llama_from_model_dir(dir.path(), DeviceRequest::Cpu, 1, 1) {
         Ok(_) => panic!("a model dir without the GGUF must be rejected"),
         Err(e) => format!("{e:#}"),
     };
@@ -568,7 +568,7 @@ fn llama_reused_context_matches_isolated_chunks() {
     use inkentry_core::embeddings::EmbeddingBackend;
 
     let llama =
-        load_llama_from_hub(DeviceRequest::Auto, 4).expect("load llama engine (canonical GGUF)");
+        load_llama_from_hub(DeviceRequest::Auto, 4, 1).expect("load llama engine (canonical GGUF)");
 
     // Mixed lengths and scripts so a KV leak between neighbours of differing
     // size would show up.

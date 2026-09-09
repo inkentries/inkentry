@@ -52,6 +52,7 @@ async fn spawn_real_server(db_path: &Path) -> String {
         embedder: inkentry_server::EmbedderSlot::disabled(),
         embed_admission: inkentry_server::EmbedAdmission::new(
             inkentry_server::EMBED_QUEUE_CAPACITY,
+            inkentry_server::EMBED_INTERACTIVE_CAPACITY_HIGH,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,

@@ -70,6 +70,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An interactive `search` or `memory add` no longer waits out a running
+  index.** A query embed took as long as ~60–154 s while the server was busy
+  embedding an index batch; it now returns sub-second at the median. Interactive
+  embeds run on a reserved admission lane with their own warm context, so a bulk
+  index pass can neither shed them nor make them wait, and the reserved lane
+  covers the cold-start and saturation tail the warm-context pool alone did not.
 - **The background indexing log is no longer empty.** `inkentry init` and
   `inkentry index --detach-embed` point at `index-background.log`, but the
   detached worker wrote nothing to it, so a run in progress looked exactly like
