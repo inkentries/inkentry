@@ -1779,6 +1779,15 @@ mod tests {
             )
             .expect("add note");
         }
+        // Force every row to share a created_at, so the walk leans on the id
+        // tie-break for a stable order rather than on the sub-second spacing of
+        // these inserts.
+        db.conn
+            .execute(
+                "UPDATE notes SET created_at = 1700000000 WHERE project_id = ?1",
+                rusqlite::params![project.id],
+            )
+            .expect("tie the created_at values");
 
         let mut seen: Vec<String> = Vec::new();
         let mut offset = 0;

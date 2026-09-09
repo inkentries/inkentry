@@ -635,3 +635,53 @@ async fn a_handle_on_a_later_page_resolves() {
         ])
     );
 }
+
+// A team server one release behind has no `offset` on its list route and drops
+// the unknown parameter, so it answers every request with the same page. Serves
+// that: a fixed listing, ignoring offset entirely.
+async fn team_backend_ignoring_offset(count: usize) -> (wiremock::MockServer, RemoteMemoryBackend) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let entries: Vec<serde_json::Value> = (0..count)
+        .map(|n| team_note(n, &format!("filler {n}")))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/v1/projects/team/memory"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(entries))
+        .mount(&server)
+        .await;
+
+    let backend = RemoteMemoryBackend {
+        client: reqwest::Client::new(),
+        base_url: server.uri(),
+        project_id: "team".to_string(),
+        api_key: None,
+    };
+    (server, backend)
+}
+
+// A peer that silently drops `offset` returns the same page forever; the walk
+// must notice it is not advancing and report the read bounded rather than loop.
+// That this test terminates at all is the core of what it proves.
+#[tokio::test]
+async fn a_peer_that_ignores_offset_is_reported_bounded_not_walked_forever() {
+    let (_server, backend) = team_backend_ignoring_offset(10).await;
+
+    let absent = crate::storage::entity_id("decision", "never held here", "b");
+    let lookup = backend
+        .note_ids_for_entity_id_prefix(&absent)
+        .await
+        .unwrap();
+
+    match lookup {
+        EntityIdLookup::Bounded { matches, examined } => {
+            assert!(matches.is_empty(), "the absent handle matched nothing");
+            assert_eq!(examined, 10, "it reports how far it actually read");
+        }
+        EntityIdLookup::Complete(_) => {
+            panic!("a peer that never advances must not be reported as a complete read")
+        }
+    }
+}

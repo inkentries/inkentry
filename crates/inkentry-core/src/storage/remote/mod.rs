@@ -473,20 +473,29 @@ impl MemoryBackend for RemoteMemoryBackend {
     }
 
     /// The team server pages its listing by `offset`, so a handle resolves
-    /// against the whole store rather than one page. Walk to exhaustion,
-    /// collecting every match so an ambiguous prefix is still caught when its
-    /// entries fall on different pages.
+    /// against the whole store rather than one page: walk it, collecting every
+    /// match so an ambiguous prefix is still caught when its entries fall on
+    /// different pages. A store read to its empty tail is `Complete`; the walk
+    /// advances by the count actually returned, since the server caps a page
+    /// below what is asked for, and ends on the empty page, not a short one.
     ///
-    /// Complete, never [`EntityIdLookup::Bounded`]: the walk stops only on an
-    /// empty page, so a miss is a real absence and not an unread tail. The
-    /// server can return fewer than the page asked for (it caps a page), so the
-    /// walk advances by the count actually returned and ends on the empty page,
-    /// not on a short one.
+    /// Two guards keep the walk finite when a peer does not page as asked. A
+    /// server one release behind has no `offset` on its list route, and an
+    /// unknown query parameter is dropped rather than refused, so it returns the
+    /// same first page for every request and the empty tail never comes. A page
+    /// that adds no entry not already seen means the offset is not advancing, so
+    /// the read is reported `Bounded` rather than looped; a hard page ceiling
+    /// backstops that guard. Either way an older peer degrades to the same
+    /// honest bounded result the single-page read once gave, never a hang.
     async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
-        let page = crate::storage::backend::ENTITY_ID_SCAN_LIMIT;
+        // Far above any project-sized store; the no-progress guard is what
+        // actually stops a non-paging peer, this only backstops it.
+        const MAX_PAGES: usize = 1_000;
+        let page = crate::storage::backend::ENTITY_ID_PAGE_SIZE;
         let mut matches = Vec::new();
+        let mut seen: HashSet<NoteId> = HashSet::new();
         let mut offset = 0usize;
-        loop {
+        for _ in 0..MAX_PAGES {
             let req = self.client.get(self.url("memory")).query(&[
                 ("limit", page.to_string().as_str()),
                 ("offset", offset.to_string().as_str()),
@@ -504,16 +513,31 @@ impl MemoryBackend for RemoteMemoryBackend {
                 .into_iter()
                 .map(Into::into)
                 .collect();
+            if notes.is_empty() {
+                return Ok(EntityIdLookup::Complete(matches));
+            }
             let drained = notes.len();
-            if drained == 0 {
-                break;
+            let mut progressed = false;
+            for note in notes {
+                if seen.insert(note.id.clone()) {
+                    progressed = true;
+                    if note.entity_id.starts_with(prefix) {
+                        matches.push(note.id);
+                    }
+                }
+            }
+            if !progressed {
+                return Ok(EntityIdLookup::Bounded {
+                    matches,
+                    examined: seen.len(),
+                });
             }
             offset += drained;
-            matches.extend(crate::storage::backend::ids_with_entity_id_prefix(
-                notes, prefix,
-            ));
         }
-        Ok(EntityIdLookup::Complete(matches))
+        Ok(EntityIdLookup::Bounded {
+            matches,
+            examined: seen.len(),
+        })
     }
 
     async fn count(&self) -> Result<i64> {

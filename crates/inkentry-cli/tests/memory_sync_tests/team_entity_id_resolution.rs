@@ -110,7 +110,10 @@ async fn a_handle_on_a_later_page_resolves() {
     // a non-zero offset ever reads it.
     entries[900] = team_note(900, target);
 
-    let out = show_against(entries, &entity_id_of(target)).await;
+    // Resolve by the 12-character handle, not the full id, so a truncated prefix
+    // is exercised against a store that spans pages.
+    let handle = entity_id_of(target);
+    let out = show_against(entries, &handle[..12]).await;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
