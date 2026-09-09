@@ -29,11 +29,14 @@ use tokio::sync::oneshot;
 use crate::error::EmbedError;
 use crate::vector::l2_normalise;
 
-/// Context sizes tried at load, largest first. A sequence is truncated to the
-/// resolved rung and must fit one micro-batch, so the rung IS the token cap.
-/// 8192 is the large-RAM cap; the lower rungs keep
-/// small-VRAM GPUs loadable at reduced chunk length.
-const UBATCH_LADDER: [u32; 3] = [8192, 4096, 2048];
+/// The one llama context size the embedder runs at on every machine. A sequence
+/// longer than this is truncated to it, so it IS the token cap. Fixing it makes
+/// that truncation happen at the same token boundary on every host: a per-machine
+/// size embedded the same source to different vectors depending on the machine's
+/// RAM, which diverges once those vectors reach a shared team/cloud store. A
+/// machine that cannot allocate a context this size is refused at load rather
+/// than stepped down to a smaller one (see [`ensure_embed_context_fits`]).
+const EMBED_UBATCH: u32 = 8192;
 
 /// Default worker-pool size for direct callers (e.g. the `embed_bench`
 /// example). The server passes its own `pool_size` to `load_from_path` — its
@@ -549,7 +552,7 @@ impl LlamaEmbedder {
         }))
         .unwrap_or(i32::MAX);
 
-        let token_cap = probe_ubatch(&model, backend, n_threads)?;
+        let token_cap = ensure_embed_context_fits(&model, backend, n_threads)?;
 
         tracing::info!(
             "F2LLM-v2-330M ready (dim={dim}, Q8_0, engine=llama, device={device_name}); \
@@ -573,31 +576,26 @@ impl LlamaEmbedder {
     }
 }
 
-/// Find the largest ladder rung whose context allocates on this device.
-/// Context creation is where llama.cpp reserves KV-cache and compute buffers,
-/// so a failed rung means "this ubatch does not fit" and the next is tried.
-fn probe_ubatch(model: &LlamaModel, backend: &LlamaBackend, n_threads: i32) -> Result<u32> {
-    let mut last_err = None;
-    for ubatch in UBATCH_LADDER {
-        match model.new_context(backend, context_params(ubatch, n_threads)) {
-            Ok(_ctx) => {
-                if last_err.is_some() {
-                    tracing::warn!(
-                        "llama context stepped down to ubatch {ubatch} — chunks longer than \
-                         {ubatch} tokens will be truncated for embedding on this device"
-                    );
-                }
-                return Ok(ubatch);
-            }
-            Err(e) => last_err = Some(e),
-        }
+/// Verify a llama context at the fixed [`EMBED_UBATCH`] allocates on this
+/// device, and return that size as the token cap. Context creation is where
+/// llama.cpp reserves the KV-cache and compute buffers, so a failure means this
+/// hardware cannot hold a context that size — refused, not stepped down: a
+/// smaller context would truncate long inputs at a different token boundary than
+/// other hosts and so embed the same source to different vectors.
+fn ensure_embed_context_fits(
+    model: &LlamaModel,
+    backend: &LlamaBackend,
+    n_threads: i32,
+) -> Result<u32> {
+    match model.new_context(backend, context_params(EMBED_UBATCH, n_threads)) {
+        Ok(_ctx) => Ok(EMBED_UBATCH),
+        Err(e) => Err(anyhow::anyhow!(
+            "this hardware cannot run the inkentry embedder: a llama context at ubatch \
+             {EMBED_UBATCH} would not allocate ({e}). The embedder runs one fixed context size \
+             on every machine so embeddings are identical across hosts, and does not fall back \
+             to a smaller one."
+        )),
     }
-    Err(anyhow::anyhow!(
-        "no llama context size in {UBATCH_LADDER:?} fits this device: {}",
-        // The loop body ran at least once, so the ladder being non-empty
-        // guarantees an error is recorded here.
-        last_err.map_or_else(String::new, |e| e.to_string())
-    ))
 }
 
 #[async_trait::async_trait]
@@ -676,11 +674,6 @@ mod tests {
         );
         assert_eq!("cpu".parse::<DeviceRequest>().unwrap(), DeviceRequest::Cpu);
         assert!("metal".parse::<DeviceRequest>().is_err());
-    }
-
-    #[test]
-    fn ubatch_ladder_is_strictly_descending() {
-        assert!(UBATCH_LADDER.windows(2).all(|w| w[0] > w[1]));
     }
 
     fn flags(states: &[bool]) -> Vec<Arc<AtomicBool>> {

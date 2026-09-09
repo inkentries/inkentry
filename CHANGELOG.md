@@ -78,6 +78,13 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `cargo build` matches every published binary and no longer needs
   `--features rich-formats`. To build the CLI without those readers, pass
   `-p inkentry-cli --no-default-features`.
+- **The embedder runs one fixed context size on every machine**, so the same
+  source embeds to identical vectors regardless of a host's RAM. It used to step
+  down to a smaller context on lower-RAM machines and truncate longer inputs at a
+  different point; a machine that cannot allocate the fixed context is now
+  refused at load with a clear message rather than silently degraded. Indexed
+  code chunks are well under the cap and unaffected — this matters for long
+  memory entries once their vectors are shared to a team or cloud store.
 
 ### Fixed
 
