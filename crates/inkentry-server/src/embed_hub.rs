@@ -334,6 +334,59 @@ fn gpu_fallback_note() -> Option<String> {
     }
 }
 
+/// Reclaim the previous candle engine's cached artifacts, which the llama
+/// engine never reads: the flat candle GGUF and `config.json` at the cache
+/// root, and the candle GGUF + `tokenizer.json` entries in the hf-hub repo
+/// cache (each snapshot pointer and the blob it resolves to). Keyed on the
+/// exact old filenames, so it can never touch the llama GGUF ([`LLAMA_GGUF`]),
+/// whose name differs and whose blob sits under its own pointer. Idempotent (a
+/// second run finds nothing) and best-effort: a leftover file is wasted disk,
+/// not a fault, so failures are ignored rather than failing the load.
+#[cfg(feature = "embed-llama")]
+fn reclaim_candle_artifacts(cache_dir: &Path, repo: &Repo) {
+    // Candle wrote these two flat at the cache root; the llama engine writes
+    // neither (its GGUF is `LLAMA_GGUF`, and it needs no separate config).
+    const STALE_FLAT: [&str; 2] = ["f2llm-v2-330m-q8_0.gguf", "config.json"];
+    // Candle fetched these into the shared hf-hub repo cache. `tokenizer.json`
+    // is candle-only (the llama GGUF embeds its tokenizer), and the old GGUF
+    // name differs from `LLAMA_GGUF`, so neither can name the llama artifact.
+    const STALE_HUB: [&str; 2] = ["f2llm-v2-330m-q8_0.gguf", "tokenizer.json"];
+
+    let mut removed = 0usize;
+    for name in STALE_FLAT {
+        if std::fs::remove_file(cache_dir.join(name)).is_ok() {
+            removed += 1;
+        }
+    }
+
+    let snapshots = cache_dir.join(repo.folder_name()).join("snapshots");
+    if let Ok(revs) = std::fs::read_dir(&snapshots) {
+        for rev in revs.flatten() {
+            for name in STALE_HUB {
+                let pointer = rev.path().join(name);
+                // Resolve the pointer to its blob before removing it, so the
+                // blob (the actual bytes) is reclaimed too. hf-hub materialises
+                // a snapshot entry as a symlink into `blobs/`.
+                if let Ok(blob) = std::fs::canonicalize(&pointer)
+                    && std::fs::remove_file(&blob).is_ok()
+                {
+                    removed += 1;
+                }
+                if std::fs::remove_file(&pointer).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    if removed > 0 {
+        tracing::info!(
+            "reclaimed {removed} superseded candle model artifact(s) from the cache \
+             (the previous embedding engine's files, no longer used)"
+        );
+    }
+}
+
 /// Load the llama.cpp engine's canonical GGUF via the Hugging Face Hub.
 ///
 /// Single file — the canonical GGUF embeds its own tokenizer and config — but
@@ -351,6 +404,12 @@ fn load_llama_from_hub(device: DeviceRequest, embed_threads: usize) -> Result<Ll
 
     let gguf_repo = prequantized_gguf_repo();
     let repo_id = Repo::new(gguf_repo.clone(), RepoType::Model);
+
+    // A machine upgrading from a candle build carries that engine's cached
+    // files, which this engine never reads. Reclaim them once, here on the load
+    // path (idempotent, best-effort).
+    reclaim_candle_artifacts(&cache_dir, &repo_id);
+
     let blobs_dir = cache_dir.join(repo_id.folder_name()).join("blobs");
 
     // Read before anything is fetched, so it describes the cache this run
@@ -996,6 +1055,42 @@ mod tests {
         let reclaimed = prune_partial_downloads(&cache.path().join("never-created"), true)
             .expect("an absent cache directory is a first run, not a failure");
         assert_eq!(reclaimed, 0);
+    }
+
+    #[test]
+    fn reclaim_removes_candle_artifacts_but_keeps_the_llama_gguf() {
+        let cache = tempfile::tempdir().unwrap();
+        let root = cache.path();
+
+        // Flat files: candle wrote the first two; the third is the llama GGUF.
+        std::fs::write(root.join("f2llm-v2-330m-q8_0.gguf"), b"old candle gguf").unwrap();
+        std::fs::write(root.join("config.json"), b"{}").unwrap();
+        std::fs::write(root.join(LLAMA_GGUF), b"llama gguf").unwrap();
+
+        // hf-hub snapshot dir carrying the candle GGUF, the candle tokenizer,
+        // and the llama GGUF side by side.
+        let repo = Repo::new(DEFAULT_GGUF_REPO.to_string(), RepoType::Model);
+        let snap = root.join(repo.folder_name()).join("snapshots").join("rev0");
+        std::fs::create_dir_all(&snap).unwrap();
+        for f in ["f2llm-v2-330m-q8_0.gguf", "tokenizer.json", LLAMA_GGUF] {
+            std::fs::write(snap.join(f), b"x").unwrap();
+        }
+
+        reclaim_candle_artifacts(root, &repo);
+
+        // Every candle artifact is gone, flat and in the snapshot.
+        assert!(!root.join("f2llm-v2-330m-q8_0.gguf").exists());
+        assert!(!root.join("config.json").exists());
+        assert!(!snap.join("f2llm-v2-330m-q8_0.gguf").exists());
+        assert!(!snap.join("tokenizer.json").exists());
+        // The llama GGUF is untouched — the whole point of keying on exact names.
+        assert!(root.join(LLAMA_GGUF).exists());
+        assert!(snap.join(LLAMA_GGUF).exists());
+
+        // Idempotent: a second run over the cleaned cache is a no-op that panics
+        // on nothing.
+        reclaim_candle_artifacts(root, &repo);
+        assert!(root.join(LLAMA_GGUF).exists());
     }
 
     // The pooled worker reuses one warm context across calls, clearing the KV
