@@ -245,6 +245,14 @@ impl WorkerPool {
         bulk_size: usize,
         interactive_size: usize,
     ) -> Self {
+        // A pool with no workers at all can embed nothing, and would leave both
+        // lanes empty (see `effective_lane`). Guarantee at least one worker so at
+        // most one lane is ever empty; clamp in release, not just a debug_assert.
+        let bulk_size = if bulk_size + interactive_size == 0 {
+            1
+        } else {
+            bulk_size
+        };
         let mut handles = Vec::with_capacity(bulk_size + interactive_size);
         let interactive = Self::spawn_lane(
             &model,
@@ -307,6 +315,11 @@ impl WorkerPool {
     }
 
     fn dispatch(&self, job: Job, lane: EmbedLane) {
+        let lane = effective_lane(
+            lane,
+            self.interactive.senders.len(),
+            self.bulk.senders.len(),
+        );
         let workers = match lane {
             EmbedLane::Interactive => &self.interactive,
             EmbedLane::Bulk => &self.bulk,
@@ -343,6 +356,24 @@ fn worker_idle_timeout(lane: EmbedLane, index_in_lane: usize) -> Option<Duration
     match lane {
         EmbedLane::Interactive if index_in_lane == 0 => None,
         _ => Some(CONTEXT_IDLE_TIMEOUT),
+    }
+}
+
+/// The lane to actually dispatch on. Normally the requested one, but a lane can
+/// have no workers when a direct caller sizes it to zero (cloud-api on Cloud Run
+/// builds a single-context embedder with `interactive_capacity = 0`). Falling
+/// back to the other lane keeps `claim_worker`'s `% busy.len()` from dividing by
+/// zero. A pool always has at least one worker overall (guaranteed at
+/// construction), so at most one lane is ever empty.
+fn effective_lane(
+    requested: EmbedLane,
+    interactive_workers: usize,
+    bulk_workers: usize,
+) -> EmbedLane {
+    match requested {
+        EmbedLane::Interactive if interactive_workers == 0 => EmbedLane::Bulk,
+        EmbedLane::Bulk if bulk_workers == 0 => EmbedLane::Interactive,
+        other => other,
     }
 }
 
@@ -838,6 +869,23 @@ mod tests {
         assert_eq!(claim_worker(&busy, &rr), 0);
         assert_eq!(claim_worker(&busy, &rr), 1);
         assert_eq!(claim_worker(&busy, &rr), 0);
+    }
+
+    #[test]
+    fn dispatch_falls_back_to_a_populated_lane_when_the_requested_one_is_empty() {
+        assert_eq!(
+            effective_lane(EmbedLane::Interactive, 0, 1),
+            EmbedLane::Bulk
+        ); // cloud-api (1,0)
+        assert_eq!(
+            effective_lane(EmbedLane::Bulk, 1, 0),
+            EmbedLane::Interactive
+        );
+        assert_eq!(
+            effective_lane(EmbedLane::Interactive, 3, 4),
+            EmbedLane::Interactive
+        );
+        assert_eq!(effective_lane(EmbedLane::Bulk, 3, 4), EmbedLane::Bulk);
     }
 
     #[test]
