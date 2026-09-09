@@ -51,6 +51,10 @@ required-features = ["llama"]
 tempfile = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
+# The golden-vector gate (tests/golden_vectors.rs) needs a runtime to await the
+# async embed and serde_json to read its committed reference.
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+serde_json = { workspace = true }
 # Only for the embed_bench example (surfaces the loader's device-selection log
 # line without requiring the caller to export RUST_LOG themselves).
 tracing-subscriber = { workspace = true }

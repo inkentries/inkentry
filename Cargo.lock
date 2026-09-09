@@ -3228,6 +3228,7 @@ dependencies = [
  "llama-cpp-2",
  "llama-cpp-sys-2",
  "pretty_assertions",
+ "serde_json",
  "serial_test",
  "tempfile",
  "thiserror",
