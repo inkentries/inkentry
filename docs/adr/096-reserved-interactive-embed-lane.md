@@ -53,8 +53,9 @@ costs semantic rankability until the next reindex.
 
 ## Decision
 
-Two changes: one at the admission gate, one to how the engine's context pool is
-sized. Together they ensure an interactive embed is neither shed nor left
+Two changes: one at the admission gate, one to the engine's context pool — how it
+is sized, how each lane's contexts live and die, and how its memory is bounded to
+the host. Together they ensure an interactive embed is neither shed nor left
 waiting behind a bulk index batch.
 
 ### 1. Interactive requests get their own reserved admission lane
@@ -107,19 +108,93 @@ restoring one warm context per admittable request. Bulk requests occupy at most
 are always free for the interactive lane, and an admitted interactive embed finds
 an idle warm context without waiting on a bulk request's decode.
 
-The pool keeps its first-idle worker preference. Under serial or light load,
-interactive and bulk work reuse the same hot context and the reserved contexts
-are never built; a worker builds its context on the first job it receives and
-drops it after an idle timeout. The reserved capacity is headroom that
-materialises as a distinct context only when a bulk pass and an interactive
-request are genuinely in flight together, which keeps context churn — and the
-memory and warm-up it costs — low.
+The pool keeps its first-idle worker preference within each lane, so serial work
+in a lane keeps reusing one hot context rather than spreading across cold ones.
+How each lane builds and retires its contexts differs, and that asymmetry —
+decided next — is what keeps the reserved capacity from costing memory when it is
+not in use.
 
 The pool must stay a set of independent contexts. Collapsing it to a single
 context behind a shared lock would serialize every embed and reintroduce
 precisely the stall this record removes, and would also return the engine to
 building a context per call under contention. Independent per-worker contexts
 are load-bearing here, not incidental.
+
+### 3. The two lanes have asymmetric context lifecycles
+
+The interactive and bulk lanes build and retire their contexts differently,
+because they serve opposite workloads.
+
+- **The interactive lane keeps one context persistently hot.** It is built on the
+  lane's first request and is then exempt from the idle timeout, never evicted for
+  quiet. So an interactive embed never pays context-creation latency: the first
+  `search` or `memory add` after any lull lands on a context that is already
+  built. A context that is never idle-evicted can still wedge or go stale; the
+  lane recovers through the pool's existing rebuild-on-decode-failure path, which
+  drops and rebuilds a context that fails to decode, rather than through idle
+  eviction.
+- **The bulk lane builds its contexts lazily and drops them after 30 s of idle.**
+  A bulk context is created on the first bulk job a worker receives and released
+  30 s after its last one. During an active index pass, batches arrive far faster
+  than that, so a bulk context stays hot for the pass and evaporates shortly after
+  it ends rather than pinning memory between passes.
+
+When `EMBED_INTERACTIVE_CAPACITY` is greater than one, exactly one interactive
+context is the persistently-hot one; the remaining interactive contexts are built
+on demand only when interactive requests are genuinely concurrent, and they retire
+on the same idle timeout as bulk contexts. Keeping a single interactive context
+permanently resident — rather than all of them — bounds the lane's resting cost to
+one context regardless of its capacity, while still giving the common case, serial
+interactive use, a context that is always warm. Concurrent interactive requests,
+which are rare for a single developer, may pay one context build for the second or
+third simultaneously in flight; the guarantee is that no interactive request ever
+*queues* behind bulk work, not that every simultaneous interactive request skips
+warm-up.
+
+### 4. Lane capacity is gated on available memory
+
+`EMBED_INTERACTIVE_CAPACITY` is resolved at load from the machine's available
+system memory — it is neither a fixed constant nor left to later tuning. **Below
+8 GB available it is 1; at or above 8 GB it is 3**, with contexts materialised on
+demand up to that ceiling as described above. `EMBED_QUEUE_CAPACITY` stays 4. The
+gate exists because each warm context is a fixed, non-trivial amount of memory,
+and that cost is what the budget below bounds against the machine it runs on.
+
+### Memory budget
+
+A separate change fixes the embedder's micro-batch at its largest rung, 8192
+tokens, on every machine, so that identical source yields identical vectors
+regardless of host. At that rung a warm context costs roughly 2 GB of KV and
+compute buffers, and the pool's contexts are the dominant memory the embedder
+holds, so the budget is counted in whole contexts.
+
+The pool's high-water mark is `EMBED_QUEUE_CAPACITY + EMBED_INTERACTIVE_CAPACITY`
+contexts — one per admittable request. What is actually resident depends on the
+workload, and the asymmetric lifecycle is what keeps the ordinary cases far below
+that mark:
+
+- **At rest:** one context, ~2 GB — the interactive lane's hot context, once it
+  has served a first request. Every bulk context and every on-demand interactive
+  context has idle-dropped.
+- **A single index pass** (the ordinary bulk workload, whose batches are issued
+  serially): the one hot interactive context plus one warm bulk context, ~4 GB. A
+  single pass does not materialise four bulk contexts on its own; four is the
+  ceiling for four genuinely concurrent bulk callers.
+- **Absolute peak:** `(EMBED_QUEUE_CAPACITY + EMBED_INTERACTIVE_CAPACITY) × ~2 GB`,
+  reached only when that many bulk and interactive requests are in flight at the
+  same instant, and released within the idle timeout once they are not.
+
+The memory gate keeps the peak proportionate to the machine. On a machine that
+reports under 8 GB available, `EMBED_INTERACTIVE_CAPACITY` is 1, so the
+interactive lane adds a single ~2 GB context on top of the pre-existing bulk pool,
+and its resting cost is that one context — not three. The bulk pool reaches its
+4 × ~2 GB only under four-way concurrent bulk load; being lazy and idle-dropped at
+30 s, it does not hold those contexts between passes, which is what stops an idle
+server from pinning 8 GB of bulk contexts. A machine that qualifies for capacity 3
+is by definition one the gate measured as having the headroom. And a lazily-built
+context that cannot allocate on the device fails that one request rather than the
+process, so the peak is a ceiling the engine degrades under, not one it must
+always fit.
 
 ### Why fairness lives at admission and pool sizing, not inside the engine
 
@@ -146,10 +221,13 @@ chunk boundary.
   caller admitted before this change is admitted after it.
   `docs/architecture/server-api.md` and `docs/openapi.json` describe the
   reserved lane on the `/index/embed` and memory search `429` responses.
-- The engine's context pool grows by `EMBED_INTERACTIVE_CAPACITY` contexts at
-  its high-water mark. Each context carries its own KV and compute buffers and
-  is built lazily and dropped when idle, so the added memory is paid only while
-  a bulk pass and interactive work overlap, not at rest.
+- The engine's context pool grows by `EMBED_INTERACTIVE_CAPACITY` contexts at its
+  high-water mark — gated to 1 below 8 GB of available memory and 3 at or above
+  it, at roughly 2 GB per context. One interactive context stays resident at rest;
+  bulk contexts and any on-demand interactive contexts are built lazily and
+  dropped after 30 s of idle, so beyond that single resident context the added
+  memory is paid only while a bulk pass and interactive work overlap, not between
+  passes.
 - The 5 s budget on `memory add` stops being the thing that hides this. It
   stays, as the guard for an embedder that is genuinely unavailable rather than
   merely busy.
@@ -157,19 +235,18 @@ chunk boundary.
 ### Validation the implementation must produce
 
 The decision rests structurally on the engine having no shared embedder lock and
-a per-worker warm-context pool; the tuning does not. The value of
-`EMBED_INTERACTIVE_CAPACITY`, and confirmation that the measured stall is gone,
-come from re-running the filing's repro on this engine: `memory add` and `search`
-timed during a genuine `init` embed pass, p50 and max over at least five runs,
-against the baseline of 2.59 / 60.58 / 154.39 s and a healthy idle single embed
-of 13 to 21 ms.
+a per-worker warm-context pool; the tuning does not. `EMBED_INTERACTIVE_CAPACITY`
+is decided here — gated on available memory — rather than measured, but the
+implementation must still confirm the stall is gone by re-running the filing's
+repro on this engine: `memory add` and `search` timed during a genuine `init`
+embed pass, p50 and max over at least five runs, against the baseline of
+2.59 / 60.58 / 154.39 s and a healthy idle single embed of 13 to 21 ms.
 
-That measurement also settles a question this record leaves open. The
+That measurement also shows what each half of the decision contributes. The
 warm-context pool already lets overlapping embeds run on separate contexts, so it
 may on its own remove the multi-second stall whenever an interactive request is
-admitted at all. If so, the reserved lane's remaining job is the narrower one it
-is kept for: guaranteeing the interactive request is admitted rather than shed
-when a bulk pass has taken every shared slot. In that case
-`EMBED_INTERACTIVE_CAPACITY` is sized as a shed-safety margin — one or two slots
-— rather than as the cure for the stall itself. The reserved count is left for
-that measurement to set.
+admitted at all; the reserved lane's distinct job is then the narrower one it is
+kept for — guaranteeing the interactive request is admitted rather than shed when
+a bulk pass has taken every shared slot. The persistently-hot interactive context
+adds a third property the repro should confirm: an interactive embed after an idle
+spell returns in the idle-server range rather than paying a context build.
