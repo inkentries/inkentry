@@ -379,6 +379,54 @@ mod tests {
         assert_eq!(store.import_carried_edges(&late).expect("late").applied, 1);
     }
 
+    // The supersede projection's contract in one pass: a resolvable pair lands
+    // as the writer's own (successor -> subject) row, a pair with either end
+    // missing is counted rather than failing the batch, a pair whose two ends
+    // are one entity is skipped (uncounted), and a re-apply changes nothing.
+    #[test]
+    fn import_supersede_edges_writes_the_writer_direction_counts_dangling_and_is_idempotent() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let store = MemoryStore::open(tmp.path()).expect("open");
+        let (old, e_old) = add(&store, "old");
+        let (new, e_new) = add(&store, "new");
+        let (_only, e_self) = add(&store, "self");
+
+        // Pairs are (subject entity_id, successor entity_id), the shape
+        // `carried_supersede_edges` emits.
+        let pairs = vec![
+            (e_old.clone(), e_new.clone()),
+            (e_old.clone(), "not-here".to_string()),
+            ("not-here".to_string(), e_new.clone()),
+            (e_self.clone(), e_self.clone()),
+        ];
+        let first = store.import_supersede_edges(&pairs).expect("apply");
+        assert_eq!(
+            first,
+            CarriedEdgeImport {
+                applied: 1,
+                already_present: 0,
+                unresolved: 2,
+            }
+        );
+        assert_eq!(
+            edge_rows(&store),
+            vec![(new.to_string(), old.to_string(), "supersedes".to_string())],
+            "the row is from the successor to the subject, as the writer records it"
+        );
+
+        let again = store.import_supersede_edges(&pairs).expect("re-apply");
+        assert_eq!(
+            again,
+            CarriedEdgeImport {
+                applied: 0,
+                already_present: 1,
+                unresolved: 2,
+            }
+        );
+        assert_eq!(edge_rows(&store).len(), 1, "re-applying adds no row");
+    }
+
     /// The prefix read is what tells a quoted handle from an ambiguous one, so
     /// it is pinned against crafted values: two that share the queried prefix,
     /// one that shares only part of it, and one that shares none. Crafted
