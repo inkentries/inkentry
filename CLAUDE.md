@@ -82,13 +82,16 @@ config/
   sync_mode.rs   — SyncMode enum: offline / local_first / cloud_first mode selection
   project_id.rs  — project-id derivation from git remote / local fallback
   paths.rs       — config-dir + project/db discovery
-  persist.rs     — config.toml / secret-store read-write
+  persist.rs     — config.toml read-write; legacy [auth] cleanup + migration
   predicates.rs  — URL/UUID/env predicates
   tls.rs         — custom CA trust-anchor application
   secret_store.rs — OS keychain / file secret-store backend
   server_keys.rs — per-origin server-key map + bearer_for() resolution (ADR-071);
                    cloud kind is keyed on the auth token's own issuing origin,
                    not an env-derived cloud origin (ADR-095)
+  org_tokens.rs  — per-organization WorkOS session cache (ADR-074): one secret-store
+                   entry keyed by org id, with an `active` pointer; the migration
+                   target for the retired plaintext [auth] table
   llm_key.rs     — LLM endpoint credential: INKENTRY_LLM_KEY / secret-store resolution,
                    plus the INKENTRY_LLM_URL / INKENTRY_LLM_MODEL variable names. Deliberately
                    not a Config field and never read by Config::load; only the daemon-spawn

@@ -1,42 +1,22 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use super::AuthTokens;
 use super::paths::inkentry_config_dir;
 
 // ───────────────────────────────────────────────────────────────────────────
-// `[auth]` table persistence (WorkOS device-flow tokens)
+// Legacy `[auth]` table cleanup
 // ───────────────────────────────────────────────────────────────────────────
+//
+// The WorkOS session is no longer written here at all: it lives in the secret
+// store, keyed per organization (ADR-074; see `super::org_tokens`). These
+// remove functions exist only to strip a legacy plaintext `[auth]` table — the
+// one-time migration off it, and `inkentry logout`'s cleanup of any remnant.
 
-/// Persist WorkOS tokens to the `[auth]` table of `~/.config/inkentry/config.toml`.
+/// Remove the legacy `[auth]` table from `~/.config/inkentry/config.toml`.
 ///
-/// Replaces any existing `[auth]` table; all other top-level keys and tables
-/// are preserved. The file is written with `0600` permissions so the refresh
-/// token is not world-readable.
-pub fn save_auth_tokens(tokens: &AuthTokens) -> Result<()> {
-    save_auth_tokens_to(tokens, &inkentry_config_dir().join("config.toml"))
-}
-
-/// Same as [`save_auth_tokens`] but writes to an explicit path (useful in tests).
-pub fn save_auth_tokens_to(tokens: &AuthTokens, config_path: &Path) -> Result<()> {
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating config dir {}", parent.display()))?;
-    }
-
-    let mut doc = read_config_table(config_path)?;
-    let auth_value = toml::Value::try_from(tokens).context("serialising auth tokens")?;
-    doc.insert("auth".to_string(), auth_value);
-
-    let serialised = toml::to_string_pretty(&doc).context("serialising config.toml")?;
-    write_config_secure(config_path, &serialised)
-}
-
-/// Remove the `[auth]` table from `~/.config/inkentry/config.toml`.
-///
-/// What `inkentry logout` clears (ADR-071 D3): only the `[auth]` cloud token
-/// pair. It does not touch self-hosted server keys as a side effect; removing
-/// those is the explicit `inkentry auth remove-key` (see
+/// The migration off plaintext (ADR-074) and `inkentry logout` both use this to
+/// clear a legacy remnant. It does not touch self-hosted server keys as a side
+/// effect; removing those is the explicit `inkentry auth remove-key` (see
 /// [`super::server_keys::clear_origin`] and
 /// [`super::server_keys::clear_all`]). No-op if the file or the table is
 /// absent. Other keys are preserved.

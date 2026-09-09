@@ -28,6 +28,11 @@ use super::secret_store::SecretStore;
 /// every origin's key (ADR-071 D1).
 pub const KEY_SERVER_KEYS_MAP: &str = "server_keys";
 
+/// Environment variable carrying a bearer directly, bypassing the secret store.
+/// It outranks every stored credential (the non-interactive escape hatch), so a
+/// caller checks it before touching the store at all.
+pub const ENV_SERVER_KEY: &str = "INKENTRY_SERVER_KEY";
+
 /// The inkentry cloud API URL a `cloud = true` project targets, fixed at
 /// compile time. `INKENTRY_CLOUD_URL` overrides it for pointing a development
 /// build at a development cloud (see [`cloud_url`]); it is not a documented user
@@ -115,7 +120,7 @@ pub fn bearer_for(
     server_url: &str,
     store: &dyn SecretStore,
 ) -> Result<Option<String>> {
-    if let Ok(v) = std::env::var("INKENTRY_SERVER_KEY") {
+    if let Ok(v) = std::env::var(ENV_SERVER_KEY) {
         return Ok(Some(v));
     }
     let origin = normalize_origin(server_url)?;

@@ -103,8 +103,8 @@ fn bare_logout_does_not_clear_stored_server_keys() {
         .assert()
         .success();
 
-    // The server key must survive a bare logout: only the cloud [auth] pair
-    // is an unconditional clear target.
+    // The server key must survive a bare logout: only the cached cloud sessions
+    // are an unconditional clear target.
     inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")
