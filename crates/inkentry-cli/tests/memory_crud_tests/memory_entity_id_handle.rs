@@ -554,3 +554,132 @@ fn an_entry_cannot_supersede_itself_however_it_is_named() {
         "nothing may have been linked"
     );
 }
+
+// ── add surfaces the portable handle, the first place an id is met ────────────
+
+impl Project {
+    // Runs `memory add` (text) and returns its stdout alongside the entity id
+    // derived here from the text, never read back from the command under test.
+    fn add_capturing(&self, kind: &str, title: &str, body: &str) -> (String, String) {
+        let out = stdout(
+            self.memory()
+                .args(["add", "--kind", kind, "--title", title, "--body", body])
+                .assert()
+                .success(),
+        );
+        (out, entity_id(kind, title, body))
+    }
+
+    fn add_with_format(&self, kind: &str, title: &str, body: &str, format: &str) -> String {
+        stdout(
+            self.memory()
+                .args([
+                    "add", "--kind", kind, "--title", title, "--body", body, "--format", format,
+                ])
+                .assert()
+                .success(),
+        )
+    }
+}
+
+// The handle out of the "Stored [kind] #<handle>: title" (or "Already recorded
+// as …") lead line.
+fn stored_handle(out: &str) -> String {
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("Stored") || l.starts_with("Already recorded as"))
+        .unwrap_or_else(|| panic!("no stored lead line in:\n{out}"));
+    let after_hash = line.split_once('#').expect("a # before the handle").1;
+    after_hash
+        .split_once(':')
+        .expect("a : after the handle")
+        .0
+        .to_string()
+}
+
+#[test]
+fn add_leads_with_the_handle_that_resolves_via_show() {
+    let p = project();
+    let (out, eid) = p.add_capturing("decision", "Handle from add", "body of the add entry");
+
+    let printed = stored_handle(&out);
+    assert_eq!(
+        printed.as_str(),
+        handle(&eid),
+        "add should lead with the portable handle, got:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("entity_id:  {eid}")),
+        "add should print the full portable id, got:\n{out}"
+    );
+
+    let shown = stdout(p.show(&printed).success());
+    assert!(
+        shown.contains("Handle from add") && shown.contains(&format!("entity_id:  {eid}")),
+        "the handle add printed should resolve to the same entry, got:\n{shown}"
+    );
+}
+
+#[test]
+fn add_format_json_emits_one_object_carrying_both_ids() {
+    let p = project();
+    let out = p.add_with_format(
+        "decision",
+        "Both ids from add",
+        "body of the json add entry",
+        "json",
+    );
+    let obj: serde_json::Value =
+        serde_json::from_str(out.trim()).expect("add --format json emits one JSON object");
+    let eid = entity_id(
+        "decision",
+        "Both ids from add",
+        "body of the json add entry",
+    );
+
+    assert_eq!(obj["entity_id"].as_str().unwrap(), eid);
+    assert_eq!(obj["kind"].as_str().unwrap(), "decision");
+    assert_eq!(obj["title"].as_str().unwrap(), "Both ids from add");
+    assert!(
+        obj["created"].as_bool().unwrap(),
+        "a fresh add reports created"
+    );
+
+    // The per-machine id add reports is the row `show` resolves the handle to —
+    // cross-checked, not trusted from add's own output.
+    let uuid = obj["id"].as_str().expect("json carries the local id");
+    let shown = stdout(
+        p.memory()
+            .args(["show", &eid, "--format", "json"])
+            .assert()
+            .success(),
+    );
+    let note: serde_json::Value = serde_json::from_str(&shown).expect("show json parses");
+    assert_eq!(note["id"].as_str().unwrap(), uuid);
+    assert_eq!(note["entity_id"].as_str().unwrap(), eid);
+}
+
+#[test]
+fn add_format_jsonl_emits_one_compact_line_with_the_entity_id() {
+    let p = project();
+    let out = p.add_with_format(
+        "note",
+        "One json line",
+        "body of the jsonl add entry",
+        "jsonl",
+    );
+    let eid = entity_id("note", "One json line", "body of the jsonl add entry");
+
+    let mut lines = out.lines().filter(|l| !l.trim().is_empty());
+    let line = lines.next().expect("one jsonl line");
+    assert!(
+        lines.next().is_none(),
+        "jsonl add must print exactly one line, got:\n{out}"
+    );
+    let obj: serde_json::Value = serde_json::from_str(line).expect("jsonl line parses");
+    assert_eq!(obj["entity_id"].as_str().unwrap(), eid);
+    assert!(
+        obj["id"].as_str().is_some(),
+        "jsonl carries the local id too"
+    );
+}

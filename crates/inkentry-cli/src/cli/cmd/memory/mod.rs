@@ -121,6 +121,10 @@ pub struct MemoryAddArgs {
     /// ID of an existing entry this entry relates to (creates a relates_to edge).
     #[arg(long, value_name = "ID")]
     pub relates_to: Option<NoteId>,
+
+    /// Output format: text, json, or jsonl
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[derive(Args, Debug)]

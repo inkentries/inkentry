@@ -141,17 +141,14 @@ fn add_note(
     parse_stored_id(&String::from_utf8_lossy(&out.stdout))
 }
 
-// Ids are UUIDs, so the token in `Stored [note] #<id>: <title>` runs to the
-// colon that separates it from the title.
+// The per-machine id from `memory add` output. The lead line now shows the
+// portable handle; the full row id is on its own `id:` line below it.
 fn parse_stored_id(stdout: &str) -> String {
-    let hash = stdout
-        .find('#')
-        .unwrap_or_else(|| panic!("no id marker in stored output: {stdout:?}"));
-    let rest = &stdout[hash + 1..];
-    let end = rest
-        .find(':')
-        .unwrap_or_else(|| panic!("no id terminator in stored output: {stdout:?}"));
-    let id = &rest[..end];
+    let id = stdout
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("id:"))
+        .map(str::trim)
+        .unwrap_or_else(|| panic!("no id line in stored output: {stdout:?}"));
     assert!(
         uuid::Uuid::parse_str(id).is_ok(),
         "stored id must be a UUID, got {id:?} in: {stdout:?}"

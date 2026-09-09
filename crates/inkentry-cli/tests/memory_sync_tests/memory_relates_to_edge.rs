@@ -47,7 +47,7 @@ fn memory_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
 }
 
 // Run `memory add --kind note --title <title> --body … <extra…>`; assert
-// success and return the id printed in `Stored [<kind>] #<id>: <title>`.
+// success and return the per-machine id from its output.
 fn add_note(dir: &Path, cfg: &Path, mem_db: &Path, title: &str, extra: &[&str]) -> String {
     let mut cmd = memory_cmd(dir, cfg, mem_db);
     cmd.arg("add")
@@ -70,17 +70,14 @@ fn add_note(dir: &Path, cfg: &Path, mem_db: &Path, title: &str, extra: &[&str]) 
     parse_stored_id(&stdout)
 }
 
-// Extract the id from a `Stored [note] #<id>: <title>` line. Ids are UUIDs,
-// so the token runs to the colon that separates it from the title.
+// The per-machine id from `memory add` output. The lead line now shows the
+// portable handle; the full row id is on its own `id:` line below it.
 fn parse_stored_id(stdout: &str) -> String {
-    let hash = stdout
-        .find('#')
-        .unwrap_or_else(|| panic!("no id marker in stored output: {stdout:?}"));
-    let rest = &stdout[hash + 1..];
-    let end = rest
-        .find(':')
-        .unwrap_or_else(|| panic!("no id terminator in stored output: {stdout:?}"));
-    let id = &rest[..end];
+    let id = stdout
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("id:"))
+        .map(str::trim)
+        .unwrap_or_else(|| panic!("no id line in stored output: {stdout:?}"));
     assert!(
         uuid::Uuid::parse_str(id).is_ok(),
         "stored id must be a UUID, got {id:?} in: {stdout:?}"

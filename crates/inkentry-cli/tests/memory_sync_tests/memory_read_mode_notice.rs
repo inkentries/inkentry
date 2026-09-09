@@ -57,11 +57,10 @@ fn seeded_project() -> (TempDir, PathBuf, String) {
         .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // "Stored [note] #<id>: <title>"
+    // The per-machine id is on its own `id:` line under the handle-led lead line.
     let id = stdout
-        .split('#')
-        .nth(1)
-        .and_then(|s| s.split(':').next())
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("id:"))
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| panic!("could not parse stored id from: {stdout}"));
     assert!(

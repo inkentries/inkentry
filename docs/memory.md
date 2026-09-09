@@ -868,10 +868,19 @@ add-wins) and reports it instead of erroring:
 
 ```
 $ inkentry memory add --kind decision --title "dup entry" --body "same content"
-Stored [decision] #3: dup entry
+Stored [decision] #032547a036ac: dup entry
+entity_id:  032547a036accdf2e01229961e376fc453f05fb3722afcb04facf946e6164fe5
+id:         0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33
 $ inkentry memory add --kind decision --title "dup entry" --body "same content"
-Already recorded as [decision] #3: dup entry
+Already recorded as [decision] #032547a036ac: dup entry
+entity_id:  032547a036accdf2e01229961e376fc453f05fb3722afcb04facf946e6164fe5
+id:         0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33
 ```
+
+The lead line and the `entity_id:` line show the portable id (the one that
+travels with the repo through clone and fetch); `id:` is the per-machine row id.
+`--format json` (or `jsonl`) prints the same entry as one object carrying both
+ids instead.
 
 ### Security notes
 

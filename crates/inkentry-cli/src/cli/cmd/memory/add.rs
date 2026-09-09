@@ -120,6 +120,12 @@ pub(super) async fn memory_add(
         );
     }
 
+    // The portable identity: a pure function of (kind, title, body), the same
+    // value every reader recomputes and the git-notes carrier records. Computed
+    // once here so the id `add` surfaces is the one that travels with the repo,
+    // not the per-machine row id — on every store path (sqlite / carrier / remote).
+    let entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
+
     // `memory.db` is the store of record unless `cloud_first` routes memory CRUD
     // to a server, or git notes is the primary store. Only a local row can have
     // a vector attached to it after the fact, so only there can the write go
@@ -269,7 +275,6 @@ pub(super) async fn memory_add(
         pre_init_notes || (cfg.store_in_git_notes && backend_override != Some("git-notes"));
     let mut notes_rewrite_note: Option<&str> = None;
     if write_through {
-        let new_entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
         let record = NoteRecord {
             schema_version: 1,
             id: id.as_str().parse().unwrap_or_else(|_| now_millis()),
@@ -286,7 +291,7 @@ pub(super) async fn memory_add(
             superseded_by: None,
             // Never-synced local row: no cross-machine id yet.
             remote_id: None,
-            entity_id: Some(new_entity_id.clone()),
+            entity_id: Some(entity_id.clone()),
             superseded_by_entity_id: None,
             // A `--relates-to` link starts at this entry, so it rides this
             // entry's record (ADR-086 D1).
@@ -356,7 +361,7 @@ pub(super) async fn memory_add(
                 &old_note,
                 "archived",
                 invalid_at,
-                Some(new_entity_id),
+                Some(entity_id.clone()),
             )
             .await
             {
@@ -384,16 +389,43 @@ pub(super) async fn memory_add(
         pending_embedding = embed_and_attach(cfg, mem_path, &id, &doc).await;
     }
 
-    if created {
-        println!("Stored [{kind}] #{id}: {title}", kind = args.kind);
-    } else {
-        println!(
-            "Already recorded as [{kind}] #{id}: {title}",
-            kind = args.kind
-        );
-    }
-    if let Some(line) = notes_rewrite_note {
-        println!("{line}");
+    let format = crate::utils::effective_format(&args.format);
+    match format {
+        // stdout is only the object: the human lead line and the rewrite-ref
+        // note would corrupt it, so they are dropped here (the pending-embedding
+        // warning already goes to stderr, below).
+        "json" | "jsonl" => {
+            let obj = serde_json::json!({
+                "id": &id,
+                "entity_id": entity_id,
+                "kind": args.kind,
+                "title": title,
+                "created": created,
+            });
+            if format == "jsonl" {
+                println!("{}", serde_json::to_string(&obj)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&obj)?);
+            }
+        }
+        _ => {
+            // Lead with the portable handle, the id that travels with the repo;
+            // then both identities in full, as `memory show` does.
+            let handle = crate::storage::entity_id_handle(&entity_id);
+            if created {
+                println!("Stored [{kind}] #{handle}: {title}", kind = args.kind);
+            } else {
+                println!(
+                    "Already recorded as [{kind}] #{handle}: {title}",
+                    kind = args.kind
+                );
+            }
+            println!("entity_id:  {entity_id}");
+            println!("id:         {id}");
+            if let Some(line) = notes_rewrite_note {
+                println!("{line}");
+            }
+        }
     }
     // On stderr, so a deferred vector never changes what a caller reading
     // stdout sees, and unconditionally rather than through `tracing`, which is
