@@ -34,7 +34,7 @@ tempfile    = "3"
 pretty_assertions = "1"
 serial_test = "4"
 wiremock    = "0.6"
-dirs        = "6"
+dirs        = "7"
 # tokenizers: a test/fixture dependency only — the llama.cpp engine tokenizes
 # internally from the GGUF, so nothing in the shipped path uses this crate. Kept
 # here so the crates that pull it into dev-deps stay on one version.
