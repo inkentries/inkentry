@@ -290,6 +290,16 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of entries to skip before this page, for walking a store larger\nthan one page (default: 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -1777,6 +1787,11 @@
           "limit": {
             "type": "integer",
             "description": "Maximum number of results to return (default: 20).",
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Number of entries to skip before this page, for walking a store larger\nthan one page (default: 0).",
             "minimum": 0
           }
         }

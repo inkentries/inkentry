@@ -472,29 +472,48 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(Some(note.into()))
     }
 
-    /// The team server has no route keyed on `entity_id` and no offset or
-    /// cursor on its listing, so this reads one page and reports honestly
-    /// whether that page was the whole store.
+    /// The team server pages its listing by `offset`, so a handle resolves
+    /// against the whole store rather than one page. Walk to exhaustion,
+    /// collecting every match so an ambiguous prefix is still caught when its
+    /// entries fall on different pages.
     ///
-    /// A full page back means the listing was cut off at the limit and older
-    /// entries were never read, so the result is
-    /// [`EntityIdLookup::Bounded`]: without paging there is no way to reach
-    /// them, and claiming the entry is absent would deny one that was never
-    /// looked for. A short page means the store ended inside it, so the answer
-    /// is exhaustive.
+    /// Complete, never [`EntityIdLookup::Bounded`]: the walk stops only on an
+    /// empty page, so a miss is a real absence and not an unread tail. The
+    /// server can return fewer than the page asked for (it caps a page), so the
+    /// walk advances by the count actually returned and ends on the empty page,
+    /// not on a short one.
     async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
-        let limit = crate::storage::backend::ENTITY_ID_SCAN_LIMIT;
-        let notes = self.list(None, limit, true, None).await?;
-        let saturated = notes.len() >= limit;
-        let matches = crate::storage::backend::ids_with_entity_id_prefix(notes, prefix);
-        Ok(if saturated {
-            EntityIdLookup::Bounded {
-                matches,
-                examined: limit,
+        let page = crate::storage::backend::ENTITY_ID_SCAN_LIMIT;
+        let mut matches = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let req = self.client.get(self.url("memory")).query(&[
+                ("limit", page.to_string().as_str()),
+                ("offset", offset.to_string().as_str()),
+                ("archived", "true"),
+            ]);
+            let notes: Vec<Note> = self
+                .send(req, "GET /memory")
+                .await?
+                .checked(&self.base_url)
+                .context("server returned error for GET /memory")?
+                .json::<NoteListPayload>()
+                .await
+                .context("parsing list response")?
+                .into_notes()
+                .into_iter()
+                .map(Into::into)
+                .collect();
+            let drained = notes.len();
+            if drained == 0 {
+                break;
             }
-        } else {
-            EntityIdLookup::Complete(matches)
-        })
+            offset += drained;
+            matches.extend(crate::storage::backend::ids_with_entity_id_prefix(
+                notes, prefix,
+            ));
+        }
+        Ok(EntityIdLookup::Complete(matches))
     }
 
     async fn count(&self) -> Result<i64> {

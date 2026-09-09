@@ -139,8 +139,8 @@ async fn search_sends_query_text_not_precomputed_embedding() {
 // ── CLI to peer: query parameters this server does not accept ────────────────
 //
 // Pins live drift rather than desired behaviour. `inkentry_server::handlers::
-// ListQuery` deserialises exactly three names from `GET /memory`: `kind`,
-// `limit`, `archived`. Axum's `Query` extractor ignores anything else, so the
+// ListQuery` deserialises four names from `GET /memory`: `kind`, `limit`,
+// `archived`, `offset`. Axum's `Query` extractor ignores anything else, so the
 // two parameters below are accepted by the transport, dropped by the handler,
 // and never reported to the caller.
 //
@@ -530,8 +530,8 @@ async fn a_slow_but_connected_server_is_not_reported_as_unreachable() {
 
 // ── entity id lookup ─────────────────────────────────────────────────────────
 
-// The team server's listing takes a limit but no offset or cursor, so this
-// backend reads one page and has to say whether that page was the whole store.
+// The team server's listing pages by offset, so this backend walks it to
+// exhaustion to resolve a handle, reading every page until one comes back empty.
 
 fn team_note(n: usize, title: &str) -> serde_json::Value {
     serde_json::json!({
@@ -547,12 +547,37 @@ fn team_note(n: usize, title: &str) -> serde_json::Value {
     })
 }
 
+// Serves the listing the way the team server does: honouring `offset`, and
+// capping a page far below what the client asks — as the real server caps at
+// 500 — so a handful of entries still spans several pages and a page past the
+// end is empty, which is what ends the client's walk.
+struct PagedTeamListing {
+    entries: Vec<serde_json::Value>,
+}
+
+impl wiremock::Respond for PagedTeamListing {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let q: std::collections::HashMap<String, String> =
+            request.url.query_pairs().into_owned().collect();
+        let offset: usize = q.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let page = 2;
+        let slice: Vec<_> = self
+            .entries
+            .iter()
+            .skip(offset)
+            .take(page)
+            .cloned()
+            .collect();
+        wiremock::ResponseTemplate::new(200).set_body_json(slice)
+    }
+}
+
 async fn team_backend_listing(
     count: usize,
     last_title: &str,
 ) -> (wiremock::MockServer, RemoteMemoryBackend) {
     use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer};
 
     let server = MockServer::start().await;
     let mut entries: Vec<serde_json::Value> = (0..count.saturating_sub(1))
@@ -561,7 +586,7 @@ async fn team_backend_listing(
     entries.push(team_note(count, last_title));
     Mock::given(method("GET"))
         .and(path("/v1/projects/team/memory"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(entries))
+        .respond_with(PagedTeamListing { entries })
         .mount(&server)
         .await;
 
@@ -574,35 +599,28 @@ async fn team_backend_listing(
     (server, backend)
 }
 
-// The blocking case: a listing that came back full was cut off at the limit, so
-// entries older than it were never read. Reporting "no match" as a fact would
-// deny an entry that was never looked for, and the listing is newest-first, so
-// what falls outside is exactly the oldest entries a long-lived document cites.
+// A store larger than one page is walked to the end rather than cut off, so the
+// team backend reports a complete result, never a bounded one: an absent handle
+// is a definite empty result, not the old "looked only so far" hedge.
 #[tokio::test]
-async fn a_full_page_reports_the_lookup_as_bounded_not_as_a_miss() {
-    let limit = crate::storage::backend::ENTITY_ID_SCAN_LIMIT;
-    let (_server, backend) = team_backend_listing(limit, "newest").await;
+async fn a_multi_page_store_is_walked_to_a_complete_result() {
+    let (_server, backend) = team_backend_listing(5, "newest").await;
 
-    let absent = crate::storage::entity_id("decision", "an entry this server never returned", "b");
+    let absent = crate::storage::entity_id("decision", "an entry this server never held", "b");
     let lookup = backend
         .note_ids_for_entity_id_prefix(&absent)
         .await
         .unwrap();
 
-    match lookup {
-        EntityIdLookup::Bounded { matches, examined } => {
-            assert!(matches.is_empty());
-            assert_eq!(examined, limit);
-        }
-        EntityIdLookup::Complete(_) => {
-            panic!("a saturated listing must not be reported as an exhaustive read")
-        }
-    }
+    assert_eq!(lookup, EntityIdLookup::Complete(vec![]));
 }
 
+// The target sits on the last page (the mock caps a page at 2, so five entries
+// span three), so resolving it proves the walk advanced the offset past the
+// first page instead of reading one page and stopping.
 #[tokio::test]
-async fn a_short_page_is_an_exhaustive_read() {
-    let (_server, backend) = team_backend_listing(3, "findable").await;
+async fn a_handle_on_a_later_page_resolves() {
+    let (_server, backend) = team_backend_listing(5, "findable").await;
 
     let target = crate::storage::entity_id("decision", "findable", "b");
     let lookup = backend
@@ -613,7 +631,7 @@ async fn a_short_page_is_an_exhaustive_read() {
     assert_eq!(
         lookup,
         EntityIdLookup::Complete(vec![
-            "00000003-0000-7000-8000-000000000000".parse().unwrap()
+            "00000005-0000-7000-8000-000000000000".parse().unwrap()
         ])
     );
 }

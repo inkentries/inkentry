@@ -170,6 +170,13 @@ response root is always an object here, never a bare array (ADR-076: the memory
 wire contract). Older CLIs predate this and read a bare array; see
 [version skew](../version-skew.md#the-memory-read-endpoint-envelope).
 
+The list route takes `kind`, `limit` (server-capped), `archived` and `offset`
+query parameters. `offset` skips that many entries before the page, ordered
+newest first with a stable tie-break, so a client resolving a memory handle (the
+portable `entity_id`, ADR-093) walks the whole project — `offset` in steps of
+the page it got back until a page returns empty — instead of reading only the
+most recent page.
+
 If the server has no embedder configured, it returns `400`:
 
 ```json

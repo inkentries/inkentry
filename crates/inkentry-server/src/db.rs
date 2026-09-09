@@ -668,6 +668,7 @@ impl ServerDb {
         kind_filter: Option<&str>,
         limit: usize,
         include_archived: bool,
+        offset: usize,
     ) -> Result<Vec<ServerNote>> {
         let limit = limit.min(500);
         let status_clause = if include_archived {
@@ -675,13 +676,16 @@ impl ServerDb {
         } else {
             "AND n.status = 'active'"
         };
+        // `n.id` breaks ties on `created_at` so a paged walk (LIMIT/OFFSET over
+        // successive requests) neither skips nor repeats a row when several
+        // entries share a timestamp.
         let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
             if let Some(kind) = kind_filter {
                 (
                     format!(
                         "SELECT {NOTE_COLUMNS} FROM {NOTE_SOURCE}
                      WHERE n.project_id = ?1 AND n.kind = ?2 {status_clause}
-                     ORDER BY n.created_at DESC LIMIT {limit}"
+                     ORDER BY n.created_at DESC, n.id DESC LIMIT {limit} OFFSET {offset}"
                     ),
                     vec![Box::new(project_id), Box::new(kind.to_string())],
                 )
@@ -690,7 +694,7 @@ impl ServerDb {
                     format!(
                         "SELECT {NOTE_COLUMNS} FROM {NOTE_SOURCE}
                      WHERE n.project_id = ?1 {status_clause}
-                     ORDER BY n.created_at DESC LIMIT {limit}"
+                     ORDER BY n.created_at DESC, n.id DESC LIMIT {limit} OFFSET {offset}"
                     ),
                     vec![Box::new(project_id)],
                 )
@@ -1121,7 +1125,7 @@ mod tests {
         // ALTER; it must succeed and the row must read back with remote_id NULL.
         let db = ServerDb::open(&path, 768, "test-model").expect("reopen must not fail");
         let project = db.get_project("acme/widget").expect("get").expect("exists");
-        let notes = db.list_notes(project.id, None, 10, true).expect("list");
+        let notes = db.list_notes(project.id, None, 10, true, 0).expect("list");
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].remote_id, None, "existing row defaults to NULL");
     }
@@ -1749,5 +1753,50 @@ mod tests {
             .expect("cursor query");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].source_commit.as_deref(), Some("deadbeef"));
+    }
+
+    // Paging the listing by offset covers every row exactly once, even when
+    // entries share a created_at: the id tie-break keeps the order stable across
+    // the successive LIMIT/OFFSET queries a client walk issues.
+    #[test]
+    fn list_notes_pages_by_offset_without_gaps_or_repeats() {
+        register_sqlite_vec();
+        let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
+            .expect("open in-memory server db");
+        let project = db
+            .upsert_project("acme/widget", 4, "test-model")
+            .expect("project");
+        for i in 0..5 {
+            db.add_note(
+                project.id,
+                "note",
+                &format!("t{i}"),
+                "b",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .expect("add note");
+        }
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = db
+                .list_notes(project.id, None, 2, true, offset)
+                .expect("list page");
+            if page.is_empty() {
+                break;
+            }
+            offset += page.len();
+            seen.extend(page.into_iter().map(|n| n.id));
+        }
+
+        let collected = seen.len();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(collected, 5, "the walk reads each row once, with no repeat");
+        assert_eq!(seen.len(), 5, "and it misses none");
     }
 }

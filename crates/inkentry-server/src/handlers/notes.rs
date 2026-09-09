@@ -76,6 +76,10 @@ pub struct ListQuery {
     /// Include archived entries (default: false).
     #[serde(default)]
     pub archived: bool,
+    /// Number of entries to skip before this page, for walking a store larger
+    /// than one page (default: 0).
+    #[serde(default)]
+    pub offset: usize,
 }
 fn default_limit() -> usize {
     20
@@ -314,6 +318,7 @@ pub async fn list_notes(
         params.kind.as_deref(),
         params.limit,
         params.archived,
+        params.offset,
     )?;
     let total = notes.len();
     Ok(Json(NoteListResponse {

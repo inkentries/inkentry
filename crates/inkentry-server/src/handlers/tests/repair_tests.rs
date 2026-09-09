@@ -358,7 +358,7 @@ async fn a_sweep_ignores_archived_rows() {
     {
         let db = state.db.lock().await;
         let project = db.get_project("arch").expect("project").expect("exists");
-        let listed = db.list_notes(project.id, None, 10, false).expect("list");
+        let listed = db.list_notes(project.id, None, 10, false, 0).expect("list");
         db.archive_note(project.id, &listed[0].id).expect("archive");
     }
 
@@ -431,7 +431,7 @@ async fn a_row_deleted_mid_sweep_acquires_no_orphan_vector() {
         let db = state.db.lock().await;
         let project = db.get_project("racy").expect("project").expect("exists");
         let candidates = db.notes_missing_embeddings(0, 10).expect("candidates");
-        let listed = db.list_notes(project.id, None, 10, false).expect("list");
+        let listed = db.list_notes(project.id, None, 10, false, 0).expect("list");
         (candidates[0].rowid, listed[0].id.clone(), project.id)
     };
 
@@ -946,7 +946,7 @@ async fn a_row_archived_mid_sweep_acquires_no_vector() {
     let db = state.db.lock().await;
     let project = db.get_project("archrace").expect("p").expect("exists");
     let candidates = db.notes_missing_embeddings(0, 10).expect("candidates");
-    let listed = db.list_notes(project.id, None, 10, false).expect("list");
+    let listed = db.list_notes(project.id, None, 10, false, 0).expect("list");
     db.archive_note(project.id, &listed[0].id).expect("archive");
 
     assert!(
