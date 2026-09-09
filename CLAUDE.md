@@ -279,10 +279,11 @@ server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind
                      plus resolve_llm_key (--llm-key / --llm-key-file / INKENTRY_LLM_KEY) and
                      check_llm_transport, which refuses to start when a credential would
                      travel in the clear
-embed_hub.rs       — Hugging Face Hub download path for the bundled embedder (gated by
+embed_hub/         — Hugging Face Hub download path for the bundled embedder (gated by
                      `embed-llama`); fetches the canonical llama.cpp GGUF to disk, then
                      calls inkentry-embed's `LlamaEmbedder::load_from_path`. The only place in the
-                     workspace that depends on `hf-hub`.
+                     workspace that depends on `hf-hub`. `mod.rs` is the loader (cache + device
+                     resolution); `tests.rs` its unit tests.
 
 migrations/  (crates/inkentry-server/migrations/)
   server_001.sql — projects + server memory schema
