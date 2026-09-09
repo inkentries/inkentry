@@ -211,7 +211,11 @@ async fn embed_page(state: &AppState, page: &[crate::db::VectorlessNote]) -> Pag
         .collect();
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
 
-    match crate::handlers::embed_for_storage(state, &refs).await {
+    // Repair is a background sweep, so every embed here is bulk — the per-row
+    // fallback below included, even though each of those calls carries a single
+    // text. That single-text-yet-bulk case is why lane is the caller's declared
+    // intent, not the request's size (ADR-096).
+    match crate::handlers::embed_for_storage(state, &refs, crate::EmbedLane::Bulk).await {
         Ok(crate::handlers::StorageEmbedding::Vectors(vectors)) => {
             PageOutcome::Vectors(vectors.into_iter().map(Some).collect())
         }
@@ -227,7 +231,9 @@ async fn embed_page(state: &AppState, page: &[crate::db::VectorlessNote]) -> Pag
             );
             let mut out = Vec::with_capacity(refs.len());
             for text in &refs {
-                match crate::handlers::embed_for_storage(state, &[text]).await {
+                match crate::handlers::embed_for_storage(state, &[text], crate::EmbedLane::Bulk)
+                    .await
+                {
                     Ok(crate::handlers::StorageEmbedding::Vectors(mut v)) => out.push(v.pop()),
                     Ok(crate::handlers::StorageEmbedding::Failed) => out.push(None),
                     Ok(crate::handlers::StorageEmbedding::NotReady) => {

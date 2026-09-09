@@ -2,6 +2,11 @@
 /// that crate stays storage-free); re-exported here at the historical path.
 pub use inkentry_embed::EmbeddingBackend;
 
+/// Admission lane an embed request declares (interactive vs bulk). Owned by
+/// `inkentry-embed` alongside the backend trait; re-exported here so server
+/// handlers name one lane type regardless of the `embed-llama` feature.
+pub use inkentry_embed::EmbedLane;
+
 /// Stable provenance id for the native embedding model. Single source of truth
 /// is `inkentry_embed::MODEL_ID`; re-exported here so server and CLI share it.
 pub use inkentry_embed::MODEL_ID;

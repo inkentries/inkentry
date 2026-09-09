@@ -183,10 +183,11 @@ If the server has no embedder configured, it returns `400`:
 { "error": { "code": "bad_request", "message": "This server has no embedder configured. Semantic memory search is unavailable." } }
 ```
 
-**Response `429`:** the query embed shares the bounded admission queue in front
-of the mutex-serialized embedder with `/index/embed`; once
-that queue is full the request is shed immediately rather than queued behind a
-running index, with a `Retry-After` (seconds) header:
+**Response `429`:** a memory search query is interactive, so it takes the
+reserved interactive admission lane — separate from the bulk lane an index pass
+uses, so a running index never sheds nor delays it. Only when the interactive
+lane itself is full is the request shed immediately (rather than queued), with a
+`Retry-After` (seconds) header:
 
 ```json
 { "error": "embedder busy, retry shortly", "state": "busy" }
@@ -242,13 +243,14 @@ If the server has no embedder, it returns 400:
 { "error": { "code": "bad_request", "message": "index.embed requires an embedder, but this server was built without the embedder (embed-llama feature)." } }
 ```
 
-**Response `429`:** the embedder is serialized behind a single mutex (GPU
-memory limits and the CPU thread budget both rule out running batches
-concurrently, see [Embedding CPU thread
-budget](../server-setup.md#embedding-cpu-thread-budget)), so a bounded
-admission queue sits in front of it. Once that queue is full the request is
-shed immediately with `429` and a `Retry-After` (seconds) header, instead of
-parking until the caller's own request timeout fires:
+**Response `429`:** a bounded admission gate sits in front of the embedder's
+warm-context pool, split into two lanes — a bulk lane and a reserved interactive
+lane. `/index/embed` classifies by size: a one-chunk request (a query embed
+posts as one chunk) takes the interactive lane, a larger batch the bulk lane. A
+request is shed only when *its own* lane is full, immediately with `429` and a
+`Retry-After` (seconds) header, instead of parking until the caller's own
+request timeout fires. The lanes are independent, so a running index (bulk) can
+never shed a one-chunk query:
 
 ```json
 { "error": "embedder busy, retry shortly", "state": "busy" }

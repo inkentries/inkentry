@@ -606,7 +606,7 @@ async fn a_sweep_stops_quietly_when_the_request_path_holds_every_permit() {
     };
     let held: Vec<_> = (0..crate::EMBED_QUEUE_CAPACITY)
         .map(|_| {
-            let Ok(permit) = ready.embed_admission.try_acquire() else {
+            let Ok(permit) = ready.embed_admission.try_acquire(crate::EmbedLane::Bulk) else {
                 panic!("the pool must start with every permit free");
             };
             permit
@@ -651,7 +651,7 @@ async fn a_backlog_left_by_a_saturated_request_path_still_completes() {
 
     let held: Vec<_> = (0..crate::EMBED_QUEUE_CAPACITY)
         .map(|_| {
-            let Ok(permit) = ready.embed_admission.try_acquire() else {
+            let Ok(permit) = ready.embed_admission.try_acquire(crate::EmbedLane::Bulk) else {
                 panic!("the pool must start with every permit free");
             };
             permit
@@ -713,7 +713,10 @@ async fn a_sweep_holds_no_admission_permit_once_it_returns() {
 
     for _ in 0..crate::EMBED_QUEUE_CAPACITY {
         assert!(
-            ready.embed_admission.try_acquire().is_ok(),
+            ready
+                .embed_admission
+                .try_acquire(crate::EmbedLane::Bulk)
+                .is_ok(),
             "every permit must be back in the pool after a multi-page sweep"
         );
     }

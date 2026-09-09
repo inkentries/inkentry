@@ -55,6 +55,7 @@ pub fn make_test_state(dim: usize, auth_key: Option<String>) -> inkentry_server:
         embedder: inkentry_server::EmbedderSlot::disabled(),
         embed_admission: inkentry_server::EmbedAdmission::new(
             inkentry_server::EMBED_QUEUE_CAPACITY,
+            inkentry_server::EMBED_INTERACTIVE_CAPACITY_HIGH,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,

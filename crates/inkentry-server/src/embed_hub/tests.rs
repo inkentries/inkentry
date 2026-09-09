@@ -151,7 +151,7 @@ fn embed_device_request_accepts_documented_values() {
 #[test]
 fn load_llama_from_model_dir_rejects_non_directory() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    let msg = match load_llama_from_model_dir(file.path(), DeviceRequest::Cpu, 1) {
+    let msg = match load_llama_from_model_dir(file.path(), DeviceRequest::Cpu, 1, 1) {
         Ok(_) => panic!("a non-directory --model-dir must be rejected"),
         Err(e) => format!("{e:#}"),
     };
@@ -164,7 +164,7 @@ fn load_llama_from_model_dir_rejects_non_directory() {
 #[test]
 fn load_llama_from_model_dir_missing_gguf_names_the_file_and_docs() {
     let dir = tempfile::tempdir().unwrap();
-    let msg = match load_llama_from_model_dir(dir.path(), DeviceRequest::Cpu, 1) {
+    let msg = match load_llama_from_model_dir(dir.path(), DeviceRequest::Cpu, 1, 1) {
         Ok(_) => panic!("a model dir without the GGUF must be rejected"),
         Err(e) => format!("{e:#}"),
     };
@@ -568,7 +568,7 @@ fn llama_reused_context_matches_isolated_chunks() {
     use inkentry_core::embeddings::EmbeddingBackend;
 
     let llama =
-        load_llama_from_hub(DeviceRequest::Auto, 4).expect("load llama engine (canonical GGUF)");
+        load_llama_from_hub(DeviceRequest::Auto, 4, 1).expect("load llama engine (canonical GGUF)");
 
     // Mixed lengths and scripts so a KV leak between neighbours of differing
     // size would show up.
@@ -602,6 +602,61 @@ fn llama_reused_context_matches_isolated_chunks() {
             c >= 0.9999,
             "chunk {i}: vector from the reused context drifts from the isolated decode \
                  (cos={c:.6}); the KV cache is not being cleared cleanly between chunks"
+        );
+    }
+}
+
+// The interactive and bulk lanes keep separate warm contexts, so the same text
+// embeds on a different context depending on the lane it was admitted to. That
+// routing must not perturb the vector: an interactive `search` embed and a bulk
+// index embed of the same chunk have to land in one vector space, or ranking
+// drifts by lane (ADR-096). Both lanes run the same deterministic forward pass
+// on identically shaped calls, so the vectors are expected byte-identical, not
+// merely close. Ignored by default: needs the canonical GGUF on disk and runs
+// inference.
+#[cfg(feature = "embed-llama")]
+#[test]
+#[ignore = "requires the canonical F2LLM GGUF and runs inference"]
+fn llama_interactive_and_bulk_lanes_embed_identically() {
+    use inkentry_core::embeddings::{EmbedLane, EmbeddingBackend};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    // Both lanes must be populated for the routing to differ at all: bulk gets
+    // `EMBED_QUEUE_CAPACITY` contexts, interactive one.
+    let llama =
+        load_llama_from_hub(DeviceRequest::Auto, 4, 1).expect("load llama engine (canonical GGUF)");
+
+    let texts: [&str; 5] = [
+        "title: none | text: a",
+        "title: l2_normalise | text: fn l2_normalise(v: &mut [f32]) { let norm = \
+             v.iter().map(|x| x * x).sum::<f32>().sqrt(); for x in v { *x /= norm; } }",
+        "title: none | text: SELECT id, title FROM notes WHERE archived = 0;",
+        "title: none | text: 埋め込みは起動時にバックグラウンドで読み込まれます。",
+        "title: none | text: cosine similarity between L2-normalised vectors is their dot product",
+    ];
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let never = || Arc::new(AtomicBool::new(false));
+    let interactive = rt
+        .block_on(llama.embed_lane(&texts, never(), EmbedLane::Interactive))
+        .expect("interactive-lane embed");
+    let bulk = rt
+        .block_on(llama.embed_lane(&texts, never(), EmbedLane::Bulk))
+        .expect("bulk-lane embed");
+
+    let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    for (i, (int_vec, bulk_vec)) in interactive.iter().zip(&bulk).enumerate() {
+        let c = cos(int_vec, bulk_vec);
+        assert!(
+            c >= 0.9999,
+            "chunk {i}: interactive-lane and bulk-lane vectors diverge (cos={c:.6}); \
+                 the lane an embed is admitted to must not change its vector space"
+        );
+        assert_eq!(
+            int_vec, bulk_vec,
+            "chunk {i}: interactive-lane and bulk-lane vectors are not byte-identical \
+                 (cos={c:.6}); the two lanes run the same deterministic forward pass"
         );
     }
 }

@@ -161,12 +161,14 @@ fn main() -> Result<()> {
         cfg!(feature = "llama-vulkan"),
     );
 
-    // The bench issues requests sequentially, so the default pool is plenty.
+    // The bench issues requests sequentially, so the default bulk pool plus one
+    // interactive context is plenty.
     let embedder = LlamaEmbedder::load_from_path(
         &args.gguf,
         DeviceRequest::Auto,
         None,
         DEFAULT_EMBED_POOL_SIZE,
+        1,
     )
     .context("loading LlamaEmbedder")?;
     let embedder: &dyn EmbeddingBackend = &embedder;

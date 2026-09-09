@@ -73,7 +73,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 
 fn embed_corpus() -> Vec<Vec<f32>> {
     let gguf = locate_gguf();
-    let embedder = LlamaEmbedder::load_from_path(Path::new(&gguf), DeviceRequest::Cpu, None, 1)
+    let embedder = LlamaEmbedder::load_from_path(Path::new(&gguf), DeviceRequest::Cpu, None, 1, 0)
         .expect("load the llama embedder from the canonical GGUF");
     let texts: Vec<&str> = CORPUS.to_vec();
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");

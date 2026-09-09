@@ -26,6 +26,7 @@ use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::token::LlamaToken;
 use tokio::sync::oneshot;
 
+use crate::EmbedLane;
 use crate::error::EmbedError;
 use crate::vector::l2_normalise;
 
@@ -38,26 +39,23 @@ use crate::vector::l2_normalise;
 /// than stepped down to a smaller one (see [`ensure_embed_context_fits`]).
 const EMBED_UBATCH: u32 = 8192;
 
-/// Default worker-pool size for direct callers (e.g. the `embed_bench`
-/// example). The server passes its own `pool_size` to `load_from_path` — its
-/// embed-admission capacity — so the two never drift and every admitted
-/// concurrent embed gets its own warm context, instead of an interactive embed
-/// (a search query, a `memory add`) queuing behind a bulk index batch. Each
-/// context carries its own KV and compute buffers, built lazily and dropped
-/// when idle, so a pool sized to admission only holds that many contexts under
-/// real concurrency. Independent contexts, NOT one shared behind a mutex — a
-/// shared context would serialize every embed and reintroduce the
-/// interactive-embed starvation ADR-096's admission control addresses (see the
-/// `EmbedAdmission` notes).
+/// Default bulk-lane worker count for direct callers (e.g. the `embed_bench`
+/// example). The server passes its own admission capacities to
+/// [`LlamaEmbedder::load_from_path`], so the pool and the admission gate never
+/// drift and every admitted concurrent embed finds its own warm context.
+/// Independent contexts, NOT one shared behind a mutex — a shared context would
+/// serialize every embed and reintroduce the interactive-embed starvation
+/// ADR-096 removes.
 pub const DEFAULT_EMBED_POOL_SIZE: usize = 2;
 
-/// A warm context is dropped after this long with no work, so a Metal context
-/// never sits idle long enough to lose its `MTLCompilerService` connection (a
-/// known staleness failure of long-resident contexts). During an active index,
-/// batches arrive far faster than this so the context stays hot; the first
-/// embed after a lull pays one context init to rebuild — the cost this whole
-/// change exists to stop paying *per call*.
-const CONTEXT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A bulk-lane (and non-primary interactive) context is dropped after this long
+/// with no work, so its ~5.5 GiB of reserved address space is paid only while a
+/// pass is actually running, not held between passes (ADR-096 §4 memory budget).
+/// During an active index, batches arrive far faster than this so the context
+/// stays hot for the pass. The one persistently-hot interactive context is
+/// exempt (see [`worker_idle_timeout`]): it is never idle-evicted, so the first
+/// `search`/`memory add` after any lull skips the ~2 s cold-context build.
+const CONTEXT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where the caller wants inference to run. `Auto` and `Gpu` both offload the
 /// whole model — llama.cpp itself degrades to CPU buffers when no GPU
@@ -212,58 +210,128 @@ struct Job {
     reply: oneshot::Sender<EmbedResult>,
 }
 
-/// A bounded set of worker threads, each owning one persistent `LlamaContext`,
-/// fed by per-worker channels. This is the shape context reuse takes: a
-/// `LlamaContext` borrows its `&LlamaModel`, so it cannot be stored beside the
+/// One lane's worker threads: senders to reach them, per-worker "busy" flags,
+/// and the rotation counter used once every worker is busy. A `LlamaContext`
+/// borrows its `&LlamaModel`, so it cannot be stored beside the
 /// `Arc<LlamaModel>` in a struct (self-referential) — but a worker thread can
 /// hold both on its own stack for its whole life and decode job after job
 /// against the same warm context.
 ///
-/// [`dispatch`](Self::dispatch) prefers the first idle worker, so serial
-/// indexing keeps reusing worker 0's warm context while the rest never build
-/// one; the moment a second request overlaps, it lands on the next worker's
-/// context with no wait and no shared lock.
-struct WorkerPool {
+/// [`claim_worker`] prefers the first idle worker within the lane, so serial
+/// work in a lane keeps reusing its first worker's warm context while the rest
+/// never build one; the moment a second request in the same lane overlaps, it
+/// lands on the next worker's context with no wait and no shared lock.
+struct LaneWorkers {
     senders: Vec<mpsc::Sender<Job>>,
-    /// Per-worker "has a job right now" flags, claimed by `dispatch` and
-    /// released by the worker when it goes back to waiting.
     busy: Vec<Arc<AtomicBool>>,
     round_robin: AtomicUsize,
+}
+
+/// A bounded set of worker threads split into two lanes, each worker owning one
+/// persistent `LlamaContext`. Bulk requests reach the [`bulk`](Self::bulk)
+/// lane's workers and interactive requests the [`interactive`](Self::interactive)
+/// lane's, so a bulk index batch never occupies a context an interactive embed
+/// needs (ADR-096): with the pool sized to the total admission capacity, at
+/// least `interactive.len()` contexts stay reachable for interactive work no
+/// matter how many the bulk lane holds.
+struct WorkerPool {
+    interactive: LaneWorkers,
+    bulk: LaneWorkers,
     handles: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl WorkerPool {
-    fn new(model: Arc<LlamaModel>, token_cap: usize, n_threads: i32, size: usize) -> Self {
+    fn new(
+        model: Arc<LlamaModel>,
+        token_cap: usize,
+        n_threads: i32,
+        bulk_size: usize,
+        interactive_size: usize,
+    ) -> Self {
+        // A pool with no workers at all can embed nothing, and would leave both
+        // lanes empty (see `effective_lane`). Guarantee at least one worker so at
+        // most one lane is ever empty; clamp in release, not just a debug_assert.
+        let bulk_size = if bulk_size + interactive_size == 0 {
+            1
+        } else {
+            bulk_size
+        };
+        let mut handles = Vec::with_capacity(bulk_size + interactive_size);
+        let interactive = Self::spawn_lane(
+            &model,
+            token_cap,
+            n_threads,
+            interactive_size,
+            EmbedLane::Interactive,
+            &mut handles,
+        );
+        let bulk = Self::spawn_lane(
+            &model,
+            token_cap,
+            n_threads,
+            bulk_size,
+            EmbedLane::Bulk,
+            &mut handles,
+        );
+        Self {
+            interactive,
+            bulk,
+            handles,
+        }
+    }
+
+    fn spawn_lane(
+        model: &Arc<LlamaModel>,
+        token_cap: usize,
+        n_threads: i32,
+        size: usize,
+        lane: EmbedLane,
+        handles: &mut Vec<std::thread::JoinHandle<()>>,
+    ) -> LaneWorkers {
         let mut senders = Vec::with_capacity(size);
         let mut busy = Vec::with_capacity(size);
-        let mut handles = Vec::with_capacity(size);
+        let tag = match lane {
+            EmbedLane::Interactive => "interactive",
+            EmbedLane::Bulk => "bulk",
+        };
         for i in 0..size {
             let (tx, rx) = mpsc::channel::<Job>();
             let flag = Arc::new(AtomicBool::new(false));
-            let model = Arc::clone(&model);
+            let idle_timeout = worker_idle_timeout(lane, i);
+            let model = Arc::clone(model);
             let worker_flag = Arc::clone(&flag);
             let handle = std::thread::Builder::new()
-                .name(format!("llama-embed-{i}"))
-                .spawn(move || worker_loop(model, token_cap, n_threads, &rx, &worker_flag))
+                .name(format!("llama-embed-{tag}-{i}"))
+                .spawn(move || {
+                    worker_loop(model, token_cap, n_threads, &rx, &worker_flag, idle_timeout)
+                })
                 .expect("spawning a llama embed worker thread");
             senders.push(tx);
             busy.push(flag);
             handles.push(handle);
         }
-        Self {
+        LaneWorkers {
             senders,
             busy,
             round_robin: AtomicUsize::new(0),
-            handles,
         }
     }
 
-    fn dispatch(&self, job: Job) {
-        let worker = claim_worker(&self.busy, &self.round_robin);
+    fn dispatch(&self, job: Job, lane: EmbedLane) {
+        let lane = effective_lane(
+            lane,
+            self.interactive.senders.len(),
+            self.bulk.senders.len(),
+        );
+        let workers = match lane {
+            EmbedLane::Interactive => &self.interactive,
+            EmbedLane::Bulk => &self.bulk,
+        };
+        let worker = claim_worker(&workers.busy, &workers.round_robin);
         // A closed channel means the worker exited (pool shutting down); the
         // dropped `job` drops its reply, so the awaiting caller sees a cancelled
         // oneshot and returns an error rather than hanging.
-        let _ = self.senders[worker].send(job);
+        let _ = workers.senders[worker].send(job);
     }
 }
 
@@ -272,18 +340,51 @@ impl Drop for WorkerPool {
         // Close every channel so each worker's `recv` returns `Disconnected`
         // and the loop exits, then join: a worker's context borrows the model
         // Arc it holds, so it must be torn down before this returns.
-        self.senders.clear();
+        self.interactive.senders.clear();
+        self.bulk.senders.clear();
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
     }
 }
 
-/// Pick the worker to run the next job: the first idle one (claiming it), else
-/// — with the pool sized to the server's embed-admission capacity, every worker
-/// being busy means admission is saturated (or a direct caller used a smaller
-/// pool) — the next by rotation, whose queue it joins. Pulled out of
-/// [`WorkerPool::dispatch`] so the preference is unit-testable without a model.
+/// How long a worker at `index_in_lane` in `lane` keeps a built context through
+/// idle before dropping it. `None` means never for idle — exactly one
+/// interactive context (the first worker in the interactive lane) stays
+/// permanently hot so serial interactive use never pays a cold-context build.
+/// Every other worker — bulk, and any additional interactive worker built only
+/// under concurrent interactive load — idle-drops on [`CONTEXT_IDLE_TIMEOUT`]
+/// so its reserved address space is not held between passes (ADR-096 §3/§4).
+fn worker_idle_timeout(lane: EmbedLane, index_in_lane: usize) -> Option<Duration> {
+    match lane {
+        EmbedLane::Interactive if index_in_lane == 0 => None,
+        _ => Some(CONTEXT_IDLE_TIMEOUT),
+    }
+}
+
+/// The lane to actually dispatch on. Normally the requested one, but a lane can
+/// have no workers when a direct caller sizes it to zero — a single-context
+/// embedder built with `interactive_capacity = 0`. Falling back to the other
+/// lane keeps `claim_worker`'s `% busy.len()` from dividing by zero. A pool
+/// always has at least one worker overall (guaranteed at construction), so at
+/// most one lane is ever empty.
+fn effective_lane(
+    requested: EmbedLane,
+    interactive_workers: usize,
+    bulk_workers: usize,
+) -> EmbedLane {
+    match requested {
+        EmbedLane::Interactive if interactive_workers == 0 => EmbedLane::Bulk,
+        EmbedLane::Bulk if bulk_workers == 0 => EmbedLane::Interactive,
+        other => other,
+    }
+}
+
+/// Pick the worker to run the next job within a lane: the first idle one
+/// (claiming it), else — every worker in the lane being busy means the lane's
+/// admission capacity is saturated — the next by rotation, whose queue it joins.
+/// Pulled out of [`WorkerPool::dispatch`] so the preference is unit-testable
+/// without a model.
 fn claim_worker(busy: &[Arc<AtomicBool>], round_robin: &AtomicUsize) -> usize {
     for (i, flag) in busy.iter().enumerate() {
         if flag
@@ -298,14 +399,18 @@ fn claim_worker(busy: &[Arc<AtomicBool>], round_robin: &AtomicUsize) -> usize {
 
 /// Owns one persistent context for its whole life and decodes jobs against it.
 /// The context is built lazily on the first job (so an unused worker never
-/// allocates one) and dropped after [`CONTEXT_IDLE_TIMEOUT`] of quiet or on a
-/// decode failure (which may have wedged it); either way the next job rebuilds.
+/// allocates one). It is dropped on a decode failure (which may have wedged it),
+/// and — when `idle_timeout` is `Some` — after that long with no job; a `None`
+/// timeout keeps the context resident through any idle spell (the persistently
+/// hot interactive context, ADR-096 §3). Either drop path rebuilds on the next
+/// job.
 fn worker_loop(
     model: Arc<LlamaModel>,
     token_cap: usize,
     n_threads: i32,
     rx: &mpsc::Receiver<Job>,
     busy: &AtomicBool,
+    idle_timeout: Option<Duration>,
 ) {
     let backend = match backend() {
         Ok(b) => b,
@@ -332,20 +437,22 @@ fn worker_loop(
 
     loop {
         busy.store(false, Ordering::Release);
-        let job = if ctx.is_some() {
-            match rx.recv_timeout(CONTEXT_IDLE_TIMEOUT) {
+        // Only a worker holding a context on an idle timeout waits with a
+        // deadline; a worker with no context yet, or one exempt from idle
+        // eviction, blocks until the next job (or channel close).
+        let job = match (ctx.is_some(), idle_timeout) {
+            (true, Some(timeout)) => match rx.recv_timeout(timeout) {
                 Ok(job) => job,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     ctx = None;
                     continue;
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        } else {
-            match rx.recv() {
+            },
+            _ => match rx.recv() {
                 Ok(job) => job,
                 Err(_) => break,
-            }
+            },
         };
         busy.store(true, Ordering::Release);
 
@@ -488,15 +595,17 @@ impl LlamaEmbedder {
     /// `threads` caps llama.cpp's per-context CPU threadpool; `None` uses all
     /// available parallelism.
     ///
-    /// `pool_size` is how many persistent contexts (worker threads) back the
-    /// engine. The server passes its embed-admission capacity so every admitted
-    /// concurrent embed has its own context; direct callers can pass
-    /// [`DEFAULT_EMBED_POOL_SIZE`].
+    /// `bulk_capacity` and `interactive_capacity` are how many persistent
+    /// contexts (worker threads) back each admission lane. The server passes its
+    /// two embed-admission capacities so every admitted concurrent embed has its
+    /// own context on its own lane (ADR-096); direct callers can pass
+    /// [`DEFAULT_EMBED_POOL_SIZE`] for bulk and `1` for interactive.
     pub fn load_from_path(
         gguf_path: &Path,
         device: DeviceRequest,
         threads: Option<usize>,
-        pool_size: usize,
+        bulk_capacity: usize,
+        interactive_capacity: usize,
     ) -> Result<Self> {
         anyhow::ensure!(
             gguf_path.exists(),
@@ -556,10 +665,17 @@ impl LlamaEmbedder {
 
         tracing::info!(
             "F2LLM-v2-330M ready (dim={dim}, Q8_0, engine=llama, device={device_name}); \
-             token cap {token_cap}, {pool_size} warm context(s)"
+             token cap {token_cap}, {bulk_capacity} bulk + {interactive_capacity} interactive \
+             warm context(s)"
         );
 
-        let pool = WorkerPool::new(Arc::new(model), token_cap as usize, n_threads, pool_size);
+        let pool = WorkerPool::new(
+            Arc::new(model),
+            token_cap as usize,
+            n_threads,
+            bulk_capacity,
+            interactive_capacity,
+        );
 
         Ok(Self {
             pool,
@@ -608,28 +724,39 @@ impl crate::EmbeddingBackend for LlamaEmbedder {
             .await
     }
 
-    /// Embed a batch of strings via llama.cpp, stopping early if `cancel` is
-    /// observed set.
+    /// Delegates to [`Self::embed_lane`] on the bulk lane: a caller with no lane
+    /// of its own (the bench, a direct library consumer) is background work by
+    /// default, never a person waiting.
+    async fn embed_with_cancel(
+        &self,
+        texts: &[&str],
+        cancel: Arc<AtomicBool>,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.embed_lane(texts, cancel, EmbedLane::Bulk).await
+    }
+
+    /// Embed a batch of strings via llama.cpp on the declared `lane`, stopping
+    /// early if `cancel` is observed set.
     ///
-    /// The request is handed to a [`WorkerPool`] worker that owns a persistent
-    /// context: each chunk is tokenized with llama.cpp's own tokenizer
-    /// (byte-identical to the HF tokenizer for this model, verified including
-    /// the appended EOS), truncated to the token cap, then decoded one chunk
-    /// per forward pass with last-token pooling and the KV cache cleared
+    /// The request is handed to a [`WorkerPool`] worker on `lane` that owns a
+    /// persistent context: each chunk is tokenized with llama.cpp's own
+    /// tokenizer (byte-identical to the HF tokenizer for this model, verified
+    /// including the appended EOS), truncated to the token cap, then decoded one
+    /// chunk per forward pass with last-token pooling and the KV cache cleared
     /// between chunks; the pooled vector is L2-normalised. The context is
     /// *reused* across calls, so a serial index no longer rebuilds (and rewarms)
     /// a Metal context per request — the churn that starved GPU utilization.
     ///
     /// `cancel` is checked before starting and between chunks, bounding waste to
     /// one chunk's forward pass, and `completed`/`total` count chunks. There is
-    /// no interior mutex: workers are independent, so a bulk index batch on one
-    /// context never blocks a concurrent interactive embed, which runs on
-    /// another — the property the per-request-context design had, kept while
-    /// dropping the per-request context churn.
-    async fn embed_with_cancel(
+    /// no interior mutex: workers are independent, and the interactive lane's
+    /// contexts are separate from the bulk lane's, so a bulk index batch never
+    /// blocks a concurrent interactive embed (ADR-096).
+    async fn embed_lane(
         &self,
         texts: &[&str],
         cancel: Arc<AtomicBool>,
+        lane: EmbedLane,
     ) -> anyhow::Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -640,7 +767,7 @@ impl crate::EmbeddingBackend for LlamaEmbedder {
             cancel,
             reply,
         };
-        self.pool.dispatch(job);
+        self.pool.dispatch(job, lane);
         reply_rx.await.unwrap_or_else(|_| {
             Err(anyhow::anyhow!(
                 "llama embed worker dropped the reply channel"
@@ -708,6 +835,31 @@ mod tests {
     }
 
     #[test]
+    fn exactly_one_interactive_context_is_persistently_hot() {
+        // The first interactive worker never idle-drops its context, so serial
+        // interactive use always lands on a warm one; every other worker —
+        // additional interactive workers and all bulk workers — idle-drops so
+        // its reserved address space is not held between passes.
+        assert_eq!(worker_idle_timeout(EmbedLane::Interactive, 0), None);
+        assert_eq!(
+            worker_idle_timeout(EmbedLane::Interactive, 1),
+            Some(CONTEXT_IDLE_TIMEOUT)
+        );
+        assert_eq!(
+            worker_idle_timeout(EmbedLane::Interactive, 2),
+            Some(CONTEXT_IDLE_TIMEOUT)
+        );
+        assert_eq!(
+            worker_idle_timeout(EmbedLane::Bulk, 0),
+            Some(CONTEXT_IDLE_TIMEOUT)
+        );
+        assert_eq!(
+            worker_idle_timeout(EmbedLane::Bulk, 1),
+            Some(CONTEXT_IDLE_TIMEOUT)
+        );
+    }
+
+    #[test]
     fn claim_worker_rotates_when_every_worker_is_busy() {
         // Past the pool size (bounded by the server's embed admission), work is
         // handed out by rotation; no worker's busy flag is disturbed.
@@ -716,6 +868,23 @@ mod tests {
         assert_eq!(claim_worker(&busy, &rr), 0);
         assert_eq!(claim_worker(&busy, &rr), 1);
         assert_eq!(claim_worker(&busy, &rr), 0);
+    }
+
+    #[test]
+    fn dispatch_falls_back_to_a_populated_lane_when_the_requested_one_is_empty() {
+        assert_eq!(
+            effective_lane(EmbedLane::Interactive, 0, 1),
+            EmbedLane::Bulk
+        ); // single-context embedder: interactive lane sized to zero
+        assert_eq!(
+            effective_lane(EmbedLane::Bulk, 1, 0),
+            EmbedLane::Interactive
+        );
+        assert_eq!(
+            effective_lane(EmbedLane::Interactive, 3, 4),
+            EmbedLane::Interactive
+        );
+        assert_eq!(effective_lane(EmbedLane::Bulk, 3, 4), EmbedLane::Bulk);
     }
 
     #[test]
@@ -743,6 +912,7 @@ mod tests {
             DeviceRequest::Cpu,
             None,
             DEFAULT_EMBED_POOL_SIZE,
+            1,
         ) {
             Ok(_) => panic!("load of a nonexistent GGUF must fail"),
             Err(e) => e,

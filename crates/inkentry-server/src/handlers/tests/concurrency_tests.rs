@@ -3,7 +3,8 @@ use std::sync::Arc;
 use serde_json::json;
 
 use super::support::{
-    MockEmbedder, spawn_test_server_with_embed, spawn_test_server_with_embed_and_admission,
+    MockEmbedder, make_state_with_slot, spawn_test_server_with_embed,
+    spawn_test_server_with_embed_and_admission,
 };
 
 // ── Embed cancellation on client disconnect / server timeout ─────────────
@@ -738,14 +739,15 @@ async fn concurrency_limit_layer_queues_requests_beyond_the_cap() {
     );
 }
 
-// ── Embed admission control (429 on queue saturation) ────────────────────
+// ── Embed admission control (429 on lane saturation) ─────────────────────
 //
-// The embedder itself is mutex-serialized (one call at a time) by design
-// (GPU memory / CPU thread-budget reasons in `inkentry-embed`); these tests
-// cover the layer in FRONT of it: `EmbedAdmission`: which bounds how
-// many callers may hold a slot waiting their turn before the server sheds
-// load with 429 instead of letting a request queue silently past its own
-// timeout.
+// Embeds run on a warm-context pool with no shared lock, split into two
+// admission lanes (ADR-096): a bulk lane and a reserved interactive lane. These
+// tests cover the gate in front of it: `EmbedAdmission`, which bounds each lane
+// independently and sheds a full lane with 429 rather than letting a request
+// queue silently past its own timeout. The interactive lane is additional
+// depth, so a saturated bulk index pass never sheds nor delays an interactive
+// `search`/`memory add`.
 
 // An embedder that signals `started` the instant it is invoked, then
 // blocks until `release` fires: lets a test hold the only admission
@@ -770,12 +772,121 @@ impl inkentry_core::embeddings::EmbeddingBackend for GatedEmbedder {
     }
 }
 
-// **T1:** with the admission queue's only slot held by an in-flight
-// request, a second `/index/embed` call must be shed immediately with
-// `429` + the configured `Retry-After`: not queue behind the first and
-// wait. Once the first request is released, it must still complete
-// normally: admission control sheds excess load, it does not break the
-// request that WAS within budget.
+// Records the lane every embed is issued on, and blocks calls on any lane in
+// `blocked` until `gate` grants a permit — enough to hold an admission slot open
+// on a chosen lane while proving the other lane still admits. `embed_lane` is
+// the method every server route now calls, so overriding it is what lets a test
+// observe the lane a route declared.
+struct LaneGatedEmbedder {
+    dim: usize,
+    observed: Arc<std::sync::Mutex<Vec<crate::EmbedLane>>>,
+    blocked: Vec<crate::EmbedLane>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    gate: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl inkentry_core::embeddings::EmbeddingBackend for LaneGatedEmbedder {
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.embed_lane(
+            texts,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            crate::EmbedLane::Bulk,
+        )
+        .await
+    }
+
+    async fn embed_lane(
+        &self,
+        texts: &[&str],
+        _cancel: Arc<std::sync::atomic::AtomicBool>,
+        lane: crate::EmbedLane,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.observed
+            .lock()
+            .expect("observed lane mutex")
+            .push(lane);
+        if self.blocked.contains(&lane) {
+            self.in_flight
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // `forget` so each `add_permits(n)` releases exactly n holders.
+            self.gate.acquire().await.expect("gate closed").forget();
+        }
+        Ok(vec![vec![0.0_f32; self.dim]; texts.len()])
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+}
+
+// Poll until at least `n` embed calls are blocked in-flight, so a test asserts
+// saturation only once the holders genuinely hold their slots.
+async fn wait_for_in_flight(counter: &std::sync::atomic::AtomicUsize, n: usize) {
+    for _ in 0..1000 {
+        if counter.load(std::sync::atomic::Ordering::SeqCst) >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!(
+        "only {} of {n} embed calls became in-flight",
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+// Records the lane of every embed, and fails any multi-text call by returning
+// one fewer vector than asked. The storage embed helper treats that count
+// mismatch as a failure, which drives the repair sweep into its per-row
+// fallback; a single text is answered normally.
+struct RepairLaneProbeEmbedder {
+    dim: usize,
+    observed: Arc<std::sync::Mutex<Vec<crate::EmbedLane>>>,
+}
+
+#[async_trait::async_trait]
+impl inkentry_core::embeddings::EmbeddingBackend for RepairLaneProbeEmbedder {
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.embed_lane(
+            texts,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            crate::EmbedLane::Bulk,
+        )
+        .await
+    }
+
+    async fn embed_lane(
+        &self,
+        texts: &[&str],
+        _cancel: Arc<std::sync::atomic::AtomicBool>,
+        lane: crate::EmbedLane,
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.observed
+            .lock()
+            .expect("observed lane mutex")
+            .push(lane);
+        // One short on a multi-text call: the input↔output mapping is unknown,
+        // so the storage helper returns Failed and the sweep falls back to one
+        // text at a time.
+        let produced = if texts.len() > 1 {
+            texts.len() - 1
+        } else {
+            texts.len()
+        };
+        Ok(vec![vec![0.5_f32; self.dim]; produced])
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+}
+
+// **T1:** two one-chunk `/index/embed` calls both take the interactive lane;
+// with its only slot held by an in-flight request, the second must be shed
+// immediately with `429` + the configured `Retry-After`, not queue behind the
+// first and wait. Once the first is released, it must still complete normally:
+// admission control sheds excess load, it does not break the request that WAS
+// within budget.
 #[tokio::test]
 async fn index_embed_returns_429_with_retry_after_once_admission_queue_is_saturated() {
     let started = Arc::new(tokio::sync::Notify::new());
@@ -789,7 +900,7 @@ async fn index_embed_returns_429_with_retry_after_once_admission_queue_is_satura
         embedder,
         std::time::Duration::from_secs(60),
         std::time::Duration::from_secs(60),
-        crate::EmbedAdmission::new(1, 3),
+        crate::EmbedAdmission::new(1, 1, 3),
     )
     .await;
 
@@ -853,7 +964,7 @@ async fn index_embed_succeeds_normally_when_within_admission_capacity() {
         embedder,
         std::time::Duration::from_secs(60),
         std::time::Duration::from_secs(60),
-        crate::EmbedAdmission::new(2, 3),
+        crate::EmbedAdmission::new(2, 2, 3),
     )
     .await;
 
@@ -883,41 +994,53 @@ async fn index_embed_succeeds_normally_when_within_admission_capacity() {
 // saturated embedder, which does not error quickly, it just makes the
 // caller wait.
 
-// With the admission queue's only slot held by an in-flight embed, a
-// memory write that needs a server-side vector must be shed with `429` +
-// `Retry-After` rather than joining the wait.
+// Both memory write paths embed server-side when the client sends no vector,
+// and each is shed with `429` + `Retry-After` when *its* lane is saturated:
+// `add_note` on the interactive lane, a batch push on the bulk lane. Two
+// holders, one per lane, take both single slots so each write hits a full lane
+// and is shed before any embed.
 #[tokio::test]
-async fn memory_writes_return_429_once_the_admission_queue_is_saturated() {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
-    let embedder = crate::EmbedderSlot::ready(Arc::new(GatedEmbedder {
+async fn memory_writes_return_429_once_their_admission_lane_is_saturated() {
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let embedder = crate::EmbedderSlot::ready(Arc::new(LaneGatedEmbedder {
         dim: 4,
-        started: Arc::clone(&started),
-        release: Arc::clone(&release),
+        observed: Arc::clone(&observed),
+        blocked: vec![crate::EmbedLane::Interactive, crate::EmbedLane::Bulk],
+        in_flight: Arc::clone(&in_flight),
+        gate: Arc::clone(&gate),
     }));
-    // A short *general* budget (the embed budget stays long, so the holder
-    // survives): shedding happens before any embed, so a correct run never
-    // approaches it, while a regression that queues instead of shedding fails
-    // in seconds rather than out-waiting a long timeout.
     let (base, _db) = spawn_test_server_with_embed_and_admission(
         embedder,
-        std::time::Duration::from_secs(2),
         std::time::Duration::from_secs(60),
-        crate::EmbedAdmission::new(1, 3),
+        std::time::Duration::from_secs(60),
+        crate::EmbedAdmission::new(1, 1, 3),
     )
     .await;
 
-    let holder_base = base.clone();
-    let holder = tokio::spawn(async move {
+    // Interactive holder: a one-chunk index embed takes the single interactive slot.
+    let ib = base.clone();
+    let interactive_holder = tokio::spawn(async move {
         reqwest::Client::new()
-            .post(format!(
-                "{holder_base}/v1/projects/timeout-test/index/embed"
-            ))
+            .post(format!("{ib}/v1/projects/timeout-test/index/embed"))
             .json(&json!({"chunks": [{"chunk_id": "1", "content": "fn f() {}"}]}))
             .send()
             .await
     });
-    started.notified().await;
+    // Bulk holder: a two-chunk index embed takes the single bulk slot.
+    let bb = base.clone();
+    let bulk_holder = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!("{bb}/v1/projects/timeout-test/index/embed"))
+            .json(&json!({"chunks": [
+                {"chunk_id": "1", "content": "fn a() {}"},
+                {"chunk_id": "2", "content": "fn b() {}"},
+            ]}))
+            .send()
+            .await
+    });
+    wait_for_in_flight(&in_flight, 2).await;
 
     let client = reqwest::Client::new();
     let note = client
@@ -925,12 +1048,11 @@ async fn memory_writes_return_429_once_the_admission_queue_is_saturated() {
         .json(&json!({"kind": "note", "title": "shed me", "body": "no client vector"}))
         .send()
         .await
-        .expect("a saturated queue must respond immediately, not hang");
+        .expect("a saturated lane must respond immediately, not hang");
     assert_eq!(
         note.status().as_u16(),
         429,
-        "add_note needs a server-side embed here, so it must be shed like any \
-         other embed-consuming route"
+        "add_note is interactive, so a full interactive lane must shed it"
     );
     assert_eq!(
         note.headers()
@@ -948,11 +1070,11 @@ async fn memory_writes_return_429_once_the_admission_queue_is_saturated() {
         ]}))
         .send()
         .await
-        .expect("a saturated queue must respond immediately, not hang");
+        .expect("a saturated lane must respond immediately, not hang");
     assert_eq!(
         batch.status().as_u16(),
         429,
-        "the batch push embeds server-side too and must be shed on the same terms"
+        "a batch push is bulk, so a full bulk lane must shed it"
     );
     assert_eq!(
         batch
@@ -964,12 +1086,18 @@ async fn memory_writes_return_429_once_the_admission_queue_is_saturated() {
         "3",
     );
 
-    release.notify_one();
-    let holder_resp = holder
-        .await
-        .expect("holder task panicked")
-        .expect("the admitted request must still complete once released");
-    assert_eq!(holder_resp.status().as_u16(), 200);
+    gate.add_permits(2);
+    for (label, holder) in [("interactive", interactive_holder), ("bulk", bulk_holder)] {
+        let resp = holder
+            .await
+            .expect("holder task panicked")
+            .expect("holder request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "the {label} holder must still complete once released"
+        );
+    }
 }
 
 // A client-supplied vector needs no embedder, so it must not be shed by a
@@ -988,7 +1116,7 @@ async fn a_memory_write_carrying_its_own_vector_is_not_shed_by_a_saturated_queue
         embedder,
         std::time::Duration::from_secs(60),
         std::time::Duration::from_secs(60),
-        crate::EmbedAdmission::new(1, 3),
+        crate::EmbedAdmission::new(1, 1, 3),
     )
     .await;
 
@@ -1081,4 +1209,248 @@ async fn add_note_under_saturated_embedder_is_cancelled_not_degraded() {
     // `release` any more. Fire it anyway so a future refactor that makes
     // this not-cancelled can't turn this test into a silent hang.
     release.notify_one();
+}
+
+// ── Reserved interactive lane (ADR-096) ───────────────────────────────────
+
+// The core invariant: an interactive embed runs at once from the reserved lane
+// while the bulk lane is fully saturated, and a multi-chunk embed is still shed
+// exactly as before — never admitted from the interactive lane.
+#[tokio::test]
+async fn an_interactive_embed_is_admitted_while_the_bulk_lane_is_saturated() {
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let embedder = crate::EmbedderSlot::ready(Arc::new(LaneGatedEmbedder {
+        dim: 4,
+        observed: Arc::clone(&observed),
+        blocked: vec![crate::EmbedLane::Bulk],
+        in_flight: Arc::clone(&in_flight),
+        gate: Arc::clone(&gate),
+    }));
+    let (base, _db) = spawn_test_server_with_embed_and_admission(
+        embedder,
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(60),
+        crate::EmbedAdmission::new(1, 1, 3),
+    )
+    .await;
+
+    // Bulk holder: a two-chunk index embed takes and holds the single bulk slot.
+    let bb = base.clone();
+    let bulk_holder = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!("{bb}/v1/projects/timeout-test/index/embed"))
+            .json(&json!({"chunks": [
+                {"chunk_id": "1", "content": "fn a() {}"},
+                {"chunk_id": "2", "content": "fn b() {}"},
+            ]}))
+            .send()
+            .await
+    });
+    wait_for_in_flight(&in_flight, 1).await;
+
+    let client = reqwest::Client::new();
+    // A one-chunk (interactive) embed runs at once from the reserved lane.
+    let interactive = client
+        .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+        .json(&json!({"chunks": [{"chunk_id": "q", "content": "fn f() {}"}]}))
+        .send()
+        .await
+        .expect("interactive embed must not hang behind the bulk lane");
+    assert_eq!(
+        interactive.status().as_u16(),
+        200,
+        "a one-chunk embed must be admitted from the reserved interactive lane even while the \
+         bulk lane is full"
+    );
+
+    // A second multi-chunk embed is shed exactly as before: the bulk lane is full.
+    let bulk_shed = client
+        .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+        .json(&json!({"chunks": [
+            {"chunk_id": "3", "content": "fn c() {}"},
+            {"chunk_id": "4", "content": "fn d() {}"},
+        ]}))
+        .send()
+        .await
+        .expect("a saturated bulk lane must respond immediately, not hang");
+    assert_eq!(
+        bulk_shed.status().as_u16(),
+        429,
+        "a multi-chunk embed is bulk and must still be shed when the bulk lane is full, never \
+         admitted from the interactive lane"
+    );
+
+    gate.add_permits(1);
+    let held = bulk_holder
+        .await
+        .expect("holder task panicked")
+        .expect("holder request failed");
+    assert_eq!(held.status().as_u16(), 200);
+}
+
+// Each internal caller declares its own lane, and `/index/embed` classifies by
+// size. This pins the exact classification: intent, not size, distinguishes a
+// person waiting from a background sweep.
+#[tokio::test]
+async fn each_internal_caller_declares_its_admission_lane() {
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let embedder = crate::EmbedderSlot::ready(Arc::new(LaneGatedEmbedder {
+        dim: 4,
+        observed: Arc::clone(&observed),
+        blocked: vec![],
+        in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        gate: Arc::new(tokio::sync::Semaphore::new(0)),
+    }));
+    let (base, _db) = spawn_test_server_with_embed_and_admission(
+        embedder,
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(60),
+        crate::EmbedAdmission::new(4, 3, 3),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let last_lane = || {
+        observed
+            .lock()
+            .expect("observed lane mutex")
+            .last()
+            .copied()
+    };
+
+    client
+        .post(format!("{base}/v1/projects/timeout-test/memory"))
+        .json(&json!({"kind": "note", "title": "t", "body": "b"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        last_lane(),
+        Some(crate::EmbedLane::Interactive),
+        "add_note is interactive"
+    );
+
+    client
+        .post(format!("{base}/v1/projects/timeout-test/memory/search"))
+        .json(&json!({"query": "q"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        last_lane(),
+        Some(crate::EmbedLane::Interactive),
+        "memory search is interactive"
+    );
+
+    client
+        .post(format!("{base}/v1/projects/timeout-test/search"))
+        .json(&json!({"query": "q"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        last_lane(),
+        Some(crate::EmbedLane::Interactive),
+        "code search is interactive"
+    );
+
+    client
+        .post(format!("{base}/v1/projects/timeout-test/memory/batch"))
+        .json(&json!({"entries": [{"kind": "note", "title": "t", "external_id": "ext-cls-1"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        last_lane(),
+        Some(crate::EmbedLane::Bulk),
+        "a batch push is bulk"
+    );
+
+    client
+        .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+        .json(&json!({"chunks": [{"chunk_id": "1", "content": "fn f() {}"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        last_lane(),
+        Some(crate::EmbedLane::Interactive),
+        "a one-chunk index embed is interactive"
+    );
+
+    client
+        .post(format!("{base}/v1/projects/timeout-test/index/embed"))
+        .json(&json!({"chunks": [
+            {"chunk_id": "1", "content": "fn a() {}"},
+            {"chunk_id": "2", "content": "fn b() {}"},
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        last_lane(),
+        Some(crate::EmbedLane::Bulk),
+        "a multi-chunk index embed is bulk"
+    );
+}
+
+// The repair sweep's per-row fallback carries a single text per call yet stays
+// bulk — the case that rules out classifying by size alone. Force the fallback
+// (a batched call that fails) and prove every embed, batched and per-row, ran
+// on the bulk lane.
+#[tokio::test]
+async fn the_repair_per_row_fallback_embeds_on_the_bulk_lane() {
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    // Store three vectorless rows while no embedder is ready.
+    let loading = make_state_with_slot(4, crate::EmbedderSlot::loading());
+    {
+        let db = loading.db.lock().await;
+        let model = db.embedding_model.clone();
+        let project = db
+            .upsert_project("repair-lane", 0, &model)
+            .expect("create project");
+        for i in 0..3 {
+            db.add_note(
+                project.id,
+                "note",
+                &format!("t{i}"),
+                "b",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .expect("insert vectorless row");
+        }
+    }
+    // Swap in an embedder that fails the batched call (forcing the per-row
+    // fallback) but answers a single text, recording the lane of every call.
+    let ready = crate::AppState {
+        embedder: crate::EmbedderSlot::ready(Arc::new(RepairLaneProbeEmbedder {
+            dim: 4,
+            observed: Arc::clone(&observed),
+        })),
+        ..loading.clone()
+    };
+
+    let stats = crate::repair::repair_missing_embeddings(&ready, 8)
+        .await
+        .expect("sweep");
+    assert_eq!(
+        stats.repaired, 3,
+        "the per-row fallback must repair all three rows"
+    );
+
+    let lanes = observed.lock().expect("observed lane mutex").clone();
+    assert!(
+        lanes.len() >= 4,
+        "one batched attempt plus a per-row call for each of three rows: {lanes:?}"
+    );
+    assert!(
+        lanes.iter().all(|l| *l == crate::EmbedLane::Bulk),
+        "every repair embed — the batched attempt and every per-row fallback — must be on the \
+         bulk lane: {lanes:?}"
+    );
 }

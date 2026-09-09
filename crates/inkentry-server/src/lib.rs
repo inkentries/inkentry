@@ -32,6 +32,10 @@ use auth::{AuthError, AuthProvider};
 use db::ServerDb;
 use rate_limiter::RateLimiter;
 
+/// The admission lane a request declares. Re-exported at the crate root so
+/// handlers and the admission gate name one lane type.
+pub use inkentry_core::embeddings::EmbedLane;
+
 /// Wall-clock budget for a single request before the server aborts it with
 /// `408`. `/memory/stream` (SSE) and `/index/embed` (see
 /// [`EMBED_REQUEST_TIMEOUT`]) are exempt.
@@ -61,49 +65,91 @@ const DEFAULT_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 /// including the `/memory/stream` SSE poll loop.
 const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 
-/// Bound on how many embed requests may be admitted (in-flight + queued
-/// waiting on the embedder) before the server sheds load with `429` instead
-/// of letting a request join an unbounded wait.
+/// Bulk-lane admission bound: how many bulk embed requests (an index pass, a
+/// memory batch push, the vectorless-repair sweep) may be in flight before the
+/// server sheds load with `429` instead of joining an unbounded wait.
 ///
-/// This also sizes the llama engine's warm-context pool
-/// (`LlamaEmbedder::load_from_path`'s `pool_size`), so every admitted caller
-/// gets its own context and an interactive `search`/`memory search` never
-/// queues behind a bulk index batch. A handful is enough for the normal case
-/// (one big index batch plus a couple of interactive queries) without letting
-/// a slow index turn every other request into a silent hang.
+/// The interactive lane ([`EMBED_INTERACTIVE_CAPACITY_LOW`] /
+/// [`EMBED_INTERACTIVE_CAPACITY_HIGH`]) is *additional* depth, not a division of
+/// this, so no caller admitted before the reserved lane existed is shed after it
+/// (ADR-096). The two capacities together size the llama engine's warm-context
+/// pool, so every admitted caller finds its own context on its own lane.
 pub const EMBED_QUEUE_CAPACITY: usize = 4;
 
-/// `Retry-After` (seconds) sent with a `429` when the embed admission queue is
+/// Interactive-lane capacity on a host with less than
+/// [`EMBED_INTERACTIVE_MEMORY_THRESHOLD_BYTES`] of available memory. One warm
+/// interactive context stays permanently resident; each context reserves ~5.5 GiB
+/// of address space, so a small machine holds the high-water to
+/// `EMBED_QUEUE_CAPACITY + 1` (ADR-096 §4).
+pub const EMBED_INTERACTIVE_CAPACITY_LOW: usize = 1;
+
+/// Interactive-lane capacity at or above [`EMBED_INTERACTIVE_MEMORY_THRESHOLD_BYTES`].
+/// Additional interactive contexts past the one persistently-hot one are built
+/// on demand only under concurrent interactive load and idle-drop after use, so
+/// the resting cost stays one context while a machine with headroom can absorb a
+/// burst of simultaneous interactive embeds without any queuing behind bulk work.
+pub const EMBED_INTERACTIVE_CAPACITY_HIGH: usize = 3;
+
+/// Available-memory boundary that selects the interactive-lane capacity: below
+/// it [`EMBED_INTERACTIVE_CAPACITY_LOW`], at or above it
+/// [`EMBED_INTERACTIVE_CAPACITY_HIGH`] (ADR-096 §4). 8 GiB, the point past which
+/// the pool's reserved address space stops driving a small host into swap.
+pub const EMBED_INTERACTIVE_MEMORY_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Resolve the interactive-lane capacity from the host's available memory. Pure
+/// and total-ordering on the one threshold so the gate is unit-testable without
+/// reading the machine; the binary reads available memory once at load and calls
+/// this. An unknown reading (0) resolves to the conservative low capacity.
+pub fn interactive_capacity_for_available_memory(available_bytes: u64) -> usize {
+    if available_bytes >= EMBED_INTERACTIVE_MEMORY_THRESHOLD_BYTES {
+        EMBED_INTERACTIVE_CAPACITY_HIGH
+    } else {
+        EMBED_INTERACTIVE_CAPACITY_LOW
+    }
+}
+
+/// `Retry-After` (seconds) sent with a `429` when an embed admission lane is
 /// full. Matches the `Retry-After: 5` already used for `EmbedderWarmingUp`'s
 /// transient case, so CLI clients have one retry cadence to reason about
 /// regardless of which transient embed condition they hit.
 pub const EMBED_BUSY_RETRY_AFTER_SECS: u64 = 5;
 
 /// A permit held for the duration of one embed request. Dropping it (end of
-/// the holding handler's scope) returns the slot to the queue.
+/// the holding handler's scope) returns the slot to its lane.
 pub struct EmbedPermit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
 
-/// Bounded admission control in front of the shared, mutex-serialized
-/// embedder. See [`EMBED_QUEUE_CAPACITY`].
+/// Bounded admission control in front of the warm-context embedder pool, split
+/// into two lanes: a bulk lane of [`EMBED_QUEUE_CAPACITY`] slots and a reserved
+/// interactive lane. A request tries only its own lane's slots, so a saturated
+/// index pass can never shed or delay an interactive `search`/`memory add`
+/// (ADR-096). See [`EmbedLane`].
 #[derive(Clone)]
 pub struct EmbedAdmission {
-    semaphore: Arc<tokio::sync::Semaphore>,
+    bulk: Arc<tokio::sync::Semaphore>,
+    interactive: Arc<tokio::sync::Semaphore>,
     retry_after_secs: u64,
 }
 
 impl EmbedAdmission {
-    pub fn new(capacity: usize, retry_after_secs: u64) -> Self {
+    pub fn new(bulk_capacity: usize, interactive_capacity: usize, retry_after_secs: u64) -> Self {
         Self {
-            semaphore: Arc::new(tokio::sync::Semaphore::new(capacity)),
+            bulk: Arc::new(tokio::sync::Semaphore::new(bulk_capacity)),
+            interactive: Arc::new(tokio::sync::Semaphore::new(interactive_capacity)),
             retry_after_secs,
         }
     }
 
-    /// Take a slot if one is free; otherwise `Err(AppError::EmbedderBusy)`
-    /// with this admission gate's configured `Retry-After`. Never waits: a
-    /// full queue is shed immediately, not joined.
-    pub fn try_acquire(&self) -> Result<EmbedPermit, AppError> {
-        match Arc::clone(&self.semaphore).try_acquire_owned() {
+    /// Take a slot in `lane` if one is free; otherwise `Err(AppError::EmbedderBusy)`
+    /// with this gate's configured `Retry-After`. Never waits, and never falls
+    /// back to the other lane: a full lane is shed immediately, so an
+    /// interactive request is never parked behind bulk work nor a bulk request
+    /// admitted into interactive capacity.
+    pub fn try_acquire(&self, lane: EmbedLane) -> Result<EmbedPermit, AppError> {
+        let semaphore = match lane {
+            EmbedLane::Interactive => &self.interactive,
+            EmbedLane::Bulk => &self.bulk,
+        };
+        match Arc::clone(semaphore).try_acquire_owned() {
             Ok(permit) => Ok(EmbedPermit(permit)),
             Err(_) => Err(AppError::EmbedderBusy {
                 retry_after_secs: self.retry_after_secs,
@@ -114,7 +160,7 @@ impl EmbedAdmission {
 
 #[cfg(test)]
 mod embed_admission_tests {
-    use super::{AppError, EmbedAdmission};
+    use super::{AppError, EmbedAdmission, EmbedLane};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -122,24 +168,24 @@ mod embed_admission_tests {
     /// 429, and the permit can be held and dropped like any resource guard.
     #[test]
     fn admits_requests_within_capacity() {
-        let admission = EmbedAdmission::new(2, 5);
-        let p1 = admission.try_acquire();
+        let admission = EmbedAdmission::new(2, 2, 5);
+        let p1 = admission.try_acquire(EmbedLane::Bulk);
         assert!(p1.is_ok(), "first of 2 must be admitted");
-        let p2 = admission.try_acquire();
+        let p2 = admission.try_acquire(EmbedLane::Bulk);
         assert!(p2.is_ok(), "second of 2 must be admitted");
     }
 
-    /// Once every slot is held, the next acquire is shed immediately with
-    /// `429` + the configured `Retry-After` — never blocks waiting for a
-    /// slot to free up: an unbounded wait is exactly the failure mode
-    /// being fixed.
+    /// Once every slot in a lane is held, the next acquire on that lane is shed
+    /// immediately with `429` + the configured `Retry-After` — never blocks
+    /// waiting for a slot to free up: an unbounded wait is exactly the failure
+    /// mode being fixed.
     #[test]
     fn sheds_with_busy_error_once_capacity_is_exhausted() {
-        let admission = EmbedAdmission::new(1, 9);
-        let Ok(_permit) = admission.try_acquire() else {
+        let admission = EmbedAdmission::new(1, 1, 9);
+        let Ok(_permit) = admission.try_acquire(EmbedLane::Bulk) else {
             panic!("the only slot is free");
         };
-        let second = admission.try_acquire();
+        let second = admission.try_acquire(EmbedLane::Bulk);
         assert!(
             matches!(
                 second,
@@ -152,15 +198,35 @@ mod embed_admission_tests {
         );
     }
 
-    /// Dropping a held permit returns its slot to the pool immediately — the
-    /// mechanism that lets a drained embed queue recover without a restart.
+    /// The reserved interactive lane is additional depth, not a division of the
+    /// bulk lane: a fully saturated bulk lane must not shed or delay an
+    /// interactive acquire, and vice versa. This is the core admission
+    /// invariant of ADR-096.
+    #[test]
+    fn a_saturated_bulk_lane_does_not_shed_an_interactive_request() {
+        let admission = EmbedAdmission::new(1, 1, 5);
+        let Ok(_bulk) = admission.try_acquire(EmbedLane::Bulk) else {
+            panic!("the only bulk slot is free");
+        };
+        assert!(
+            admission.try_acquire(EmbedLane::Bulk).is_err(),
+            "the bulk lane is now saturated"
+        );
+        assert!(
+            admission.try_acquire(EmbedLane::Interactive).is_ok(),
+            "an interactive request must still be admitted while the bulk lane is full"
+        );
+    }
+
+    /// Dropping a held permit returns its slot to its lane immediately — the
+    /// mechanism that lets a drained embed lane recover without a restart.
     #[test]
     fn dropping_a_permit_frees_its_slot() {
-        let admission = EmbedAdmission::new(1, 5);
-        let permit = admission.try_acquire();
+        let admission = EmbedAdmission::new(1, 1, 5);
+        let permit = admission.try_acquire(EmbedLane::Bulk);
         assert!(permit.is_ok(), "the only slot is free");
         drop(permit);
-        let reacquired = admission.try_acquire();
+        let reacquired = admission.try_acquire(EmbedLane::Bulk);
         assert!(
             reacquired.is_ok(),
             "the slot must be available again once the prior permit dropped"
@@ -172,15 +238,15 @@ mod embed_admission_tests {
     /// runs during unwind like any other destructor, and a panicking tokio
     /// task is caught at the task boundary (converted to a `JoinError`) not
     /// escalated to the process, so this is the realistic failure shape.
-    /// Without this, one panic would permanently shrink the effective queue
+    /// Without this, one panic would permanently shrink the effective lane
     /// capacity by one slot until a server restart.
     #[tokio::test]
     async fn a_panic_while_holding_a_permit_still_frees_its_slot() {
-        let admission = EmbedAdmission::new(1, 5);
+        let admission = EmbedAdmission::new(1, 1, 5);
 
         let admission_clone = admission.clone();
         let handle = tokio::spawn(async move {
-            let Ok(_permit) = admission_clone.try_acquire() else {
+            let Ok(_permit) = admission_clone.try_acquire(EmbedLane::Bulk) else {
                 panic!("the only slot is free");
             };
             panic!("simulated panic mid-embed, permit still held on this stack frame");
@@ -191,7 +257,7 @@ mod embed_admission_tests {
             "the spawned task must have panicked (sanity check on the test itself)"
         );
 
-        let reacquired = admission.try_acquire();
+        let reacquired = admission.try_acquire(EmbedLane::Bulk);
         assert!(
             reacquired.is_ok(),
             "a panic while holding a permit must not leak the slot: the next acquire must \
@@ -200,7 +266,7 @@ mod embed_admission_tests {
     }
 
     /// Boundary case under real concurrent load: fire exactly
-    /// `EMBED_QUEUE_CAPACITY` (production value) simultaneous holders plus
+    /// `EMBED_QUEUE_CAPACITY` (production value) simultaneous bulk holders plus
     /// one more, all racing to acquire at once via a barrier (not
     /// sequenced start-then-fire like the HTTP-level saturation test), and
     /// prove exactly the capacity's worth are admitted and exactly one is
@@ -209,7 +275,11 @@ mod embed_admission_tests {
     async fn exactly_capacity_admitted_and_the_next_one_shed_under_true_concurrency() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let admission = EmbedAdmission::new(super::EMBED_QUEUE_CAPACITY, 5);
+        let admission = EmbedAdmission::new(
+            super::EMBED_QUEUE_CAPACITY,
+            super::EMBED_INTERACTIVE_CAPACITY_LOW,
+            5,
+        );
         let attempts = super::EMBED_QUEUE_CAPACITY + 1;
         let barrier = Arc::new(tokio::sync::Barrier::new(attempts));
         let admitted = Arc::new(AtomicUsize::new(0));
@@ -227,7 +297,7 @@ mod embed_admission_tests {
                 // the runtime can make them, instead of one reliably winning
                 // by virtue of being spawned/polled first.
                 barrier.wait().await;
-                match admission.try_acquire() {
+                match admission.try_acquire(EmbedLane::Bulk) {
                     Ok(permit) => {
                         admitted.fetch_add(1, Ordering::SeqCst);
                         // Hold the permit past the point every task has had a
@@ -988,9 +1058,9 @@ pub enum AppError {
         terminal: bool,
         detail: String,
     },
-    /// The bounded embed admission queue ([`EmbedAdmission`]) is full: `429`
-    /// with `Retry-After`, so a client sheds load explicitly instead of
-    /// joining an unbounded wait behind the mutex-serialized embedder.
+    /// The embed admission lane ([`EmbedAdmission`]) a request tried is full:
+    /// `429` with `Retry-After`, so a client sheds load explicitly instead of
+    /// joining an unbounded wait for a warm context.
     EmbedderBusy {
         retry_after_secs: u64,
     },

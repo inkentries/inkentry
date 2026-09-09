@@ -74,7 +74,7 @@
           "index"
         ],
         "summary": "Generate embeddings for code chunks. The server encodes each chunk and returns the\nvectors. **The server does not store the vectors**: the CLI is the only persistent\nstore for index data.",
-        "description": "Returns 400 if no embedder is configured.\nReturns 413 if the batch exceeds 256 chunks.\nReturns 429 (with `Retry-After`) if the embed admission queue is full.",
+        "description": "Returns 400 if no embedder is configured.\nReturns 413 if the batch exceeds 256 chunks.\nReturns 429 (with `Retry-After`) if the request's admission lane is full (a\none-chunk request uses the reserved interactive lane, a larger batch the bulk lane).",
         "operationId": "index_embed",
         "parameters": [
           {
@@ -135,7 +135,7 @@
             }
           },
           "429": {
-            "description": "Embed admission queue full; retry after the given delay",
+            "description": "Embed admission lane full; retry after the given delay. A one-chunk request uses the reserved interactive lane, a larger batch the bulk lane.",
             "content": {
               "application/json": {
                 "schema": {
@@ -345,7 +345,7 @@
           "memory"
         ],
         "summary": "Add a memory entry to a project. The project is auto-created on first write.",
-        "description": "The `vector` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN). A `vector` must\narrive with its `vector_model` and `vector_precision`, or it is refused.\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.\nReturns **429** (with `Retry-After`) when the entry needs server-side\nembedding and the embed admission queue is full.",
+        "description": "The `vector` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN). A `vector` must\narrive with its `vector_model` and `vector_precision`, or it is refused.\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.\nReturns **429** (with `Retry-After`) when the entry needs server-side\nembedding and the interactive embed admission lane is full.",
         "operationId": "add_note",
         "parameters": [
           {
@@ -413,7 +413,7 @@
             "description": "Entry rejected: prompt injection detected"
           },
           "429": {
-            "description": "Embed admission queue full; retry after the given delay",
+            "description": "Interactive embed admission lane full; retry after the given delay",
             "content": {
               "application/json": {
                 "schema": {
@@ -436,7 +436,7 @@
           "memory"
         ],
         "summary": "Batch-create memory entries. Idempotent on `external_id`: a live note\nalready carrying the given `external_id` is skipped, not duplicated.",
-        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `inkentry plumbing push`\nand `inkentry sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written. A batch needing\nserver-side embedding is shed with **429** when the embed admission queue is\nfull, on the same terms as every other embed-consuming route.",
+        "description": "Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`\n(the same client cloud-api's `/memory/batch` serves); `inkentry plumbing push`\nand `inkentry sync` target this route on an OSS team server exactly as they\ndo against cloud-api. Always returns **207** with a per-entry result list;\na request-level validation failure (oversized batch, a title/body over the\nconfigured caps, or an injection match) rejects the whole batch (4xx/422)\nwith nothing stored, before any entry is written. A batch needing\nserver-side embedding is bulk work, shed with **429** when the bulk embed\nadmission lane is full, on the same terms as every other bulk embed route.",
         "operationId": "push_memory_batch",
         "parameters": [
           {
@@ -494,7 +494,7 @@
             "description": "Entry rejected: prompt injection detected"
           },
           "429": {
-            "description": "Embed admission queue full; retry after the given delay",
+            "description": "Bulk embed admission lane full; retry after the given delay",
             "content": {
               "application/json": {
                 "schema": {
@@ -639,7 +639,7 @@
             }
           },
           "429": {
-            "description": "Embed admission queue full; retry after the given delay",
+            "description": "Interactive embed admission lane full; retry after the given delay",
             "content": {
               "application/json": {
                 "schema": {
@@ -1159,7 +1159,7 @@
             }
           },
           "429": {
-            "description": "Embed admission queue full; retry after the given delay",
+            "description": "Interactive embed admission lane full; retry after the given delay",
             "content": {
               "application/json": {
                 "schema": {

@@ -71,7 +71,7 @@ pub struct CodeSearchResponse {
         (status = 200, description = "Query vector (CLI runs KNN locally)", body = CodeSearchResponse),
         (status = 400, description = "No embedder configured or invalid mode", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
-        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
+        (status = 429, description = "Interactive embed admission lane full; retry after the given delay", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
     tag = "search"
@@ -106,12 +106,13 @@ pub async fn project_search(
          without the embedder (embed-llama feature); use mode=text.",
     )?;
 
-    // Admission control: a query embed sharing the mutex-serialized
-    // embedder with a running `/index/embed` batch must not queue
-    // silently behind it until the client's own timeout fires (the observed
-    // symptom: `search` reporting "no results" against a live-but-busy
-    // server). Shed with 429 instead once the bounded queue is full.
-    let _admission = state.embed_admission.try_acquire()?;
+    // A code search query is interactive: it takes the reserved lane, so it is
+    // never shed nor left waiting behind a running bulk `/index/embed` batch
+    // (ADR-096). A full interactive lane still sheds with 429 rather than
+    // queuing silently past the client's own timeout.
+    let _admission = state
+        .embed_admission
+        .try_acquire(crate::EmbedLane::Interactive)?;
 
     // F2LLM-v2-330M query prefix: instruction + query. Documents are embedded
     // without a prefix; queries must use this format for correct retrieval.
@@ -119,8 +120,13 @@ pub async fn project_search(
         "Instruct: Given a code search query, retrieve the relevant code snippets\nQuery: {}",
         body.query
     );
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let vecs = embedder
-        .embed(&[query_text.as_str()])
+        .embed_lane(
+            &[query_text.as_str()],
+            cancel,
+            crate::EmbedLane::Interactive,
+        )
         .await
         .map_err(AppError::Internal)?;
     let query_vector = vecs

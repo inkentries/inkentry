@@ -289,6 +289,7 @@ async fn explicit_git_notes_backend_pre_init_never_creates_a_phantom_memory_db()
         embedder: inkentry_server::EmbedderSlot::disabled(),
         embed_admission: inkentry_server::EmbedAdmission::new(
             inkentry_server::EMBED_QUEUE_CAPACITY,
+            inkentry_server::EMBED_INTERACTIVE_CAPACITY_HIGH,
             inkentry_server::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,

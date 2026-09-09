@@ -47,15 +47,15 @@ pub struct EmbedResponse {
 }
 
 /// Observability guard for an in-flight `/index/embed` call (GH#631 /
-/// GH#631). Created armed right before the `embed_with_cancel` await and
+/// GH#631). Created armed right before the `embed_lane` await and
 /// disarmed right after it returns. If the surrounding handler future is
 /// dropped while still armed  -  client disconnect or the router's
 /// `TimeoutLayer` firing a 408, both of which drop the handler future rather
 /// than running it to completion  -  `Drop` fires instead: it flips the shared
-/// cancellation flag (which `embed_with_cancel` polls from inside its detached
-/// `spawn_blocking` task, the only way to reach in there) and logs the
-/// abandonment, since today the server otherwise cannot distinguish a slow
-/// client from a gone one.
+/// cancellation flag (which the pool worker running `embed_lane`'s forward
+/// passes checks between chunks, the only way to reach into that running work)
+/// and logs the abandonment, since today the server otherwise cannot
+/// distinguish a slow client from a gone one.
 pub(crate) struct EmbedAbandonGuard {
     pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) armed: bool,
@@ -87,7 +87,8 @@ impl Drop for EmbedAbandonGuard {
 ///
 /// Returns 400 if no embedder is configured.
 /// Returns 413 if the batch exceeds 256 chunks.
-/// Returns 429 (with `Retry-After`) if the embed admission queue is full.
+/// Returns 429 (with `Retry-After`) if the request's admission lane is full (a
+/// one-chunk request uses the reserved interactive lane, a larger batch the bulk lane).
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/index/embed",
@@ -99,7 +100,7 @@ impl Drop for EmbedAbandonGuard {
         (status = 200, description = "Embedding vectors as raw little-endian f32 bytes, row-major [n_chunks x dim] in request order (not stored server-side)", content_type = "application/octet-stream"),
         (status = 400, description = "No embedder configured", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
-        (status = 429, description = "Embed admission queue full; retry after the given delay", body = ErrorBody),
+        (status = 429, description = "Embed admission lane full; retry after the given delay. A one-chunk request uses the reserved interactive lane, a larger batch the bulk lane.", body = ErrorBody),
         (status = 413, description = "Batch exceeds 256 chunks", body = ErrorBody),
     ),
     security(("bearer_auth" = [])),
@@ -137,13 +138,23 @@ pub async fn index_embed(
         return Ok(octet_stream(Vec::new()));
     }
 
-    // Admission control: the embedder is mutex-serialized and processes
-    // one request at a time, so a saturated index run must not
-    // let this request join an unbounded wait behind it. Shed with `429`
-    // immediately if the bounded queue is already full, rather than parking
-    // as another blocking-pool thread on the mutex. Held for the whole embed
-    // call so the permit only frees up once this request's turn is done.
-    let _admission = state.embed_admission.try_acquire()?;
+    // The wire carries no intent, so a one-chunk request is the interactive
+    // lane: a single chunk cannot hold a context long enough to matter, so a
+    // bulk client whose calibration batch is one chunk lands there at no cost,
+    // while a query embed (posted as one chunk) gets the reserved lane it needs
+    // (ADR-096). Anything larger is bulk.
+    let lane = if body.chunks.len() == 1 {
+        crate::EmbedLane::Interactive
+    } else {
+        crate::EmbedLane::Bulk
+    };
+
+    // Admission control on that lane: a full lane is shed immediately with
+    // `429` rather than joining an unbounded wait, and the two lanes are
+    // independent, so a saturated index pass never sheds a one-chunk query.
+    // Held for the whole embed call so the slot only frees once this request's
+    // turn is done.
+    let _admission = state.embed_admission.try_acquire(lane)?;
 
     // Collect texts, preserving order for reassembly.
     let texts: Vec<&str> = body.chunks.iter().map(|c| c.content.as_str()).collect();
@@ -151,10 +162,11 @@ pub async fn index_embed(
     // Cancellation seam (GH#631): if this handler's future is
     // dropped mid-embed  -  client disconnect or the router's `TimeoutLayer`
     // firing a 408  -  `cancel_guard` drops while still armed and flips
-    // `cancel_flag`, which `embed_with_cancel` polls from inside its detached
-    // `spawn_blocking` task (a plain `.await` drop does not otherwise reach in
-    // there). Disarmed once the embed call returns on its own, so an ordinary
-    // completed request (success or a real embed error) never logs abandonment.
+    // `cancel_flag`, which the pool worker running `embed_lane`'s forward passes
+    // checks between chunks (a plain `.await` drop does not otherwise reach into
+    // that running work). Disarmed once the embed call returns on its own, so
+    // an ordinary completed request (success or a real embed error) never logs
+    // abandonment.
     let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut cancel_guard = EmbedAbandonGuard {
         cancel: Arc::clone(&cancel_flag),
@@ -163,7 +175,7 @@ pub async fn index_embed(
         batch_size: body.chunks.len(),
         started: std::time::Instant::now(),
     };
-    let embed_result = embedder.embed_with_cancel(&texts, cancel_flag).await;
+    let embed_result = embedder.embed_lane(&texts, cancel_flag, lane).await;
     cancel_guard.armed = false;
     let vectors = embed_result.map_err(AppError::Internal)?;
 

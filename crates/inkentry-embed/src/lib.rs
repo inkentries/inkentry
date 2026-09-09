@@ -15,7 +15,7 @@
 //! Face Hub acquisition path (`embed_hub` module) and constructs the embedder.
 
 mod backend;
-pub use backend::EmbeddingBackend;
+pub use backend::{EmbedLane, EmbeddingBackend};
 
 /// Stable provenance id for the native embedding model, `<repo-shortname>@<dim>`.
 /// Exact-match token: never parse it. Requantization or a hardware-portability

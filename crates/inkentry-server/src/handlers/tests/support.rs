@@ -43,6 +43,7 @@ pub(super) fn make_app(conflict_threshold: f32) -> (axum::Router, i32) {
         embedder: crate::EmbedderSlot::disabled(),
         embed_admission: crate::EmbedAdmission::new(
             crate::EMBED_QUEUE_CAPACITY,
+            crate::EMBED_INTERACTIVE_CAPACITY_HIGH,
             crate::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,
@@ -126,6 +127,7 @@ pub(super) fn make_state_with_slot(dim: usize, embedder: crate::EmbedderSlot) ->
         embedder,
         embed_admission: crate::EmbedAdmission::new(
             crate::EMBED_QUEUE_CAPACITY,
+            crate::EMBED_INTERACTIVE_CAPACITY_HIGH,
             crate::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,
@@ -255,6 +257,7 @@ pub(super) fn make_app_with_llm_limit_and_proxies(
         embedder: crate::EmbedderSlot::disabled(),
         embed_admission: crate::EmbedAdmission::new(
             crate::EMBED_QUEUE_CAPACITY,
+            crate::EMBED_INTERACTIVE_CAPACITY_HIGH,
             crate::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,
@@ -326,6 +329,7 @@ pub(super) fn make_app_with_auth_key(key: Option<&str>) -> axum::Router {
         embedder: crate::EmbedderSlot::disabled(),
         embed_admission: crate::EmbedAdmission::new(
             crate::EMBED_QUEUE_CAPACITY,
+            crate::EMBED_INTERACTIVE_CAPACITY_HIGH,
             crate::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,
@@ -424,6 +428,7 @@ pub(super) async fn spawn_test_server(
         embedder: crate::EmbedderSlot::disabled(),
         embed_admission: crate::EmbedAdmission::new(
             crate::EMBED_QUEUE_CAPACITY,
+            crate::EMBED_INTERACTIVE_CAPACITY_HIGH,
             crate::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
         embed_threads: 4,
@@ -471,6 +476,7 @@ pub(super) async fn spawn_test_server_with_embed(
         embed_request_timeout,
         crate::EmbedAdmission::new(
             crate::EMBED_QUEUE_CAPACITY,
+            crate::EMBED_INTERACTIVE_CAPACITY_HIGH,
             crate::EMBED_BUSY_RETRY_AFTER_SECS,
         ),
     )

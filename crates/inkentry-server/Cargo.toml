@@ -63,6 +63,11 @@ constant_time_eq = "0.6"
 # embed-llama: the budget is resolved before the runtime starts regardless of
 # feature set. Pinned here since no other crate uses it directly.
 num_cpus = "1"
+# Available system memory for the reserved interactive embed lane's capacity
+# gate (main.rs, ADR-096 §4). `system` is the only feature needed; the rest of
+# sysinfo (disks, networks, components) stays out. Pinned here since no other
+# crate uses it.
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # Hugging Face Hub acquisition path for the bundled embedder (`embed_hub`
 # module) — the only place in the workspace that depends on `hf-hub`. Gated
 # behind `embed-llama` so a build without that feature carries none of this.

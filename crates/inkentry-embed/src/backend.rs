@@ -3,6 +3,21 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 
+/// Which admission lane an embed request runs on.
+///
+/// A person waiting on a `search` or `memory add` embed is `Interactive`; a
+/// background index pass, a memory batch push, or the vectorless-repair sweep is
+/// `Bulk`. The two lanes have separate admission slots and separate warm
+/// contexts, so an interactive embed is never shed nor left waiting behind a
+/// bulk index batch (ADR-096). The distinction is the caller's intent, not the
+/// request's size: the repair worker's per-row fallback carries a single text
+/// yet stays `Bulk`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedLane {
+    Interactive,
+    Bulk,
+}
+
 /// Trait every embedding backend must implement.
 ///
 /// Owned here (not in `inkentry-core`) so this crate stays storage-free: a
@@ -29,6 +44,23 @@ pub trait EmbeddingBackend: Send + Sync {
     ) -> Result<Vec<Vec<f32>>> {
         let _ = cancel;
         self.embed(texts).await
+    }
+
+    /// Embed a batch on a declared admission [`EmbedLane`], checking `cancel`
+    /// cooperatively. The default ignores the lane and delegates to
+    /// [`Self::embed_with_cancel`]: correct for any backend with no lane
+    /// structure of its own (an external HTTP shim, a test double). The one
+    /// backend that routes by lane is [`LlamaEmbedder`](crate::LlamaEmbedder),
+    /// which keeps a warm context reserved for each lane so an interactive embed
+    /// runs at once rather than waiting on a bulk decode (ADR-096).
+    async fn embed_lane(
+        &self,
+        texts: &[&str],
+        cancel: Arc<AtomicBool>,
+        lane: EmbedLane,
+    ) -> Result<Vec<Vec<f32>>> {
+        let _ = lane;
+        self.embed_with_cancel(texts, cancel).await
     }
 
     /// Dimensionality of the output vectors.
