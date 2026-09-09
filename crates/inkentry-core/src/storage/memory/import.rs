@@ -208,6 +208,43 @@ impl MemoryStore {
         Ok(outcome)
     }
 
+    /// Apply supersede edges that arrived as `(OLD/subject entity_id,
+    /// NEW/successor entity_id)` pairs — the shape the git-notes carrier records
+    /// on each superseded entry's `superseded_by_entity_id`, one per pair.
+    ///
+    /// The row is written `from = successor, to = subject`, the direction the
+    /// writer records a supersede in (`add_note_superseding`/`supersede`), so a
+    /// clone reconstructs the same row the writer holds. Supersede stays out of
+    /// the carrier's `relates_to`/`contradicts` edge list, so
+    /// [`import_carried_edges`] never sees it; this is its dedicated projection.
+    /// Same rules otherwise: both endpoints resolve through `entity_id`, an
+    /// absent endpoint is counted unresolved rather than failing the batch, and
+    /// `import_edge`'s `INSERT OR IGNORE` makes a re-run add nothing.
+    pub fn import_supersede_edges(&self, pairs: &[(String, String)]) -> Result<CarriedEdgeImport> {
+        let mut outcome = CarriedEdgeImport::default();
+        for (old_entity_id, new_entity_id) in pairs {
+            let (Some(from), Some(to)) = (
+                self.note_id_for_entity_id(new_entity_id)?,
+                self.note_id_for_entity_id(old_entity_id)?,
+            ) else {
+                outcome.unresolved += 1;
+                continue;
+            };
+            // A supersede pair whose two entries share identical text collapses
+            // to one entity; the self-edge that would leave is a cycle, not a
+            // chain — the same guard `add_note_superseding` applies.
+            if from == to {
+                continue;
+            }
+            if self.import_edge(&from, &to, "supersedes", None)? {
+                outcome.applied += 1;
+            } else {
+                outcome.already_present += 1;
+            }
+        }
+        Ok(outcome)
+    }
+
     /// The id of the entry already holding `entity_id`, if any. Lets an import
     /// recognise an entry it has already seen without depending on the uuid,
     /// which a second dump of the same store may not have carried.

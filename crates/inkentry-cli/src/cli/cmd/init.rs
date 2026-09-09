@@ -297,7 +297,11 @@ fn git_notes_import_line(outcome: &GitNotesImport) -> Option<String> {
              a later import resolves them)"
         )
     };
-    match (outcome.imported, outcome.edges_unresolved) {
+    // A skipped supersede edge reads to a user exactly like a skipped
+    // relates_to/contradicts one — a link on the ref whose endpoint is not here
+    // yet — so it is folded into the same count rather than announced apart.
+    let unresolved = outcome.edges_unresolved + outcome.supersede_edges_unresolved;
+    match (outcome.imported, unresolved) {
         (0, 0) => None,
         (0, u) => Some(skipped(u)),
         (n, 0) => Some(format!(
@@ -549,6 +553,7 @@ mod git_notes_import_line_tests {
             imported: 3,
             edges_applied: 2,
             edges_unresolved: 0,
+            ..Default::default()
         };
         let line = git_notes_import_line(&entries_only).expect("entries must be reported");
         // Spelled out in one piece, with no line continuation of its own: the
@@ -564,6 +569,7 @@ mod git_notes_import_line_tests {
             imported: 0,
             edges_applied: 0,
             edges_unresolved: 1,
+            ..Default::default()
         };
         let line = git_notes_import_line(&edges_only).expect("a skipped edge must be reported");
         assert!(line.starts_with("1 edge skipped"), "{line}");
@@ -572,6 +578,7 @@ mod git_notes_import_line_tests {
             imported: 2,
             edges_applied: 1,
             edges_unresolved: 2,
+            ..Default::default()
         };
         let line = git_notes_import_line(&both).expect("both halves must be reported");
         assert!(line.contains("imported 2 entries"), "{line}");
@@ -582,6 +589,27 @@ mod git_notes_import_line_tests {
         for rendered in line.lines().map(|l| l.trim_start()) {
             assert!(!rendered.contains("  "), "doubled space in {rendered:?}");
         }
+    }
+
+    // A dangling supersede (its successor not on the ref yet) is a skipped edge
+    // to a user like any other, and both kinds of skip add into one count.
+    #[test]
+    fn a_skipped_supersede_edge_is_counted_with_the_rest() {
+        let supersede_only = GitNotesImport {
+            supersede_edges_unresolved: 1,
+            ..Default::default()
+        };
+        let line = git_notes_import_line(&supersede_only)
+            .expect("a skipped supersede edge must be reported");
+        assert!(line.starts_with("1 edge skipped"), "{line}");
+
+        let mixed = GitNotesImport {
+            edges_unresolved: 1,
+            supersede_edges_unresolved: 1,
+            ..Default::default()
+        };
+        let line = git_notes_import_line(&mixed).expect("mixed skips reported");
+        assert!(line.starts_with("2 edges skipped"), "{line}");
     }
 }
 
