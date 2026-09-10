@@ -66,7 +66,9 @@ Cargo.toml                    — workspace root; [workspace.dependencies] for s
 crates/
   inkentry-core/               — library: storage, indexer, embeddings, LLM, search, config, registry
   inkentry-cli/                — `inkentry` binary; depends on inkentry-core
-  inkentry-embed/              — library: F2LLM-v2-330M embedder (llama.cpp); depends on inkentry-core
+  inkentry-embed/              — library: F2LLM-v2-330M embedder (llama.cpp); owns the
+                                 EmbeddingBackend trait. A leaf crate — inkentry-core
+                                 depends on it, not the other way round
   inkentry-server/             — `inkentry-server` binary + lib; depends on inkentry-core + inkentry-embed
 ```
 
@@ -100,6 +102,10 @@ utils/
   mod.rs         — strip_ansi(), misc helpers
   dates.rs       — date parsing helpers
 registry.rs      — global project registry (~/.config/inkentry/registry.db)
+reachability.rs  — remembers that a connect to an origin just failed, so the several
+                   subsystems one command points at the same absent server do not each
+                   spend a full connect timeout rediscovering it. This is what makes a
+                   cloud_first command against an unreachable server fail in seconds
 
 conventions/
   mod.rs         — ConventionRecord type; re-exports ConventionExtractor
@@ -144,12 +150,23 @@ storage/
   specs.rs       — spec record CRUD
   stats.rs       — aggregate statistics queries
   note_record.rs — NoteRecord struct (memory entry)
+  entity_id.rs   — entity_id: the content-addressed identity a memory entry carries
+                   across the local store, refs/notes/inkentry and a server. A pure
+                   function of (kind, title, body), so two machines recording the
+                   same decision land on the same id (ADR-068; the handle users
+                   quote is a prefix of it, ADR-093)
   git_notes/
     mod.rs         — GitNotesBackend struct + helpers; append_to_git_notes free function
     backend_impl.rs — MemoryBackend trait impl for GitNotesBackend
+    fold.rs        — collapses the per-machine copies of one entity that the
+                     append-only notes ref accumulates into a single entry;
+                     the fold rules converge under any merge order (ADR-068)
   memory/
     mod.rs       — NoteStore: memory entries CRUD + list_filtered
     edges.rs     — memory relationship edges CRUD
+    import.rs    — writes entries and carried edges that arrived from a portable
+                   dump, keeping their identity, creation time and provenance
+                   verbatim rather than minting new ones
     notes.rs     — note insert/fetch/delete
     search.rs    — memory FTS + semantic search
     tests.rs     — integration tests for NoteStore
@@ -176,6 +193,10 @@ migrations/  (crates/inkentry-core/migrations/)
 
 ```
 main.rs          — entry point: parse CLI, dispatch to commands
+notice.rs        — the one sink for informational stderr notices (enotice!), and the
+                   single place `search --quiet` is honoured. Errors and the
+                   multi-user server warning deliberately do not route through it,
+                   so `--quiet` can never hide either
 capability/      — Tier 0/1 capability detection (server reachable probe, cached per-process)
   mod.rs         — module doc + re-exports
   state.rs       — Capabilities / EmbedderState / ServerLimits: data parsed from `/v1/health`
@@ -201,6 +222,15 @@ cli/
     auth.rs      — `inkentry auth set-key/list-servers` handlers (ADR-071); `--llm` stores
                    the LLM endpoint credential. `remove-key` removes any stored
                    credential: one origin, all of them, or the LLM key (ADR-090)
+    auth_api.rs  — HTTP client for the WorkOS device-authorization grant. The CLI
+                   talks to WorkOS directly as a public client (client_id, no
+                   secret); auth no longer proxies through cloud-api
+    login.rs     — `inkentry login`: runs the device grant and persists the session
+    logout.rs    — `inkentry logout`: clears every cached org session, or one with
+                   `--org`. Never removes self-hosted server keys as a side effect
+                   (ADR-071 D3) — that is `inkentry auth remove-key`
+    org.rs       — `inkentry org list/switch`: re-scopes the session to another
+                   cached organisation without a new device login
     context.rs   — `inkentry context` handler (agent session entry point)
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all
@@ -214,6 +244,7 @@ cli/
     init.rs      — `inkentry init` handler
     link.rs      — `inkentry link/unlink/autoclean` handlers
     links.rs     — `inkentry links` handler
+    import.rs    — `inkentry import` handler (portable dump; see docs/dump-format.md)
     misc.rs      — `inkentry chunks` / `inkentry languages` handlers
     search.rs    — `inkentry search` handler (unified code+memory, RRF fusion, corpus filters)
     server.rs    — `inkentry server start/stop/status/logs` daemon management
@@ -221,9 +252,20 @@ cli/
     ui.rs        — TUI helpers (private)
     index/
       mod.rs         — `inkentry index` entry point
+      background_log.rs — the lifecycle lines the detached continuation child writes
+                        to index-background.log: a start line with the pid, throttled
+                        batch progress, and a finish line or the reason it stopped
+                        early. Plain text with a UTC timestamp, never colour, since
+                        that stderr is a file
+      continuation.rs — detached-child spawn and run-lock handoff: the shared argv
+                        for the two re-exec'd children, and the check that a spawned
+                        child really became the run lock's new holder
       embed_phase.rs — embedding phase of indexing
       mentions.rs    — mention stopword filter used during indexing
       parse_phase.rs — parse/chunk phase of indexing
+      phases.rs      — pre-embed (PageRank, summaries) and post-embed (tier-3 MMR,
+                        conventions) phase runners, shared by the foreground path and
+                        both continuation children, plus the embedder-readiness wait
       summaries.rs   — composes each chunk's structural summary during index (offline)
       worktree.rs    — git worktree handling for index
     memory/
@@ -239,7 +281,14 @@ cli/
       corpus.rs       — memory-corpus retrieval for unified search (the folded-in
                         former `memory search`: hybrid/FTS + expand-graph + cross-project)
       list.rs         — memory list subcommand
+      outbox.rs       — entries saved before their search vector arrived; `memory
+                        reindex` and the next `sync` drain it
       reconcile.rs    — memory reconcile subcommand (import from server.db)
+      resolve.rs      — resolves the token a user typed to the entry the backend
+                        holds: the backend's own id first, then an entity-id handle
+                        (ADR-093 D4). An ambiguous handle resolves nothing rather
+                        than guessing, and a backend that could not read far enough
+                        to know is an error, not a "no such entry"
       show.rs         — memory show subcommand
       supersede.rs    — memory supersede subcommand
       timeline.rs     — memory timeline subcommand
@@ -278,6 +327,10 @@ handlers/
     *_tests.rs     — one file per theme (notes, health, embed, search, llm, batch,
                      batch dedupe, sync, timeout, concurrency, liveness-under-embed,
                      wire shape)
+repair.rs          — background fill-in for memory rows stored without a vector. A write
+                     is never failed for want of an embedder; the row is stored text-only
+                     and this pass embeds it later. Driven by signals (embedder ready, a
+                     vectorless row stored), never a timer; runs on the Bulk lane
 server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind `--llm-url`,
                      plus resolve_llm_key (--llm-key / --llm-key-file / INKENTRY_LLM_KEY) and
                      check_llm_transport, which refuses to start when a credential would
@@ -315,8 +368,17 @@ embedder_llama.rs  — llama.cpp embedder (F2LLM-v2-330M, 896-dim; Metal on macO
                      LlamaEmbedder::load_from_path(gguf, ...) loads a canonical llama.cpp
                      GGUF already on disk with zero network access — the crate's only load
                      entry point, and it carries no download/fetch dependency. Implements
-                     inkentry-core's EmbeddingBackend. inkentry-server's embed_hub module (above)
+                     this crate's own EmbeddingBackend. inkentry-server's embed_hub module (above)
                      resolves the GGUF via the Hugging Face Hub before calling it.
+backend.rs         — the EmbeddingBackend trait itself (this crate owns it; inkentry-core
+                     re-exports it at the historical path), plus EmbedLane
+                     (Interactive / Bulk). The two lanes hold separate admission slots
+                     and separate warm contexts, so an interactive embed is never shed
+                     nor left queued behind a bulk index batch (ADR-096)
+vector.rs          — L2 normalisation for the embedder's output vectors
+error.rs           — EmbedError: the engine's failure kinds, kept distinct from a bare
+                     anyhow::Error so the server's handlers can match on the kind
+                     instead of string-matching a message
 ```
 
 ---
@@ -325,15 +387,17 @@ embedder_llama.rs  — llama.cpp embedder (F2LLM-v2-330M, 896-dim; Metal on macO
 
 All AI inference goes through **inkentry-server**. The CLI calls the server via
 `ServerInferenceClient` in `crates/inkentry-cli/src/server_client.rs`: the only
-place in inkentry-cli that issues AI inference requests. `ServerLlmAdapter` in
-the same file is a thin `LlmBackend` trait adapter over an `Arc` of that client;
-embedding is issued directly through the client's `embed_text`, so there is no
-embed adapter. (There is no `ServerLlmClient` or `ServerEmbedClient` either;
-those names are long gone.)
+place in inkentry-cli that issues AI inference requests. Its `llm_complete`,
+`embed_text` and `search_query` methods are called directly — there is no trait
+adapter on the CLI side, and no `ServerLlmAdapter`, `ServerEmbedAdapter`,
+`ServerLlmClient` or `ServerEmbedClient`. Those names survive only in the
+blocklist `capability/llm_message.rs` asserts no user-facing message leaks.
+The one `LlmBackend` implementation is `ServerLlm`, server-side.
 
-`inkentry-core` defines the `EmbeddingBackend` and `LlmBackend` traits
-(`embeddings/mod.rs`, `llm/mod.rs`) but ships **no concrete implementations**.
-The embedding *engine* lives in the `inkentry-embed` crate
+`LlmBackend` is defined in `inkentry-core` (`llm/mod.rs`); `EmbeddingBackend` is
+defined in `inkentry-embed` (`backend.rs`) and re-exported by
+`inkentry-core::embeddings` at its historical path. Neither crate ships an LLM
+implementation. The embedding *engine* lives in the `inkentry-embed` crate
 (`LlamaEmbedder`, local-path load only); inkentry-server's `embed_hub` module
 owns the Hugging Face Hub download path that resolves the (pre-quantized)
 model artifacts before handing them to it. There is no external embedder

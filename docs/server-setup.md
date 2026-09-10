@@ -714,7 +714,7 @@ overridden. The resolved value and its source are logged at startup
 (`embed CPU thread budget resolved`), and the value is reported as
 `limits.embed_threads` on `/v1/health`. When it resolves to 1, both that log
 and `inkentry status` name this variable, since a single-threaded first index
-is the difference between minutes and hours. GPU (Metal/CUDA) builds are
+is the difference between minutes and hours. GPU (Metal/Vulkan) builds are
 unaffected.
 
 This budget is not what keeps the server answering while an embedder is busy,
