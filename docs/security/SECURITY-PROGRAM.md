@@ -52,12 +52,12 @@ server-specific pre-v1.0 checklist is
 
 ## SAMM v2 Posture
 
-### Current State (April 2026)
+### Current State (September 2026)
 
 | Business Function  | Practice                    | Current Level | Target Level |
 | ------------------ | --------------------------- | :-----------: | :----------: |
 | **Governance**     | Strategy & Metrics          |       1       |      1       |
-|                    | Policy & Compliance         |       0       |      1       |
+|                    | Policy & Compliance         |       1       |      1       |
 |                    | Education & Guidance        |       1       |      1       |
 | **Design**         | Threat Assessment           |       1       |      1       |
 |                    | Security Requirements       |       0       |      1       |
@@ -68,15 +68,22 @@ server-specific pre-v1.0 checklist is
 | **Verification**   | Architecture Assessment     |       1       |      1       |
 |                    | Requirements-driven Testing |       1       |      1       |
 |                    | Security Testing            |       1       |      2       |
-| **Operations**     | Incident Management         |       0       |      1       |
+| **Operations**     | Incident Management         |       1       |      1       |
 |                    | Environment Management      |       2       |      2       |
 |                    | Operational Management      |       1       |      1       |
 
-### Gaps to Close Before Launch
+### Open gaps
 
-1. **Policy & Compliance L1** — Publish a `SECURITY.md` with responsible disclosure process and a brief secure coding policy reference in `CLAUDE.md`. Owned by: Docs Writer.
-2. **Security Requirements L1** — Define a minimal security acceptance checklist for issues and PRs (secret handling, SQL parameterisation, input validation at boundaries). Owned by: Architect.
-3. **Incident Management L1** — `SECURITY.md` must include a private vulnerability reporting contact and a defined response SLA (acknowledge within 7 days, patch within 30 for critical). Owned by: Docs Writer.
+1. **Security Requirements L1** — no minimal security acceptance checklist for
+   issues and PRs (secret handling, SQL parameterisation, input validation at
+   boundaries) is published yet.
+2. **Security Testing L2** — security tests are targeted rather than
+   systematic; the egress-containment and secret-scanner suites cover the two
+   boundaries that matter most, not the whole surface.
+
+Closed since the last review: Policy & Compliance L1 and Incident Management
+L1, both met by the repository-root `SECURITY.md` (disclosure process, private
+reporting route, and response SLA).
 
 ---
 
@@ -86,7 +93,7 @@ server-specific pre-v1.0 checklist is
 
 | Control                          | Where                      | CI gate?           |
 | -------------------------------- | -------------------------- | ------------------ |
-| Secret scanning before indexing  | `src/indexer/secrets.rs`   | No (runtime)       |
+| Secret scanning before indexing  | `crates/inkentry-core/src/indexer/secrets.rs` | No (runtime) |
 | Dependency advisory scan         | `cargo audit`              | Yes — blocks merge |
 | Dependency license/source policy | `cargo deny`               | Yes — blocks merge |
 | Static analysis                  | `cargo clippy -D warnings` | Yes — blocks merge |
@@ -96,7 +103,7 @@ server-specific pre-v1.0 checklist is
 | Control                                  | Where                             |
 | ---------------------------------------- | --------------------------------- |
 | Parameterised SQL (no string formatting) | All `storage/*.rs`                |
-| Atomic transactions for memory state     | `storage/memory.rs`              |
+| Atomic transactions for memory state     | `storage/memory/`                 |
 
 ### Server controls (shared `inkentry-server`)
 
@@ -136,8 +143,9 @@ server-specific pre-v1.0 checklist is
 
 - Full `cargo audit` clean (no unignored advisories)
 - Re-run secret scanning patterns against the test fixture corpus
-- Update `SAMM-POSTURE.md` with any practice level changes
-- Check `SECURITY.md` contact details are still valid
+- Update the SAMM posture table above with any practice level changes
+- Check `SECURITY.md` is current: the private vulnerability reporting route
+  still resolves, and the supported-versions and SLA tables still hold
 
 ---
 
