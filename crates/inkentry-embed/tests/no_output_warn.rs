@@ -59,8 +59,9 @@ fn embed_emits_no_llama_output_warning() {
     let subscriber = registry().with(WarnCapture(captured.clone()));
     tracing::subscriber::set_global_default(subscriber).expect("install the capturing subscriber");
 
-    let embedder = LlamaEmbedder::load_from_path(Path::new(&gguf()), DeviceRequest::Cpu, None, 1)
-        .expect("load embedder");
+    let embedder =
+        LlamaEmbedder::load_from_path(Path::new(&gguf()), DeviceRequest::Cpu, None, 1, 0)
+            .expect("load embedder");
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let texts = ["the first chunk", "a second, different chunk"];
     let vecs = rt.block_on(embedder.embed(&texts)).expect("embed");
