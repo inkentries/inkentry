@@ -57,16 +57,22 @@ network adds is that TLS becomes mandatory, and the server provides it.
 
 ## Sizing the host
 
-Figures below were measured on `inkentry-server` v1.0.0-rc1, at idle, before
-any database or request load. Treat them as the floor.
+Figures below were measured on `inkentry-server` 1.1.0 (llama.cpp engine) on
+Apple Silicon, at idle, with the model loaded and before any database or
+request load. Treat them as the floor. RAM depends on which device the
+embedder resolved to, so both paths are given; the disk figure does not.
 
-- **RAM: about 523 MB resident.** Every published `inkentry-server` binary
-  bundles the embedder (the `embed-llama` build feature), and the
-  server loads it at startup. It does this whether or not `--llm-url` is set
-  and before any client asks for an embedding, because server-side semantic
-  search over memory needs the embeddings. A server run as nothing more than a
-  shared memory store (`--db` plus a key) still sits at this figure. There is
-  no switch to skip the load.
+- **RAM: about 775 MB resident on the CPU path, about 370 MB when the embedder
+  runs on the GPU.** Most team servers are the first case: a headless Linux
+  host without a GPU, or one where the process cannot reach the render device.
+  The CPU path costs more because llama.cpp keeps a SIMD-repacked copy of the
+  weights alongside the mapped file. Every published `inkentry-server` binary
+  bundles the embedder (the `embed-llama` build feature), and the server loads
+  it at startup. It does this whether or not `--llm-url` is set and before any
+  client asks for an embedding, because server-side semantic search over memory
+  needs the embeddings. A server run as nothing more than a shared memory store
+  (`--db` plus a key) still sits at this figure. There is no switch to skip the
+  load.
 - **Disk: about 345 MB for the model.** The embedder is a pre-quantized Q8_0
   GGUF (`f2llm-v2-330m-llama-q8_0.gguf`, about 345 MB) fetched once into the model
   cache. The GGUF is self-contained: it embeds its own tokenizer and config, so
@@ -77,17 +83,16 @@ any database or request load. Treat them as the floor.
   [Where the model is cached](getting-started.md#where-the-model-is-cached).
   The database is separate and grows with the team's memory entries.
 - **Co-locating with a developer machine doubles the model.** The local
-  inference server that `inkentry` starts on demand loads the same embedder,
-  so a team server on a machine that also runs `inkentry` holds two resident
-  copies, roughly 1 GB together, plus a second model cache on disk when the
-  server runs as its own user or in a container. On a 7.9 GiB test host that
-  shape left about 1.7 GB free while `inkentry init` ran its embedding pass.
-  It works for an evaluation; it is not a comfortable steady state.
+  inference server that `inkentry` starts on demand loads the same embedder, so
+  a team server on a machine that also runs `inkentry` holds two resident
+  copies — on the CPU path roughly 1.5 GB together — plus a second model cache
+  on disk when the server runs as its own user or in a container. It works for
+  an evaluation; it is not a comfortable steady state.
 
 **Recommendation:** give the team server its own host or VM with at least 2 GB
 of RAM and 1 GB of disk before the database; if it must share a developer's
-machine, count 1 GB of RAM for the two embedders together and keep that machine
-at 8 GB or more.
+machine, count about 1.5 GB of RAM for the two embedders together and keep that
+machine at 8 GB or more.
 
 ## 1. Get a certificate
 
