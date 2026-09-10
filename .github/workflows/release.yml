@@ -200,6 +200,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.container }}-${{ matrix.target }}-
 
+      # `restore-keys` makes a `Cargo.lock` change fall back to an older entry,
+      # which is exactly the case CI's llama-vulkan leg trips on: the dead
+      # `lib*.so` links llama-cpp-sys-2 leaves in the profile root make its next
+      # run panic EEXIST (see the same step in ci.yml). Windows is exempt — the
+      # DLLs it collects are real files, not SOVERSION symlinks — but the step
+      # is a no-op wherever there is nothing dangling.
+      - name: Drop dangling library links from the restored cache
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ -d target ]; then find target -xtype l -delete; fi
+
       - name: Build release binaries
         if: runner.os != 'Windows'
         shell: bash
