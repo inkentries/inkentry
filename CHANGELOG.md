@@ -9,6 +9,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-10
+
+This release contains breaking changes. Read the entries marked
+**BREAKING** below, together with the new build prerequisites and the
+raised Linux floor, before upgrading.
+
 ### Added
 
 - **Each organization keeps its own cloud login session.** A repo can pin itself

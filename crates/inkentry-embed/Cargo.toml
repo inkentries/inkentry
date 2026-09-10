@@ -1,6 +1,6 @@
 [package]
 name = "inkentry-embed"
-version = "1.0.2"
+version = "1.1.0"
 edition = "2024"
 description = "F2LLM-v2-330M embedder (llama.cpp) for inkentry"
 license = "MIT"
