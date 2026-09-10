@@ -513,7 +513,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ---
 
-Releases before 1.0.0 shipped under this project's predecessor, spelunk. That
-history is not repeated here; it is kept in the predecessor repository's
+Releases before 1.0.0 shipped under this project's predecessor, spelunk, and are
+kept in [CHANGELOG-v0.md](CHANGELOG-v0.md) — also in the predecessor repository's
 changelog, at
 [spelunk-cloud/spelunk](https://github.com/spelunk-cloud/spelunk/blob/main/CHANGELOG.md).
