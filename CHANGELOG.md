@@ -11,16 +11,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **The cloud login session no longer lives in plaintext config, and each
-  organization keeps its own.** `inkentry login` stores the WorkOS session
-  (including the long-lived refresh token) in the OS secret store, keyed per
-  organization. A legacy `[auth]` table in `~/.config/inkentry/config.toml` is
-  migrated into the store and stripped from the file on first use, so nothing
-  needs doing. A repo can pin itself to one org with `org = "<slug>"` in
-  `.inkentry/config.toml` (or `INKENTRY_ORG`). `inkentry org list` shows the
-  cached orgs, `inkentry org switch` between already-cached orgs is now local,
-  and `inkentry logout --org <target>` signs out of one org while leaving the
-  others.
+- **Each organization keeps its own cloud login session.** A repo can pin itself
+  to one org with `org = "<slug>"` in `.inkentry/config.toml` (or
+  `INKENTRY_ORG`). `inkentry org list` shows the cached orgs, `inkentry org
+  switch` between already-cached orgs is now local, and `inkentry logout --org
+  <target>` signs out of one org while leaving the others.
 - **Memory entries now show the id that travels with the repo.** `memory add`,
   `memory list`, `memory show` and `context` lead each entry with a 12-character
   handle taken from its entity id; `memory add` and `memory show` print the full
@@ -41,6 +36,12 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   manually.
 - **Faster CPU embedding on Linux arm64.** Where Vulkan can't go, the same
   llama.cpp engine runs on CPU, typically faster than the previous engine.
+- **A Linux host now says when GPU embedding was blocked by permissions.** Where
+  a GPU is present but the server's user cannot open the render device, the
+  startup log, `/v1/health` and `inkentry server status` name the cause and the
+  fix (add the user to the `render` group) instead of quietly embedding on CPU.
+  See
+  [Linux GPU acceleration and the `render` group](docs/server-setup.md#linux-gpu-acceleration-and-the-render-group).
 - **`inkentry search --quiet`** suppresses the informational notices on stderr.
   Results and exit codes are unchanged, and it never hides an error or the
   warning about a server started by another user. Reach for it in Windows
@@ -105,9 +106,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 - **`inkentry hooks install` prints one path separator on Windows.** The
   installed-hook path read as `D:\src\repo\.git/hooks\post-commit`.
 - **The model cache no longer holds the embedding model twice.** A fresh
-  download now occupies about 350 MB instead of about 690 MB. If your cache was
-  filled by an earlier release, delete the model cache directory and let the
-  next server start refetch to reclaim the duplicate.
+  download now occupies about 350 MB instead of about 690 MB.
+- **Upgrading reclaims the previous engine's cached model files.** A machine
+  that ran 1.0.x kept about 350 MB of model files the llama.cpp engine never
+  reads; the next server start removes them. Nothing needs doing.
+- **The server log is no longer flooded with embedder warnings.** Indexing a
+  repository wrote one `some input tokens were not marked as outputs` line per
+  chunk — thousands in a single pass — burying anything worth reading in
+  `server.log`. Embeddings are unchanged.
 - **Interrupted model downloads are cleaned up.** A partial download is resumed
   where it left off, and one that nothing can resume is removed instead of
   sitting in the cache forever. A start that follows an interrupted download is
@@ -129,6 +135,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   its search vector arrives says so, and is listed and readable straight away;
   `inkentry memory reindex` adds the vector, and the next `inkentry sync` does
   it on its own.
+
+### Security
+
+- **The cloud login session no longer lives in plaintext config.** `inkentry
+  login` wrote the WorkOS access and refresh tokens to
+  `~/.config/inkentry/config.toml` in the clear; they now go to the OS secret
+  store, keyed per organization. A legacy `[auth]` table is migrated into the
+  store and stripped from the file on first use, so nothing needs doing. Rotate
+  the session with `inkentry logout` then `inkentry login` if that file was ever
+  backed up or shared (ADR-074).
 
 ## [1.0.2] — 2026-09-03
 
@@ -504,8 +520,9 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   host.** `POST /local/relay/push` previously took `server_url` and `bearer` from
   the request body and connected there; a request now only *selects* among the
   team servers this machine already declares. The relay routes are unmounted on a
-  non-loopback bind, and relay sessions are capped and retired when idle
-  (ADR-056).
+  non-loopback bind, and relay sessions are capped and retired when idle. The
+  surface is local-only and its authentication posture is unchanged (ADR-056);
+  only the outbound capability is closed.
 - **The `/llm/complete` rate limit can no longer be lifted by setting a header.**
   The bucket key used the caller's own `X-Forwarded-For`; it now comes from the
   TCP peer. An operator running a proxy opts in with `--trusted-proxy` (or
