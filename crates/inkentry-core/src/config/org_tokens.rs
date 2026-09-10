@@ -1,12 +1,10 @@
 //! Per-organization WorkOS session cache (ADR-074 D1/D3/D4).
 //!
-//! `inkentry login` and `inkentry org switch` used to write a single WorkOS
-//! session — the short-lived access token and the long-lived, rotating refresh
-//! token — as plaintext in the `[auth]` table of
-//! `~/.config/inkentry/config.toml`. Any process running as the user could read
-//! it, and the common leak is a `~/.config` synced into a dotfiles repo. This
-//! module moves the session into the secret store, the WorkOS analogue of
-//! ADR-071's `server_keys` move: one secret-store entry ([`KEY_ORG_TOKENS`])
+//! The WorkOS session — a short-lived access token and a long-lived, rotating
+//! refresh token — lives in the secret store rather than on disk: any process
+//! running as the user can read `~/.config`, and the common leak is a
+//! `~/.config` synced into a dotfiles repo. This is the WorkOS analogue of
+//! ADR-071's `server_keys` arrangement: one secret-store entry ([`KEY_ORG_TOKENS`])
 //! whose payload is a JSON object holding one session per organization, keyed by
 //! WorkOS org id, plus an `active` pointer naming the org an invocation uses when
 //! nothing else selects one (ADR-074 D2's lowest-precedence tier). One entry,

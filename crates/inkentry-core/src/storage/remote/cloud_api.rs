@@ -2,16 +2,13 @@
 //!
 //! Kept a separate type from [`RemoteMemoryBackend`](super::RemoteMemoryBackend)
 //! rather than a set of `if peer == cloud` branches inside it: the two peers
-//! disagree about routes, verbs and entry shape, and the self-hosted dialect
-//! staying a distinct type is what makes "self-hosted `cloud_first` is
-//! unchanged" true by construction instead of by care.
+//! disagree about routes, verbs and entry shape, and keeping the self-hosted
+//! dialect a distinct type isolates it from the cloud dialect by construction
+//! instead of by care.
 //!
-//! Every route used here ships on the cloud API today: `get`/`archive` (and
-//! `supersede`, which reads both entries first) originally required a
-//! project UUID rather than a slug on their two per-entry routes, a
-//! constraint the hosted API has since lifted so the project segment now
-//! behaves identically to every other memory route (see ADR-005's second
-//! amendment).
+//! Every route used here ships on the cloud API, and the project segment
+//! accepts a slug on all of them, including the per-entry `get`/`archive`
+//! routes (see ADR-005's second amendment).
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;

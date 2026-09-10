@@ -7,10 +7,10 @@ use super::paths::inkentry_config_dir;
 // Legacy `[auth]` table cleanup
 // ───────────────────────────────────────────────────────────────────────────
 //
-// The WorkOS session is no longer written here at all: it lives in the secret
-// store, keyed per organization (ADR-074; see `super::org_tokens`). These
-// remove functions exist only to strip a legacy plaintext `[auth]` table — the
-// one-time migration off it, and `inkentry logout`'s cleanup of any remnant.
+// The WorkOS session lives in the secret store, keyed per organization
+// (ADR-074; see `super::org_tokens`), never here. These remove functions exist
+// only to strip a legacy plaintext `[auth]` table — the one-time migration off
+// it, and `inkentry logout`'s cleanup of any remnant.
 
 /// Remove the legacy `[auth]` table from `~/.config/inkentry/config.toml`.
 ///

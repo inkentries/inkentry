@@ -63,10 +63,9 @@ fn classify_render_nodes_permission_denied_for_inaccessible_node() {
     );
 }
 
-/// `prequantized_gguf_repo()` resolves the GGUF source from
-/// `INKENTRY_EMBEDDER_GGUF_REPO`: unset/blank → the bundled default repo;
-/// any other value → that `org/repo` (trimmed). Uses `serial` because it
-/// mutates a process-global env var.
+// Unset or blank `INKENTRY_EMBEDDER_GGUF_REPO` resolves to the bundled default
+// repo; any other value is used as `org/repo`, trimmed. `serial` because it
+// mutates a process-global env var.
 #[test]
 #[serial_test::serial(gguf_repo_env)]
 fn prequantized_gguf_repo_defaults_to_bundled_repo() {
@@ -175,15 +174,12 @@ fn load_llama_from_model_dir_missing_gguf_names_the_file_and_docs() {
     assert!(msg.contains("docs/server-setup.md"), "{msg}");
 }
 
-/// `model_cache_dir()` honours `XDG_DATA_HOME` when set (the Docker image
-/// points this at the persistent `/data` volume so the ~339 MB model
-/// survives `docker rm`/recreate, instead of landing in the container
-/// layer or a home directory that doesn't exist for the `-r` service
-/// user). Linux-only: `dirs::data_local_dir()` follows the XDG spec on
-/// Linux/BSD, but macOS ignores `XDG_DATA_HOME` entirely in favor of
-/// `~/Library/Application Support` (the Docker image is Linux, so that's
-/// the platform this fix targets). Uses `serial` because it mutates a
-/// process-global env var.
+// The Docker image points `XDG_DATA_HOME` at the persistent `/data` volume so
+// the ~345 MB model survives `docker rm`/recreate, instead of landing in the
+// container layer or a home directory the `-r` service user does not have.
+// Linux-only: `dirs::data_local_dir()` follows the XDG spec on Linux/BSD, but
+// macOS ignores `XDG_DATA_HOME` in favour of `~/Library/Application Support`.
+// `serial` because it mutates a process-global env var.
 #[test]
 #[cfg(target_os = "linux")]
 #[serial_test::serial(xdg_data_home_env)]

@@ -938,7 +938,7 @@ impl Config {
         if let Some(mode) = self.mode {
             return mode;
         }
-        // Default mirrors the original implicit behaviour, from before the `mode` field existed.
+        // With no explicit mode, a configured server_url is a replica.
         if self.server_url.is_some() {
             SyncMode::LocalFirst
         } else {

@@ -537,8 +537,7 @@ struct ThreadBudget {
     source: &'static str,
 }
 
-/// Largest reservation either term will take, matching the flat two-core
-/// reservation this budget used to apply at every size.
+/// Largest reservation either term will take.
 const MAX_RESERVED: usize = 2;
 
 /// CPU threads the embedder may use for a forward pass, so a running embed leaves

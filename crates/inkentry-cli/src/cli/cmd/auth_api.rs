@@ -27,8 +27,7 @@ use inkentry_core::config::{AuthTokens, Config};
 /// self-hosted origin boundary for bearer resolution, ADR-071 D2). Single
 /// source of truth lives in `inkentry_core::config::server_keys`, which also
 /// reads it (and its `INKENTRY_CLOUD_URL` override) when deciding credential
-/// kind; re-exported here so every existing `auth_api::DEFAULT_CLOUD_URL`
-/// call site keeps working unchanged.
+/// kind; re-exported here.
 pub use inkentry_core::config::server_keys::DEFAULT_CLOUD_URL;
 
 /// Default WorkOS User Management API base URL.
