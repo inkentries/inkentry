@@ -7,10 +7,10 @@ versions receive fixes.
 
 | Platform | Requirement | Notes |
 |----------|-------------|-------|
-| macOS (Apple Silicon) | — | Embedding runs GPU-accelerated via Metal |
-| Linux x86_64 (glibc) | glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer) | Release binaries are built in an Ubuntu 22.04 container |
-| Linux arm64 (glibc) | glibc 2.35+ | Same baseline as x86_64 |
-| Windows x86_64 | — | `.zip` archive with `.exe` binaries |
+| macOS (Apple Silicon) | — | Embedding runs on the GPU via Metal |
+| Linux x86_64 (glibc) | glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer) | Release binaries are built in an Ubuntu 22.04 container. Embedding runs on the GPU via Vulkan where a driver allows; the archive carries `lib*.so*` engine files that must stay next to the binaries. GPU access needs the server's user in the `render` group — see [Linux GPU acceleration and the `render` group](server-setup.md#linux-gpu-acceleration-and-the-render-group) |
+| Linux arm64 (glibc) | glibc 2.35+ | Same baseline as x86_64. CPU embedding only (no arm64 Linux Vulkan SDK) |
+| Windows x86_64 | — | `.zip` archive with `.exe` binaries. Embedding runs on the GPU via Vulkan where a driver allows; the archive carries `ggml*.dll` / `llama*.dll` that must stay next to the `.exe`s |
 
 Intel Macs are not shipped as prebuilt binaries; they build from source — see
 [Building from source](building.md). Musl-based distributions (Alpine) are
@@ -26,7 +26,7 @@ Download URLs and archive formats are listed in [Releasing](releasing.md).
 - **SQLite** — none required. SQLite and the `sqlite-vec` extension are
   bundled into the binaries; there is no system dependency.
 - **Network** — none required for the core local flows. The bundled embedding
-  model (~339 MB) is downloaded once on first server start; after that,
+  model (~345 MB) is downloaded once on first server start; after that,
   semantic search runs entirely on-machine. Full-text search, the code graph,
   and memory work with no server and no network at all.
 - **Disk** — the index lives in `.inkentry/` inside your project; expect it to

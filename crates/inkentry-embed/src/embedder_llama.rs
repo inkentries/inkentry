@@ -744,8 +744,8 @@ impl crate::EmbeddingBackend for LlamaEmbedder {
     /// including the appended EOS), truncated to the token cap, then decoded one
     /// chunk per forward pass with last-token pooling and the KV cache cleared
     /// between chunks; the pooled vector is L2-normalised. The context is
-    /// *reused* across calls, so a serial index no longer rebuilds (and rewarms)
-    /// a Metal context per request — the churn that starved GPU utilization.
+    /// *reused* across calls, so a serial index does not rebuild (and rewarm) a
+    /// Metal context per request, which would starve GPU utilisation.
     ///
     /// `cancel` is checked before starting and between chunks, bounding waste to
     /// one chunk's forward pass, and `completed`/`total` count chunks. There is

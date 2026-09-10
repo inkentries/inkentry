@@ -524,8 +524,7 @@ fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Install the git post-commit hook, returning a short status string.
 ///
 /// Shares `hooks.rs`'s resolution logic rather than re-implementing it: a
-/// second hardcoded `$GIT_DIR/hooks` here previously disagreed with
-/// `core.hooksPath` in exactly the same way `inkentry hooks install` did.
+/// second hardcoded `$GIT_DIR/hooks` here would disagree with `core.hooksPath`.
 fn install_hook_for_init() -> Result<String> {
     let cwd = std::env::current_dir().context("getting current directory")?;
     match super::hooks::install_post_commit_hook(&cwd)? {

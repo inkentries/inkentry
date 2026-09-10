@@ -430,8 +430,7 @@ async fn probe_loopback() -> Tier {
 /// embedder, even when `server_url` is explicitly configured — there, an
 /// explicit `server_url` is a memory sync replica only, never an inference
 /// target. Only `cloud_first` lets an explicit `server_url` serve inference
-/// too, in which case this reuses [`get_tier`]'s cached probe of that URL
-/// (unchanged behaviour for that mode).
+/// too, in which case this reuses [`get_tier`]'s cached probe of that URL.
 ///
 /// Explicit offline (`INKENTRY_NO_SERVER` / `mode = "offline"`) skips every
 /// probe, mirroring `get_tier`.

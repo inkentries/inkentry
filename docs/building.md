@@ -15,7 +15,33 @@ Install via [rustup](https://rustup.rs/):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Rust 1.80 or later is required (inkentry uses the 2024 edition).
+Rust 1.85 or later is required (inkentry uses the 2024 edition). The toolchain
+is pinned to `stable` in `rust-toolchain.toml`, so rustup selects it for you.
+
+### C/C++ toolchain, CMake and libclang
+
+A default build compiles the llama.cpp engine (ggml) from source, so it needs
+more than rustup:
+
+| Need | Why |
+|------|-----|
+| C/C++ toolchain | compiles ggml — `build-essential` on Debian/Ubuntu, the Xcode Command Line Tools on macOS, MSVC Build Tools on Windows |
+| CMake 3.19+ | ggml's own build system |
+| `clang` + `libclang` | the engine binding's `bindgen` step |
+| `pkg-config` | locating system libraries |
+| `libdbus-1-dev` (Linux only) | `libdbus-sys`'s build script, pulled in by the keyring backend |
+
+On Debian or Ubuntu:
+
+```bash
+sudo apt install build-essential pkg-config cmake clang libclang-dev libdbus-1-dev
+```
+
+On macOS, `xcode-select --install` plus `brew install cmake` covers it; clang
+and libclang come with the Command Line Tools.
+
+These are build-time only. To build without them, build the CLI alone
+(`cargo build -p inkentry-cli`) — it never links the engine.
 
 ### No external inference server required
 
@@ -26,8 +52,9 @@ first use; model weights are downloaded once, into the platform's own
 local-data directory (see
 [Where the model is cached](getting-started.md#where-the-model-is-cached)).
 
-If you want GPU acceleration on macOS, build `inkentry-server` with the `llama-metal`
-feature (see [Build feature flags](#build-feature-flags) below).
+For GPU acceleration, build `inkentry-server` with `llama-metal` (macOS) or
+`llama-vulkan` (Windows and Linux x64) — see
+[Build feature flags](#build-feature-flags) below. A default build is CPU-only.
 
 ### Vulkan SDK (only for `llama-vulkan` builds)
 
@@ -47,7 +74,7 @@ acceleration and the `render` group" in [server-setup.md](server-setup.md).
 ## Build
 
 This is a Cargo workspace with four crates: `inkentry-core` (library),
-`inkentry-cli` (`inkentry` binary), `inkentry-embed` (embedding engines
+`inkentry-cli` (`inkentry` binary), `inkentry-embed` (embedding engine
 library), and `inkentry-server` (`inkentry-server` binary).
 Build them all together:
 
@@ -93,7 +120,7 @@ cargo build --release -p inkentry-server
 
 | Feature | Default | Description |
 |---|---|---|
-| `embed-llama` | yes | Bundle the F2LLM-v2-330M embedder (llama.cpp engine, CPU) and its Hugging Face Hub download path. Disabling it builds a server with no embedding capability at all: embed endpoints return a permanent 400 (there is no external-endpoint fallback). The device is selected at runtime (`INKENTRY_EMBED_DEVICE=auto\|gpu\|cpu`). |
+| `embed-llama` | yes | Bundle the F2LLM-v2-330M embedder (llama.cpp engine) and its Hugging Face Hub download path. On its own this builds the CPU-only ggml backend; add `llama-metal` or `llama-vulkan` below for GPU acceleration. Disabling it builds a server with no embedding capability at all: embed endpoints return a permanent 400 (there is no external-endpoint fallback). The device is selected at runtime (`INKENTRY_EMBED_DEVICE=auto\|gpu\|cpu`). |
 | `llama-metal` | no | llama.cpp engine with Metal GPU acceleration on macOS — the macOS release target. Implies `embed-llama`. |
 | `llama-vulkan` | no | llama.cpp engine with Vulkan + runtime-loaded backend modules — the cross-vendor Windows/Linux GPU target shipped in release binaries. Implies `embed-llama`. Needs the Vulkan SDK at build time (see Prerequisites); produces shared libraries and `ggml` modules that must ship next to the binary. |
 
@@ -109,6 +136,17 @@ cargo build --release -p inkentry-server --features llama-vulkan
 # Server without the bundled embedder (no embedding capability at all)
 cargo build --release -p inkentry-server --no-default-features
 ```
+
+### inkentry-embed features
+
+The server features above are pass-throughs to this crate, which owns the
+engine. You only name these directly when building `inkentry-embed` itself.
+
+| Feature | Default | Description |
+|---|---|---|
+| `llama` | yes | The `LlamaEmbedder` engine itself — the sole embedding engine. Builds the CPU-only ggml backend. A consumer that needs only the `EmbeddingBackend` trait and `MODEL_ID` depends on this crate with `default-features = false`, which is what keeps the C++ engine out of `inkentry-cli`. |
+| `llama-metal` | no | Adds Metal GPU acceleration. Implies `llama`. |
+| `llama-vulkan` | no | Adds Vulkan plus runtime-loaded backend modules, so one binary carries the Vulkan and CPU-SIMD variants and degrades to CPU where no driver is present. Implies `llama`. Needs the Vulkan SDK at build time. |
 
 ### inkentry-cli features
 

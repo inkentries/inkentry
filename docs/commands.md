@@ -289,6 +289,26 @@ inkentry index ./myproject
 inkentry index ./myproject --force --batch-size 16
 ```
 
+### Security notes
+
+`index` reads your working tree and writes to the local index database. Two
+protections apply to what it stores:
+
+- **Sensitive files are never read.** `.env*`, `*.pem`, `*.key` and similar
+  patterns are excluded unconditionally, matched case-insensitively, and cannot
+  be re-included through `[index].exclude`.
+- **Credential-bearing chunks are dropped.** Every chunk is scanned before it is
+  stored or embedded, docstring and content together, and again when its summary
+  is composed. A chunk matching a known credential pattern is discarded and a
+  warning naming only the symbol is logged, so the value itself never reaches
+  the log.
+
+This is best-effort defence in depth, not a boundary: a finite pattern list
+cannot catch every credential format. The boundary is that indexed code never
+leaves the machine unless you explicitly configure a team `server_url`. Chunk
+summaries are composed offline with no model, so indexing sends nothing to an
+LLM. See [Threat model](security/THREAT-MODEL.md).
+
 ---
 
 ## inkentry search
@@ -1158,6 +1178,27 @@ reachable. See
 Extraction and the dedup embedding resolve independently and can land on
 different servers.
 
+### Security notes
+
+`harvest` is the only command that sends anything to an LLM, and the only one
+whose input is text you did not write for it.
+
+- **Commit messages are secret-scanned first.** A commit whose message matches a
+  known credential pattern is skipped before the request is built: it is not
+  sent, and nothing derived from it is stored. The warning names the SHA only,
+  never the matched text.
+- **It sends no indexed code.** Only commit messages, or session transcripts
+  under `--source claude-code`, which additionally requires `--confirm`.
+- **Where it sends them depends on your configuration.** On the default local
+  server both the LLM and the embedder run on your machine. Text leaves it only
+  when a team `server_url`, or an `llm_url` pointing off-machine, is configured.
+  `llm_url` is a project config key, so a cloned repository can carry one: treat
+  a project config from an untrusted repository as you would any other
+  executable content in it, particularly before installing the post-commit hook,
+  which harvests unattended on every commit.
+
+See [Threat model](security/THREAT-MODEL.md) and
+[Third-party models](third-party-models.md).
 
 ---
 
@@ -1364,6 +1405,19 @@ actually finishes the job.
 | `--db <PATH>` | Memory database to import into (overrides auto-detect) |
 | `--no-embed` | Import without embedding; still reports what is pending |
 | `--format <FMT>` | `text` (default) or `json` |
+
+### Security notes
+
+A dump is untrusted input. It is verified whole before anything is written —
+record counts and digest recomputed, and any mismatch refuses the whole file —
+but that check establishes only that the dump is intact, not that its author is
+trustworthy. Imported entries keep their own identity, creation time and
+provenance verbatim, so a dump can assert entries that read as another author's
+decisions. Import dumps only from a source you trust, and treat entry text from
+one as data rather than as instructions to an agent.
+
+Import writes to the local memory store only; it sends nothing to a server and
+calls no LLM. With `--no-embed` it makes no inference call at all.
 
 ---
 

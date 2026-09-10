@@ -255,8 +255,9 @@ remote, so neither entry publishes anything: sharing your own memory is a
 separate opt-in step, covered in section 5.
 
 No config file, no Docker, no external embedder. The server bundles the
-embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS
-via llama.cpp); a pre-quantized Q8_0 GGUF (~345 MB) is downloaded once on first
+embedding model (codefuse-ai/F2LLM-v2-330M, 896-dim) and runs it on the
+llama.cpp engine — Metal on macOS, Vulkan on Windows and Linux x64, CPU
+elsewhere; a pre-quantized Q8_0 GGUF (~345 MB) is downloaded once on first
 use. No LM Studio or other external inference server is needed. The next
 section covers commands that work even before you index.
 
@@ -295,9 +296,8 @@ Budget about **345 MB**: a single GGUF that embeds its own tokenizer and
 config. The GGUF is stored once. It is linked into place rather than
 copied, so a cache filled by a fresh download does not hold it twice; on a
 filesystem that cannot hard link, it is copied instead and the cache holds
-both. A cache first filled by an earlier release keeps a second copy of the
-GGUF, about 345 MB, until you delete the cache directory and let the next
-server start download the model again.
+both. Upgrading from 1.0.x needs nothing: the next server start removes the
+previous engine's model files, which the current engine never reads.
 
 ## 3. Start using it inside your project
 
@@ -538,8 +538,9 @@ and the summaries need no inference at all.
 ### Index your project for semantic search
 
 `inkentry init` (section 2) already indexes and embeds your project against the
-local server. If you've configured a custom embedding endpoint above, restart
-the server and run `init` again so chunks are embedded through that endpoint:
+local server. The LLM override above changes nothing here — indexing never
+calls an LLM, and the embedder is fixed product-wide — so there is no need to
+re-run `init` after setting one. To index a project you have not indexed yet:
 
 ```bash
 cd /path/to/your/project

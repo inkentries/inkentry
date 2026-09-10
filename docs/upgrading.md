@@ -1,9 +1,40 @@
-# Upgrading to 1.0.0
+# Upgrading
+
+## 1.0.x to 1.1.0
+
+Nothing to do. The index and memory stores are unchanged, and the embedding
+vectors are identical, so nothing re-embeds and no store is rewritten. What is
+worth knowing:
+
+**The embedding engine changed to llama.cpp.** On the first server start after
+upgrading, the previous engine's cached model files — about 350 MB the new
+engine never reads — are removed for you. Embedding now runs on the GPU where a
+driver allows: Metal on macOS, Vulkan on Windows and Linux x64, CPU elsewhere.
+On Linux the server's user must be in the `render` group to reach the GPU;
+without it embedding falls back to CPU and says so. See
+[Linux GPU acceleration and the `render` group](server-setup.md#linux-gpu-acceleration-and-the-render-group).
+
+**If you install by unpacking an archive**, the Windows and Linux x64 archives
+now carry engine library files (`ggml*.dll` / `llama*.dll` on Windows,
+`lib*.so*` on Linux) beside the binaries. Copy them out together and keep them
+next to the binaries; a binary moved on its own will not start.
+
+**The supported Linux floor is now glibc 2.35** (Ubuntu 22.04 / Debian 12).
+Release binaries no longer run on Debian 11 or Ubuntu 20.04 — upgrade the OS
+or [build from source](building.md).
+
+Building from source now needs a C++ toolchain, CMake and libclang; see
+[Building from source](building.md).
+
+## To 1.0.0, from spelunk
 
 1.0.0 is the first release that will not open a memory store an earlier build
 wrote.
 
-## Credentials do not migrate
+1.0.0 is the first release that will not open a memory store an earlier build
+wrote.
+
+### Credentials do not migrate
 
 The migration brings memory across. It does not bring secrets across: inkentry
 stores credentials under its own name, in the OS keychain service `inkentry`
@@ -40,7 +71,7 @@ Writing the key into `~/.config/inkentry/config.toml` as a bare `server_key`
 is not a way around this. 1.0.0 no longer reads that field, and a key sitting
 in a plaintext file should be rotated rather than moved.
 
-## Run the migration script
+### Run the migration script
 
 Check where memory lives first: `inkentry status`. If it shows a server, skip
 straight to [Teams running a shared inkentry-server](#teams-running-a-shared-inkentry-server)
@@ -88,7 +119,7 @@ Either way, `import` appends the same entries to the shared
 their next `git fetch`/`pull`, so one person can run the import once for
 everyone.
 
-## What actually needs coordinating
+### What actually needs coordinating
 
 Running the script, or the manual export, is a per-machine action — nothing
 about it needs the team's permission or a shared window. Two things do:
@@ -108,7 +139,7 @@ carrier's format hasn't changed, so a half-upgraded team keeps reading each
 other's memory throughout, and `index.db` is per-machine and gitignored, so
 re-indexing never needs coordinating either.
 
-## Teams running a shared inkentry-server
+### Teams running a shared inkentry-server
 
 An explicit `server_url` adds a real problem: entries are identified by
 UUIDv7 instead of integers, with no compatibility mapping between them — a
@@ -140,7 +171,7 @@ INKENTRY_MODE=local_first inkentry import project.dump
 inkentry sync
 ```
 
-## If you already upgraded without exporting
+### If you already upgraded without exporting
 
 Nothing is lost yet.
 
@@ -156,7 +187,7 @@ fresh `init` recovers what reached the ref, including the `relates_to` and
 `contradicts` links between the entries it recovers, and minus anything
 recorded with `store_in_git_notes = false`.
 
-## Appendix: symptoms if you skip this
+### Appendix: symptoms if you skip this
 
 **Memory refusal** (exit `1`, on every command that reads `memory.db`):
 

@@ -98,8 +98,8 @@ pub struct Capabilities {
     /// feature capability while serving no `/llm/complete` route at all, so
     /// only this flag establishes LLM availability across version skew.
     ///
-    /// Kept out of `inkentry status --format json` (which serializes this
-    /// struct wholesale) so that payload's shape is unchanged.
+    /// Kept out of `inkentry status --format json`, which serializes this
+    /// struct wholesale.
     #[serde(skip_serializing)]
     pub llm_complete: bool,
     /// Reserved (ADR-002 `/plan`): parsed from server caps but hidden from all

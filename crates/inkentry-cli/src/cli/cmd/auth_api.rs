@@ -1,9 +1,8 @@
 //! HTTP client for WorkOS-direct device-flow auth.
 //!
-//! Supersedes the cloud-api `/v1/auth/*` proxy. A live multi-org
-//! device login proved every token leg the CLI needs is a WorkOS PUBLIC-CLIENT
-//! exchange — `client_id` only, no secret — so the CLI talks to WorkOS directly
-//! and no longer routes auth through cloud-api.
+//! Every token leg the CLI needs is a WorkOS PUBLIC-CLIENT exchange —
+//! `client_id` only, no secret — so the CLI talks to WorkOS directly rather
+//! than routing auth through cloud-api.
 //!
 //! WorkOS endpoints (all under `https://api.workos.com/user_management`):
 //!   POST /authorize/device   — start the device-authorization grant
@@ -28,8 +27,7 @@ use inkentry_core::config::{AuthTokens, Config};
 /// self-hosted origin boundary for bearer resolution, ADR-071 D2). Single
 /// source of truth lives in `inkentry_core::config::server_keys`, which also
 /// reads it (and its `INKENTRY_CLOUD_URL` override) when deciding credential
-/// kind; re-exported here so every existing `auth_api::DEFAULT_CLOUD_URL`
-/// call site keeps working unchanged.
+/// kind; re-exported here.
 pub use inkentry_core::config::server_keys::DEFAULT_CLOUD_URL;
 
 /// Default WorkOS User Management API base URL.

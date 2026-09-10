@@ -1,8 +1,7 @@
 //! Cloud two-way sync wire client.
 //!
 //! Wires the CLI's `sync` and `plumbing push`/`pull` commands to cloud-api
-//! primitives that already exist server-side but were previously unreachable
-//! from the CLI:
+//! primitives:
 //!
 //! - `GET  /v1/projects/{id}/memory/since?since_id=<cursor>` — delta pull.
 //! - `POST /v1/projects/{id}/memory/batch`                   — batched delta push.
@@ -42,8 +41,7 @@ use crate::embeddings::{PUSHED_VECTOR_PRECISION, pushed_vector_model_tag};
 /// per-entry CRUD ceiling while still making progress, so the sync path belongs
 /// in the inference timeout class instead. This is a client-level timeout, so it
 /// also raises the ceiling on `pull_since`/`delete_remote`: strictly better,
-/// since only a hung connection ever reaches it and a slow-but-progressing pull
-/// is no longer cut short at 30s.
+/// since only a hung connection ever reaches it.
 const SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// One entry pushed to `POST /memory/batch`.

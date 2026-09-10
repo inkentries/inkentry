@@ -73,7 +73,7 @@ inkentry keeps that why-layer beside the code and hands it back on demand.
 - **Memory that travels with the repo** — decisions, requirements, and context are stored in git notes, so they clone with the repository and reach your teammates the way code already does. Retrieve them next session with `inkentry context` or `inkentry search`.
 - **One search, both layers** — a single `search` interleaves code chunks and the decisions behind them into one ranked list. Add `--graph` and each result brings its callers and callees, so you trace how code connects without opening every file.
 - **Runs on your machine** — full-text search, memory, and the call graph work with just the binary and a local index (`inkentry init`). No API keys, no configuration, no server to operate.
-- **Semantic search built in** — a local `inkentry-server` starts on demand with a bundled embedder (codefuse-ai/F2LLM-v2-330M, 896-dim, GPU-accelerated on macOS), so there is no external inference server to run. You can still point inkentry at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM) if you prefer.
+- **Semantic search built in** — a local `inkentry-server` starts on demand with a bundled embedder (codefuse-ai/F2LLM-v2-330M, 896-dim), so there is no external inference server to run. It runs on the GPU wherever a driver allows: Metal on macOS, Vulkan on Windows and Linux x64, CPU elsewhere. For `harvest`, the one feature that needs an LLM, you can point inkentry at your own OpenAI-compatible endpoint (LM Studio, Ollama, vLLM); the embedder itself is fixed.
 - **Your code stays local** — your code never leaves your machine; only memory does, and only when you point at a team server. The server is self-hosted and binds to loopback by default. This is enforced, not just asserted: `crates/inkentry-cli/tests/egress_containment.rs` traps every outbound connection across the local-tier command surface and fails loudly, naming the destination, on any escape past loopback.
 - **Agent-native** — JSON output (`AGENT=true`), git hooks, and a structured memory system built for the agent workflow loop.
 
@@ -219,7 +219,7 @@ This is a Cargo workspace with four crates:
 |---|---|---|
 | `inkentry-core` | `crates/inkentry-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
 | `inkentry-cli` | `crates/inkentry-cli` | `inkentry` binary — CLI commands; depends on `inkentry-core` |
-| `inkentry-embed` | `crates/inkentry-embed` | Library — F2LLM-v2-330M embedder (llama.cpp); depends on `inkentry-core` |
+| `inkentry-embed` | `crates/inkentry-embed` | Library — F2LLM-v2-330M embedder (llama.cpp); owns the `EmbeddingBackend` trait. A leaf crate: `inkentry-core` depends on it |
 | `inkentry-server` | `crates/inkentry-server` | `inkentry-server` binary + lib — shared memory server; depends on `inkentry-core` + `inkentry-embed` |
 
 ```bash

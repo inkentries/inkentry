@@ -1,9 +1,8 @@
 //! Per-origin server-key map (ADR-071 D1/D2).
 //!
-//! The client's bearer credential used to be a single flat `server_key`,
-//! which cannot represent a developer who holds keys for two different
-//! self-hosted `server_url`s (ADR-056's recommended multi-server topology).
-//! This module gives the credential a home keyed by the server it belongs to:
+//! The bearer credential is keyed by the server it belongs to, so a developer
+//! can hold keys for two different self-hosted `server_url`s (ADR-056's
+//! recommended multi-server topology). It lives in
 //! a single secret-store entry (`KEY_SERVER_KEYS_MAP`) whose payload is a JSON
 //! object mapping normalized origin to key. One entry, not one per host, so
 //! granting keychain access once covers every server (see the module-level
@@ -13,8 +12,7 @@
 //! *kind* (cloud vs. self-hosted) from whether the target `server_url`'s origin
 //! is the one the cloud token was issued for (ADR-095), before touching any
 //! store, so a given request only ever consults the tier its own kind uses
-//! (ADR-071 D2). The flat entry that predated the map is
-//! gone, along with the migrate-on-read it was kept alive for (ADR-088 D2/D3):
+//! (ADR-071 D2). There is no migrate-on-read (ADR-088 D2/D3):
 //! `inkentry auth set-key --server <url>` is the one way a key gets into the
 //! map.
 

@@ -170,8 +170,8 @@ fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
 /// `git rev-parse --git-path hooks`, run from `dir`. This is the only correct
 /// resolution because it honors `core.hooksPath` (set by husky, lefthook, and
 /// the pre-commit framework) and follows a linked worktree back to its shared
-/// hooks directory. Reading `$GIT_DIR/hooks` directly, as this used to, agrees
-/// with git only when `core.hooksPath` is unset.
+/// hooks directory. Reading `$GIT_DIR/hooks` directly agrees with git only when
+/// `core.hooksPath` is unset.
 ///
 /// The result is canonicalized (via [`inkentry_core::utils::canonicalize`], so
 /// symlinks are resolved and, on Windows, the `\\?\` prefix is stripped)

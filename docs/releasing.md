@@ -21,9 +21,9 @@ Three install paths live outside this workflow:
   `https://get.inkentry.com/install.sh` and `.../install.ps1`, which are the
   commands `README.md` and `docs/getting-started.md` publish. Neither needs a
   per-release edit: each resolves the newest release tag through the GitHub
-  API, falling back to the newest release of any kind because
-  `/releases/latest` excludes pre-releases and so 404s for the whole
-  `v1.0.0-rc` cycle.
+  API, falling back to the newest release of any kind. That fallback exists
+  because `/releases/latest` excludes pre-releases, so it 404s whenever no
+  stable release has been published yet — as during the `v1.0.0-rc` cycle.
 
   They do need an edit when asset naming changes, and nothing checks it. The
   scripts rebuild the archive name from the git tag
@@ -52,12 +52,14 @@ Three install paths live outside this workflow:
   commit landed after the tag was cut and so opened the *next* release's
   changelog carrying the *previous* version.
 
-  Both packaging jobs publish every stable tag, plus pre-release tags on the
-  `v1.0.0` line only — the release candidates for v1 are installable through
-  brew and scoop, and the condition expires on its own once v1.0.0 ships, since
-  a later `v1.1.0-rc0` no longer matches `v1.0.0-`. Without that, a `1.1.0-rc`
-  would sort *above* `1.0.0` in both package managers and be served to everyone
-  tracking stable.
+  Both packaging jobs publish every stable tag, plus pre-release tags matching
+  `v1.0.0-` and nothing else
+  (`!contains(github.ref_name, '-') || startsWith(github.ref_name, 'v1.0.0-')`).
+  That carve-out was for the v1 release candidates and has now lapsed: a
+  pre-release tag on any later line — `v1.1.0-rc0`, say — publishes no brew or
+  scoop update, by design. A pre-release must not reach people tracking stable,
+  because `1.1.0-rc` sorts *above* `1.0.0` in both package managers. Release
+  candidates are installable from their GitHub release assets.
 
   Neither the tap nor the bucket keeps more than one file, so publishing order,
   not version order, decides what users get. Both generator scripts read the
