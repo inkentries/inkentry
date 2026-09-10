@@ -41,7 +41,7 @@ and `publish-notes` cannot return `1`; the contract explains why.
 always emit their one report object on a completed run, so exit `1` there means
 the run completed with an **empty delta** (nothing new pushed, or nothing new
 pulled) and the report is still on stdout. Only their exit `2` (the run did not
-complete) leaves stdout empty. Everything else about the codes is unchanged.
+complete) leaves stdout empty.
 
 ### Missing stores
 
