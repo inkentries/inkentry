@@ -30,8 +30,9 @@ The tokenizer is redistributed as-is, byte-for-byte identical to upstream:
 
     tokenizer.json
 
-`config.json` is not hosted in this repo; it is small enough (~1 KB) that
-Inkentry vendors it directly into the inkentry-server binary instead.
+`config.json` is not hosted in this repo. The canonical llama.cpp GGUF embeds
+its own tokenizer and configuration, so inkentry-server reads neither a
+separate `config.json` nor `tokenizer.json` at runtime.
 
 License
 -------

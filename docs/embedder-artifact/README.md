@@ -30,9 +30,10 @@ plus its tokenizer, distributed for use as the bundled embedding model in
     from the same pinned upstream revision, read by Inkentry's llama.cpp
     engine as a single file — the build Inkentry loads.
 - The **unmodified** upstream `tokenizer.json`, redistributed as-is (same
-  Apache-2.0 terms) so Inkentry has no runtime dependency on the third-party
-  upstream repo. (`config.json` is small enough that Inkentry embeds it
-  directly in the binary instead of fetching it from here.)
+  Apache-2.0 terms). It pairs with the older `f2llm-v2-330m-q8_0.gguf` above
+  and is kept for anyone using that build; the canonical llama.cpp GGUF embeds
+  its own tokenizer and config, so Inkentry itself no longer reads this file or
+  a separate `config.json`.
 
 Distributing the GGUF pre-quantized keeps the first-run download and
 steady-state disk use to a single file, with no on-device
