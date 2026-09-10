@@ -1,9 +1,8 @@
 //! HTTP client for WorkOS-direct device-flow auth.
 //!
-//! Supersedes the cloud-api `/v1/auth/*` proxy. A live multi-org
-//! device login proved every token leg the CLI needs is a WorkOS PUBLIC-CLIENT
-//! exchange — `client_id` only, no secret — so the CLI talks to WorkOS directly
-//! and no longer routes auth through cloud-api.
+//! Every token leg the CLI needs is a WorkOS PUBLIC-CLIENT exchange —
+//! `client_id` only, no secret — so the CLI talks to WorkOS directly rather
+//! than routing auth through cloud-api.
 //!
 //! WorkOS endpoints (all under `https://api.workos.com/user_management`):
 //!   POST /authorize/device   — start the device-authorization grant

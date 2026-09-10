@@ -264,12 +264,10 @@ impl ServerInferenceClient {
             project_id,
             // Mirrors `Config::resolve_inference_url`'s own fallback exactly:
             // `base_url` came from `server_url` iff `inference_url` was unset.
-            // Since the 2026-07-23 ADR-004 revision,
-            // `effective_config` CAN set `inference_url` even when
-            // `server_url` is ALSO set (the `local_first` case: an explicit
-            // `server_url` there is a sync replica only, never the inference
-            // target) — so `cfg.server_url.is_some()` alone is no longer a
-            // reliable signal of "base_url is the explicit remote".
+            // Both can be set at once (the `local_first` case, where an
+            // explicit `server_url` is a sync replica only, never the
+            // inference target), so `server_url.is_some()` alone does not
+            // establish that `base_url` is the explicit remote.
             is_explicit_remote: cfg.inference_url.is_none() && cfg.server_url.is_some(),
             auth: Mutex::new(BearerState { bearer, refresh }),
         }

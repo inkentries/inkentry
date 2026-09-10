@@ -22,7 +22,7 @@
 //!   `remote_id` does; semantic-dup detection is the server's job (it flags
 //!   `contradicts`).
 //! - **Lifecycle propagation.** `supersedes` and archive/tombstone state travel
-//!   in both directions (previously hard-coded `None`/dropped).
+//!   in both directions.
 //! - **Text-only by default; optional pushed vector.** A push ships no vector
 //!   and the server backfills the embedding (embedding-model conformance) —
 //!   unless the server advertises `accepts_pushed_vectors`, in which case an
