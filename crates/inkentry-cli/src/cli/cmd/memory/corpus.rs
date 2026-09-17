@@ -24,13 +24,15 @@ pub(crate) struct MemoryCorpus {
 /// Retrieve the memory corpus for unified search — the fold-in of the former
 /// `memory search` command (ADR-082).
 ///
-/// `qa_blob` is the QA-prefix query embedding: `Some` runs hybrid (note vector
-/// KNN fused with `memory_fts` BM25), `None` runs full-text only — the
-/// `--only-text` path and the embedder-unavailable degrade. `as_of` restricts to
-/// the temporal window; `expand_graph` attaches `relates_to` 1-hop neighbours;
-/// and unless `local_only`, locked / cross-project decisions and requirements
-/// from linked stores are attached (text-only, as they have no CLI-side
-/// embedder).
+/// `qa_blob` is the QA-prefix query embedding: `Some` runs the vector-KNN
+/// hybrid search, `None` runs full-text only — the `--only-text` path and the
+/// embedder-unavailable degrade. `gate` applies ADR-083's within-corpus
+/// relevance floor to the hybrid path (`true` for the default unified search,
+/// `false` for `--only-memory`; irrelevant when `qa_blob` is `None`). `as_of`
+/// restricts to the temporal window; `expand_graph` attaches `relates_to`
+/// 1-hop neighbours; and unless `local_only`, locked / cross-project decisions
+/// and requirements from linked stores are attached (text-only, as they have
+/// no CLI-side embedder).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn memory_corpus_search(
     cfg: &Config,
@@ -42,6 +44,7 @@ pub(crate) async fn memory_corpus_search(
     as_of: Option<i64>,
     expand_graph: bool,
     local_only: bool,
+    gate: bool,
 ) -> Result<MemoryCorpus> {
     // Fold in any fetched teammate notes before searching, so a teammate's
     // newly-published entry is searchable on the default path without a re-init
@@ -52,7 +55,7 @@ pub(crate) async fn memory_corpus_search(
 
     let notes = match qa_blob {
         Some(blob) => backend
-            .search_hybrid(blob, query, limit, as_of)
+            .search_hybrid(blob, query, limit, as_of, gate)
             .await
             .map_err(backend_err)?,
         None => backend

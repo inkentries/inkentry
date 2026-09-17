@@ -9,6 +9,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Unified `search` no longer hands memory half of every result page.** A
+  memory entry now competes for a slot only if its distance to the query
+  clears a calibrated relevance floor (`MEMORY_MAX_QA_DISTANCE`); an unrelated
+  memory store contributes nothing rather than the fixed 1:1 share it used to.
+  `--only-memory` is unaffected — it shows the full memory page, ungated, and
+  is now the way to see what the default suppressed. See
+  [ADR-083](docs/adr/083-memory-relevance-gate-in-unified-search.md).
+
 ## [1.1.0] — 2026-09-10
 
 This release contains breaking changes. Read the entries marked

@@ -321,6 +321,13 @@ after `inkentry init` parses the tree, while semantic ranking builds in the
 background. During embeddings warmup a coverage notice is printed to stderr
 naming the percentage and shape of embedded chunks.
 
+A memory entry earns its place on the default page: it is admitted only if it
+clears a calibrated relevance floor against the query, so an unrelated memory
+store contributes nothing rather than taking half of every result. `--only-memory`
+skips that floor — with no code corpus in scope there is nothing to protect,
+so it shows the full memory page, which is also how to check what the default
+suppressed. See [ADR-083](adr/083-memory-relevance-gate-in-unified-search.md).
+
 `search` **requires an index.** Run in an uninitialised directory, it funnels
 you to `inkentry init` rather than returning results; once `init` has parsed the
 source tree, full-text search works right away.
@@ -337,7 +344,7 @@ inkentry search <query> [options]
 | `-g, --graph` | false | Append the queried symbol's chunk plus its 1-hop call-graph neighbours after the ranked results |
 | `--graph-limit <n>` | 10 | Max graph-expanded results to add (with `--graph`) |
 | `--only-code` | false | Code corpus only — the escape hatch when interleaved memory results are unwanted |
-| `--only-memory` | false | Memory corpus only |
+| `--only-memory` | false | Memory corpus only, and **ungated**: shows every match, not only the ones that clear the relevance floor the default applies |
 | `--only-text` | false | Full-text over the in-scope corpora, no embedding, no server needed |
 | `--as-of <date>` | — | Memory-only: only entries valid at this date (point-in-time) |
 | `--expand-graph` | false | Memory-only: also surface each memory result's 1-hop `relates_to` neighbours |
@@ -579,9 +586,9 @@ determines which payload keys you will see:
 
 | Invocation | Envelopes emitted |
 |---|---|
-| `search "<q>"` | both corpora, interleaved: `type` is `"code"` on some, `"memory"` on others |
+| `search "<q>"` | both corpora, interleaved: `type` is `"code"` on some, `"memory"` on others. Memory results are gated on relevance — an unrelated store contributes none |
 | `search "<q>" --only-code` | `type` is `"code"` on every envelope |
-| `search "<q>" --only-memory` | `type` is `"memory"` on every envelope |
+| `search "<q>" --only-memory` | `type` is `"memory"` on every envelope, ungated — the full memory page, not only what cleared the default's relevance floor |
 | `search "<q>" --only-text` | either corpus, full-text ranked; no embedding and no server, and the memory payload carries no `score` |
 
 `--only-code` and `--only-memory` are mutually exclusive; either one composes

@@ -150,6 +150,13 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     let mut embed_degraded = false;
 
     if !args.only_text {
+        // ADR-083 decision 7 / ADR-081's elision table: a memory store with no
+        // embedded notes can never produce a KNN candidate, so embedding the
+        // query against it is pure cost, not a degrade — no notice, and the
+        // default search is byte-identical to `--only-code` (the lexical door
+        // is retired, so there is nothing else for the memory side to
+        // contribute).
+        let memory_has_no_vectors = want_memory && memory_has_no_embedded_notes(&mem_path);
         match require_server_client(&cfg, "search").ok() {
             Some(client) => {
                 let sp = spinner("Embedding query…");
@@ -162,7 +169,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
                         _ => embed_degraded = true,
                     }
                 }
-                if want_memory {
+                if want_memory && !memory_has_no_vectors {
                     match embed_query(&client, MEMORY_QA_TASK, &args.query).await {
                         Ok(b) => qa_blob = Some(b),
                         Err(_) => embed_degraded = true,
@@ -240,6 +247,10 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             as_of,
             args.expand_graph,
             args.local_only,
+            // ADR-083: gate only when memory competes with code for shared
+            // result slots (the default). `--only-memory` (want_code == false)
+            // has no slots to protect and returns the full page.
+            want_code,
         )
         .await?
     } else {
@@ -552,6 +563,21 @@ fn memory_missing_count(mem_path: &std::path::Path) -> i64 {
         .and_then(|s| s.notes_missing_embeddings(false).ok())
         .map(|v| v.len() as i64)
         .unwrap_or(0)
+}
+
+/// Whether the memory store holds zero embedded notes, for the ADR-083 QA-embed
+/// elision. Best-effort, direct read of the local `memory.db`, mirroring
+/// [`memory_missing_count`]: `false` when there is no local store to read (an
+/// uninitialised path or a cloud-routed store) so it never wrongly elides a
+/// real embed.
+fn memory_has_no_embedded_notes(mem_path: &std::path::Path) -> bool {
+    if !mem_path.exists() {
+        return false;
+    }
+    MemoryStore::open(mem_path)
+        .ok()
+        .and_then(|s| s.has_no_embedded_notes().ok())
+        .unwrap_or(false)
 }
 
 /// Emit a staleness warning to stderr if the index appears out of date.
