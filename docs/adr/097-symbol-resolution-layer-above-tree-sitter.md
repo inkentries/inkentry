@@ -11,8 +11,10 @@ in-tree beneficiary of better identity. It does not touch memory identity
 [ADR-093](093-entity-id-is-the-portable-handle-for-memory-entries.md)) — this is
 about *code-symbol* identity, a different axis. It adds one nullable column to
 `graph_edges` (the table [ADR-080](080-structural-summaries-pagerank-tiered-embed-queue-in-place-reembed.md)'s
-PageRank and the LinearRAG mentions graph both read); `index.db` rebuilds rather
-than migrates, so the column arrives on the next `inkentry index` with no ladder.
+PageRank and the LinearRAG mentions graph both read). The column arrives by a
+forward migration of `index.db`, not by a rebuild (section 1): a rebuild
+discards the embeddings, and re-embedding a large repository is hours of work
+that every team member would repeat.
 
 ## Context
 
@@ -85,9 +87,37 @@ this edge resolved to.
   conditional definitions). The per-file dedup key in `replace_edges` therefore
   extends to include `target_file`. Unresolved stays one row, `target_file` NULL.
 
-`index.db` declares its final shape in one schema file and rebuilds on version
-mismatch (CLAUDE.md, "SQLite + sqlite-vec"); the column is added to
-`index_001_initial.sql` with no migration path and no data carried across.
+**The column is migrated in, not rebuilt in.** Today `Database::open`
+(`crates/inkentry-core/src/storage/db.rs`) treats any `user_version` below
+`CURRENT_SCHEMA_VERSION` as an index it cannot read: it deletes the file,
+recreates it empty and asks for `inkentry index`. That is affordable for shapes
+from before the 1.0 reset and is kept for them (stamps at or below
+`LAST_LEGACY_SCHEMA_VERSION`). It is not affordable here. Everything in
+`index.db` can be rederived from source, but the embeddings are by far the
+expensive part to rederive: on a large repository a rebuild is hours of
+embedding, paid again by every team member, to add one nullable column that
+touches neither chunks nor vectors.
+
+So this change is a forward step on `index.db`, applied in place on open, using
+the same stamped, one-transaction-per-step pattern `memory.db` uses:
+
+- `ALTER TABLE graph_edges ADD COLUMN target_file TEXT`, plus the index that
+  backs the extended dedup key. Existing rows get `NULL`, which already means
+  "unresolved, use the bare-name fallback", so a migrated index is correct
+  before any resolution has run.
+- `index_001_initial.sql` gains the column too, as the declared final shape for
+  new indexes, and a parity test holds the migrated and fresh schemas equal.
+- Filling `target_file` for existing edges is a **graph-only pass**: re-parse
+  and re-extract edges with tree-sitter, write `graph_edges`, touch nothing
+  else. No chunking, no embedding. The step records that the pass is owed in
+  `index_meta`, and the next `inkentry index` runs it for every file, not just
+  changed ones, then clears the marker. Until then consumers see `NULL` and
+  behave as they do today.
+
+Rebuild stays as the last resort for a change that genuinely invalidates the
+stored data (a different embedding space, a chunking change that makes existing
+chunk rows wrong). A step says so explicitly; it is not the default consequence
+of a version bump.
 
 `inkentry plumbing graph-edges` JSONL gains an **optional** `target_file` field,
 present only when resolved. This is an additive field, not a shape change.
@@ -189,7 +219,7 @@ does not ship.
   types) is the cheaper, broader win to land first. Deferred as its own tier.
 - **A separate `edge_resolution` table.** Rejected: `graph_edges` has no stable
   edge id (it is replace-per-file), so a side table buys nothing over a nullable
-  column and complicates the rebuild.
+  column.
 
 ## Consequences
 
