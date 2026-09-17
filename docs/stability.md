@@ -279,24 +279,27 @@ The same three steps apply to CLI flags and to `/v1/` request fields.
 
 The promise here is **that no recorded memory is lost**, and that a store this
 build cannot read is refused or rebuilt rather than opened and damaged. The
-promise is *not* that the SQL schema stays fixed, and from 1.0.0 it is also
-**not** that an upgrade never requires you to move your data across: neither
-store migrates, and the one that holds authored data has to be exported and
-imported. See [Upgrading](upgrading.md) for the sequence, which is a team-wide
-one rather than a personal one.
+promise is *not* that the SQL schema stays fixed. From 1.0.0, a store below
+schema version 11 (the previous product's) still has to be exported and
+imported rather than migrated; from version 11 onward, `memory.db` migrates
+forward in place, and `index.db` still never migrates — it rebuilds
+instead. See [Upgrading](upgrading.md) for the export/import sequence, which
+is a team-wide one rather than a personal one.
 
 | Store | Versioning | Level |
 |---|---|---|
 | `.inkentry/index.db` | `PRAGMA user_version`, no ladder | **Stable**: a store this build did not write is discarded and rebuilt empty, carrying the `usage` table across, and one from a newer build is refused. The index is derived from your source tree, so `inkentry index` is always a valid recovery. |
-| `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index, no ladder | **Stable**, and stricter: memory is authored and cannot be rebuilt, so a store this build did not write is refused outright and left untouched on disk. An older one is refused with a message naming the export and [import](commands.md#inkentry-import) path; a newer one is refused with a message to upgrade. |
+| `.inkentry/memory.db` | `PRAGMA user_version`, independent of the index; forward-only ladder from schema version 11 | **Stable**, and stricter: memory is authored and cannot be rebuilt. A store below version 11 is refused outright and left untouched on disk, with a message naming the export and [import](commands.md#inkentry-import) path; version 11 and above migrates forward in place to the version this build writes; a newer one is refused with a message to upgrade. |
 | `~/.config/inkentry/registry.db` | none | **Best-effort**. Tables are created idempotently. It holds project registrations, which are re-derivable by re-registering. |
 | git notes on `refs/notes/inkentry` | `schema_version` inside each JSON record | **Stable**. A record with a higher `schema_version` than the reader knows is refused rather than misread, and lines that are not inkentry records are left untouched, so the ref can be shared with other tooling. Fields are added within a version rather than by bumping it: a reader ignores keys it does not know, so a record written by a newer build still reads. A record carries the entry, its supersede state, and the entry's outgoing `relates_to` and `contradicts` edges. |
 | server-side database | sequential migration files | **Internal** to a server deployment, and not a client-facing surface. |
 | [portable dump](dump-format.md) | `format_version` in the header record | **Stable**. Version 1 stays readable for the life of the major version; change within a version is additive only, and anything a version 1 reader could not handle is a version bump. A dump is refused whole rather than partially read, so an unreadable one never turns into a partial import. |
 
-There are no migrations. Downgrading inkentry after an upgrade is not
-supported, and the next section says what each store actually does when you try
-it anyway.
+`index.db` never migrates. `memory.db` migrates forward from schema version
+11 on; below that, it is still refused rather than migrated, since
+the pre-11 ladder belonged to the previous product and was retired at the
+rename. Downgrading inkentry after an upgrade is not supported, and the next
+section says what each store actually does when you try it anyway.
 
 ### Downgrading, and what each store does
 
@@ -308,9 +311,10 @@ opening build's own constant, and anything above it stops with a message to
 upgrade rather than being opened. The file is left as it was.
 
 **Below its own stamp, the two diverge.** `index.db` is discarded and rebuilt
-empty, carrying only `usage`; `memory.db` is refused and left untouched, with
-its message naming the export and import path. That is the whole of the
-compatibility behaviour: neither store is ever converted in place.
+empty, carrying only `usage`. `memory.db` migrates forward in place from
+schema version 11 up to its own stamp; below version 11 — the previous
+product's store — it is refused and left untouched, with its message naming
+the export and import path.
 
 Each store's constant sits **above** the highest `user_version` its old
 migration ladder ever stamped, and nothing may reclaim that range. `PRAGMA

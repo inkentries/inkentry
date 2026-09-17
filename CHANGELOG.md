@@ -9,6 +9,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Internal
+
+- **`memory.db` can migrate forward again, starting at schema version 11.**
+  `create_schema` used to refuse every stamp below the current version,
+  legacy product or not; a future version bump would have locked out every
+  1.0/1.1 store. Versions below 11 (the previous product's) are still
+  refused with the export-and-import message. No release has stamped
+  anything above 11 yet, so this changes nothing you can observe today; it
+  only stops the next schema change from being a lockout.
+
 ## [1.1.0] — 2026-09-10
 
 This release contains breaking changes. Read the entries marked
