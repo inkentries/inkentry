@@ -127,6 +127,16 @@ pub fn inkentry_bin_in(home: &Path) -> Command {
         // its var is set, whatever the path resolves to.
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    // `Config::load` discovers the project `.inkentry/config.toml` by walking up
+    // from the child's working directory. Under nextest that directory defaults
+    // to this crate's dir *inside the checked-out repo*, so a command that does
+    // not set its own CWD would walk up and read the repo's own dogfood config —
+    // which pins `cloud = true` and sends the test to the live api.inkentry.com
+    // (401s, unexpected `GET /memory` / `/memory/since`). Pin the CWD to the
+    // isolated `home` (no `.inkentry/` ancestor) so discovery finds nothing.
+    // Tests that need a real project set `.current_dir(project_dir)` themselves,
+    // which overrides this default.
+    cmd.current_dir(home);
     cmd
 }
 
