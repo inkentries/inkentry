@@ -9,6 +9,21 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`inkentry metrics snapshot`** computes a deterministic, commit-keyed
+  state-metrics document from `memory.db` and (in a git repository) `git log`
+  — entry counts by kind, commit coverage, supersede rate and time-to-supersede,
+  open-question age, near-duplicate rate, unresolved conflicts, lines per
+  decision, review items per day, and an estimated context-token count
+  ([ADR-098](docs/adr/098-metrics-and-evaluation-indexed-by-commit.md)).
+  `--json` prints the full document (`"schema": "inkentry.metrics/1"`);
+  without it, the same numbers print as a short summary. `--window-days`
+  (default 30) sets the window. No network, no model calls, and no entry
+  content — aggregates only. `inkentry status` now prints a compact, cheap
+  subset of the same metrics (and carries it under a new `metrics` field in
+  `--format json`) whenever a memory store exists.
+
 ## [1.1.0] — 2026-09-10
 
 This release contains breaking changes. Read the entries marked

@@ -51,8 +51,17 @@ use crate::{
 /// `embedding_pending`, `embedding_refresh_pending`, `memory_embedding_pending`,
 /// `summary_scheme`, `index_rebuilt_from`, `embed_worker_alive`, `embed_tokens`,
 /// `drift_candidates`,
-/// `usage_7d`) are present for backward compatibility and richer tooling; treat
-/// them as unstable extensions.
+/// `usage_7d`, `metrics`) are present for backward compatibility and richer
+/// tooling; treat them as unstable extensions.
+///
+/// `metrics` (ADR-098) is the cheap subset of a `inkentry metrics snapshot`:
+/// `null` when there is no readable local memory store, otherwise an object
+/// with `window_days` and the `rec.*`/`cmp.*` fields
+/// [`inkentry_core::metrics::StatusMetricsSummary`] documents. It omits
+/// `rec.near_duplicate_rate` (needs a full embedding scan),
+/// `cmp.lines_per_decision` (needs a `git log --numstat` walk of the window),
+/// and `cmp.tokens_context_estimate` — `status` runs every session and must
+/// stay cheap; use `inkentry metrics snapshot --json` for the full set.
 ///
 /// `memory_embedding_pending` counts memory entries with no vector — the set
 /// `inkentry memory reindex` fills. `null` when there is no readable local
@@ -118,6 +127,12 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             };
         let usage_map: std::collections::HashMap<&str, i64> =
             usage.iter().map(|(c, n)| (c.as_str(), *n)).collect();
+
+        // ADR-098: the cheap metrics subset, only when a memory store exists.
+        // Best-effort like the rest of this branch's supplementary fields —
+        // a computation failure omits the section rather than failing the
+        // whole `status` call.
+        let metrics_json = metrics_summary_json(&mem_path, &db_path).await;
 
         // ADR-037 P2, item 35: additive-only JSON extensions. `null` under any
         // mode other than `local_first` (item 38: `cloud_first` has no local
@@ -275,7 +290,8 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "usage_7d": {
                     "search": usage_map.get("search").copied().unwrap_or(0),
                     "memory_search": usage_map.get("memory search").copied().unwrap_or(0),
-                }
+                },
+                "metrics": metrics_json,
             }))?
         );
         return Ok(());
@@ -487,7 +503,54 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         }
     }
 
+    // ADR-098: compact metrics section, only when a memory store exists.
+    // Best-effort: a computation failure (no git, an unreadable store) skips
+    // the section rather than failing `status` itself.
+    if mem_path_text.exists()
+        && let Some(summary) = metrics_status_summary(&mem_path_text, &db_path).await
+    {
+        println!();
+        super::metrics::print_status_summary(&summary);
+    }
+
     Ok(())
+}
+
+/// The cheap ADR-098 metrics subset for both `status --format json`'s
+/// `metrics` field and the text section above. `None` on any failure to
+/// open the store or compute it — the caller treats that identically to "no
+/// memory store", never as a hard error.
+async fn metrics_status_summary(
+    mem_path: &std::path::Path,
+    db_path: &std::path::Path,
+) -> Option<inkentry_core::metrics::StatusMetricsSummary> {
+    let store = MemoryStore::open(mem_path).ok()?;
+    // `db_path` is always `<project_root>/.inkentry/index.db`
+    // (stability.md); two `.parent()` calls recover the project root the git
+    // commands and a non-git-repo fallback project id both need.
+    let project_root = db_path.parent().and_then(|p| p.parent())?;
+    inkentry_core::metrics::build_status_summary(
+        &store,
+        project_root,
+        inkentry_core::metrics::DEFAULT_WINDOW_DAYS,
+    )
+    .await
+    .ok()
+}
+
+/// JSON-mode wrapper around [`metrics_status_summary`]: `Value::Null` when
+/// there is no store or the computation failed.
+async fn metrics_summary_json(
+    mem_path: &std::path::Path,
+    db_path: &std::path::Path,
+) -> serde_json::Value {
+    if !mem_path.exists() {
+        return serde_json::Value::Null;
+    }
+    match metrics_status_summary(mem_path, db_path).await {
+        Some(summary) => serde_json::to_value(summary).unwrap_or(serde_json::Value::Null),
+        None => serde_json::Value::Null,
+    }
 }
 
 /// `mem_label` is the resolved memory line (ADR-067 D3): derived from the opened

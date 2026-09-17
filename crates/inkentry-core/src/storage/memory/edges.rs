@@ -162,6 +162,21 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Every edge of `kind` in the store, regardless of when it was created.
+    /// Callers that need a time window (e.g. `rec.supersede_rate`, ADR-098)
+    /// filter `created_at` themselves rather than parameterising the query
+    /// twice: the set is small (one row per supersede/relates_to/contradicts),
+    /// so filtering after the fact costs nothing extra.
+    pub fn edges_of_kind(&self, kind: &str) -> Result<Vec<MemoryEdge>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT from_id, to_id, kind, created_at FROM memory_edges WHERE kind = ?1 ORDER BY created_at",
+        )?;
+        let edges = stmt
+            .query_map(rusqlite::params![kind], row_to_edge)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(edges)
+    }
+
     /// Return all outgoing and incoming edges for a note.
     /// Returns `(outgoing, incoming)`.
     pub fn get_edges(&self, id: &NoteId) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {

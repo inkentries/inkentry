@@ -344,6 +344,45 @@ async fn memory_add_list_zero_egress() {
     trap.assert_clean().await;
 }
 
+// ── metrics snapshot (ADR-098): memory.db + local git log, nothing else ────────
+
+#[tokio::test]
+async fn metrics_snapshot_zero_egress() {
+    ensure_sqlite_vec();
+    let home = TempDir::new().expect("home");
+    let project = TempDir::new().expect("project");
+    let state_dir = TempDir::new().expect("state dir");
+    init_git_repo(project.path());
+    write_project(project.path());
+
+    local_tier_cmd(home.path(), project.path(), state_dir.path())
+        .arg("init")
+        .arg("--no-index")
+        .assert()
+        .success();
+
+    let mut add_cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    add_cmd
+        .arg("memory")
+        .arg("add")
+        .arg("--kind")
+        .arg("decision")
+        .arg("--title")
+        .arg("egress test decision")
+        .arg("--body")
+        .arg("written by egress_containment.rs");
+    add_cmd.assert().success();
+
+    let trap = EgressTrap::start().await;
+
+    let mut snapshot_cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    trap.wire(&mut snapshot_cmd);
+    snapshot_cmd.arg("metrics").arg("snapshot").arg("--json");
+    snapshot_cmd.assert().success();
+
+    trap.assert_clean().await;
+}
+
 // ── memory-corpus search (hybrid, loopback-embedded query) ─────────────────────
 
 #[tokio::test]
