@@ -642,6 +642,17 @@ modes](memory.md#team-server-and-sync-modes)). `--format json` carries the
 same information as `sync_pending` / `sync_last_synced_at`, both `null`
 outside `local_first`.
 
+When a memory store exists, `status` also prints a compact metrics section
+(ADR-098): entries recorded in the default 30-day window by kind, commit
+coverage, how many entries were superseded in the window and the median time
+to supersede, review items recorded per day, open questions and their median
+age, and unresolved conflicts. This is the cheap subset of [`inkentry metrics
+snapshot`](#inkentry-metrics) — `status` runs on every session, so it never
+computes `rec.near_duplicate_rate` (a full embedding scan) or
+`cmp.lines_per_decision` (a `git log --numstat` walk); use `inkentry metrics
+snapshot --json` for those. `--format json` carries the same subset under a
+`metrics` field, `null` when there is no readable local memory store.
+
 **Example:**
 
 ```bash
@@ -1319,6 +1330,60 @@ also covers archived notes, and `--dry-run` reports counts without writing or
 contacting the embedder. This is separate from `inkentry index`, which re-embeds
 the code index. See
 [Backfilling missing embeddings](memory.md#backfilling-missing-embeddings).
+
+---
+
+## inkentry metrics
+
+State metrics computed from `memory.db` and (when the project is a git
+repository) `git log`, keyed by commit ([ADR-098](adr/098-metrics-and-evaluation-indexed-by-commit.md)).
+This is the **state** source only: no events, no evals. The CLI never runs an
+eval and never emits an `eval` block.
+
+```
+inkentry metrics snapshot [--window-days 30] [--json]
+```
+
+`inkentry metrics snapshot --json` prints one deterministic JSON document
+(`"schema": "inkentry.metrics/1"`) to stdout: a `header` (project id, HEAD's
+commit sha and commit time when in a git repository, the inkentry version,
+the embedder's model id/dimension/precision, and the window in days) and a
+`state` block of `rec.*`/`cmp.*` metrics, each rate carrying its own
+numerator and denominator. No network, no model calls, and no entry ids,
+titles, paths or query text — aggregates only.
+
+Deterministic means exactly that: given the same repository state, two runs
+produce byte-identical output. There is no `generated_at` field, and the
+window closes at the later of HEAD's commit time and the newest memory
+entry's `created_at`, never at the wall clock, so an entry recorded since the
+last commit is still counted. A project
+that is not a git repository (or has no commits yet) has every commit-based
+metric — `rec.commit_coverage`, `cmp.lines_per_decision` — **absent** from
+the document, not reported as zero.
+
+Without `--json`, the same numbers print as a short human summary.
+
+`--window-days N` (default 30) sets the window every metric below is computed
+over.
+
+**State metrics (v1 slice):**
+
+| id | what it is |
+|---|---|
+| `rec.entries` | total / active / in-window entry counts, by kind |
+| `rec.commit_coverage` | commits in the window with at least one entry anchored to them (by `source_ref` or the git-notes attachment), over commits in the window |
+| `rec.supersede_rate` | entries superseded in the window, over active decisions at window start |
+| `rec.time_to_supersede_p50` | median seconds between a superseding entry and what it superseded |
+| `rec.open_question_age_p50` | median age of open questions (a `question` entry with no `relates_to` edge to an `answer` entry — the closest this schema can express "unanswered") |
+| `rec.near_duplicate_rate` | active entries with another active entry within cosine distance 0.15, using stored embeddings only; entries without a vector are excluded from both numerator and denominator, and their count is reported separately |
+| `rec.unresolved_conflicts` | active entry pairs joined by a `contradicts` edge |
+| `cmp.lines_per_decision` | lines added + removed in the window (`git log --numstat`), over decisions recorded in the window |
+| `cmp.review_items_per_day` | `decision`/`requirement`/`question`/`antipattern` entries recorded in the window, over the window's length in days |
+| `cmp.tokens_context_estimate` | estimated token count (chars/4) of the entries a default `inkentry context` would print |
+
+Not implemented in this slice, and deliberately absent from the document:
+`events`-source metrics (need the `memory.db` migration in #292) and every
+`eval`-source metric (the CLI never runs an eval, per ADR-098 D7).
 
 ---
 
