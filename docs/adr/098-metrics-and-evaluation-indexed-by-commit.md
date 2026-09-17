@@ -139,81 +139,113 @@ here so the definition is fixed.
 `out.review_rounds_p50`, `out.corrections_per_session`. These need weeks of
 history and, for the last, session transcripts.
 
-### D4 - versioned eval sets, with labels the product already creates
+### D4 - evals are split by the job they do
+
+The bench harness has been asked to do three different jobs, and most
+disappointment with it comes from asking one suite for another's job.
+
+| job | question it answers | what it needs |
+|---|---|---|
+| **guard** | did this change break retrieval? | a fixed input and a number that moves when something breaks. Internal, relative, never quoted as a result |
+| **development signal** | does memory recall work, and did this change improve it? | memory queries with known right answers that were not derived from the stored text |
+| **comparison** | is inkentry better than the alternatives at finding *why*? | the development set at adequate size, run against baselines a reader recognises |
 
 Eval sets live in `inkentry-bench` under `evalsets/<name>/v<N>/`, are frozen
-once published, and are referred to by name and version everywhere
-(`memory-supersede/v1`). Changing a set means a new version and a visible break
-in the series.
+once published, and are referred to by name and version everywhere. Changing a
+set means a new version and a visible break in the series.
 
-- `memory-supersede/v1`. For each `supersedes` edge in a repository's history:
-  the query is the **title** of the superseding entry, the expected result is
-  the superseded entry, and the search runs `--as-of` the instant before the
-  superseding entry was written, so the answer cannot be the entry that asked
-  the question. Body text is excluded from the query because superseding
-  entries often quote what they replace.
+#### Guards: automatic, from now
+
+- `codesearchnet/v1`. The existing suite pinned to the ADR-083 configuration
+  (fixed seed and sample, a few hundred chunks). It is mostly a measure of the
+  embedder and chunker, not of anything inkentry claims, and that is fine for a
+  guard: it is the suite that caught the ADR-083 regression.
+- `codegraph/v1`. The existing call-graph tasks. Guard for the code-graph work.
+- `memory-supersede/v1`. For each `supersedes` edge: the query is the **title**
+  of the superseding entry, the expected result is the superseded entry, and
+  the search runs `--as-of` the instant before the superseding entry was
+  written. Body text is excluded because superseding entries often quote what
+  they replace.
 - `memory-anchor/v1`. For each active entry with validated `linked_files`: the
   query is a path, the expected results are the entries linked to it.
-- `memory-commit/v1`. For each entry whose `source_ref` is a commit SHA: the
-  files that commit changed are the entry's anchor. The query is one of those
-  paths (or the commit subject); the expected result is the entry. This is the
-  set that has labels today.
-- `decision-archaeology/v1`. The three committed question sets already in the
-  bench repo (ripgrep, ruff, tokio), with their blindness protocol.
-- `codesearchnet/v1`, `codegraph/v1`. The existing code suites, pinned to a
-  seed and sample size so they form a series.
+- `memory-commit/v1`. For each entry whose `source_ref` is a commit: the query
+  is the commit subject, the expected result is the entry. **This set leaks by
+  construction** for harvested entries, whose text was written from that same
+  commit message. It can show that retrieval broke; it cannot show that
+  retrieval is good, and it is never reported as anything but a guard.
 
 **Label counts today, measured on this repository's `.inkentry/memory.db`
 (2026-09-17):** 195 entries (101 decisions, 57 handoffs), 4 `supersedes`
-edges, 0 entries with `linked_files`, 181 entries with a `source_ref`. So on
-inkentry's own history `memory-supersede/v1` has 4 labels and
-`memory-anchor/v1` has none; both are defined now and reported as underpowered
-until the log supplies them. `memory-commit/v1` (181 labels) and
-`decision-archaeology/v1` carry the memory side of the series at first. The
-counts are themselves a finding: 4 supersessions across 101 decisions in three
-months says supersession is not happening, which `rec.supersede_rate` will
-track.
+edges, 0 entries with `linked_files`, 181 entries with a `source_ref`. So
+`memory-supersede/v1` has 4 labels and `memory-anchor/v1` has none. Both are
+defined now, reported as underpowered, and grow only as the write path
+improves; their label counts are themselves a measure of that. The counts are
+also a finding: 4 supersessions across 101 decisions in three months says
+supersession is not happening, which `rec.supersede_rate` will track.
 
-Source repositories are inkentry's own history first, then any open-source
-repository with a harvested log. The label count is recorded in
-the set's manifest; a set with fewer than 50 labels is reported but marked
-underpowered. Each set records its measured run-to-run noise floor, and a delta
-smaller than the floor is reported as no change (ADR-083 measured 0.018 on
-Recall@10 for one configuration).
+When guards run:
 
-#### What runs when
-
-The full bench suite cannot run per merge: it needs large repository
-checkouts, a long `inkentry harvest` preparation pass, a long run, and parts
-of it call a model. So the series is built from three tiers, and only the
-first is tied to merges.
-
-| tier | when | budget | contents |
+| tier | when | budget | sets |
 |---|---|---|---|
-| **T0** | every merge to `main` that touches search, ranking, indexing, embedding or storage code; otherwise the previous point is carried forward | minutes on a hosted runner, no model calls, no external repository checkouts | `memory-commit/v1`, `memory-supersede/v1`, `memory-anchor/v1` on inkentry's own history; `decision-archaeology/v1` against **frozen corpora** (below); `codesearchnet/v1` at a fixed seed and sample (the ADR-083 configuration: a few hundred chunks); the state metrics |
-| **T1** | nightly or weekly, scheduled | about an hour, no model calls | `codegraph/v1` on its three repositories with cached indexes; larger CodeSearchNet samples |
-| **T2** | before a release, run by hand on a developer machine or a self-hosted runner, as today | hours, and model calls | SWE-bench, CrossCodeEval, and **re-harvesting** the corpora. Results are committed as baselines and appear in the series as sparse points |
-
-The thing that makes T0 possible is separating *evaluating retrieval* from
-*evaluating harvest*. Harvest is the slow, model-dependent part, and its
-output is just a memory store. Each corpus-based eval set therefore ships with
-its harvested store as a frozen artefact (a `dump` file, versioned with the
-set). T0 imports the dump, embeds it, and measures retrieval over it: no
-model, no preparation pass, no large checkout, and the same input every time. Harvest
-quality itself is a T2 question, measured when a new corpus version is cut.
+| **T0** | every merge to `main` that touches search, ranking, indexing, embedding or storage code; otherwise the previous point is carried forward | minutes on a hosted runner, no model calls, no external repository checkouts | `codesearchnet/v1`, the three memory sets on inkentry's own history, and the state metrics |
+| **T1** | scheduled, nightly or weekly | about an hour, no model calls | `codegraph/v1` with cached indexes |
 
 T0's remaining cost is embedding on a CPU runner: the embedder download
-(cached between runs) plus a few hundred entries and queries. The budget above
-is a target to be confirmed on the first run, and if a set does not fit it
-moves to T1 rather than slowing merges.
+(cached between runs) plus a few hundred entries and queries. The budget is a
+target to be confirmed on the first run; a set that does not fit moves to T1
+rather than slowing merges. Each set records its measured run-to-run noise
+floor, and a delta smaller than the floor is reported as no change (ADR-083
+measured 0.018 on Recall@10 for one configuration). A guard exists to catch an
+ADR-083-sized break (Recall@10 0.650 to 0.356) the day it lands, not to rank
+two good configurations.
 
-T0 can only resolve regressions larger than each set's noise floor. That is
-the intent: it exists to catch an ADR-083-sized break (Recall@10 0.650 to
-0.356) the day it lands, not to rank two good configurations. Fine comparisons
-are made with `paired_stats.py` on T1 or T2 runs.
+#### Development signal: `why/v1`, defined now, built when there is time
 
-Model-judged evals are allowed as a secondary, periodic report at T2; they
-never feed the T0 or T1 series because they are neither deterministic nor free.
+The set that measures the product's actual claim is a list of why-questions
+about a repository, each with the commit or entry that answers it as ground
+truth, scored by whether each retrieval method surfaces that answer in its top
+results. The harness for this exists (`decision_archaeology`: literal grep,
+keyword grep, commit-message search, plain RAG, memory search). What does not
+exist is a question set large enough to mean anything.
+
+- **inkentry's own repository first.** Authoring questions for a large
+  third-party history means learning that history before writing a single
+  question, and the existing third-party sets proved slow to write and hard to
+  be confident in. Maintainers already know why inkentry is the way it is.
+- **Blind by construction.** A question must be written without sight of the
+  memory store, from `git log`, PRs or recollection, so that the wording does
+  not echo a stored entry. Ground truth is reviewed by a second person.
+- **Accrued, not commissioned.** A real why-question asked during real work,
+  before its answer was known, is blind for free. Recording such a question
+  with the commit or entry that turned out to answer it (a `question` entry
+  related to its answer already expresses this) adds a candidate to the set at
+  almost no cost. A review pass promotes candidates into a versioned set.
+- **Size.** Reported as underpowered below 50 questions.
+
+This ADR does not schedule `why/v1`. Until it exists, the memory side of the
+series has guards only, and reports must say so rather than present a guard as
+evidence of quality.
+
+#### Comparison: not before `why/v1`
+
+No comparative result is produced by this ADR. One becomes possible when
+`why/v1` has adequate size and is run through the harness's baseline
+conditions, optionally with an agent answering the same questions with and
+without inkentry and the tokens and tool calls it spends recorded. The
+existing third-party question sets stay in the bench repository as they are
+and are not extended.
+
+#### Out of the series
+
+The agent-task suites (SWE-bench, CrossCodeEval) measure task completion, not
+recall, on repositories with no real memory, and at the slice sizes that are
+practical their uncertainty is wider than any plausible effect. The own-repo
+golden set derives its queries from text that is also indexed, and the bench
+README already says its absolute numbers run high. None of them feeds the
+series. They remain in the bench repository for ad-hoc runs.
+
+Model-judged evals are allowed as an occasional secondary report; they never
+feed the series because they are not deterministic.
 
 ### D5 - a local event log, as a table in `memory.db`
 
@@ -308,11 +340,10 @@ change should move, the direction, and the eval set version that will show it.
 ### Phasing
 
 1. **Baseline, no product change.** State metrics computed by a script over
-   inkentry's own repository; `memory-commit/v1` built, with
-   `memory-supersede/v1` and `memory-anchor/v1` defined and reported as
-   underpowered; `codesearchnet/v1` pinned; frozen archaeology corpora cut from the
-   existing harvested repositories; the T0 job emitting snapshots on merge.
-   First result expected: the ADR-083 regression visible as `ret.memory_in_top10`.
+   inkentry's own repository; `codesearchnet/v1` pinned; the three memory
+   guard sets built and reported with their label counts; the T0 job emitting
+   snapshots on merge. First result expected: the ADR-083 regression visible
+   as `ret.memory_in_top10`.
 2. **Events and origin.** D5 and D6 in the CLI; the summary in `inkentry status`.
 3. **Hooks and MCP** declare `trigger` and `actor_kind`; automation and
    recollection metrics become meaningful.
@@ -340,8 +371,8 @@ change should move, the direction, and the eval set version that will show it.
   without anyone remembering to run a harness. ADR-083-style regressions are
   visible the night they land, and an accepted-but-unbuilt fix shows up as a
   flat line.
-- Comparing inkentry with another tool becomes a run of the same versioned
-  sets against it rather than an impression.
+- Once `why/v1` exists, comparing inkentry with another tool is a run of the
+  same versioned questions against it rather than an impression.
 - The hooks and MCP work has a target: `auto.read_rate` and `auto.write_rate`
   towards 1.
 
@@ -349,18 +380,13 @@ change should move, the direction, and the eval set version that will show it.
 
 - Eval sets are now a maintained artefact with versioning discipline, and the
   bench repo becomes part of the release path rather than a side tool.
-- Frozen corpora go stale: a harvested store cut today reflects today's
-  harvest prompts. That is correct for measuring retrieval and wrong for
-  measuring harvest, and the two must not be confused when reading a chart.
-  Cutting a new corpus version is a deliberate T2 task, and it breaks
-  the series by design.
-- `memory-supersede/v1` is only as good as supersede discipline in the source
-  history, and today that yields 4 labels; `memory-anchor/v1` yields none
-  because no entry carries `linked_files`. The series leans on
-  `memory-commit/v1` and the archaeology sets until write-time improvements
-  (candidate surfacing on `memory add`, validated file links) start producing
-  labels, at which point the label counts become a measure of those
-  improvements.
+- The memory side starts with guards only. `memory-supersede/v1` has 4 labels,
+  `memory-anchor/v1` has none, and `memory-commit/v1` leaks by construction.
+  Until `why/v1` exists there is no number that says memory recall is *good*,
+  only numbers that say it has not broken, and every report has to be honest
+  about that.
+- `why/v1` depends on maintainers' time. Accrual through ordinary work keeps
+  the cost low but makes the set's growth unpredictable.
 - Two more schemas to keep stable: `events` and the snapshot document.
 - Every new surface (MCP, hooks) must declare `surface`, `trigger` and
   `actor_kind`, or the event metrics decay into `unknown`.
