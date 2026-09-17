@@ -310,11 +310,20 @@ migration pattern, re-enabled from version 11 by #292); until then `origin` live
 ### D7 - one snapshot document, and it is the only interface to dashboards
 
 `inkentry metrics snapshot --json` emits a deterministic document
-(`schema: "inkentry.metrics/1"`) for a commit: the D2 header, then `state`,
-`events` and (when supplied by the bench job) `eval` blocks holding the D3
-metrics. Given the same repository state and the same `events` rows, it is byte-
-identical. The existing `inkentry status` command gains a human summary of the
-same data.
+(`schema: "inkentry.metrics/1"`) for a commit: the D2 header, then the `state`
+and `events` blocks holding the D3 metrics. Given the same repository state
+and the same `events` rows, it is byte-identical. The existing
+`inkentry status` command gains a human summary of the same two blocks.
+
+**The CLI never runs an eval.** Guards and every other D4 set are benchmarks:
+they embed queries and execute searches in bulk, and they belong to the
+development of inkentry, not to a user's machine or a user's repository. They
+run only in the bench repository's CI against inkentry's own history, and that
+job adds an `eval` block to the snapshot it publishes. A snapshot produced by
+the CLI has no `eval` block, and `inkentry status` shows none. What a user's
+repository does get is the cheap state metrics that the guard sets happen to be
+built from, such as how many supersede edges and linked files exist, because
+those are counts over the local store and cost nothing.
 
 Dashboards and reports read snapshots and nothing
 else. Nothing downstream queries `memory.db` directly, so the
