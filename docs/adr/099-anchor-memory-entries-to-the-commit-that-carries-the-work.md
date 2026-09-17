@@ -118,9 +118,9 @@ ordinary workflow:
 Commit time is not compared either. At hook time every pending row already
 predates the commit, and committer dates can be set by hand.
 
-### D3 - the anchor is a note attachment, so history rewrites carry it
+### D3 - the anchor is a note attachment, and it records the commit's patch-id
 
-Claiming writes a state-update record `{entity_id, op: "anchor"}` attached to
+Claiming writes a state-update record `{entity_id, op: "anchor", patch_id}` attached to
 the **claimed commit**, and sets `source_ref` on the local row as the projection
 of that attachment. This keeps the rule the carrier already follows: the anchor
 commit is the attachment, not a field inside the record. Because
@@ -130,9 +130,42 @@ import, an `anchor` record sets `source_ref` for its `entity_id`; the original
 write-time attachment remains and keeps its meaning of "written while standing
 here".
 
-An entry can carry more than one anchor (a decision whose work spans commits is
-claimed by the first; `memory anchor --commit <sha> <id>` adds others by hand).
-`source_ref` holds the earliest.
+`patch_id` is `git patch-id --stable` of the claimed commit: a hash of the
+commit's diff that does not depend on its parent, which is how git itself
+recognises a commit that has been rebased or cherry-picked. It is stored in the
+record, not recomputed later, because the original commit object may be gone
+from a clone by the time it is needed. Merge commits have no patch-id and carry
+none.
+
+An entry can carry more than one anchor. `source_ref` holds the earliest one
+that is reachable from a ref, falling back to the earliest.
+
+### D3a - rewrites are followed by patch-id, without relying on a hook
+
+Rebasing is a default workflow for many teams, and much of it happens where no
+local hook can run: the hosting service's "rebase and merge" button creates new
+commits server-side, with new SHAs, and carries no notes. `notes.rewriteRef`
+and a `post-rewrite` hook only ever see rewrites made in the clone they are
+installed in. So following a rewrite cannot depend on having observed it.
+
+Instead, reconciliation is done after the fact, from content:
+
+- **Claimed anchors.** When the commit an anchor is attached to is no longer
+  reachable from any ref, inkentry looks for a reachable commit with the same
+  `patch_id` and, if there is exactly one, writes an additional `anchor` record
+  on it. The old anchor is kept: it is still true of the commits the work was
+  reviewed as. This runs inside passes that already happen after history moves
+  (`inkentry index`, `memory sync`), over commits not seen before, so it costs
+  one patch-id per new commit.
+- **Pending rows.** When `head_at_write` is no longer reachable from any ref,
+  the same lookup finds the commit that replaced it, and D2's ancestry test
+  runs against that. This covers "recorded a decision, rebased the branch, then
+  committed" with no `post-rewrite` hook.
+
+It is best effort by nature. A rebase that needed conflict resolution changes
+the diff and therefore the patch-id, and no match is found. Two commits with
+the same diff are ambiguous and are left alone. Neither case is guessed: the
+entry keeps the anchor it has, or stays pending and ages out under D4.
 
 ### D4 - unclaimed stays unclaimed, and is visible
 
@@ -159,6 +192,7 @@ inkentry-server gains the update.
 | Also require the branch at write time to equal the branch committed on | Feels like extra safety | Rejects "started on `main`, created the branch at commit time", which is routine. Ancestry gives the safety without the false negative |
 | Also require the writing session to equal the committing session | Separates agents sharing a directory | Sessions sharing a worktree share a working tree, so the commit carries both; and the writer and the committer are often different sessions, or an agent and a person |
 | A commit-message trailer listing entry ids, written by a `prepare-commit-msg` hook | Survives every rewrite and is visible in `git log` | Puts tool bookkeeping into every commit message, and a second hook in the commit path is a second thing that can break a commit. The note attachment survives rewrites already |
+| Follow rewrites with a `post-rewrite` hook | Exact, and git hands over the old-to-new mapping | Only sees rewrites made in a clone that has the hook. Server-side rebase and squash, and teammates' rebases, are invisible to it. Patch-id needs no observation of the rewrite, so the hook would add a second mechanism for a subset of cases |
 | Store the anchor as a field in the record | Simple to read | The record is immutable and content-addressed by design; the carrier already expresses anchors as attachments, and a field would not follow an amend |
 | Require the agent to pass `--commit` | Exact | The commit does not exist yet when the decision is made, and a step someone must remember is the failure this product exists to remove |
 
@@ -177,18 +211,20 @@ inkentry-server gains the update.
 - The hook is now load-bearing for a data property, and hooks are per-clone.
   Without it entries stay pending until someone runs `memory anchor`. The
   agent hooks work should run the same plumbing after an agent commits.
-- Squash merges discard the anchored commits from `main`. The anchor remains
-  valid against the PR's commits, which is what the PR comment needs, but an
-  as-of query over `main` will not see it until the squash commit is anchored.
-  Deferred; see below.
+- Squash merges are not recoverable by patch-id: several diffs become one. The
+  anchor stays valid against the commits the work was reviewed as, which is
+  what a per-PR listing needs, but an as-of query over `main` does not see the
+  entry at the squash commit. See Known gaps.
 - One more local table to keep consistent with worktree removal.
 
 **Known gaps**
 
-- An entry still pending when its branch is rebased keeps a `head_at_write`
-  that is no longer an ancestor of anything, and falls to unanchored (D4).
-  `post-rewrite` could remap it; not worth the machinery until it is seen to
-  matter.
+- Squash merges (above), and rebases whose conflicts changed the diff, lose the
+  link to `main`. Closing the squash case needs the mapping from a pull
+  request's commits to its squash commit, which only the merge event carries;
+  a tree comparison (the squash commit's tree equals the branch tip's tree when
+  the branch was up to date) is a possible hook-free heuristic, not adopted
+  here.
 - The first commit after an entry is written claims it, even if that commit is
   an unrelated fix made first. Once entries carry linked files (ADR-101),
   preferring a commit that touches one of them would sharpen this.
