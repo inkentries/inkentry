@@ -73,8 +73,13 @@ else about the moment of writing is stored. In particular the branch name is
 not: a branch is a movable label, and the label at write time says nothing
 reliable about where the work will be committed (D2).
 
-A write outside a git repository, or pre-`init` on the git-notes-only path,
-records no pending anchor and behaves as today.
+An inkentry project does not have to be a git repository. When the project
+has no repository, or the repository has no commit yet (`HEAD` is unborn),
+`memory add` records no pending anchor and behaves exactly as today. Nothing
+else in this ADR applies to such a project: there is no hook, entries are
+never reported as unanchored, and the commit-based metrics (`rec.commit_coverage`,
+`rec.unanchored_rate`) are absent from its snapshot rather than zero. The same
+holds pre-`init` on the git-notes-only path.
 
 ### D2 - the post-commit hook claims anchors for its own worktree only
 
