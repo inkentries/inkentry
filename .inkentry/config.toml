@@ -1,1 +1,2 @@
 project_id = "github.com/inkentries/inkentry"
+cloud = true
