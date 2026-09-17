@@ -86,8 +86,41 @@ The caller repeats the command with one resolution per blocking candidate:
 - `--distinct-from <id>`: the similarity is incidental. Records nothing.
 
 A resolution naming an id that is not in the current candidate set is accepted;
-the set is advice, not a lock. `--no-reconcile` skips D1 entirely for bulk and
-scripted imports and is recorded as such in the event log.
+the set is advice, not a lock.
+
+### D2a - blocking is opt-in for the life of 1.x
+
+`docs/stability.md` freezes exit codes and makes changes additive-only within a
+major version. A `memory add` that starts refusing writes would break every
+script that treats success as "written", so in 1.x the blocking behaviour is
+selected by the caller:
+
+- `--reconcile` on the command, or `reconcile = "block"` under `[memory]` in
+  `.inkentry/config.toml`, turns D2 on. The new exit status exists only on this
+  path, which makes it an addition.
+- Without it, `memory add` writes as it does today, and the response gains the
+  `candidates` and `related` lists (additive fields). A human or a script sees
+  no change in behaviour; an agent that reads the response can still supersede
+  in a follow-up write, at the cost of the duplicate having been stored.
+- The agent-facing surfaces turn it on from the start: the skill's documented
+  invocation, the agent hooks, and the server request field in D4. These are
+  the callers that can actually resolve a candidate, and they are the ones the
+  problem comes from.
+- 2.0 makes `block` the default and `--no-reconcile` the escape for bulk and
+  scripted writes.
+
+### D2b - only an interactive write can block
+
+Reconciliation needs a caller who can answer. Paths that move entries which
+already exist somewhere never block and never drop an entry because of
+similarity: git-notes import, `memory sync`, `inkentry import`, and the
+server's batch and sync endpoints. They may report candidates; they do not act
+on them. `harvest` has no caller to ask either and keeps its existing
+behaviour of skipping a candidate that falls in the duplicate band.
+
+Two people who record the same decision independently while offline will
+therefore both keep their entry after a sync. That is surfaced by
+`rec.near_duplicate_rate`, not prevented.
 
 ### D3 - a successful write returns what is nearby
 
@@ -139,10 +172,10 @@ same candidate function as `memory add`, so the three paths cannot drift.
 
 **Harder**
 
-- `memory add` can now return "not written". Every caller, script and skill
-  that assumes success needs the new exit status handled. This is a breaking
-  change to a stable command and needs the `docs/stability.md` treatment and a
-  release note.
+- Under `--reconcile`, `memory add` can return "not written". D2a keeps that
+  off the default path in 1.x, so the stability policy holds, but it means two
+  behaviours to document and test until 2.0, and the default path still stores
+  duplicates.
 - Embedding moves ahead of the insert, so the embedder's latency is felt
   before the write returns rather than after. ADR-096's reserved lane is what
   keeps that bounded.
@@ -164,7 +197,8 @@ same candidate function as `memory add`, so the three paths cannot drift.
   checks. No cross-project lookup is introduced.
 - The secret scan still runs before anything else, so a refused secret is never
   embedded or compared.
-- `--no-reconcile` is an explicit bypass, visible in the event log.
+- Whether a write ran with reconciliation on, off or bypassed is recorded in
+  the event log, so the metrics can tell the paths apart.
 
 ## Measured by
 
