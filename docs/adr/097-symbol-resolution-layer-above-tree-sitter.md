@@ -1,4 +1,4 @@
-# ADR-097: A tiered symbol-resolution layer above tree-sitter, and a resolved-target column on the code graph
+# ADR-097: A symbol-resolution layer above tree-sitter — `locals.scm` intra-file resolution, and a resolved-target column on the code graph
 
 **Date:** 2026-09-15
 **Deciders:** Founder (Johan); Architect
@@ -45,28 +45,33 @@ Every derived property — impact, coupling, cycles, and PageRank centrality —
 only as trustworthy as this resolution. **Correctness is gated on identity, not
 on the engine.** (See handbook `v2-journey/poc-results.md`.)
 
-Two constraints shape any fix:
+The intra-file tier has one dependency constraint, and the obvious cross-file
+library is now foreclosed:
 
 - **The grammars come from `ast-grep-language` 0.45 on tree-sitter 0.26.13**
   (`ts_walker::ts_language`). That crate exposes each grammar's
   `tree_sitter::Language`, but **ships no `locals.scm`/query files** and no scope
   analysis (the `ast-grep-core` structural engine was removed — see CLAUDE.md,
-  "Dependency Notes").
-- **`tree-sitter-stack-graphs` 0.10 pins `tree-sitter ^0.24`** and its language
-  crates pin *exact* old grammars (`tree-sitter-python =0.23.5`,
-  `-typescript =0.23.2`, `-javascript =0.23.1`). Those are a different, semver-
-  incompatible tree-sitter line from ours; a `Language` or `Tree` from one line
-  cannot cross into the other. There is no published Ruby stack-graphs crate.
+  "Dependency Notes"). So the intra-file tier vendors the query files; it needs
+  no new runtime.
+- **`tree-sitter-stack-graphs` is foreclosed.** It was the obvious hermetic,
+  no-build cross-file resolver, but GitHub **archived the `github/stack-graphs`
+  monorepo on 2025-09-09**. Its releases are terminal at `tree-sitter ^0.24`
+  with exact old grammars (`-python =0.23.5`, `-typescript =0.23.2`,
+  `-javascript =0.23.1`) — a semver-incompatible line from our 0.26 that will
+  never advance, and no Ruby crate ever shipped. Adopting it would mean owning a
+  year-dead framework across two tree-sitter runtimes. So **cross-file resolution
+  is deferred** (see Deferred), and this ADR commits v1.2 to the intra-file tier.
 
 The offline/deterministic/single-binary promise (enforced by
-`crates/inkentry-cli/tests/egress_containment.rs`) rules out a live language
+`crates/inkentry-cli/tests/egress_containment.rs`) also rules out a live language
 server as a runtime dependency.
 
 ## Decision
 
 Keep tree-sitter as the parser. Add a **resolution layer** above it that binds a
-call edge's callee to a **defining file**, and persist that binding. Build it in
-tiers, cheapest and broadest first.
+call edge's callee to a **defining file**, and persist that binding. v1.2 ships
+the **intra-file** tier; cross-file resolution is deferred (see Deferred).
 
 ### 1. `graph_edges` gains a nullable `target_file` column
 
@@ -122,7 +127,7 @@ of a version bump.
 `inkentry plumbing graph-edges` JSONL gains an **optional** `target_file` field,
 present only when resolved. This is an additive field, not a shape change.
 
-### 2. Tier 1 — `locals.scm` intra-file resolution (ships first)
+### 2. `locals.scm` intra-file resolution (the v1.2 deliverable)
 
 tree-sitter's own scope queries (`@local.scope`, `@local.definition`,
 `@local.reference`) resolve name bindings *within a file*: which definition a
@@ -139,84 +144,76 @@ alias re-exports.
 - Broadly available across our tree-sitter languages (Rust, Python, JS/TS, Go,
   Ruby, …). Cheap: one extra query pass per file.
 
-Tier 1 makes the POC's largest locality bucket — same-file bindings (1,952 of the
+This makes the POC's largest locality bucket — same-file bindings (1,952 of the
 32% on lago) — **principled** rather than a "a def with this name happens to live
 in this file" guess, extends it to lexical scopes, and improves *precision* by
 suppressing edges whose callee is a local binding rather than a repo definition.
 
-### 3. Tier 2 — stack-graphs cross-file resolution (TS/JS/Python), as a sidecar
+### 3. Never: live LSP
 
-The 68% of multi-def edges Tier 1 leaves are cross-file: the callee is defined in
-another module reached through imports/exports. `stack-graphs` does exactly this
-name binding over tree-sitter — hermetic, no build step, no type checker —
-strongest where GitHub ships maintained rules: **TypeScript, JavaScript,
-Python**.
+A live language server is **never** a runtime dependency. It needs a buildable,
+stateful, non-hermetic project; it breaks the offline / deterministic /
+single-binary promise enforced by `egress_containment.rs`. This is a permanent
+boundary, not a scoping choice.
 
-Because stack-graphs sits on the incompatible tree-sitter 0.24 / 0.23.x line
-(Context), it is adopted as a **self-contained resolution sidecar**:
+### 4. Deferred (recorded so it is not re-litigated)
 
-- It owns its own tree-sitter 0.24 runtime and its own pinned grammars, and
-  **re-parses** the TS/JS/Python subset it resolves. The two tree-sitter lines
-  coexist in the binary and **never exchange `Language`/`Tree`/node values**; the
-  sidecar's only output is data — `(reference site → defining file)` bindings —
-  which the resolution pass writes into `target_file`.
-- The cost is explicit and accepted: a second tree-sitter line in the binary, a
-  double-parse of the resolved subset, and two grammar lines to track. It buys
-  the cross-file bulk of Mode-1 identity for the three languages where it is
-  strongest.
-
-**Ruby gets Tier 1 only** in v1.2: no stack-graphs crate exists for it, and its
-remaining gap is dynamic method dispatch — a *type* problem (Mode 2), not a scope
-one.
-
-### 4. Out of scope for v1.2 (recorded, not built)
-
-- **Live LSP** — never a runtime dependency. A language server needs a buildable,
-  stateful, non-hermetic project; it breaks the offline/deterministic/single-
-  binary promise and `egress_containment.rs`. Not now, not later.
+- **Cross-file resolution** — the POC's 68% residual — is out of v1.2 and gets
+  its own shaping task when picked up. Two maintained directions are on the
+  table: resolution over our **own import graph** (`EdgeExtractor` already emits
+  `kind = 'imports'` edges with module specifiers; combined with `chunks` this
+  needs no new dependency), and **SCIP ingest** as an offline enrichment. Ruby's
+  cross-file binding is `autoload`/constant-and-convention driven and effectively
+  type-bound, so it is scoped modestly on whichever path is chosen.
 - **The type-dependent residual (Mode 2).** ~26% of lago's intra-repo edges are
   *single-def over-match*: one definition, one common method name (`find`,
-  `success?`, `perform_later`) matched at every same-named call. Locality and
-  stack-graphs cannot split a single definition; only receiver types can. That is
-  a later **SCIP-ingest enrichment tier** (scip-typescript, scip-ruby/Sorbet,
-  rust-analyzer SCIP consumed *offline*, not a live server). Noted here so the
-  ceiling is on the record; it is a separate future track, not v1.2 work.
+  `success?`, `perform_later`) matched at every same-named call; only receiver
+  types can split those. The maintained tool is **SCIP ingest** (scip-typescript,
+  scip-python, scip-ruby/Sorbet, rust-analyzer SCIP) consumed *offline* — but
+  SCIP indexers need the language toolchain and a buildable project, so they are
+  not hermetic and can only be an opt-in tier, never core indexing. Noted so the
+  ceiling is on the record; a separate future track, not v1.2 work.
 
 ### 5. Measurement contract
 
-Every child task reports **before/after** on lago (`~/opensource/lago`) and on
-inkentry's own repo, against the POC's **32% crude-locality floor**. The POC
-probe (`code/inkentry-v2-poc`, `src/probe.rs`) is extended so a resolver is a
-pluggable backend and it reports, per tier (crude-locality baseline → `locals.scm`
-→ `+ stack-graphs`): multi-def resolution %, and the module-graph edge and
-cycle deltas. A tier that does not measurably beat 32% on multi-def resolution
-does not ship.
+The POC probe (`code/inkentry-v2-poc`, `src/probe.rs`) is extended so a resolver
+is a pluggable backend and it reports resolution % plus module-graph edge and
+cycle deltas, on lago (`~/opensource/lago`) and inkentry's own repo. v1.2's bar
+is the intra-file contribution: `locals.scm` measurably raises *sound* resolution
+and precision over the bare-lexical baseline, reported before/after.
+
+**v1.2 does not target the 32% floor.** That floor is a *cross-file* recall
+number; beating it is the deferred cross-file tier's job. Intra-file resolution
+is higher-precision and narrower-recall than crude locality's unsound
+same-dir/same-package guesses — the intended trade, not a regression. The probe
+reports both so the split is legible.
 
 ## What breaks
 
-- **Binary grows.** Tier 2 links a second tree-sitter line and three extra
-  grammars. Tier 1 adds only vendored query text.
-- **Double-parse** of the TS/JS/Python subset during indexing (Tier 2 only), on
-  top of the existing parse. Bounded to the resolved subset.
 - **`graph_edges` widens** by one nullable column and its dedup key. No consumer
   breaks: the bare-name join still works for `NULL` rows, and the two-column join
   is opt-in per consumer.
 - **`plumbing graph-edges` JSONL** carries a new optional field. Additive;
   consumers that ignore unknown fields are unaffected.
+- Nothing else: `locals.scm` adds vendored query text and one query pass — no new
+  runtime, no new dependency.
 
 ## Alternatives considered
 
-- **Wait for stack-graphs to reach tree-sitter 0.26 and unify on one runtime.**
-  Rejected: out of our control and blocks the whole track. The sidecar isolates
-  the version skew at a data boundary, which is cheaper than waiting.
+- **`tree-sitter-stack-graphs` for cross-file resolution.** Rejected: the
+  `github/stack-graphs` monorepo was archived 2025-09-09 and is terminal at
+  tree-sitter 0.24 / grammars 0.23.x. Adopting it would mean owning a year-dead
+  Rust framework across two runtimes, for only the languages it shipped rules
+  for. Our own import graph is the maintained path when cross-file is picked up.
+- **Cross-file resolution in v1.2.** Deferred, not rejected: v1.2 lands the
+  intra-file tier and the `target_file` substrate, and other in-flight work
+  carries the release. Cross-file gets its own shaping (Deferred).
+- **SCIP ingest now.** Rejected for v1.2 core: SCIP indexers need the language
+  toolchain and a buildable project, breaking the hermetic/single-binary promise.
+  It is the right tool for the type residual and the harder cross-file cases, so
+  it is the designated later enrichment tier.
 - **Reuse ast-grep for scope analysis.** Not available: `ast-grep-core` was
   removed and `ast-grep-language` ships only grammars.
-- **Intra-file resolution only (skip cross-file).** Insufficient: 68% of the
-  multi-def edges are cross-file; Tier 1 alone cannot clear the bar the roadmap
-  set.
-- **SCIP / receiver-type inference now, to also close Mode 2.** Rejected for
-  v1.2: heavier, needs a type signal the index does not carry, and Mode-1 (no
-  types) is the cheaper, broader win to land first. Deferred as its own tier.
 - **A separate `edge_resolution` table.** Rejected: `graph_edges` has no stable
   edge id (it is replace-per-file), so a side table buys nothing over a nullable
   column.
@@ -226,23 +223,23 @@ does not ship.
 - Resolution is **pure local computation** over files the indexer already reads:
   no new external input, no new trust boundary, no network. `target_file` flows
   as a bind parameter exactly like `target_name`, so no SQL-string-formatting
-  surface is introduced. `THREAT-MODEL.md` is unchanged, and the stack-graphs
-  sidecar must resolve from **vendored/bundled** grammars — never fetch at
-  runtime — so `egress_containment.rs` continues to pass.
-- Both tiers are **deterministic and offline**: the same repo yields the same
+  surface is introduced. `THREAT-MODEL.md` is unchanged, and
+  `egress_containment.rs` continues to pass (this tier adds no outbound path).
+- The tier is **deterministic and offline**: the same repo yields the same
   `target_file`, satisfying the same promise the engine relies on.
 - The realized value is staged. Populating `target_file` and proving the
   resolution-% lift and cycle/impact trustworthiness (via the probe) is the
   mandatory bar. Feeding `target_file` into PageRank and `search --graph` ranking
   is the **stretch** (the roadmap's "ranking-lift" half of acceptance), scoped as
-  follow-on once the substrate is proven.
+  follow-on once the substrate is proven. Cross-file recall — the 32%-beat —
+  waits on the deferred tier.
 
 ## Validation the implementation must produce
 
-- On lago and on inkentry: multi-def resolution % under `locals.scm`, and under
-  `locals.scm + stack-graphs`, each reported against the 32% crude-locality
-  floor, with the module-graph edge and cycle deltas.
+- On lago and on inkentry: resolution % and precision character under
+  `locals.scm` vs the bare-lexical baseline, with the module-graph edge and
+  cycle deltas.
 - A determinism check: two indexes of the same tree produce byte-identical
   `target_file` assignments.
 - `egress_containment.rs` still traps every outbound connection across
-  `init`/`index`/`search` — the sidecar adds none.
+  `init`/`index`/`search` — this tier adds none.
