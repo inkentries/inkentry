@@ -492,6 +492,36 @@ inkentry memory add --title "Follow-up note" --kind note --body "..." \
 
 When `--body` is omitted, `inkentry` opens `$VISUAL` or `$EDITOR` (falling back to `vi`). Lines starting with `#` are stripped (comment convention).
 
+### Tags and linked files
+
+Tags and linked files are stored as normalised, indexed rows, not free text
+([ADR-101](adr/101-normalised-tags-and-linked-files-in-the-memory-projection.md)).
+
+A tag is Unicode NFC, lowercased, trimmed, with runs of whitespace or `_`
+collapsed to one `-` — `--tags "Auth Service"` and `--tags auth_service` land
+as the same tag. Normalisation happens once, in the core write path, so every
+writer (`memory add`, `import`, `harvest`, the git-notes carrier import, and
+the entity-id collision merge below) agrees; the original spelling is not
+kept.
+
+```bash
+# See every tag in use, most-used first
+inkentry memory tags
+inkentry memory tags --format json
+
+# Exact filters, backed by an index
+inkentry memory list --tag auth
+inkentry memory list --file src/auth/middleware.rs
+```
+
+A linked file (`--files`) is made relative to the project root, given forward
+slashes, and stripped of a leading `./`; a path that escapes the root is
+refused. Its state is then read from git: `tracked` at `HEAD`, `untracked` if
+it exists on disk only, `missing` otherwise (derived from disk alone outside a
+git repository). A `missing` file is still stored — with a warning on stderr
+and the state in `--format json` output — never refused, since recording a
+decision about a file often precedes creating it.
+
 ## Pulling in context from a URL
 
 `--from-url` fetches content from a GitHub issue, Linear ticket, or any web page and stores it as a memory entry. The title is inferred from the page automatically.

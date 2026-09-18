@@ -180,7 +180,13 @@ storage/
     import.rs    — writes entries and carried edges that arrived from a portable
                    dump, keeping their identity, creation time and provenance
                    verbatim rather than minting new ones
-    notes.rs     — note insert/fetch/delete
+    notes.rs     — note insert/fetch/delete; hydrates `note_tags`/`note_files`
+                   onto every returned `Note`
+    migrate.rs   — the forward migration ladder (steps 12..MEMORY_SCHEMA_VERSION)
+    tags.rs      — normalize_tag: tag normalisation (ADR-101 D2), the one
+                   choke point every write path funnels a raw tag through
+    file_links.rs — resolve_file_link: linked-file path normalisation + git/disk
+                   state resolution (ADR-101 D3)
     search.rs    — memory FTS + semantic search
     tests.rs     — integration tests for NoteStore
   backend.rs     — StorageBackend trait (local vs remote)
@@ -309,6 +315,7 @@ cli/
                         to know is an error, not a "no such entry"
       show.rs         — memory show subcommand
       supersede.rs    — memory supersede subcommand
+      tags.rs         — `inkentry memory tags`: tag vocabulary + counts (ADR-101)
       timeline.rs     — memory timeline subcommand
     plumbing/
       mod.rs               — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error

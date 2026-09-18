@@ -62,6 +62,16 @@ pub struct SearchArgs {
     #[arg(long)]
     pub expand_graph: bool,
 
+    /// Restrict memory results to this exact tag, normalised the same way a
+    /// write is (ADR-101 D4)
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+
+    /// Restrict memory results to this exact repository-relative linked file
+    /// (ADR-101 D4)
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+
     /// Suppress the informational notices on stderr (stale index, server
     /// discovery, semantic-ranking availability, embedding coverage). Results,
     /// exit codes, errors and the multi-user server warning are unaffected.
@@ -251,6 +261,8 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             // result slots (the default). `--only-memory` (want_code == false)
             // has no slots to protect and returns the full page.
             want_code,
+            args.tag.as_deref(),
+            args.file.as_deref(),
         )
         .await?
     } else {
