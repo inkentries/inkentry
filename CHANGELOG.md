@@ -18,6 +18,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   refused with the export-and-import message. No release has stamped
   anything above 11 yet, so this changes nothing you can observe today; it
   only stops the next schema change from being a lockout.
+- **`index.db` can migrate forward too, starting at schema version 17.**
+  `create_schema` used to send every stamp below the current version to a
+  full rebuild, discarding every embedding along with it; a future version
+  bump — even one adding a nullable column — would have forced a full
+  re-embed for everyone who upgraded. Versions at or below 16 (the previous
+  ladder's floor) still rebuild, as does any future step that genuinely
+  invalidates stored data (a different embedding space, a chunking change)
+  rather than one an in-place step can cover. No release has stamped
+  anything above 17 yet, so this changes nothing you can observe today; it
+  only stops the next schema change from forcing a full re-embed.
 
 ## [1.1.0] — 2026-09-10
 
