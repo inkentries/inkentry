@@ -325,6 +325,66 @@ fn a_store_stamped_by_a_released_binary_is_sent_to_export_and_import() {
     }
 }
 
+// ── migration parity ─────────────────────────────────────────────────────────
+
+/// Every non-internal `sqlite_master` row (tables, indexes, triggers, virtual
+/// tables), normalised so incidental whitespace differences in a `CREATE`
+/// statement's text don't register as a schema difference.
+fn sqlite_master_signature(conn: &rusqlite::Connection) -> Vec<(String, String, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT type, name, COALESCE(sql, '') FROM sqlite_master \
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .expect("preparing sqlite_master query");
+    stmt.query_map([], |row| {
+        let kind: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        let sql: String = row.get(2)?;
+        Ok((
+            kind,
+            name,
+            sql.split_whitespace().collect::<Vec<_>>().join(" "),
+        ))
+    })
+    .expect("querying sqlite_master")
+    .collect::<rusqlite::Result<_>>()
+    .expect("collecting sqlite_master rows")
+}
+
+// A store migrated forward from version 11 must end up indistinguishable
+// from one created fresh, so the first real step (currently none —
+// `migrate::MEMORY_MIGRATIONS` is empty) is held to this from day one rather
+// than only once it exists. The version-11 fixture is built here from the
+// current `memory_001_initial.sql`, since that file *is* version 11's shape;
+// once a real step 12 lands, this must switch to a committed fixture file
+// produced by the 1.1.0 release binary rather than be rebuilt
+// from the current schema file, which would stop testing anything once the
+// two diverge. Do not attempt to download that binary here.
+#[test]
+fn a_store_migrated_from_schema_version_11_matches_a_fresh_store() {
+    register_sqlite_vec();
+    let legacy_dir = tempfile::tempdir().unwrap();
+    let legacy_path = legacy_dir.path().join("memory.db");
+    {
+        let conn = rusqlite::Connection::open(&legacy_path).unwrap();
+        conn.execute_batch(&format!(
+            "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
+            include_str!("../../../migrations/memory_001_initial.sql")
+        ))
+        .unwrap();
+    }
+
+    let migrated = MemoryStore::open(&legacy_path).expect("open must migrate, not refuse");
+    let (_fresh_dir, fresh) = store();
+
+    assert_eq!(
+        sqlite_master_signature(&migrated.conn),
+        sqlite_master_signature(&fresh.conn),
+        "a store migrated from schema version 11 must match one created fresh"
+    );
+}
+
 #[test]
 fn a_store_from_a_future_build_is_refused() {
     register_sqlite_vec();
