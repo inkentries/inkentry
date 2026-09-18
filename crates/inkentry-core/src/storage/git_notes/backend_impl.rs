@@ -200,6 +200,7 @@ impl MemoryBackend for GitNotesBackend {
         _query: &str,
         _limit: usize,
         _as_of: Option<i64>,
+        _gate: bool,
     ) -> Result<Vec<Note>> {
         Err(crate::error::InkentryError::BackendUnsupported("search_hybrid".into()).into())
     }
