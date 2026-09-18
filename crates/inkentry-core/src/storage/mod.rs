@@ -12,6 +12,7 @@ mod chunks;
 mod conventions;
 mod files;
 mod graph;
+mod migration_ladder;
 mod search;
 mod specs;
 mod sql;
