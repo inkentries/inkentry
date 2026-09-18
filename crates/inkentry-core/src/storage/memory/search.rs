@@ -114,6 +114,31 @@ impl MemoryStore {
             .search_text(query, candidates, as_of)
             .unwrap_or_default();
 
+        // ── SPIKE(ADR-083): within-corpus relevance gate ──────────────────────
+        // Throwaway. Both doors are env-driven so one binary can run the
+        // baseline arm, the gated arm and the band sweep without a rebuild.
+        // The vector door reads `distance` off `self.search()`, which is the
+        // raw L2 to the QA-prefixed query embedding — this is upstream of the
+        // `1.0 / rrf_score` overwrite below, so the gate never sees the
+        // clobbered value.
+        let (vec_results, text_results) = {
+            let vec_gate: Option<f64> = std::env::var("INKENTRY_SPIKE_MEMORY_MAX_QA_DISTANCE")
+                .ok()
+                .and_then(|s| s.parse().ok());
+            let lexical_door = std::env::var("INKENTRY_SPIKE_LEXICAL_DOOR")
+                .map(|v| v != "0")
+                .unwrap_or(true);
+            let v = match vec_gate {
+                Some(max) => vec_results
+                    .into_iter()
+                    .filter(|n| n.distance.is_some_and(|d| d <= max))
+                    .collect(),
+                None => vec_results,
+            };
+            let t = if lexical_door { text_results } else { vec![] };
+            (v, t)
+        };
+
         const K: f64 = crate::search::RRF_K;
 
         let mut scores: HashMap<NoteId, f64> = HashMap::new();
