@@ -166,6 +166,33 @@ fn count_memory_notes(mem_path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+// The single memory.db row's tags/linked files as comma-joined strings, read
+// from `note_tags`/`note_files` (ADR-101) rather than the dropped
+// `notes.tags`/`notes.linked_files` columns. Only meaningful when the store
+// holds exactly one note, which is what every caller here has already
+// asserted.
+fn mem_tags_and_files(mem_path: &Path) -> (String, String) {
+    ensure_sqlite_vec();
+    let conn = Connection::open(mem_path).expect("open memory.db");
+    let uuid: String = conn
+        .query_row("SELECT uuid FROM notes LIMIT 1", [], |r| r.get(0))
+        .expect("one note");
+    let read = |table: &str, column: &str| -> String {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {column} FROM {table} WHERE note_uuid = ?1 ORDER BY {column}"
+            ))
+            .expect("prepare");
+        let rows: Vec<String> = stmt
+            .query_map(rusqlite::params![uuid], |r| r.get(0))
+            .expect("query")
+            .collect::<rusqlite::Result<_>>()
+            .expect("collect");
+        rows.join(",")
+    };
+    (read("note_tags", "tag"), read("note_files", "path"))
+}
+
 /// Read all notes from memory.db, returning (kind, title, status) tuples.
 fn read_memory_notes(mem_path: &Path) -> Vec<(String, String, String)> {
     ensure_sqlite_vec();
@@ -760,12 +787,7 @@ fn dedup_key_excludes_tags_which_union_on_collapse() {
 
     assert_eq!(count_memory_notes(&mem_path), 1, "one entity");
 
-    let mem = Connection::open(&mem_path).unwrap();
-    let (tags, files): (String, String) = mem
-        .query_row("SELECT tags, linked_files FROM notes", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .unwrap();
+    let (tags, files) = mem_tags_and_files(&mem_path);
     for want in ["alpha", "beta"] {
         assert!(tags.contains(want), "tags {tags:?} must union {want}");
     }
@@ -840,12 +862,7 @@ fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
         "identical text stays one entity"
     );
 
-    let mem = Connection::open(&mem_path).unwrap();
-    let (tags, files): (String, String) = mem
-        .query_row("SELECT tags, linked_files FROM notes", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .unwrap();
+    let (tags, files) = mem_tags_and_files(&mem_path);
     for want in ["alpha", "beta"] {
         assert!(
             tags.contains(want),
@@ -917,10 +934,7 @@ fn dry_run_does_not_union_tags_into_a_stored_row() {
         .assert()
         .success();
 
-    let mem = Connection::open(&mem_path).unwrap();
-    let tags: String = mem
-        .query_row("SELECT tags FROM notes", [], |r| r.get(0))
-        .unwrap();
+    let (tags, _files) = mem_tags_and_files(&mem_path);
     assert!(
         !tags.contains("beta"),
         "--dry-run must not merge tags; found {tags:?}"

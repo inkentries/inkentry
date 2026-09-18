@@ -26,7 +26,7 @@ impl MemoryStore {
                  WHERE  embedding MATCH ?1
                    AND  k = {limit}
              )
-             SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
+             SELECT n.uuid, n.kind, n.title, n.body,
                     n.created_at, n.status, n.superseded_by, n.source_ref,
                     n.valid_at, n.invalid_at, n.entity_id, CAST(k.distance AS REAL)
              FROM   knn k
@@ -35,13 +35,14 @@ impl MemoryStore {
              ORDER  BY k.distance, n.uuid"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let notes = if let Some(ts) = as_of {
+        let mut notes = if let Some(ts) = as_of {
             stmt.query_map(rusqlite::params![query_blob, ts], row_to_note_with_distance)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             stmt.query_map(rusqlite::params![query_blob], row_to_note_with_distance)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
+        self.hydrate_tags_and_files(&mut notes)?;
         Ok(notes)
     }
 
@@ -59,7 +60,7 @@ impl MemoryStore {
             "n.status = 'active'"
         };
         let sql = format!(
-            "SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
+            "SELECT n.uuid, n.kind, n.title, n.body,
                     n.created_at, n.status, n.superseded_by, n.source_ref,
                     n.valid_at, n.invalid_at, n.entity_id, bm25(memory_fts) AS bm25_score
              FROM memory_fts
@@ -71,9 +72,9 @@ impl MemoryStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let fts_query = crate::utils::fts5_quote_literal(query);
-        let notes = if let Some(ts) = as_of {
+        let mut notes = if let Some(ts) = as_of {
             stmt.query_map(rusqlite::params![fts_query, ts], |row| {
-                let bm25_score: f64 = row.get(13)?;
+                let bm25_score: f64 = row.get(11)?;
                 let mut note = row_to_note(row)?;
                 note.distance = Some(-bm25_score);
                 Ok(note)
@@ -81,7 +82,7 @@ impl MemoryStore {
             .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             stmt.query_map(rusqlite::params![fts_query], |row| {
-                let bm25_score: f64 = row.get(13)?;
+                let bm25_score: f64 = row.get(11)?;
                 let mut note = row_to_note(row)?;
                 // Negate so that higher relevance → lower distance (ascending convention).
                 note.distance = Some(-bm25_score);
@@ -89,6 +90,7 @@ impl MemoryStore {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
+        self.hydrate_tags_and_files(&mut notes)?;
         Ok(notes)
     }
 
@@ -176,11 +178,11 @@ impl MemoryStore {
         // before the LIMIT means a store with more than `limit` matches keeps
         // the most relevant entries, not merely the oldest ones.
         let sql = format!(
-            "SELECT uuid, kind, title, body, tags, linked_files,
+            "SELECT uuid, kind, title, body,
                     created_at, status, superseded_by, source_ref,
                     valid_at, invalid_at, entity_id
              FROM (
-                 SELECT n.uuid, n.kind, n.title, n.body, n.tags, n.linked_files,
+                 SELECT n.uuid, n.kind, n.title, n.body,
                         n.created_at, n.status, n.superseded_by, n.source_ref,
                         n.valid_at, n.invalid_at, n.entity_id
                  FROM   memory_fts
@@ -193,9 +195,10 @@ impl MemoryStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let fts_query = crate::utils::fts5_quote_literal(query);
-        let notes = stmt
+        let mut notes = stmt
             .query_map(rusqlite::params![fts_query], row_to_note)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.hydrate_tags_and_files(&mut notes)?;
         Ok(notes)
     }
 }

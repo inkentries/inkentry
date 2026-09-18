@@ -146,7 +146,10 @@ fn open_memory_db(path: &Path) -> Connection {
     conn
 }
 
-// Insert a note directly into a `memory.db`. Returns its id.
+// Insert a note directly into a `memory.db`. Returns its id. `tags` land in
+// `note_tags` (ADR-101), not a `notes.tags` column; every tag literal used by
+// this file is already in normalised form (lowercase, hyphenated), so this
+// helper does not re-normalise them.
 fn seed_note(
     conn: &Connection,
     kind: &str,
@@ -157,19 +160,25 @@ fn seed_note(
 ) -> String {
     let uuid = inkentry_core::storage::uuid_v7_at(1_700_000_000);
     conn.execute(
-        "INSERT INTO notes (uuid, kind, title, body, tags, status, entity_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO notes (uuid, kind, title, body, status, entity_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             uuid,
             kind,
             title,
             body,
-            tags.join(","),
             status,
             inkentry_core::storage::entity_id(kind, title, body)
         ],
     )
     .expect("seed note");
+    for tag in tags {
+        conn.execute(
+            "INSERT INTO note_tags (note_uuid, tag) VALUES (?1, ?2)",
+            rusqlite::params![uuid, tag],
+        )
+        .expect("seed tag");
+    }
     uuid
 }
 

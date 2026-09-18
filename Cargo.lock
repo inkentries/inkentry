@@ -3203,6 +3203,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-proto",
  "tree-sitter-sequel",
+ "unicode-normalization",
  "uuid",
  "wiremock",
 ]

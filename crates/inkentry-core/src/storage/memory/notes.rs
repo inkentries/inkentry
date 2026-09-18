@@ -1,13 +1,18 @@
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 
+use super::file_links::{ResolvedFileLink, resolve_file_link};
+use super::tags::normalize_tag;
 use super::{MemoryStore, Note, NoteId, uuid_v7::uuid_v7_at};
 use std::str::FromStr;
 
 /// Every note-selecting query uses this column list, so the row mappers below
 /// can index positionally. `uuid` leads: it is the identity, and `id` is a
-/// storage surrogate that never reaches a `Note`.
-pub(super) const NOTE_COLUMNS: &str = "uuid, kind, title, body, tags, linked_files, \
+/// storage surrogate that never reaches a `Note`. `tags`/`linked_files` moved
+/// to `note_tags`/`note_files` (ADR-101) and are filled in afterwards by
+/// [`MemoryStore::hydrate_tags_and_files`] — the row mappers below leave both
+/// empty.
+pub(super) const NOTE_COLUMNS: &str = "uuid, kind, title, body, \
      created_at, status, superseded_by, source_ref, valid_at, invalid_at, entity_id";
 
 fn note_id_at(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<NoteId> {
@@ -25,21 +30,21 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         kind: row.get(1)?,
         title: row.get(2)?,
         body: row.get(3)?,
-        tags: split_csv(row.get::<_, Option<String>>(4)?.as_deref()),
-        linked_files: split_csv(row.get::<_, Option<String>>(5)?.as_deref()),
-        created_at: row.get(6)?,
-        status: row.get(7)?,
+        tags: Vec::new(),
+        linked_files: Vec::new(),
+        created_at: row.get(4)?,
+        status: row.get(5)?,
         superseded_by: row
-            .get::<_, Option<String>>(8)?
+            .get::<_, Option<String>>(6)?
             .map(|s| NoteId::from_str(&s))
             .transpose()
             .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, e.into())
+                rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, e.into())
             })?,
-        source_ref: row.get(9)?,
-        valid_at: row.get(10)?,
-        invalid_at: row.get(11)?,
-        entity_id: row.get(12)?,
+        source_ref: row.get(7)?,
+        valid_at: row.get(8)?,
+        invalid_at: row.get(9)?,
+        entity_id: row.get(10)?,
         distance: None,
         score: None,
         source_project: None,
@@ -55,44 +60,27 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
         kind: row.get(1)?,
         title: row.get(2)?,
         body: row.get(3)?,
-        tags: split_csv(row.get::<_, Option<String>>(4)?.as_deref()),
-        linked_files: split_csv(row.get::<_, Option<String>>(5)?.as_deref()),
-        created_at: row.get(6)?,
-        status: row.get(7)?,
+        tags: Vec::new(),
+        linked_files: Vec::new(),
+        created_at: row.get(4)?,
+        status: row.get(5)?,
         superseded_by: row
-            .get::<_, Option<String>>(8)?
+            .get::<_, Option<String>>(6)?
             .map(|s| NoteId::from_str(&s))
             .transpose()
             .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, e.into())
+                rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, e.into())
             })?,
-        source_ref: row.get(9)?,
-        valid_at: row.get(10)?,
-        invalid_at: row.get(11)?,
-        entity_id: row.get(12)?,
-        distance: Some(row.get(13)?),
+        source_ref: row.get(7)?,
+        valid_at: row.get(8)?,
+        invalid_at: row.get(9)?,
+        entity_id: row.get(10)?,
+        distance: Some(row.get(11)?),
         score: None,
         source_project: None,
         source_project_path: None,
         remote_id: None,
     })
-}
-
-/// Append the members of `incoming` that `current` lacks, preserving `current`'s
-/// order. Returns `None` only when the result is empty and `current` was NULL,
-/// so a row with no tags is not rewritten to `""`.
-fn union_csv(current: Option<&str>, incoming: &[String]) -> Option<String> {
-    let mut merged = split_csv(current);
-    for v in incoming {
-        let v = v.trim();
-        if !v.is_empty() && !merged.iter().any(|e| e == v) {
-            merged.push(v.to_string());
-        }
-    }
-    match (merged.is_empty(), current) {
-        (true, None) => None,
-        _ => Some(merged.join(",")),
-    }
 }
 
 pub(super) fn split_csv(s: Option<&str>) -> Vec<String> {
@@ -128,15 +116,13 @@ impl MemoryStore {
         let entity_id = crate::storage::entity_id::entity_id(kind, title, body);
         let result = self.conn.execute(
             "INSERT INTO notes \
-             (uuid, kind, title, body, tags, linked_files, source_ref, valid_at, created_at, entity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (uuid, kind, title, body, source_ref, valid_at, created_at, entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 uuid_v7_at(created_at),
                 kind,
                 title,
                 body,
-                tags.join(","),
-                linked_files.join(","),
                 source_ref,
                 valid_at,
                 created_at,
@@ -168,15 +154,13 @@ impl MemoryStore {
         let entity_id = crate::storage::entity_id::entity_id(kind, title, body);
         let result = self.conn.execute(
             "INSERT INTO notes \
-             (uuid, kind, title, body, tags, linked_files, source_ref, status, created_at, entity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (uuid, kind, title, body, source_ref, status, created_at, entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 uuid_v7_at(created_at),
                 kind,
                 title,
                 body,
-                tags.join(","),
-                linked_files.join(","),
                 source_ref,
                 status,
                 created_at,
@@ -189,11 +173,13 @@ impl MemoryStore {
     /// Shared insert-then-recover tail for `add_note`/`add_note_with_created_at`.
     /// A UNIQUE-constraint failure here can only be `entity_id`: the `uuid`
     /// each caller mints is fresh, and `remote_id` is NULL on these paths and
-    /// so never collides. Recovers by merging `tags`/`linked_files` into the existing row
-    /// (add-wins, via `union_tags_and_files`) and returning its id with
-    /// `created = false`. Leaves `status`/`superseded_by` untouched, unlike
-    /// `dedupe.rs`'s fuller merge (that collapses two rows already diverged
-    /// in the store; this is one fresh insert colliding with one existing row).
+    /// so never collides. Either way — fresh insert or a collision reusing the
+    /// existing row — `tags`/`linked_files` are attached via
+    /// [`Self::attach_tags_and_files`] (ADR-101 D1: "two `INSERT OR IGNORE`s"),
+    /// which is what makes this the merge path `dedupe.rs`'s module doc refers
+    /// to. Leaves `status`/`superseded_by` untouched on a collision, unlike
+    /// `dedupe.rs`'s fuller merge (that collapses two rows already diverged in
+    /// the store; this is one fresh insert colliding with one existing row).
     /// Any other error propagates unchanged.
     pub(super) fn recover_from_entity_id_collision(
         &self,
@@ -207,6 +193,7 @@ impl MemoryStore {
                 let id = self
                     .uuid_for_rowid(self.conn.last_insert_rowid())?
                     .ok_or_else(|| anyhow::anyhow!("inserted note vanished before it was read"))?;
+                self.attach_tags_and_files(id.as_str(), tags, linked_files)?;
                 Ok((id, true))
             }
             Err(rusqlite::Error::SqliteFailure(err, _))
@@ -219,13 +206,99 @@ impl MemoryStore {
                     |r| r.get(0),
                 )?;
                 let existing_id = NoteId::from_str(&existing_id).map_err(|e| anyhow::anyhow!(e))?;
-                let owned_tags: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
-                let owned_files: Vec<String> = linked_files.iter().map(|s| s.to_string()).collect();
-                self.union_tags_and_files(&existing_id, &owned_tags, &owned_files)?;
+                self.attach_tags_and_files(existing_id.as_str(), tags, linked_files)?;
                 Ok((existing_id, false))
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Normalise `tags` (D2) and resolve `linked_files` against
+    /// [`MemoryStore::project_root`] (D3), attaching both to `note_uuid` via
+    /// `INSERT OR IGNORE` — add-only, so calling this twice with overlapping
+    /// input adds nothing a second time. The one place every write path
+    /// (`memory add`, import, harvest, git-notes import, the collision
+    /// recovery above, and `union_tags_and_files`) funnels a raw tag or path
+    /// through before it reaches `note_tags`/`note_files`.
+    ///
+    /// A path that escapes the project root is refused (the whole call
+    /// errors, before anything is written for it); a `missing` path is
+    /// stored like any other — the caller decides whether to warn.
+    fn attach_tags_and_files(
+        &self,
+        note_uuid: &str,
+        tags: &[&str],
+        linked_files: &[&str],
+    ) -> Result<Vec<ResolvedFileLink>> {
+        {
+            let mut insert_tag = self.conn.prepare_cached(
+                "INSERT OR IGNORE INTO note_tags (note_uuid, tag) VALUES (?1, ?2)",
+            )?;
+            for raw in tags {
+                if let Some(tag) = normalize_tag(raw) {
+                    insert_tag.execute(rusqlite::params![note_uuid, tag])?;
+                }
+            }
+        }
+
+        let mut resolved = Vec::new();
+        if !linked_files.is_empty() {
+            let mut insert_file = self.conn.prepare_cached(
+                "INSERT OR IGNORE INTO note_files (note_uuid, path, state, checked_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for raw in linked_files {
+                if raw.trim().is_empty() {
+                    continue;
+                }
+                let link = resolve_file_link(&self.project_root, raw)?;
+                insert_file.execute(rusqlite::params![
+                    note_uuid,
+                    &link.path,
+                    link.state.as_str(),
+                    link.checked_at
+                ])?;
+                resolved.push(link);
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// The normalised tag vocabulary this note carries, sorted for a stable
+    /// display order.
+    fn tags_for(&self, note_uuid: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT tag FROM note_tags WHERE note_uuid = ?1 ORDER BY tag")?;
+        let rows = stmt.query_map(rusqlite::params![note_uuid], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// The linked-file paths this note carries, sorted for a stable display
+    /// order. `state`/`checked_at` stay internal — every current reader wants
+    /// only the path (ADR-101 D1: the carrier and every `Note` projection are
+    /// unchanged).
+    fn linked_files_for(&self, note_uuid: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT path FROM note_files WHERE note_uuid = ?1 ORDER BY path")?;
+        let rows = stmt.query_map(rusqlite::params![note_uuid], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Fill in `tags`/`linked_files` on every note in `notes`, which the row
+    /// mappers above leave empty. One query pair per note rather than a join
+    /// baked into every `SELECT` in this module: memory stores are small and
+    /// every call site here is already limited, so this is not a hot loop
+    /// (the same reasoning `Box<dyn Trait>` gets elsewhere in this codebase).
+    pub(super) fn hydrate_tags_and_files(&self, notes: &mut [Note]) -> Result<()> {
+        for note in notes.iter_mut() {
+            note.tags = self.tags_for(note.id.as_str())?;
+            note.linked_files = self.linked_files_for(note.id.as_str())?;
+        }
+        Ok(())
     }
 
     /// Return all notes ordered by created_at ASC, id ASC (used by reconcile
@@ -243,46 +316,35 @@ impl MemoryStore {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {NOTE_COLUMNS} FROM notes ORDER BY created_at ASC, id ASC"
         ))?;
-        let notes = stmt
+        let mut notes = stmt
             .query_map([], super::notes::row_to_note)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.hydrate_tags_and_files(&mut notes)?;
         Ok(notes)
     }
 
     /// Merge `tags` and `linked_files` into an existing note, add-wins: values
-    /// are only ever added, never removed or reordered.
+    /// are only ever added, never removed or reordered — the same
+    /// `attach_tags_and_files` a fresh `add_note` uses, so a tag or path
+    /// merged in here is normalised/resolved identically (ADR-101 D1/D2/D3).
     ///
     /// Two entries with identical text but different tags share one `entity_id`
     /// and so collapse on import; unioning is what keeps the losing copy's tags
     /// from being dropped. Mirrors the pull-side Add-Wins policy in `sync.rs`.
     ///
-    /// Returns `true` when the row changed.
+    /// Returns `true` when the row changed (a tag or file was actually added;
+    /// `INSERT OR IGNORE` makes re-merging the same input a no-op).
     pub fn union_tags_and_files(
         &self,
         note_id: &NoteId,
         tags: &[String],
         linked_files: &[String],
     ) -> Result<bool> {
-        let (cur_tags, cur_files): (Option<String>, Option<String>) = self.conn.query_row(
-            "SELECT tags, linked_files FROM notes WHERE uuid = ?1",
-            rusqlite::params![note_id.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-
-        let merged_tags = union_csv(cur_tags.as_deref(), tags);
-        let merged_files = union_csv(cur_files.as_deref(), linked_files);
-
-        if merged_tags.as_deref() == cur_tags.as_deref()
-            && merged_files.as_deref() == cur_files.as_deref()
-        {
-            return Ok(false);
-        }
-
-        self.conn.execute(
-            "UPDATE notes SET tags = ?1, linked_files = ?2 WHERE uuid = ?3",
-            rusqlite::params![merged_tags, merged_files, note_id.as_str()],
-        )?;
-        Ok(true)
+        let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+        let file_refs: Vec<&str> = linked_files.iter().map(String::as_str).collect();
+        let before = self.conn.total_changes();
+        self.attach_tags_and_files(note_id.as_str(), &tag_refs, &file_refs)?;
+        Ok(self.conn.total_changes() != before)
     }
 
     /// Update an existing note's `superseded_by` link (used by reconcile to
@@ -475,6 +537,33 @@ impl MemoryStore {
         include_archived: bool,
         as_of: Option<i64>,
     ) -> Result<Vec<Note>> {
+        self.list_filtered_ext(
+            kind_filter,
+            source_ref_prefix,
+            None,
+            None,
+            limit,
+            include_archived,
+            as_of,
+        )
+    }
+
+    /// [`Self::list_filtered`] plus the ADR-101 D4 exact filters: `tag` (after
+    /// the same normalisation a write applies) and `file` (an exact
+    /// repository-relative path), each backed by `note_tags`/`note_files`'s
+    /// indexes via an `EXISTS` correlated subquery rather than a join, so a
+    /// note with several tags or files is never duplicated in the result.
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_filtered_ext(
+        &self,
+        kind_filter: Option<&str>,
+        source_ref_prefix: Option<&str>,
+        tag: Option<&str>,
+        file: Option<&str>,
+        limit: usize,
+        include_archived: bool,
+        as_of: Option<i64>,
+    ) -> Result<Vec<Note>> {
         let limit = limit.min(500);
         // A point-in-time (`as_of`) query is governed entirely by the temporal
         // window below, independent of archived status: an entry archived or
@@ -488,8 +577,8 @@ impl MemoryStore {
         };
 
         // Safety: only string literals and bind-param placeholders are appended to
-        // `conditions`; all user-supplied values (kind, source_ref, as_of) are bound
-        // via rusqlite params![...], never interpolated into the query string.
+        // `conditions`; all user-supplied values (kind, source_ref, tag, file, as_of)
+        // are bound via rusqlite params![...], never interpolated into the query string.
         let mut conditions = format!("WHERE 1=1 {status_clause}");
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
 
@@ -500,6 +589,25 @@ impl MemoryStore {
         if let Some(prefix) = source_ref_prefix {
             conditions.push_str(&format!(" AND source_ref LIKE ?{}", params.len() + 1));
             params.push(Box::new(format!("{prefix}%")));
+        }
+        if let Some(raw) = tag {
+            // A tag that fails to normalise to anything (e.g. all whitespace)
+            // can match no stored row; short-circuit to an always-false
+            // condition rather than binding an empty string that would.
+            conditions.push_str(&format!(
+                " AND EXISTS (SELECT 1 FROM note_tags WHERE note_uuid = notes.uuid AND tag = ?{})",
+                params.len() + 1
+            ));
+            params.push(Box::new(
+                super::tags::normalize_tag(raw).unwrap_or_default(),
+            ));
+        }
+        if let Some(path) = file {
+            conditions.push_str(&format!(
+                " AND EXISTS (SELECT 1 FROM note_files WHERE note_uuid = notes.uuid AND path = ?{})",
+                params.len() + 1
+            ));
+            params.push(Box::new(path.to_string()));
         }
         if let Some(ts) = as_of {
             // `valid_at` is stored NULL when no explicit --valid-at was given;
@@ -520,9 +628,10 @@ impl MemoryStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
-        let notes = stmt
+        let mut notes = stmt
             .query_map(params_refs.as_slice(), row_to_note)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.hydrate_tags_and_files(&mut notes)?;
         Ok(notes)
     }
 
@@ -583,9 +692,10 @@ impl MemoryStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
-        let notes = stmt
+        let mut notes = stmt
             .query_map(params_refs.as_slice(), row_to_note)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.hydrate_tags_and_files(&mut notes)?;
         Ok(notes)
     }
 
@@ -637,18 +747,15 @@ impl MemoryStore {
             shas.insert(row?);
         }
 
-        // Backwards compat: legacy "git:<sha>" tags written by older versions.
+        // Backwards compat: legacy "git:<sha>" tags written by older versions,
+        // now rows in `note_tags` like any other tag (ADR-101).
         let mut stmt2 = self
             .conn
-            .prepare_cached("SELECT tags FROM notes WHERE tags LIKE '%git:%'")?;
-        let rows2 = stmt2.query_map([], |r| r.get::<_, Option<String>>(0))?;
+            .prepare_cached("SELECT tag FROM note_tags WHERE tag LIKE 'git:%'")?;
+        let rows2 = stmt2.query_map([], |r| r.get::<_, String>(0))?;
         for row in rows2 {
-            if let Some(tags) = row? {
-                for tag in tags.split(',').map(str::trim) {
-                    if let Some(sha) = tag.strip_prefix("git:") {
-                        shas.insert(sha.to_string());
-                    }
-                }
+            if let Some(sha) = row?.strip_prefix("git:") {
+                shas.insert(sha.to_string());
             }
         }
 
@@ -671,6 +778,33 @@ impl MemoryStore {
             .conn
             .prepare(&format!("SELECT {NOTE_COLUMNS} FROM notes WHERE uuid = ?1"))?;
         let mut rows = stmt.query_map(rusqlite::params![id.as_str()], row_to_note)?;
-        Ok(rows.next().transpose()?)
+        let Some(note) = rows.next().transpose()? else {
+            return Ok(None);
+        };
+        let mut notes = vec![note];
+        self.hydrate_tags_and_files(&mut notes)?;
+        Ok(notes.pop())
+    }
+
+    /// The tag vocabulary across every active note, with how many active
+    /// notes carry each — the retrieval behind `inkentry memory tags`
+    /// (ADR-101 D1/D2): a closed, inspectable vocabulary alias resolution can
+    /// later work over without a model. Archived notes are excluded, the same
+    /// gate `list`/`count` use by default, so a tag that only survives on an
+    /// archived entry drops out of the vocabulary rather than lingering.
+    /// Sorted by descending count, then tag, so the top of the list is the
+    /// most-reused tags rather than an arbitrary order.
+    pub fn tags_with_counts(&self) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT nt.tag, COUNT(*) \
+             FROM note_tags nt \
+             JOIN notes n ON n.uuid = nt.note_uuid \
+             WHERE n.status = 'active' \
+             GROUP BY nt.tag \
+             ORDER BY COUNT(*) DESC, nt.tag ASC",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 }
