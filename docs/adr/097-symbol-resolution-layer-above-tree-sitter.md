@@ -106,20 +106,26 @@ touches neither chunks nor vectors.
 So this change is a forward step on `index.db`, applied in place on open, using
 the same stamped, one-transaction-per-step pattern `memory.db` uses:
 
-- The column ships as a **new** forward-migration file — e.g.
-  `index_002_add_target_file.sql` — carrying `ALTER TABLE graph_edges ADD COLUMN
-  target_file TEXT` plus the index that backs the extended dedup key.
-  `index_001_initial.sql` is **not** edited: a shipped migration file is
-  immutable, so the shape change is a new step and `CURRENT_SCHEMA_VERSION` bumps
-  to cover it. Existing rows get `NULL`, which already means "unresolved, use the
-  bare-name fallback", so a migrated index is correct before any resolution runs.
-- This is `index.db`'s **first real forward step**, so `Database::open` gains a
-  step runner alongside the current all-or-nothing rebuild: on open, a fresh
-  index applies `index_001_initial.sql` and then every step up to
-  `CURRENT_SCHEMA_VERSION`; an existing index at the prior version applies only
-  the new step, in place, keeping its embeddings. Neither rebuilds. A convergence
-  test asserts the fresh path and the migrated path end at a byte-identical
-  schema.
+- The shape change is a **new migration step**, never an edit to a shipped
+  schema file. `index_001_initial.sql` stays frozen; the step runs `ALTER TABLE
+  graph_edges ADD COLUMN target_file TEXT` plus the index backing the extended
+  dedup key, and `CURRENT_SCHEMA_VERSION` bumps (17 → 18) to cover it. Existing
+  rows get `NULL`, which already means "unresolved, use the bare-name fallback",
+  so a migrated index is correct before any resolution runs.
+- It **reuses the store-agnostic forward ladder** `storage::migration_ladder::apply_ladder`
+  (the ladder `memory.db` already drives via `memory::migrate`): a
+  `&[(version, MigrationStep)]` registry whose
+  steps each commit atomically with their own `user_version` stamp under
+  `BEGIN IMMEDIATE`, so a crash leaves the store at the last completed version and
+  the next open resumes. `index.db`'s `Database::open` adopts it — the mechanism
+  was written to be reused with a second store's own constants — with an
+  `INDEX_MIGRATIONS` registry whose first entry is the `target_file` step, applied
+  to any stamp above `LAST_LEGACY_SCHEMA_VERSION` (16). A fresh index applies
+  `index_001_initial.sql` then the ladder to head; an existing index at 17 applies
+  only the new step in place, keeping its embeddings — neither rebuilds. A
+  contiguity check and a parity test (a from-17 fixture vs a fresh store) hold the
+  two paths to an identical schema, mirroring `memory.db`'s own migration
+  discipline.
 - Filling `target_file` for existing edges is a **graph-only pass**: re-parse
   and re-extract edges with tree-sitter, write `graph_edges`, touch nothing
   else. No chunking, no embedding. The step records that the pass is owed in
