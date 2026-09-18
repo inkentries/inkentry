@@ -106,12 +106,20 @@ touches neither chunks nor vectors.
 So this change is a forward step on `index.db`, applied in place on open, using
 the same stamped, one-transaction-per-step pattern `memory.db` uses:
 
-- `ALTER TABLE graph_edges ADD COLUMN target_file TEXT`, plus the index that
-  backs the extended dedup key. Existing rows get `NULL`, which already means
-  "unresolved, use the bare-name fallback", so a migrated index is correct
-  before any resolution has run.
-- `index_001_initial.sql` gains the column too, as the declared final shape for
-  new indexes, and a parity test holds the migrated and fresh schemas equal.
+- The column ships as a **new** forward-migration file — e.g.
+  `index_002_add_target_file.sql` — carrying `ALTER TABLE graph_edges ADD COLUMN
+  target_file TEXT` plus the index that backs the extended dedup key.
+  `index_001_initial.sql` is **not** edited: a shipped migration file is
+  immutable, so the shape change is a new step and `CURRENT_SCHEMA_VERSION` bumps
+  to cover it. Existing rows get `NULL`, which already means "unresolved, use the
+  bare-name fallback", so a migrated index is correct before any resolution runs.
+- This is `index.db`'s **first real forward step**, so `Database::open` gains a
+  step runner alongside the current all-or-nothing rebuild: on open, a fresh
+  index applies `index_001_initial.sql` and then every step up to
+  `CURRENT_SCHEMA_VERSION`; an existing index at the prior version applies only
+  the new step, in place, keeping its embeddings. Neither rebuilds. A convergence
+  test asserts the fresh path and the migrated path end at a byte-identical
+  schema.
 - Filling `target_file` for existing edges is a **graph-only pass**: re-parse
   and re-extract edges with tree-sitter, write `graph_edges`, touch nothing
   else. No chunking, no embedding. The step records that the pass is owed in
