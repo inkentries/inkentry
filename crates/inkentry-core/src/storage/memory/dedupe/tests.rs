@@ -48,14 +48,7 @@ fn dry_run_reports_counts_and_writes_nothing() {
         .unwrap();
 
     let before_count = note_count(&store);
-    let (before_tags, _): (String, String) = store
-        .conn
-        .query_row(
-            "SELECT tags, linked_files FROM notes WHERE uuid = ?1",
-            rusqlite::params![survivor.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
+    let before_tags = note_tags(&store, &survivor);
 
     let summary = store.dedupe_entity_ids(true).unwrap();
     assert_eq!(summary.total_notes, 2);
@@ -64,15 +57,22 @@ fn dry_run_reports_counts_and_writes_nothing() {
     assert_eq!(summary.tags_merged, 1, "loser's 'b' tag would be merged");
 
     assert_eq!(note_count(&store), before_count, "row count unchanged");
-    let (after_tags, _): (String, String) = store
-        .conn
-        .query_row(
-            "SELECT tags, linked_files FROM notes WHERE uuid = ?1",
-            rusqlite::params![survivor.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
+    let after_tags = note_tags(&store, &survivor);
     assert_eq!(before_tags, after_tags, "tags unchanged under dry-run");
+}
+
+// A survivor's normalised tags, sorted, read straight from `note_tags`.
+fn note_tags(store: &crate::storage::MemoryStore, id: &crate::storage::NoteId) -> Vec<String> {
+    let mut tags: Vec<String> = store
+        .conn
+        .prepare("SELECT tag FROM note_tags WHERE note_uuid = ?1")
+        .unwrap()
+        .query_map(rusqlite::params![id.as_str()], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    tags.sort();
+    tags
 }
 
 // ── AC10 + AC11: real run collapses to one row, survivor = earliest ────

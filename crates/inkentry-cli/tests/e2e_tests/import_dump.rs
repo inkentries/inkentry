@@ -588,7 +588,9 @@ fn a_collapsed_entrys_tags_are_folded_into_the_survivor() {
         r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
     );
     p.import(&d).assert().success();
-    let tags: String = p.sql("SELECT tags FROM notes");
+    // Tags live in `note_tags`, not a `notes.tags` column (ADR-101); one
+    // survivor row, so every tag in the table is its own.
+    let tags: String = p.sql("SELECT GROUP_CONCAT(tag) FROM note_tags");
     assert!(tags.contains("keep") && tags.contains("alsokeep"), "{tags}");
 }
 

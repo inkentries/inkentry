@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod dedupe;
 mod edges;
+mod file_links;
 mod import;
 mod import_state;
 mod migrate;
@@ -12,13 +13,16 @@ mod note_id;
 mod notes;
 mod search;
 mod sync;
+mod tags;
 mod uuid_v7;
 
 pub use dedupe::DedupeSummary;
+pub use file_links::{FileState, ResolvedFileLink, normalize_relative_path, resolve_file_link};
 pub use import::CarriedEdgeImport;
 pub use import_state::NotesImportMarker;
 pub use note_id::{NoteId, unresolvable_id_message};
 pub use sync::{SyncEdge, SyncRow};
+pub use tags::normalize_tag;
 pub use uuid_v7::uuid_v7_at;
 
 #[cfg(test)]
@@ -38,7 +42,7 @@ mod tests;
 /// that is the whole point of [`LAST_LEGACY_SCHEMA_VERSION`]: `user_version`
 /// is one i32 per file, shared with every stamp that ladder ever wrote, so a
 /// fresh numbering would make an old product's store read as a *newer* one.
-pub(super) const MEMORY_SCHEMA_VERSION: i32 = 11;
+pub(super) const MEMORY_SCHEMA_VERSION: i32 = 12;
 
 /// The highest `user_version` the pre-rename migration ladder ever stamped,
 /// across every released binary (0.9.6 stamped 9; 0.9.7 and 0.9.8 stamped
@@ -59,6 +63,14 @@ const _: () = assert!(
 
 pub struct MemoryStore {
     pub(super) conn: Connection,
+    /// The directory linked-file paths (ADR-101 D3) are resolved against:
+    /// the grandparent of `memory.db` (its parent is `.inkentry/`), so a
+    /// path stored as `src/lib.rs` means `<project_root>/src/lib.rs`. Falls
+    /// back to the process's current directory for a store with no real
+    /// on-disk location (`:memory:`, used by tests) — the same fallback D3
+    /// specifies for a project that is not a git repository, since neither
+    /// case can be checked against anything more authoritative.
+    project_root: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,7 +152,12 @@ impl MemoryStore {
         conn.execute_batch("PRAGMA foreign_keys = ON")
             .context("enabling foreign-key enforcement")?;
         super::apply_test_page_cap(&conn)?;
-        let store = Self { conn };
+        let project_root = path
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let store = Self { conn, project_root };
         store.create_schema()?;
         // WAL for the same reason `index.db` uses it (see `storage/db.rs`): in
         // the default rollback-journal mode every autocommit write is a journal

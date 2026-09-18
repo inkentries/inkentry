@@ -918,6 +918,8 @@ mod tests {
                     archived: false,
                     as_of: None,
                     local_only: true,
+                    tag: None,
+                    file: None,
                 },
                 &mem_b,
                 &cfg,

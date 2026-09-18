@@ -109,6 +109,37 @@ pub(super) async fn memory_add(
         .map(|s| s.split(',').map(|f| f.trim().to_string()).collect())
         .unwrap_or_default();
 
+    // ── Linked-file resolution (ADR-101 D3) ──────────────────────────────────
+    // Resolved here, ahead of any write, purely to warn on a `missing` state
+    // and to report it in `--format json`: an escaping path errors out before
+    // anything is stored, and the actual storage below (`MemoryStore::add_note`,
+    // via the backend) re-resolves the same paths against the same root, which
+    // is where `note_files` is actually written. `files_root` is the real
+    // project root — the grandparent of `memory.db`'s `.inkentry/` directory —
+    // not the `project_root` above (which is a placeholder pre-init and is used
+    // only to steer inference routing).
+    let files_root = if placeholder_path {
+        project_root.to_path_buf()
+    } else {
+        mem_path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| project_root.to_path_buf())
+    };
+    let mut file_link_states: Vec<(String, String)> = Vec::new();
+    for raw in files.iter().filter(|f| !f.trim().is_empty()) {
+        let link = crate::storage::resolve_file_link(&files_root, raw)
+            .with_context(|| format!("resolving linked file '{raw}'"))?;
+        if link.state == crate::storage::FileState::Missing {
+            eprintln!(
+                "warning: linked file '{}' does not exist yet (state: missing)",
+                link.path
+            );
+        }
+        file_link_states.push((link.path, link.state.as_str().to_string()));
+    }
+
     // ── Secret-scan gate (binding requirement #8) ────────────────────────────
     // Checked before ANY persistence (SQLite or git-notes) so no credential
     // can reach either store.  Error message deliberately does not echo the
@@ -395,13 +426,19 @@ pub(super) async fn memory_add(
         // note would corrupt it, so they are dropped here (the pending-embedding
         // warning already goes to stderr, below).
         "json" | "jsonl" => {
-            let obj = serde_json::json!({
+            let mut obj = serde_json::json!({
                 "id": &id,
                 "entity_id": entity_id,
                 "kind": args.kind,
                 "title": title,
                 "created": created,
             });
+            if !file_link_states.is_empty() {
+                obj["linked_files"] = file_link_states
+                    .iter()
+                    .map(|(path, state)| serde_json::json!({"path": path, "state": state}))
+                    .collect();
+            }
             if format == "jsonl" {
                 println!("{}", serde_json::to_string(&obj)?);
             } else {
