@@ -63,6 +63,7 @@ tree-sitter-proto = "0.6"
 tree-sitter-sequel = "0.3"
 
 uuid = { workspace = true }
+unicode-normalization = { workspace = true }
 regex = { version = "1", default-features = false, features = ["std"] }
 blake3 = "1"
 sha2 = "0.11"

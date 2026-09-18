@@ -1,28 +1,23 @@
--- Initial memory schema. Declares the final shape directly, at schema
--- version 12: a fresh store is created from this file rather than by
--- replaying the migration ladder (`storage/memory/migrate.rs`),
--- which only ever moves an existing store *up to* this shape. A store
--- carrying data from an earlier product is crossed with `inkentry import`,
--- never opened in place (ADR-078).
+-- Initial memory schema. Declares the final shape directly: there is no
+-- ladder to climb, because this binary opens no memory store it did not
+-- create itself. A store carrying data from an earlier product is crossed
+-- with `inkentry import`, never opened in place (ADR-078).
 
 -- `uuid` is the exported identity (a UUIDv7), NOT NULL and uniquely indexed
--- from creation. `id` is a storage surrogate: `note_embeddings` is a vec0
--- table keyed `note_id INTEGER PRIMARY KEY`, which cannot key on TEXT.
+-- from creation. `id` is a storage surrogate: `memory_fts` is an FTS5
+-- external-content table keyed `content_rowid=id` and `note_embeddings` is a
+-- vec0 table keyed `note_id INTEGER PRIMARY KEY`, and neither can key on TEXT.
 -- Nothing outside this module may read it. AUTOINCREMENT is what stops SQLite
 -- reusing a deleted row's rowid, which would otherwise hand a new note the
 -- previous occupant's embedding.
---
--- `tags`/`linked_files` are rows in `note_tags`/`note_files` below (ADR-101),
--- not columns here: a comma-joined `TEXT` column cannot be indexed, joined,
--- or hold a comma in a value. The carrier (`NoteRecord`, git notes) is
--- unchanged — it already holds both as lists — and every reader/writer maps
--- between the two shapes at the storage boundary.
 CREATE TABLE IF NOT EXISTS notes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     uuid          TEXT    NOT NULL,
     kind          TEXT    NOT NULL DEFAULT 'note',   -- decision | context | requirement | note
     title         TEXT    NOT NULL,
     body          TEXT    NOT NULL,
+    tags          TEXT,                              -- comma-separated
+    linked_files  TEXT,                              -- comma-separated file paths
     created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
     status        TEXT    NOT NULL DEFAULT 'active',
     -- No ON DELETE action: a delete that would strand this reference must fail
@@ -42,36 +37,12 @@ CREATE TABLE IF NOT EXISTS notes (
 
 -- Uniqueness is declared as named indexes rather than inline column
 -- constraints so it is visible under `PRAGMA index_list` and can be named in a
--- test. `idx_notes_uuid` is also the parent-key index the foreign keys below
--- (including `note_tags`/`note_files`) resolve against.
+-- test. `idx_notes_uuid` is also the parent-key index the two foreign keys
+-- below resolve against.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_uuid      ON notes(uuid);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_entity_id ON notes(entity_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_remote_id ON notes(remote_id);
 CREATE INDEX        IF NOT EXISTS idx_memory_invalid_at ON notes(invalid_at);
-
--- The tag vocabulary (ADR-101 D1/D2): one row per (note, normalised tag).
--- Normalisation (Unicode NFC, lowercase, trim, whitespace/underscore runs to
--- `-`) happens once, in the core write path, so every write agrees; the
--- original spelling is not kept.
-CREATE TABLE IF NOT EXISTS note_tags (
-    note_uuid TEXT NOT NULL REFERENCES notes(uuid) ON DELETE CASCADE,
-    tag       TEXT NOT NULL,
-    PRIMARY KEY (note_uuid, tag)
-);
-CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag);
-
--- Linked files (ADR-101 D3): one row per (note, repository-relative path).
--- `state` is derived from git (`tracked` at HEAD, `untracked` on disk only,
--- `missing` otherwise) at write time, never refused for being `missing` — an
--- agent often records a decision about a file it is about to create.
-CREATE TABLE IF NOT EXISTS note_files (
-    note_uuid  TEXT NOT NULL REFERENCES notes(uuid) ON DELETE CASCADE,
-    path       TEXT NOT NULL,
-    state      TEXT NOT NULL CHECK (state IN ('tracked','untracked','missing')),
-    checked_at INTEGER NOT NULL,
-    PRIMARY KEY (note_uuid, path)
-);
-CREATE INDEX IF NOT EXISTS idx_note_files_path ON note_files(path);
 
 -- Semantic embeddings for notes (one row per note).
 CREATE VIRTUAL TABLE IF NOT EXISTS note_embeddings USING vec0(
@@ -79,47 +50,34 @@ CREATE VIRTUAL TABLE IF NOT EXISTS note_embeddings USING vec0(
     embedding  FLOAT[896]
 );
 
--- FTS5 full-text index over notes. Self-contained (no `content=`): `tags` no
--- longer has a same-shaped source column on `notes` to bind to, since it is
--- fed from `note_tags` instead — see the trigger pair below. `title`/`body`
--- are still maintained by triggers on `notes`, exactly as before.
+-- FTS5 full-text index over notes. `content=` avoids duplicating the text;
+-- the triggers below keep the index in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     title,
     body,
-    tags
+    tags,
+    content=notes,
+    content_rowid=id
 );
 
 CREATE TRIGGER IF NOT EXISTS memory_fts_insert
 AFTER INSERT ON notes BEGIN
-    INSERT INTO memory_fts(rowid, title, body, tags) VALUES (new.id, new.title, new.body, '');
+    INSERT INTO memory_fts(rowid, title, body, tags)
+    VALUES (new.id, new.title, new.body, COALESCE(new.tags, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS memory_fts_delete
 BEFORE DELETE ON notes BEGIN
-    DELETE FROM memory_fts WHERE rowid = old.id;
+    INSERT INTO memory_fts(memory_fts, rowid, title, body, tags)
+    VALUES ('delete', old.id, old.title, old.body, COALESCE(old.tags, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS memory_fts_update
 AFTER UPDATE ON notes BEGIN
-    UPDATE memory_fts SET title = new.title, body = new.body WHERE rowid = new.id;
-END;
-
--- Keeps `memory_fts.tags` in sync with `note_tags`: every insert/delete
--- recomputes the full space-joined tag text for the affected note, rather
--- than trying to patch it incrementally. Tag counts per note are small, so
--- this is not worth optimising past.
-CREATE TRIGGER IF NOT EXISTS note_tags_fts_insert
-AFTER INSERT ON note_tags BEGIN
-    UPDATE memory_fts
-    SET tags = (SELECT COALESCE(GROUP_CONCAT(tag, ' '), '') FROM note_tags WHERE note_uuid = new.note_uuid)
-    WHERE rowid = (SELECT id FROM notes WHERE uuid = new.note_uuid);
-END;
-
-CREATE TRIGGER IF NOT EXISTS note_tags_fts_delete
-AFTER DELETE ON note_tags BEGIN
-    UPDATE memory_fts
-    SET tags = (SELECT COALESCE(GROUP_CONCAT(tag, ' '), '') FROM note_tags WHERE note_uuid = old.note_uuid)
-    WHERE rowid = (SELECT id FROM notes WHERE uuid = old.note_uuid);
+    INSERT INTO memory_fts(memory_fts, rowid, title, body, tags)
+    VALUES ('delete', old.id, old.title, old.body, COALESCE(old.tags, ''));
+    INSERT INTO memory_fts(rowid, title, body, tags)
+    VALUES (new.id, new.title, new.body, COALESCE(new.tags, ''));
 END;
 
 -- Memory entry relationships. Endpoints are uuids, matching every other id

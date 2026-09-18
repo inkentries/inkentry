@@ -67,23 +67,12 @@ impl MemoryStore {
 
         let insert = self.conn.execute(
             "INSERT INTO notes \
-             (uuid, kind, title, body, tags, linked_files, created_at, status, source_ref, \
+             (uuid, kind, title, body, created_at, status, source_ref, \
               valid_at, invalid_at, entity_id, remote_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
-                uuid,
-                kind,
-                title,
-                body,
-                tags.join(","),
-                linked_files.join(","),
-                created_at,
-                status,
-                source_ref,
-                valid_at,
-                invalid_at,
-                entity_id,
-                remote_id,
+                uuid, kind, title, body, created_at, status, source_ref, valid_at, invalid_at,
+                entity_id, remote_id,
             ],
         );
 
