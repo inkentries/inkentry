@@ -341,6 +341,8 @@ inkentry search <query> [options]
 | `--only-text` | false | Full-text over the in-scope corpora, no embedding, no server needed |
 | `--as-of <date>` | — | Memory-only: only entries valid at this date (point-in-time) |
 | `--expand-graph` | false | Memory-only: also surface each memory result's 1-hop `relates_to` neighbours |
+| `--tag <tag>` | — | Memory-only: restrict to this exact tag, normalised the same way a write is (ADR-101) |
+| `--file <path>` | — | Memory-only: restrict to this exact linked repository-relative path (ADR-101) |
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
 | `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
@@ -670,7 +672,9 @@ inkentry context [options]
 | `-k, --kind <kind>` | — | Filter to a single kind instead of the multi-section view |
 | `-l, --limit <n>` | per-section | Max entries per section (handoff=3, question=10, decision=10, requirement=10); mutually exclusive with `--budget` |
 | `--budget <n>` (alias `--max-tokens`) | unlimited | Cap total output to this many tokens; mutually exclusive with `--limit` |
-| `--path <path>` | — | Only show entries tagged with this file/directory |
+| `--path <path>` | — | Only show entries whose linked files contain this substring |
+| `--tag <tag>` | — | Only show entries carrying this exact tag, normalised the same way a write is (ADR-101) |
+| `--file <path>` | — | Only show entries linking this exact repository-relative path (ADR-101); unlike `--path`, an exact match |
 | `--format text\|json` | text | Output format |
 | `--no-conventions` | false | Skip the conventions section |
 | `--local-only` | false | Skip cross-project dep pass; query only the primary project's memory |
@@ -1210,8 +1214,9 @@ Store and query project context, decisions, and requirements. See
 ```
 inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs] [--format text|json|jsonl]
 inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
-inkentry memory list [--kind decision] [--limit 20] [--format text|json] [--local-only]
+inkentry memory list [--kind decision] [--tag auth] [--file src/auth.rs] [--limit 20] [--format text|json] [--local-only]
 inkentry memory show <id> [--format text|json]
+inkentry memory tags [--format text|json]    # tag vocabulary with counts
 inkentry memory failures                    # list all antipatterns
 inkentry memory archive <id>
 inkentry memory supersede <id> --title "..." # archive old, add replacement
@@ -1259,6 +1264,19 @@ and `source_project` / `source_project_path` fields in JSON.
 
 Harvest is the top-level [`inkentry harvest`](#inkentry-harvest); see that
 section for the full flag reference.
+
+**Tags and linked files** are normalised, indexed rows, not free text
+([ADR-101](adr/101-normalised-tags-and-linked-files-in-the-memory-projection.md)).
+A tag is Unicode NFC, lowercased, trimmed, with runs of whitespace or `_`
+collapsed to a single `-` — `Auth Service` and `auth_service` are the same
+tag. `inkentry memory tags` lists the resulting vocabulary with how many
+active entries carry each. A linked file is made repository-relative and
+checked against git: `tracked` at `HEAD`, `untracked` on disk only, or
+`missing` — a `missing` path is still stored (with a warning), never refused,
+since a decision about a file often precedes the file. `memory list --tag
+<tag>` and `--file <path>` are exact filters over this vocabulary, backed by
+an index; `--tag` is normalised the same way a write is, and `--file` expects
+the exact repository-relative path `memory show`/`--format json` prints.
 
 **Memory kinds:** `decision` · `context` · `requirement` · `note` · `intent` ·
 `answer` · `handoff` · `question` · `antipattern`

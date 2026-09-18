@@ -49,6 +49,8 @@ pub enum MemoryCommand {
     Reindex(MemoryReindexArgs),
     /// Collapse duplicate-entity_id groups already resident in local memory.db (recovery tool)
     Dedupe(MemoryDedupeArgs),
+    /// List the tag vocabulary with how many active entries carry each (ADR-101)
+    Tags(MemoryTagsArgs),
 }
 
 #[derive(Args, Debug)]
@@ -156,6 +158,24 @@ pub struct MemoryListArgs {
     /// List only local project's memory, skipping linked project stores
     #[arg(long)]
     pub local_only: bool,
+
+    /// Only entries carrying this exact tag (normalised the same way a write
+    /// is), backed by the `note_tags` index (ADR-101 D4). Requires the sqlite
+    /// backend.
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+
+    /// Only entries linking this exact repository-relative path, backed by
+    /// the `note_files` index (ADR-101 D4). Requires the sqlite backend.
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct MemoryTagsArgs {
+    /// Output format: text or json
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[derive(Args, Debug)]
@@ -323,6 +343,7 @@ mod resolve;
 mod show;
 mod supersede;
 pub mod sync;
+mod tags;
 mod timeline;
 
 pub(crate) use corpus::{MemoryCorpus, memory_corpus_search};
@@ -361,6 +382,7 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
             reindex::memory_reindex(a, &mem_path, &cfg, be, reindex::Summary::Printed).await
         }
         MemoryCommand::Dedupe(a) => dedupe::memory_dedupe(a, &mem_path).await,
+        MemoryCommand::Tags(a) => tags::memory_tags(a, &mem_path).await,
     }
 }
 

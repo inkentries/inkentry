@@ -30,7 +30,11 @@ pub(crate) struct MemoryCorpus {
 /// the temporal window; `expand_graph` attaches `relates_to` 1-hop neighbours;
 /// and unless `local_only`, locked / cross-project decisions and requirements
 /// from linked stores are attached (text-only, as they have no CLI-side
-/// embedder).
+/// embedder). `tag`/`file` are the ADR-101 D4 exact filters, applied to both
+/// the ranked results and the attachments after they come back — a post-filter
+/// over already-hydrated `Note`s rather than a predicate pushed into the
+/// search SQL, since ranking and filtering are different concerns here and
+/// the fetched set is already bounded by `limit`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn memory_corpus_search(
     cfg: &Config,
@@ -42,6 +46,8 @@ pub(crate) async fn memory_corpus_search(
     as_of: Option<i64>,
     expand_graph: bool,
     local_only: bool,
+    tag: Option<&str>,
+    file: Option<&str>,
 ) -> Result<MemoryCorpus> {
     // Fold in any fetched teammate notes before searching, so a teammate's
     // newly-published entry is searchable on the default path without a re-init
@@ -60,6 +66,27 @@ pub(crate) async fn memory_corpus_search(
             .await
             .map_err(backend_err)?,
     };
+
+    let normalised_tag = tag.map(crate::storage::normalize_tag);
+    let matches_filters = |n: &Note, normalised_tag: &Option<Option<String>>| -> bool {
+        if let Some(t) = normalised_tag
+            && !t
+                .as_deref()
+                .is_some_and(|t| n.tags.iter().any(|nt| nt == t))
+        {
+            return false;
+        }
+        if let Some(f) = file
+            && !n.linked_files.iter().any(|nf| nf == f)
+        {
+            return false;
+        }
+        true
+    };
+    let notes: Vec<Note> = notes
+        .into_iter()
+        .filter(|n| matches_filters(n, &normalised_tag))
+        .collect();
 
     let mut attachments: Vec<Note> = vec![];
 

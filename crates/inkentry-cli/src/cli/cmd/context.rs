@@ -54,9 +54,19 @@ pub struct ContextArgs {
     )]
     pub budget: Option<usize>,
 
-    /// Only show entries tagged with this file or directory path
+    /// Only show entries tagged with this file or directory path (substring match)
     #[arg(long, value_name = "PATH")]
     pub path: Option<String>,
+
+    /// Only show entries carrying this exact tag, normalised the same way a
+    /// write is (ADR-101 D4)
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+
+    /// Only show entries linking this exact repository-relative path
+    /// (ADR-101 D4) — an exact match, unlike `--path`'s substring match
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
 
     /// Output format: text or json
     #[arg(long, default_value = "text")]
@@ -204,6 +214,8 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         args.kind.as_deref(),
         args.limit,
         args.path.as_deref(),
+        args.tag.as_deref(),
+        args.file.as_deref(),
     )
     .await?;
 
@@ -341,11 +353,14 @@ fn load_conventions(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn collect_sections(
     backend: &dyn crate::storage::MemoryBackend,
     kind_filter: Option<&str>,
     limit_override: Option<usize>,
     path_filter: Option<&str>,
+    tag_filter: Option<&str>,
+    file_filter: Option<&str>,
 ) -> Result<Vec<(String, Vec<Note>)>> {
     let mut result = Vec::new();
 
@@ -358,10 +373,24 @@ async fn collect_sections(
             .collect()
     };
 
+    // `--tag`/`--file` (ADR-101 D4) are exact filters applied over the
+    // already-fetched, already-hydrated notes — cheap here because `context`
+    // fetches small per-section limits to begin with. `--path` stays a
+    // substring match (unchanged, pre-dating ADR-101); `--file` is exact.
+    let normalised_tag = tag_filter.map(crate::storage::normalize_tag);
     for (kind, limit) in sections {
         let mut notes = backend.list(Some(kind), limit, false, None).await?;
         if let Some(p) = path_filter {
             notes.retain(|n| n.linked_files.iter().any(|f| f.contains(p)));
+        }
+        if let Some(tag) = &normalised_tag {
+            notes.retain(|n| {
+                tag.as_deref()
+                    .is_some_and(|t| n.tags.iter().any(|nt| nt == t))
+            });
+        }
+        if let Some(f) = file_filter {
+            notes.retain(|n| n.linked_files.iter().any(|nf| nf == f));
         }
         result.push((kind.to_string(), notes));
     }
