@@ -36,6 +36,51 @@
       "kind": "git-notes",
       "producer": "0.9.5",
       "sha256": "a47c7995a0963b860c745d84de506c8242719c1596ded382cbaeed9388ba7e3a"
+    },
+    {
+      "artifact": "memory.db.gz",
+      "expect": {
+        "active_note_count": 3,
+        "archived_title": "Retired plan for a separate vector store",
+        "entity_id_present": true,
+        "memory_fts_query": "Supersedes",
+        "note_count": 5,
+        "note_vector_count": 0,
+        "raw_tags_and_files": [
+          {
+            "linked_files": "src/lib.rs,src/window.rs",
+            "tags": "chunking,Tree Sitter",
+            "title": "Chunk with tree-sitter and re-window oversized nodes"
+          },
+          {
+            "linked_files": "./src/lib.rs",
+            "tags": "Chunking,chunking,tree_sitter",
+            "title": "Chunk with tree-sitter named nodes"
+          },
+          {
+            "linked_files": "README.md",
+            "tags": "offline",
+            "title": "Index must stay usable without a network"
+          },
+          {
+            "linked_files": "",
+            "tags": "Storage",
+            "title": "Retired plan for a separate vector store"
+          },
+          {
+            "linked_files": "",
+            "tags": "",
+            "title": "Should manifests allow blank lines"
+          }
+        ],
+        "schema_version": 11,
+        "successor_title": "Chunk with tree-sitter and re-window oversized nodes",
+        "superseded_title": "Chunk with tree-sitter named nodes"
+      },
+      "id": "memory-v1.1.0-schema-11",
+      "kind": "memory",
+      "producer": "1.1.0",
+      "sha256": "2a0829c4139354811aee84f2bd2ecf263d373319fcdfead5c698badbd327fcd8"
     }
   ]
 }

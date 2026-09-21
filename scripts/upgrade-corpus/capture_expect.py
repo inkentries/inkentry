@@ -110,10 +110,15 @@ def index_expect(path):
 
 def memory_expect(path):
     conn = connect(path)
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(notes)").fetchall()]
     notes = conn.execute(
         "SELECT id, title, status, superseded_by FROM notes ORDER BY id"
     ).fetchall()
     by_id = {n[0]: n for n in notes}
+    # From schema 11 `superseded_by` holds the successor's uuid, not its id.
+    if "uuid" in columns:
+        for uuid, note_id in conn.execute("SELECT uuid, id FROM notes"):
+            by_id[uuid] = by_id[note_id]
 
     chain = next((n for n in notes if n[3] is not None), None)
     successor = by_id.get(chain[3]) if chain else None
@@ -139,7 +144,17 @@ def memory_expect(path):
         if words:
             fts_query = words[0]
 
-    columns = [r[1] for r in conn.execute("PRAGMA table_info(notes)").fetchall()]
+    # The comma-joined columns exactly as the old binary wrote them, per title.
+    # A later schema moves them into rows; this is the independent record of
+    # what had to arrive there.
+    raw_tags_and_files = []
+    if "tags" in columns and "linked_files" in columns:
+        raw_tags_and_files = [
+            {"title": t, "tags": tags or "", "linked_files": files or ""}
+            for t, tags, files in conn.execute(
+                "SELECT title, tags, linked_files FROM notes ORDER BY title"
+            )
+        ]
 
     expect = {
         "note_count": len(notes),
@@ -148,6 +163,8 @@ def memory_expect(path):
         "superseded_title": chain[1] if chain else "",
         "successor_title": successor[1] if successor else "",
         "memory_fts_query": fts_query,
+        "schema_version": scalar(conn, "PRAGMA user_version"),
+        "raw_tags_and_files": raw_tags_and_files,
         # Recorded so the suite can prove a pre-ADR-068 wing really is one
         # before it asserts the backfill filled it in. Without this an
         # accidentally pre-migrated fixture would make the backfill assertion

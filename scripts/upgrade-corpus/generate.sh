@@ -96,9 +96,27 @@ export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
 # newer one? Until that is true there is nothing here worth capturing, and
 # `a_schema_version_that_advances_past_the_corpus_fails_here` is what asks the
 # question at the moment it stops being hypothetical.
+#
+# memory-v1.1.0-schema-11 is the first database wing since the reset, and it
+# answers that question with a yes. 1.0 and 1.1 shipped writing memory.db at
+# schema version 11, and the first schema step after them (12: tags and linked
+# files move out of comma-joined columns into rows) is applied to that store in
+# place. The wing is a store the real 1.1.0 binary wrote, holding the awkward
+# tag and path spellings that step has to carry across.
 WINGS=(
   "git-notes-eras|v0.9.5|git-notes"
+  "memory-v1.1.0-schema-11|v1.1.0|memory"
 )
+
+# Releases from 1.0 on were published under the current name, from the current
+# repository, with the current binary name. Everything earlier keeps the old
+# ones (see A NOTE ON NAMES above).
+is_current_name_release() {
+  case "$1" in
+    v0.*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
 # Wire shape and dimension the stub must speak for a given release.
 stub_profile() {
@@ -133,17 +151,24 @@ log() { echo "==> $*"; }
 # checksum. An unpinned asset is a hard stop, not a warning: the corpus is only
 # evidence about a real release if the bytes are the ones that release shipped.
 fetch_release() {
-  local tag="$1" triple asset dest actual expected
+  local tag="$1" triple asset dest actual expected slug name
   triple="$(host_triple)"
-  # Old name: the published filename of an already-shipped release.
-  asset="spelunk-${tag}-${triple}.tar.gz"
+  if is_current_name_release "$tag"; then
+    slug="inkentries/inkentry"
+    name="inkentry"
+  else
+    # Old name: the published filename of an already-shipped release.
+    slug="$REPO_SLUG"
+    name="spelunk"
+  fi
+  asset="${name}-${tag}-${triple}.tar.gz"
   dest="$CACHE_DIR/$asset"
 
   if [[ ! -f "$dest" ]]; then
     mkdir -p "$CACHE_DIR"
-    gh release download "$tag" --repo "$REPO_SLUG" --pattern "$asset" \
+    gh release download "$tag" --repo "$slug" --pattern "$asset" \
       --dir "$CACHE_DIR" --clobber \
-      || die "could not download $asset from $REPO_SLUG $tag"
+      || die "could not download $asset from $slug $tag"
   fi
 
   actual="$(shasum -a 256 "$dest" | awk '{print $1}')"
@@ -162,14 +187,15 @@ EOF
   [[ "$actual" == "$expected" ]] \
     || die "$asset checksum mismatch: expected $expected, got $actual"
 
-  # Old name: the executable inside an already-shipped tarball.
+  # `$name` is the executable inside the tarball: the old name for an
+  # already-shipped 0.x release, the current one from 1.0 on.
   local unpacked="$CACHE_DIR/$tag"
-  if [[ ! -x "$unpacked/spelunk" ]]; then
+  if [[ ! -x "$unpacked/$name" ]]; then
     mkdir -p "$unpacked"
     tar xzf "$dest" -C "$unpacked"
   fi
-  [[ -x "$unpacked/spelunk" ]] || die "$asset contains no CLI binary"
-  echo "$unpacked/spelunk"
+  [[ -x "$unpacked/$name" ]] || die "$asset contains no CLI binary"
+  echo "$unpacked/$name"
 }
 
 # ── sample repo ─────────────────────────────────────────────────────────────
@@ -247,6 +273,23 @@ sandbox_env() {
   export SPELUNK_REGISTRY_DIR="$home/.config/spelunk"
 }
 
+# The same isolation for a release published under the current name, which
+# reads the current variables. `INKENTRY_NO_SERVER=1` keeps the binary from
+# autostarting its bundled embedder, which would download a model: entries are
+# then stored without a vector, which the binary supports and reports. The
+# wings built this way exist for relational content, not for vectors.
+sandbox_env_current() {
+  local home="$1"
+  mkdir -p "$home/.config/inkentry"
+  : > "$home/.config/inkentry/config.toml"
+  export HOME="$home"
+  export INKENTRY_CONFIG_DIR="$home/.config/inkentry"
+  export INKENTRY_REGISTRY_DIR="$home/.config/inkentry"
+  export INKENTRY_STATE_DIR="$home/.state/inkentry"
+  export INKENTRY_SECRET_STORE=file
+  export INKENTRY_NO_SERVER=1
+}
+
 # Fold the write-ahead log back into the main file and store the result gzipped.
 # Copying a live database would ship a -wal/-shm pair whose contents the test
 # would have to reassemble; the checkpoint makes the single file the whole
@@ -290,8 +333,71 @@ add_memory_entry() {
   echo "$id"
 }
 
+# Add one entry with the current-name CLI and echo the handle it printed. From
+# 1.0 the handle is the leading hex of the entity id, not a number.
+add_memory_entry_current() {
+  local bin="$1" kind="$2" title="$3" body="$4" tags="$5" files="$6" out id
+  out="$("$bin" memory add --kind "$kind" --title "$title" --body "$body" \
+    ${tags:+--tags "$tags"} ${files:+--files "$files"} 2>/dev/null)"
+  id="$(printf '%s\n' "$out" | sed -n 's/.*#\([0-9a-f][0-9a-f]*\).*/\1/p' | head -1)"
+  [[ -n "$id" ]] || die "could not read the entry handle out of: $out"
+  echo "$id"
+}
+
+# A schema-11 store as 1.0/1.1 wrote it. The tags and paths are deliberately
+# awkward, because they are what schema step 12 has to carry from comma-joined
+# columns into rows: mixed case and a duplicate that differs only by case, a
+# tag with a space and one with an underscore, a `./`-prefixed path, a path to a
+# file that does not exist, an entry with neither, and one superseded and one
+# archived entry so their tags and files are shown to travel with them too.
+build_memory_wing_current() {
+  local wing_id="$1" tag="$2" work="$3" out="$4"
+  local bin
+  bin="$(fetch_release "$tag")"
+
+  local home="$work/home" repo="$work/repo"
+  mkdir -p "$home"
+  make_sample_repo "$repo"
+  (
+    sandbox_env_current "$home"
+    cd "$repo"
+    "$bin" init >/dev/null 2>&1 || true
+    local superseded successor spare
+    superseded="$(add_memory_entry_current "$bin" decision \
+      "Chunk with tree-sitter named nodes" \
+      "Naive line splits cut functions in half; named AST nodes do not." \
+      "Chunking, chunking ,tree_sitter" "./src/lib.rs")"
+    successor="$(add_memory_entry_current "$bin" decision \
+      "Chunk with tree-sitter and re-window oversized nodes" \
+      "Supersedes the earlier rule: an oversized node still needs a window." \
+      "chunking,Tree Sitter" "src/lib.rs,src/window.rs")"
+    add_memory_entry_current "$bin" requirement \
+      "Index must stay usable without a network" \
+      "Full-text search and the code graph run with no server." \
+      "offline" "README.md" >/dev/null
+    add_memory_entry_current "$bin" question \
+      "Should manifests allow blank lines" \
+      "parse_manifest skips them today; nobody has asked for anything else." \
+      "" "" >/dev/null
+    spare="$(add_memory_entry_current "$bin" note \
+      "Retired plan for a separate vector store" \
+      "Kept for the record; sqlite-vec removed the need for one." \
+      "Storage" "")"
+    "$bin" memory supersede "$superseded" "$successor" >/dev/null 2>&1
+    "$bin" memory archive "$spare" >/dev/null 2>&1
+  )
+
+  local db="$repo/.inkentry/memory.db"
+  [[ -f "$db" ]] || die "$tag produced no memory.db"
+  stage_db "$db" "$out/memory.db.gz"
+}
+
 build_memory_wing() {
   local wing_id="$1" tag="$2" work="$3" out="$4"
+  if is_current_name_release "$tag"; then
+    build_memory_wing_current "$@"
+    return
+  fi
   local bin dim wire
   bin="$(fetch_release "$tag")"
   read -r dim wire <<<"$(stub_profile "$tag")"

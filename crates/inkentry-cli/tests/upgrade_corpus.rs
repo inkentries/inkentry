@@ -8,14 +8,18 @@
 // independent record of what the old binary wrote rather than an echo of what
 // today's code happens to produce.
 //
-// The corpus holds one wing, and the reason it holds only one is the point.
+// The corpus holds two wings, and the reason it holds so few is the point.
 //
 // A wing earns its place by covering a path a real user's data actually takes.
-// Neither local database is such a path: `index.db` is not carried at all (the
-// user reindexes) and `memory.db` is exported to a portable dump and imported
-// into a store this binary creates, so no database written by an earlier
-// product is ever opened in place. Wings for those were archaeology, and they
-// went with the migration ladders they were defending.
+// No database written by the earlier product is such a path: its `index.db` is
+// not carried at all (the user reindexes) and its `memory.db` is exported to a
+// portable dump and imported into a store this binary creates. Wings for those
+// were archaeology, and they went with the migration ladders they were
+// defending.
+//
+// A `memory.db` written by 1.0 or 1.1 is such a path. It is stamped schema
+// version 11 and is migrated forward in place, so the store a real 1.1.0
+// binary wrote is what the first step after it has to carry across.
 //
 // The notes ref is the exception, and it is why the harness survives them. It
 // is renamed in place rather than exported, so a migrating user really does
@@ -70,6 +74,27 @@ struct Wing {
 struct Expect {
     #[serde(default)]
     era_entries: Vec<EraEntry>,
+    #[serde(default)]
+    schema_version: i32,
+    #[serde(default)]
+    note_count: usize,
+    #[serde(default)]
+    active_note_count: usize,
+    #[serde(default)]
+    archived_title: String,
+    #[serde(default)]
+    superseded_title: String,
+    #[serde(default)]
+    successor_title: String,
+    #[serde(default)]
+    raw_tags_and_files: Vec<RawTagsAndFiles>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTagsAndFiles {
+    title: String,
+    tags: String,
+    linked_files: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,6 +250,139 @@ fn the_corpus_is_not_empty_and_every_wing_is_present() {
     }
 }
 
+// What schema step 12 owes a store the real 1.1.0 binary wrote: every entry
+// still there with its status, and the tags and linked files that lived in
+// comma-joined columns now present as rows, normalised.
+//
+// The expected tags and paths are written out here rather than computed, so
+// they do not echo whatever today's normaliser happens to do. The raw column
+// values are asserted first against the manifest, which was read out of the
+// artifact with plain SQL at capture time: a regenerated wing with different
+// content fails there, loudly, instead of quietly testing something else.
+#[test]
+#[serial_test::serial]
+fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
+    register_sqlite_vec();
+    let m = manifest();
+    let wing = wings_of_kind(&m, "memory")
+        .into_iter()
+        .find(|w| w.id == "memory-v1.1.0-schema-11")
+        .expect("the 1.1.0 memory wing is in the manifest");
+    let tmp = tempfile::tempdir().unwrap();
+    let db = checkout(wing, tmp.path());
+
+    assert_eq!(wing.expect.schema_version, 11);
+    assert_eq!(
+        read_user_version(&raw(&db)),
+        11,
+        "the artifact must still be the unmigrated store the release wrote"
+    );
+
+    struct Case {
+        title: &'static str,
+        raw_tags: &'static str,
+        raw_files: &'static str,
+        tags: &'static [&'static str],
+        files: &'static [&'static str],
+    }
+    let cases = [
+        Case {
+            title: "Chunk with tree-sitter named nodes",
+            raw_tags: "Chunking,chunking,tree_sitter",
+            raw_files: "./src/lib.rs",
+            tags: &["chunking", "tree-sitter"],
+            files: &["src/lib.rs"],
+        },
+        Case {
+            title: "Chunk with tree-sitter and re-window oversized nodes",
+            raw_tags: "chunking,Tree Sitter",
+            raw_files: "src/lib.rs,src/window.rs",
+            tags: &["chunking", "tree-sitter"],
+            files: &["src/lib.rs", "src/window.rs"],
+        },
+        Case {
+            title: "Index must stay usable without a network",
+            raw_tags: "offline",
+            raw_files: "README.md",
+            tags: &["offline"],
+            files: &["README.md"],
+        },
+        Case {
+            title: "Retired plan for a separate vector store",
+            raw_tags: "Storage",
+            raw_files: "",
+            tags: &["storage"],
+            files: &[],
+        },
+        Case {
+            title: "Should manifests allow blank lines",
+            raw_tags: "",
+            raw_files: "",
+            tags: &[],
+            files: &[],
+        },
+    ];
+    assert_eq!(wing.expect.raw_tags_and_files.len(), cases.len());
+    for case in &cases {
+        let title = case.title;
+        let captured = wing
+            .expect
+            .raw_tags_and_files
+            .iter()
+            .find(|r| r.title == title)
+            .unwrap_or_else(|| panic!("the wing no longer holds {title:?}"));
+        assert_eq!(captured.tags, case.raw_tags, "raw tags of {title:?}");
+        assert_eq!(
+            captured.linked_files, case.raw_files,
+            "raw files of {title:?}"
+        );
+    }
+
+    let store = MemoryStore::open(&db).expect("opening a 1.1.0 store must migrate it, not refuse");
+    assert_eq!(read_user_version(&raw(&db)), fresh_memory_schema_version());
+
+    let all = store.list(None, 100, true).expect("listing every entry");
+    assert_eq!(all.len(), wing.expect.note_count);
+    let active = store
+        .list(None, 100, false)
+        .expect("listing active entries");
+    assert_eq!(active.len(), wing.expect.active_note_count);
+
+    for case in &cases {
+        let title = case.title;
+        let note = all
+            .iter()
+            .find(|n| n.title == title)
+            .unwrap_or_else(|| panic!("{title:?} did not survive the migration"));
+        let mut got_tags = note.tags.clone();
+        got_tags.sort();
+        assert_eq!(got_tags, case.tags, "tags of {title:?}");
+        let mut got_files = note.linked_files.clone();
+        got_files.sort();
+        assert_eq!(got_files, case.files, "linked files of {title:?}");
+    }
+
+    let status_of = |title: &str| {
+        all.iter()
+            .find(|n| n.title == title)
+            .map(|n| n.status.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(status_of(&wing.expect.archived_title), "archived");
+    assert_eq!(status_of(&wing.expect.superseded_title), "archived");
+    assert_eq!(status_of(&wing.expect.successor_title), "active");
+
+    let by_tag = store
+        .search_text("offline", 10, None)
+        .expect("full-text search after the migration");
+    assert!(
+        by_tag
+            .iter()
+            .any(|n| n.title == "Index must stay usable without a network"),
+        "a tag must still be reachable through full-text search once it lives in note_tags"
+    );
+}
+
 // The ref carries blobs from three writing eras (legacy single-JSON, multi-line
 // JSONL without entity_id, entity-keyed event log) and a current read must
 // surface every one of them.
@@ -310,8 +468,13 @@ async fn git_notes_reads_every_era_on_the_ref() {
 //
 // The numbers below are an acknowledgement, not a derivation. Deriving them
 // from the crate constants would make the check tautological.
+//
+// Memory 11 -> 12: yes to the question below. 1.0 and 1.1 shipped writing 11,
+// and step 12 migrates that store in place. The `memory-v1.1.0-schema-11` wing
+// and `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` are
+// the answer.
 const CORPUS_COVERS_INDEX_SCHEMA: i32 = 17;
-const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 11;
+const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 12;
 
 #[test]
 #[serial_test::serial]
