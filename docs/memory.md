@@ -532,9 +532,13 @@ This is opt-in by design: the script only runs if you've placed it at that exact
 ## Searching memory
 
 Memory is searched through the unified `inkentry search` command. By default
-`search` interleaves code and
-memory results into one ranked list — pass `--only-memory` to restrict it to the
-memory corpus. `--as-of` and `--expand-graph` are memory-only modifiers.
+`search` interleaves code and memory results into one ranked list, but a
+memory entry only takes a slot if it clears a calibrated relevance floor
+against the query — an unrelated memory store contributes nothing rather than
+taking half of every result page. Pass `--only-memory` to restrict to the
+memory corpus and see every match, ungated: with no code corpus in scope there
+are no slots to protect, so this is also how to check what the default
+suppressed. `--as-of` and `--expand-graph` are memory-only modifiers.
 
 ```bash
 # Search memory only — finds entries by meaning
@@ -1025,7 +1029,7 @@ Scope and limits:
 
 ## Using memory as context
 
-`inkentry search` interleaves memory and code results in one ranked list — memory answers the *why* while the code answers the *how*. Use `--only-memory` when you want just the decisions or `--only-code` for just the code; the default hands your reasoning model both at once for a complete picture.
+`inkentry search` interleaves memory and code results in one ranked list — memory answers the *why* while the code answers the *how* — but a memory entry only earns a slot when it clears the relevance floor, so the default does not hand your reasoning model a decision that has nothing to do with the query. Use `--only-memory` when you want just the decisions, ungated, or `--only-code` for just the code; the default hands your reasoning model both at once for a complete picture.
 
 ## Machine-readable output
 

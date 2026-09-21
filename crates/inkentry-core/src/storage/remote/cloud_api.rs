@@ -254,12 +254,15 @@ impl MemoryBackend for CloudApiMemoryBackend {
         )
     }
 
+    /// ADR-083's relevance gate is calibrated for the local SQLite backend's
+    /// embedding space only, so `gate` is unused here.
     async fn search_hybrid(
         &self,
         query_blob: &[u8],
         query: &str,
         limit: usize,
         as_of: Option<i64>,
+        _gate: bool,
     ) -> Result<Vec<Note>> {
         self.search(query_blob, query, limit, as_of).await
     }

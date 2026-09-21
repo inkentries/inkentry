@@ -1,7 +1,9 @@
--- Initial memory schema. Declares the final shape directly: there is no
--- ladder to climb, because this binary opens no memory store it did not
--- create itself. A store carrying data from an earlier product is crossed
--- with `inkentry import`, never opened in place (ADR-078).
+-- Initial memory schema. Declares the final shape directly, at schema
+-- version 11: a fresh store is created from this file rather than by
+-- replaying the migration ladder (`storage/memory/migrate.rs`),
+-- which only ever moves an existing store *up to* this shape. A store
+-- carrying data from an earlier product is crossed with `inkentry import`,
+-- never opened in place (ADR-078).
 
 -- `uuid` is the exported identity (a UUIDv7), NOT NULL and uniquely indexed
 -- from creation. `id` is a storage surrogate: `memory_fts` is an FTS5

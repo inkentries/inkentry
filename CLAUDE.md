@@ -198,7 +198,9 @@ search/
   tokens.rs      — token-budget helpers
 
 migrations/  (crates/inkentry-core/migrations/)
-  index_001_initial.sql  — index.db at its final shape (no ladder; see storage/db.rs)
+  index_001_initial.sql  — index.db at its final shape (forward migrations layer
+                           on top from schema version 17; see storage/db.rs,
+                           storage/index_migrate.rs)
   memory_001_initial.sql — memory.db at its final shape
 ```
 
@@ -492,15 +494,23 @@ the int8 L2 distance is rescaled back to the f32 scale by `INT8_SCALE` on read
 (`storage/search.rs`). Memory-entry embeddings stay
 `FLOAT[896]`.
 
-Neither store migrates. Each declares its final shape in one schema file and
-stamps `PRAGMA user_version`; anything else is refused or rebuilt, never
-converted. `memory.db` **refuses** an earlier product's store and points at
-`inkentry import`, because its rows are authored. `index.db` **rebuilds** —
-discarding the old file and recreating it empty, carrying only `usage` across —
-because everything else in it is derived from the source tree and `inkentry
-index` reproduces it. Both constants sit above the highest version their old
-ladders ever stamped, so a store from an older build reads as older rather than
-as one from the future.
+Each store declares its final shape in one schema file and stamps `PRAGMA
+user_version`. Below the version its own old ladder last stamped, both are
+still refused or rebuilt, never converted: `memory.db` **refuses** an earlier
+product's store and points at `inkentry import`, because its rows are
+authored; `index.db` **rebuilds** — discarding the old file and recreating it
+empty, carrying only `usage` across — because everything else in it is
+derived from the source tree and `inkentry index` reproduces it. Above that
+floor, both stores **migrate forward in place**: `memory.db` unconditionally,
+`index.db` unless a step registered in `storage/index_migrate.rs` between the
+found and target version asks to rebuild instead, for a change (a different
+embedding space, a chunking change) that invalidates stored data outright
+rather than one a step can fix in place — that registry entry is what
+decides, never the shared ladder in `storage/migration_ladder.rs`, which
+stays ignorant of rebuilding so `memory.db`, which must never rebuild, can
+share it unchanged. Both constants sit above the highest version their old
+ladders ever stamped, so a store from an older build reads as older rather
+than as one from the future.
 
 ### Incremental indexing
 Each file is hashed with blake3. On re-index, unchanged files are skipped.

@@ -3,6 +3,18 @@ use anyhow::Result;
 use super::notes::{row_to_note, row_to_note_with_distance};
 use super::{MemoryStore, Note, NoteId};
 
+/// The within-corpus relevance floor for a memory candidate's vector distance
+/// to the QA-prefixed query embedding (ADR-083). `note_embeddings` is a `vec0`
+/// `FLOAT[896]` table with the default L2 metric over L2-normalised vectors, so
+/// a reported `distance` is `sqrt(2 - 2·cos)`; `1.2032` L2 is cosine `0.2762`.
+/// Calibrated 2026-08-11 against `F2LLM-v2-330M@896`
+/// ([`crate::embeddings::MODEL_ID`]) under the QA instruction prefix "Given a
+/// question, retrieve passages that answer the question", from 10,000
+/// (CodeSearchNet query, unrelated note) negative pairs and 20 hand-written
+/// paraphrase positives (see `docs/adr/083-memory-relevance-gate-in-unified-search.md`).
+/// Changing `MODEL_ID` or that instruction string invalidates the calibration.
+pub const MEMORY_MAX_QA_DISTANCE: f64 = 1.2032;
+
 impl MemoryStore {
     /// Semantic KNN search. Returns active notes ordered by ascending distance.
     /// When `as_of` is `Some(ts)`, only entries valid at that Unix timestamp are returned.
@@ -92,27 +104,48 @@ impl MemoryStore {
         Ok(notes)
     }
 
-    /// Hybrid search: fuses FTS5 BM25 ranking with vector KNN via Reciprocal Rank Fusion.
+    /// Vector-only memory retrieval, admitted candidates ranked by RRF (ADR-083).
     ///
-    /// RRF score: `Σ 1 / (k + rank_i)` where `k` is the shared [`crate::search::RRF_K`].
-    /// Candidates from both lists are merged by note ID, scores summed, then the top
-    /// `limit` are returned in descending RRF score order.
-    /// When `as_of` is `Some(ts)`, only entries valid at that timestamp are considered.
+    /// An earlier version of this method fused FTS5 BM25 with vector KNN. That
+    /// lexical door is retired: `memory_fts` matches the whole query as one
+    /// contiguous phrase, and measurement found it matched 0 of 500 negative and
+    /// 0 of 20 positive natural-language queries — inert in practice, not merely
+    /// weak. `query` is accepted for trait-signature parity with the code
+    /// corpus's hybrid search and is otherwise unused.
+    ///
+    /// When `gate` is `true`, a vector candidate is admitted only if its
+    /// distance to the QA-prefixed query embedding is at most
+    /// [`MEMORY_MAX_QA_DISTANCE`] — this is what stops an unrelated memory store
+    /// from taking half of every unified-search page. `gate` is `false` for
+    /// `--only-memory`, which has no code corpus to protect slots from and is an
+    /// explicit request to see the full page (ADR-083 decision 5).
+    ///
+    /// RRF score: `1 / (k + rank_i)` where `k` is the shared [`crate::search::RRF_K`].
+    /// With one candidate source the ranking is already distance order; RRF
+    /// keeps `score`/`distance` in the same shape hybrid search has always
+    /// returned. When `as_of` is `Some(ts)`, only entries valid at that
+    /// timestamp are considered.
     pub fn search_hybrid(
         &self,
         query_blob: &[u8],
-        query: &str,
+        _query: &str,
         limit: usize,
         as_of: Option<i64>,
+        gate: bool,
     ) -> Result<Vec<Note>> {
         use std::collections::HashMap;
 
         let candidates = (limit * 3).max(20);
 
         let vec_results = self.search(query_blob, candidates, as_of)?;
-        let text_results = self
-            .search_text(query, candidates, as_of)
-            .unwrap_or_default();
+        let vec_results: Vec<Note> = if gate {
+            vec_results
+                .into_iter()
+                .filter(|n| n.distance.is_some_and(|d| d <= MEMORY_MAX_QA_DISTANCE))
+                .collect()
+        } else {
+            vec_results
+        };
 
         const K: f64 = crate::search::RRF_K;
 
@@ -125,18 +158,10 @@ impl MemoryStore {
             by_id.entry(note.id.clone()).or_insert(note);
         }
 
-        for (rank, note) in text_results.into_iter().enumerate() {
-            let rrf = 1.0 / (K + (rank + 1) as f64);
-            *scores.entry(note.id.clone()).or_insert(0.0) += rrf;
-            by_id.entry(note.id.clone()).or_insert(note);
-        }
-
         // Sort descending by RRF score, take top `limit`. `scores` is a HashMap
-        // whose iteration order is reseeded per instance, and RRF ties are the
-        // norm (vector rank i and text rank i score identically on disjoint
-        // lists), so the id tie-break is what makes this order reproducible
-        // rather than a reshuffle per call. NoteId is the backend-minted UUID,
-        // so the order agrees across machines too.
+        // whose iteration order is reseeded per instance; the id tie-break keeps
+        // this order reproducible rather than a reshuffle per call, and NoteId
+        // is the backend-minted UUID, so the order agrees across machines too.
         let mut ranked: Vec<(NoteId, f64)> = scores.into_iter().collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         ranked.truncate(limit);
@@ -202,7 +227,7 @@ impl MemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use super::MemoryStore;
+    use super::{MemoryStore, NoteId};
     use std::sync::OnceLock;
 
     fn register_sqlite_vec() {
@@ -230,72 +255,138 @@ mod tests {
         v
     }
 
-    // Issue #47, memory side. A note reachable only by text and one reachable
-    // only by vector share a rank, so RRF scores them identically; before the
-    // tie-break the pair's order came from `HashMap` iteration, reseeded per
-    // call. Expected order is derived from the two input lists — at each rank,
-    // the tied pair ordered by NoteId — so it pins the rule, not the output.
+    // ADR-083 retired the lexical door inside `search_hybrid`: a note reachable
+    // only by an FTS match, with no embedding row at all, must never surface
+    // here. This proves the vector-only mechanism rather than merely asserting
+    // it in prose — pre-fix this note would have entered via `text_results`.
     #[test]
-    fn search_hybrid_breaks_rrf_ties_by_note_id() {
+    fn search_hybrid_never_surfaces_a_text_only_match() {
         let store = open_store();
-
-        for i in 0..3 {
-            store
-                .add_note(
-                    "note",
-                    &format!("Text hit {i}"),
-                    "rrftieterm appears here",
-                    &[],
-                    &[],
-                    None,
-                    None,
-                )
-                .unwrap();
-        }
-
-        for (i, w) in [1.0_f32, 0.98, 0.95].into_iter().enumerate() {
-            let (id, _) = store
-                .add_note(
-                    "note",
-                    &format!("Vector hit {i}"),
-                    "alpha beta gamma",
-                    &[],
-                    &[],
-                    None,
-                    None,
-                )
-                .unwrap();
-            store
-                .insert_embedding(&id, &crate::embeddings::vec_to_blob(&unit_vec(w)))
-                .unwrap();
-        }
-
+        store
+            .add_note(
+                "note",
+                "Text only hit",
+                "rrftieterm appears here and nowhere else",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
         let query_blob = crate::embeddings::vec_to_blob(&unit_vec(1.0));
 
-        // Take the two per-corpus rankings as given and apply the RRF rule to
-        // them: the lists are disjoint and equal-length, so rank i ties, and the
-        // tie must resolve to the lower NoteId.
-        let text_rank = store.search_text("rrftieterm", 20, None).expect("text ok");
-        let vec_rank = store.search(&query_blob, 20, None).expect("knn ok");
-        assert_eq!(text_rank.len(), 3, "text list feeds the tie at each rank");
-        assert_eq!(vec_rank.len(), 3, "vector list feeds the tie at each rank");
-        let expected: Vec<String> = (0..3)
-            .flat_map(|i| {
-                let mut pair = [text_rank[i].id.clone(), vec_rank[i].id.clone()];
-                pair.sort();
-                pair
-            })
-            .map(|id| id.to_string())
-            .collect();
-        for call in 0..40 {
+        assert!(
+            !store
+                .search_text("rrftieterm", 20, None)
+                .expect("text ok")
+                .is_empty(),
+            "the note must be genuinely reachable by text for this assertion to mean anything"
+        );
+
+        for gate in [true, false] {
             let hits = store
-                .search_hybrid(&query_blob, "rrftieterm", 10, None)
+                .search_hybrid(&query_blob, "rrftieterm", 10, None, gate)
                 .expect("hybrid ok");
-            let got: Vec<String> = hits.iter().map(|n| n.id.to_string()).collect();
-            assert_eq!(
-                got, expected,
-                "memory hybrid order must be identical on every call (call {call})"
+            assert!(
+                hits.is_empty(),
+                "a text-only match must not surface via search_hybrid (gate={gate}), got {hits:?}"
             );
+        }
+    }
+
+    // `query` = `unit_vec(1.0)` = (1, 0, 0, ...), so `dot(query, unit_vec(w)) = w`
+    // and `distance = sqrt(2 - 2w)`. `w = 0.9` lands well inside
+    // `MEMORY_MAX_QA_DISTANCE`; `w = 0.0` gives `distance = sqrt(2) ≈ 1.4142`,
+    // well beyond it.
+    fn embedded_note(store: &MemoryStore, title: &str, w: f32) -> NoteId {
+        let (id, _) = store
+            .add_note("note", title, "body", &[], &[], None, None)
+            .unwrap();
+        store
+            .insert_embedding(&id, &crate::embeddings::vec_to_blob(&unit_vec(w)))
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn search_hybrid_gated_drops_a_candidate_beyond_the_distance_floor() {
+        let store = open_store();
+        let near = embedded_note(&store, "Near", 0.9);
+        embedded_note(&store, "Far", 0.0);
+        let query_blob = crate::embeddings::vec_to_blob(&unit_vec(1.0));
+
+        let hits = store
+            .search_hybrid(&query_blob, "q", 10, None, true)
+            .expect("hybrid ok");
+        let ids: Vec<NoteId> = hits.into_iter().map(|n| n.id).collect();
+        assert_eq!(
+            ids,
+            vec![near],
+            "only the within-floor candidate survives gating"
+        );
+    }
+
+    // `--only-memory` passes `gate = false`: no code corpus competes for slots,
+    // so every vector candidate is admitted (ADR-083 decision 5).
+    #[test]
+    fn search_hybrid_ungated_admits_a_candidate_beyond_the_distance_floor() {
+        let store = open_store();
+        let near = embedded_note(&store, "Near", 0.9);
+        let far = embedded_note(&store, "Far", 0.0);
+        let query_blob = crate::embeddings::vec_to_blob(&unit_vec(1.0));
+
+        let hits = store
+            .search_hybrid(&query_blob, "q", 10, None, false)
+            .expect("hybrid ok");
+        let ids: Vec<NoteId> = hits.into_iter().map(|n| n.id).collect();
+        assert_eq!(
+            ids,
+            vec![near, far],
+            "ungated keeps every candidate, ranked by distance"
+        );
+    }
+
+    #[test]
+    fn search_hybrid_with_every_candidate_gated_out_returns_empty() {
+        let store = open_store();
+        embedded_note(&store, "Far", 0.0);
+        let query_blob = crate::embeddings::vec_to_blob(&unit_vec(1.0));
+
+        let hits = store
+            .search_hybrid(&query_blob, "q", 10, None, true)
+            .expect("hybrid ok");
+        assert!(
+            hits.is_empty(),
+            "an entirely irrelevant store contributes nothing, got {hits:?}"
+        );
+    }
+
+    // Determinism: `self.search()` already tie-breaks by `NoteId` at the SQL
+    // level (`ORDER BY k.distance, n.uuid`), and with one candidate source
+    // every admitted note gets a distinct rank, so `search_hybrid`'s own
+    // `HashMap`-keyed re-sort cannot introduce a reshuffle across calls.
+    #[test]
+    fn search_hybrid_ordering_is_identical_across_calls() {
+        let store = open_store();
+        for (i, w) in [0.99_f32, 0.95, 0.90].into_iter().enumerate() {
+            embedded_note(&store, &format!("Note {i}"), w);
+        }
+        let query_blob = crate::embeddings::vec_to_blob(&unit_vec(1.0));
+
+        let first = store
+            .search_hybrid(&query_blob, "q", 10, None, true)
+            .expect("hybrid ok")
+            .into_iter()
+            .map(|n| n.id)
+            .collect::<Vec<_>>();
+        for call in 0..20 {
+            let hits = store
+                .search_hybrid(&query_blob, "q", 10, None, true)
+                .expect("hybrid ok")
+                .into_iter()
+                .map(|n| n.id)
+                .collect::<Vec<_>>();
+            assert_eq!(hits, first, "call {call} reordered the result");
         }
     }
 

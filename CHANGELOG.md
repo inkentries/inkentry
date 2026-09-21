@@ -23,6 +23,34 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   content — aggregates only. `inkentry status` now prints a compact, cheap
   subset of the same metrics (and carries it under a new `metrics` field in
   `--format json`) whenever a memory store exists.
+### Changed
+
+- **Unified `search` no longer hands memory half of every result page.** A
+  memory entry now competes for a slot only if its distance to the query
+  clears a calibrated relevance floor (`MEMORY_MAX_QA_DISTANCE`); an unrelated
+  memory store contributes nothing rather than the fixed 1:1 share it used to.
+  `--only-memory` is unaffected — it shows the full memory page, ungated, and
+  is now the way to see what the default suppressed. See
+  [ADR-083](docs/adr/083-memory-relevance-gate-in-unified-search.md).
+### Internal
+
+- **`memory.db` can migrate forward again, starting at schema version 11.**
+  `create_schema` used to refuse every stamp below the current version,
+  legacy product or not; a future version bump would have locked out every
+  1.0/1.1 store. Versions below 11 (the previous product's) are still
+  refused with the export-and-import message. No release has stamped
+  anything above 11 yet, so this changes nothing you can observe today; it
+  only stops the next schema change from being a lockout.
+- **`index.db` can migrate forward too, starting at schema version 17.**
+  `create_schema` used to send every stamp below the current version to a
+  full rebuild, discarding every embedding along with it; a future version
+  bump — even one adding a nullable column — would have forced a full
+  re-embed for everyone who upgraded. Versions at or below 16 (the previous
+  ladder's floor) still rebuild, as does any future step that genuinely
+  invalidates stored data (a different embedding space, a chunking change)
+  rather than one an in-place step can cover. No release has stamped
+  anything above 17 yet, so this changes nothing you can observe today; it
+  only stops the next schema change from forcing a full re-embed.
 
 ## [1.1.0] — 2026-09-10
 

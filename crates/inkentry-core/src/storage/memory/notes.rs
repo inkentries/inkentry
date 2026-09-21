@@ -623,6 +623,19 @@ impl MemoryStore {
         )?)
     }
 
+    /// Whether the `note_embeddings` `vec0` table holds zero rows.
+    ///
+    /// Unified `search` uses this to elide the QA query embed (ADR-083
+    /// decision 7 / ADR-081's elision table): a store with no vectors cannot
+    /// produce a KNN candidate for `search_hybrid`, so embedding the query
+    /// against it is pure cost.
+    pub fn has_no_embedded_notes(&self) -> Result<bool> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM note_embeddings", [], |r| r.get(0))?;
+        Ok(n == 0)
+    }
+
     /// Return all SHAs stored in source_ref (used by harvest to avoid duplicates).
     /// Also includes SHAs stored as "git:<sha>" tags for backwards compatibility.
     pub fn harvested_shas(&self) -> Result<std::collections::HashSet<String>> {

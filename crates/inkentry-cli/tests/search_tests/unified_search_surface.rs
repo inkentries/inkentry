@@ -454,6 +454,31 @@ async fn corpus_filters_elide_the_redundant_query_embed() {
     let state_dir = TempDir::new().unwrap();
     let discovery_port = loopback_discovery_port(state_dir.path(), &mock.uri());
 
+    // ADR-083 decision 7 elides the memory embed whenever the store holds zero
+    // embedded notes, regardless of corpus filter — so this table (which tests
+    // corpus-filter elision specifically) needs a store with at least one
+    // embedded note. Add it through the mock so it actually gets a vector,
+    // then rebase `seen` past that request.
+    inkentry_bin_in(home.path())
+        .env_remove("INKENTRY_NO_SERVER")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env("INKENTRY_STATE_DIR", state_dir.path())
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
+        .current_dir(proj.path())
+        .args([
+            "memory",
+            "add",
+            "--kind",
+            "decision",
+            "--title",
+            "Login uses JWT",
+            "--body",
+            "we standardised on JWT for login",
+        ])
+        .assert()
+        .success();
+
     // (args, expected /search embeds, expected /index/embed embeds)
     let cases: &[(&[&str], usize, usize)] = &[
         (&["search", "login"], 1, 1),                  // default: both prefixes
@@ -462,7 +487,7 @@ async fn corpus_filters_elide_the_redundant_query_embed() {
         (&["search", "login", "--only-text"], 0, 0),   // no embed at all
     ];
 
-    let mut seen = 0usize;
+    let mut seen = mock.received_requests().await.unwrap_or_default().len();
     for (args, want_search, want_embed) in cases {
         inkentry_bin_in(home.path())
             .env_remove("INKENTRY_NO_SERVER")
@@ -492,6 +517,267 @@ async fn corpus_filters_elide_the_redundant_query_embed() {
             (*want_search, *want_embed),
             "for `inkentry {}`: expected {want_search} /search + {want_embed} /index/embed, \
              got {searches} + {embeds}",
+            args.join(" "),
+        );
+    }
+}
+
+// ── ADR-083: the memory relevance gate ─────────────────────────────────────────
+//
+// A mock `/index/embed` responder that steers the returned vector by a marker
+// in the embedded text, so a test controls which memory entries land near the
+// query and which land far from it without a real embedder. Only one marker,
+// "UNRELATED", is checked: everything else — the RELATED entry's text and the
+// query embed's text alike, which carry no marker — gets the same vector, so
+// the query always matches RELATED exactly and only UNRELATED entries are
+// steered away.
+//
+// `w` plays the role ADR-083's calibration writes up: with the query and
+// RELATED both at `unit_vec(1.0)`, their distance is `sqrt(2 - 2*1.0) = 0`;
+// UNRELATED at `unit_vec(0.0)` is `sqrt(2 - 2*0.0) = sqrt(2) ≈ 1.414`,
+// comfortably beyond `MEMORY_MAX_QA_DISTANCE` (1.2032).
+struct SteeredEmbedResponder;
+
+impl wiremock::Respond for SteeredEmbedResponder {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        #[derive(serde::Deserialize)]
+        struct Chunk {
+            content: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct ReqBody {
+            chunks: Vec<Chunk>,
+        }
+        let body: ReqBody =
+            serde_json::from_slice(&request.body).unwrap_or(ReqBody { chunks: vec![] });
+        let content = body
+            .chunks
+            .first()
+            .map(|c| c.content.as_str())
+            .unwrap_or("");
+
+        let w: f32 = if content.contains("UNRELATED") {
+            0.0
+        } else {
+            1.0
+        };
+        let mut v = vec![0.0_f32; 896];
+        v[0] = w;
+        v[1] = (1.0 - w * w).max(0.0).sqrt();
+
+        let mut bytes = Vec::with_capacity(896 * 4);
+        for f in v {
+            bytes.extend_from_slice(&f.to_le_bytes());
+        }
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "application/octet-stream")
+            .set_body_bytes(bytes)
+    }
+}
+
+fn memory_add_steered(
+    home: &Path,
+    proj: &Path,
+    state_dir: &Path,
+    discovery_port: &str,
+    extra: &[&str],
+) {
+    inkentry_bin_in(home)
+        .env_remove("INKENTRY_NO_SERVER")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env("INKENTRY_STATE_DIR", state_dir)
+        .env("INKENTRY_TEST_DISCOVERY_PORT", discovery_port)
+        .current_dir(proj)
+        .args(["memory", "add"])
+        .args(extra)
+        .assert()
+        .success();
+}
+
+// Reproduces the failure signature ADR-083 measured in miniature: a small code
+// index plus several memory entries unrelated to the query. Pre-fix, the
+// unified 1:1 interleave put every one of those unrelated entries on the page
+// regardless of relevance ("something is always nearest" in a small store);
+// post-fix, only the entry that clears the relevance floor survives, and the
+// rest of the page is code.
+#[tokio::test]
+async fn unrelated_memory_entries_do_not_dominate_a_code_query() {
+    let mock = MockServer::start().await;
+    mount_health(&mock).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/v1/projects/.+/index/embed$"))
+        .respond_with(SteeredEmbedResponder)
+        .mount(&mock)
+        .await;
+    mount_search(&mock).await;
+
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("auth.rs"),
+        "pub fn login() {\n    // authenticate the user via password\n    let _ = 1;\n}\n\n\
+         pub fn logout() {\n    let _ = 2;\n}\n",
+    )
+    .unwrap();
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(proj.path())
+        .args(["index", "."])
+        .assert()
+        .success();
+
+    let state_dir = TempDir::new().unwrap();
+    let discovery_port = loopback_discovery_port(state_dir.path(), &mock.uri());
+
+    // Five memory entries unrelated to the query (household notes from an
+    // unrelated project, echoing ADR-083's own calibration fixture) and one
+    // that answers it.
+    for i in 0..5 {
+        memory_add_steered(
+            home.path(),
+            proj.path(),
+            state_dir.path(),
+            &discovery_port,
+            &[
+                "--kind",
+                "note",
+                "--title",
+                &format!("UNRELATED household note {i}"),
+                "--body",
+                "UNRELATED grocery list and laundry schedule",
+            ],
+        );
+    }
+    memory_add_steered(
+        home.path(),
+        proj.path(),
+        state_dir.path(),
+        &discovery_port,
+        &[
+            "--kind",
+            "decision",
+            "--title",
+            "RELATED auth decision",
+            "--body",
+            "RELATED: we standardised login on JWT",
+        ],
+    );
+
+    let out = inkentry_bin_in(home.path())
+        .env_remove("INKENTRY_NO_SERVER")
+        .env_remove("INKENTRY_SERVER_URL")
+        .env_remove("INKENTRY_MODE")
+        .env("INKENTRY_STATE_DIR", state_dir.path())
+        .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
+        .current_dir(proj.path())
+        .args([
+            "search",
+            "login",
+            "--limit",
+            "10",
+            "--format",
+            "json",
+            "--no-stale-check",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let results: Vec<serde_json::Value> =
+        serde_json::from_slice(&out).expect("stdout must be a JSON array");
+    let memory_titles: Vec<&str> = results
+        .iter()
+        .filter_map(|r| r["memory"]["title"].as_str())
+        .collect();
+
+    assert!(
+        memory_titles.iter().all(|t| !t.contains("UNRELATED")),
+        "an unrelated memory entry must not survive the relevance gate: {memory_titles:?}"
+    );
+    assert!(
+        memory_titles
+            .iter()
+            .any(|t| t.contains("RELATED auth decision")),
+        "the entry that answers the query must still appear: {memory_titles:?}"
+    );
+    let memory_count = results.iter().filter(|r| r["type"] == "memory").count();
+    assert_eq!(
+        memory_count, 1,
+        "only the one entry that clears the floor should reach the page, not \
+         half of it: {results:?}"
+    );
+}
+
+// ADR-083 decision 7: a memory store with zero embedded notes elides the QA
+// embed on every invocation that would otherwise issue it — default and
+// `--only-memory` alike — because the store cannot produce a vector candidate
+// regardless of scope.
+#[tokio::test]
+async fn zero_embedded_memory_notes_elides_the_qa_embed_on_every_invocation() {
+    let mock = MockServer::start().await;
+    mount_health(&mock).await;
+    mount_index_embed(&mock).await;
+    mount_search(&mock).await;
+
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("auth.rs"),
+        "pub fn login() { let _ = 1; }\n",
+    )
+    .unwrap();
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(proj.path())
+        .args(["index", "."])
+        .assert()
+        .success();
+
+    let state_dir = TempDir::new().unwrap();
+    let discovery_port = loopback_discovery_port(state_dir.path(), &mock.uri());
+
+    // `memory list` stamps `memory.db` with its schema and zero rows without
+    // adding an entry, so the elision check below reads a genuinely empty
+    // local store rather than a not-yet-created path (which it treats as
+    // "can't tell" and never elides for, to stay safe for a cloud-routed
+    // store with no local replica).
+    inkentry_bin_in(home.path())
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(proj.path())
+        .args(["memory", "list"])
+        .assert()
+        .success();
+
+    for args in [
+        &["search", "login"][..],
+        &["search", "login", "--only-memory"][..],
+    ] {
+        let before = mock.received_requests().await.unwrap_or_default().len();
+        inkentry_bin_in(home.path())
+            .env_remove("INKENTRY_NO_SERVER")
+            .env_remove("INKENTRY_SERVER_URL")
+            .env_remove("INKENTRY_MODE")
+            .env("INKENTRY_STATE_DIR", state_dir.path())
+            .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
+            .current_dir(proj.path())
+            .args(args)
+            .args(["--no-stale-check"])
+            .assert()
+            .success();
+
+        let all = mock.received_requests().await.unwrap_or_default();
+        let embeds = all[before..]
+            .iter()
+            .filter(|r| r.url.path().ends_with("/index/embed"))
+            .count();
+        assert_eq!(
+            embeds,
+            0,
+            "for `inkentry {}`: a store with no embedded notes must not issue \
+             the QA embed",
             args.join(" "),
         );
     }

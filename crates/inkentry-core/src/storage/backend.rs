@@ -97,14 +97,21 @@ pub trait MemoryBackend: Send {
     /// `as_of`: if set, only entries valid at that Unix timestamp are returned.
     async fn search_text(&self, query: &str, limit: usize, as_of: Option<i64>)
     -> Result<Vec<Note>>;
-    /// Hybrid search: semantic + BM25 fused via Reciprocal Rank Fusion.
+    /// Semantic (vector KNN) search, ranked by Reciprocal Rank Fusion.
     /// `as_of`: if set, only entries valid at that Unix timestamp are returned.
+    /// `gate`: apply the local backend's within-corpus relevance floor
+    /// (ADR-083) — `true` for the default unified search, where memory
+    /// competes with code for shared result slots; `false` for `--only-memory`,
+    /// which has no slots to protect and returns the full page. Backends other
+    /// than the local SQLite one are outside ADR-083's calibration and ignore
+    /// it.
     async fn search_hybrid(
         &self,
         query_blob: &[u8],
         query: &str,
         limit: usize,
         as_of: Option<i64>,
+        gate: bool,
     ) -> Result<Vec<Note>>;
     /// `as_of`: if set, only entries valid at that Unix timestamp are returned.
     async fn list(
@@ -233,11 +240,12 @@ impl MemoryBackend for LocalMemoryBackend {
         query: &str,
         limit: usize,
         as_of: Option<i64>,
+        gate: bool,
     ) -> Result<Vec<Note>> {
         self.store
             .lock()
             .await
-            .search_hybrid(query_blob, query, limit, as_of)
+            .search_hybrid(query_blob, query, limit, as_of, gate)
     }
 
     async fn list(
