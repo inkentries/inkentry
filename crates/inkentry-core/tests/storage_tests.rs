@@ -12,6 +12,8 @@ mod escape_like_integration;
 mod integration_db;
 #[path = "storage_tests/integration_git_notes.rs"]
 mod integration_git_notes;
+#[path = "storage_tests/metrics_snapshot.rs"]
+mod metrics_snapshot;
 #[path = "storage_tests/unit_graph.rs"]
 mod unit_graph;
 #[path = "storage_tests/worktree_index_resolution.rs"]

@@ -1038,6 +1038,20 @@ impl GitNotesBackend {
             .collect())
     }
 
+    /// The distinct set of full commit shas that at least one entry's memory
+    /// note is anchored to.
+    ///
+    /// Same resolution as [`entity_ids_anchored_to`] (`records_with_commit` +
+    /// [`fold::anchor_commits`]), read from the commit side instead of the
+    /// entity side: `rec.commit_coverage` (ADR-098) needs "is this commit
+    /// covered" for every commit in a window, and calling
+    /// `entity_ids_anchored_to` once per commit would re-walk the whole notes
+    /// ref each time. One pass here, then a caller checks membership.
+    pub async fn anchored_commit_shas(&self) -> Result<HashSet<String>> {
+        let records = self.records_with_commit().await?;
+        Ok(fold::anchor_commits(&records).into_values().collect())
+    }
+
     /// Note-anchored entries whose anchor commit begins with `sha_prefix`, as
     /// folded `Note`s. The git-notes analogue of the SQLite `source_ref` filter,
     /// used when git notes is the primary store (`--backend git-notes` / the

@@ -72,6 +72,7 @@ async fn main() -> Result<()> {
         Command::Unlink(args) => cli::cmd::unlink(args, cfg),
         Command::Autoclean => cli::cmd::autoclean(cfg),
         Command::Memory(args) => cli::cmd::memory(args, cfg).await,
+        Command::Metrics(args) => cli::cmd::metrics(args, cfg).await,
         Command::Harvest(args) => cli::cmd::harvest(args, cfg).await,
         Command::Import(args) => cli::cmd::import(args, cfg).await,
         Command::Hooks(args) => cli::cmd::hooks(args, cfg).await,

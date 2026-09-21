@@ -19,6 +19,7 @@ pub use cmd::login::LoginArgs;
 pub use cmd::logout::LogoutArgs;
 pub use cmd::memory::MemoryArgs;
 pub use cmd::memory::MemorySyncArgs as SyncArgs;
+pub use cmd::metrics::MetricsArgs;
 pub use cmd::misc::ChunksArgs;
 pub use cmd::org::OrgArgs;
 pub use cmd::plumbing::PlumbingArgs;
@@ -73,6 +74,8 @@ pub enum Command {
     Autoclean,
     /// Project memory: store and query decisions, context, and requirements
     Memory(MemoryArgs),
+    /// State metrics computed from memory.db and git history (ADR-098)
+    Metrics(MetricsArgs),
     /// Capture memory from git history and session logs (backfill + continuous)
     Harvest(HarvestArgs),
     /// Import a portable dump into this project (see docs/dump-format.md)

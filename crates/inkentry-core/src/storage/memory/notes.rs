@@ -679,6 +679,17 @@ impl MemoryStore {
         Ok(count > 0)
     }
 
+    /// The `created_at` of the most recently created entry, across every
+    /// status. `None` on an empty store.
+    ///
+    /// Used to anchor a metrics window (ADR-098 D7) when the project is not a
+    /// git repository and there is no commit time to anchor to instead.
+    pub fn newest_created_at(&self) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT MAX(created_at) FROM notes", [], |r| r.get(0))?)
+    }
+
     pub fn get(&self, id: &NoteId) -> Result<Option<Note>> {
         let mut stmt = self
             .conn

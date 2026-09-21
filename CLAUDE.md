@@ -122,6 +122,19 @@ embeddings/
 llm/
   mod.rs         — LlmBackend trait, Message struct, Token type
 
+metrics/
+  mod.rs         — ADR-098 state-metrics snapshot facade: Header/Snapshot types,
+                   build_snapshot (full `inkentry metrics snapshot`) and
+                   build_status_summary (the cheap subset `inkentry status`
+                   prints). State source only: no events block yet,
+                   and no eval (the CLI never runs one)
+  git.rs         — plain commit-history facts for a window: HEAD's sha/commit
+                   time, and commits reachable from it with (for the full
+                   snapshot) their `git log --numstat` line counts, or (for
+                   status's cheaper path) just their shas
+  state.rs       — the rec.*/cmp.* metric computations themselves, against a
+                   MemoryStore and the git facts above
+
 indexer/
   mod.rs         — re-exports Chunk, ChunkKind, SourceParser
   chunker.rs     — Chunk / ChunkKind structs; sliding_window fallback
@@ -247,6 +260,9 @@ cli/
     link.rs      — `inkentry link/unlink/autoclean` handlers
     links.rs     — `inkentry links` handler
     import.rs    — `inkentry import` handler (portable dump; see docs/dump-format.md)
+    metrics.rs   — `inkentry metrics snapshot` handler and the compact section
+                   `status` prints; CLI-thin, resolves the project and renders
+                   what `inkentry_core::metrics` computes (ADR-098)
     misc.rs      — `inkentry chunks` / `inkentry languages` handlers
     search.rs    — `inkentry search` handler (unified code+memory, RRF fusion, corpus filters)
     server.rs    — `inkentry server start/stop/status/logs` daemon management
