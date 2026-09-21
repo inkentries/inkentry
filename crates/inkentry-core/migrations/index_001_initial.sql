@@ -1,14 +1,19 @@
 -- index.db, at its final shape.
 --
--- There is no migration ladder. Every index this binary opens was created by
--- this binary at the shape declared here; anything else is discarded and
--- rebuilt, because an index is derived from the user's source tree and
--- reindexing reproduces it exactly (ADR-078's reasoning, applied to the store
--- that has no authored data to protect).
+-- A fresh store is created directly from this file, at schema version 17,
+-- rather than by replaying the forward-migration registry
+-- (`storage/index_migrate.rs`), which only ever moves an existing store *up
+-- to* this shape. Below schema version 17 there is still no ladder: those
+-- shapes predate `index_migrate` entirely, so the answer to one of them stays
+-- "discard and rebuild, then reindex", because an index is derived from the
+-- user's source tree and reindexing reproduces it exactly (ADR-078's
+-- reasoning, applied to the store that has no authored data to protect). A
+-- registered forward step can still ask to rebuild instead of migrating in
+-- place, for a change that invalidates stored data outright.
 --
 -- `usage` is the sole exception and the reason "purely derived" would be wrong:
 -- it is accumulated command telemetry that no reindex can reproduce. It is
--- carried across a rebuild.
+-- carried across a rebuild, whichever version triggered it.
 
 CREATE TABLE files (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

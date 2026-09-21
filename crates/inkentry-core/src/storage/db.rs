@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
+use super::index_migrate::{INDEX_MIGRATIONS, IndexMigrationKind};
+use super::migration_ladder::MigrationStep;
+
 /// Wraps the SQLite connection and provides typed access to the schema.
 /// Methods are implemented across sub-modules in the `storage` package.
 pub struct Database {
@@ -11,11 +14,17 @@ pub struct Database {
 
 /// Version stamped into `PRAGMA user_version` by [`Database::open`].
 ///
-/// There is no migration ladder. Every index this binary opens was created by
-/// this binary at the shape `index_001_initial.sql` declares; anything else is
-/// discarded and rebuilt, because an index is derived from the user's source
-/// tree. The constant survives so an index written by a future build is refused
-/// rather than silently misread.
+/// Every index this binary opens was created by this binary at the shape
+/// `index_001_initial.sql` declares, or reaches it one of two ways: a store
+/// stamped above [`LAST_LEGACY_SCHEMA_VERSION`] and below this migrates
+/// forward in place through the registry in `storage::index_migrate`, one
+/// version at a time, unless a registered version in that range asks to
+/// rebuild instead (`storage::index_migrate::IndexMigrationKind::Rebuild`) —
+/// for a change, like a different embedding space, that an in-place step
+/// cannot fix. Anything else — at or below [`LAST_LEGACY_SCHEMA_VERSION`], or
+/// from a build newer than this one — is discarded and rebuilt or refused,
+/// because an index is derived from the user's source tree and reindexing
+/// reproduces it exactly.
 ///
 /// It continues the old ladder's numbering rather than restarting at 1, for the
 /// reason [`LAST_LEGACY_SCHEMA_VERSION`] records.
@@ -110,6 +119,49 @@ impl Database {
         Ok(())
     }
 
+    /// Record that some derived-data refresh pass still owes work under
+    /// `key`, without saying what: naming the reason and running the pass are
+    /// the caller's job. A migration step whose new rows a real indexing pass
+    /// must backfill — rather than a rebuild, which would throw away
+    /// embeddings a re-extraction doesn't need to touch — sets this instead.
+    pub fn mark_pass_owed(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?1, '1')",
+                rusqlite::params![key],
+            )
+            .with_context(|| format!("recording that {key} owes a pass"))?;
+        Ok(())
+    }
+
+    /// Whether [`mark_pass_owed`](Self::mark_pass_owed) was called for `key`
+    /// and not yet cleared.
+    pub fn pass_owed(&self, key: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM index_meta WHERE key = ?1",
+                rusqlite::params![key],
+                |_| Ok(()),
+            )
+            .optional()
+            .with_context(|| format!("reading whether {key} owes a pass"))?
+            .is_some())
+    }
+
+    /// Clear the marker [`mark_pass_owed`](Self::mark_pass_owed) set for
+    /// `key`: the pass ran, so nothing is owed until the next step that sets
+    /// it again.
+    pub fn clear_pass_owed(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM index_meta WHERE key = ?1",
+                rusqlite::params![key],
+            )
+            .with_context(|| format!("clearing the {key} pass marker"))?;
+        Ok(())
+    }
+
     /// Per-connection settings, applied on every connection this type opens —
     /// including the second one a rebuild makes, which would otherwise come up
     /// without foreign-key enforcement or the WAL.
@@ -119,19 +171,19 @@ impl Database {
         Ok(())
     }
 
-    /// Create the index schema on a new file, accept one already at it, and
-    /// rebuild anything else.
+    /// Create the index schema on a new file, accept one already at it,
+    /// migrate one stamped between [`LAST_LEGACY_SCHEMA_VERSION`] and this
+    /// build's own version forward in place, and rebuild anything older.
     ///
-    /// There is no ladder. An index is derived from the user's source tree, so
-    /// the answer to a shape this build did not write is to reindex, not to
-    /// convert: reindexing reproduces the store exactly, and a conversion path
-    /// would be code carrying a description of every old shape forever. That
-    /// is the same reasoning ADR-078 applies to `memory.db`, reaching the
-    /// opposite action because the two stores hold different things — memory
-    /// is authored and refuses rather than rebuild, an index is not.
+    /// Below [`LAST_LEGACY_SCHEMA_VERSION`] there is still no ladder: an index
+    /// is derived from the user's source tree, so the answer to a shape this
+    /// old is to reindex, not to convert. That is the same reasoning ADR-078
+    /// applies to `memory.db`, reaching the opposite action for versions below
+    /// its own floor because the two stores hold different things — memory is
+    /// authored and refuses rather than rebuild, an index is not.
     ///
     /// `usage` is the exception that stops "purely derived" being true, and it
-    /// is carried across the rebuild.
+    /// is carried across every rebuild, whichever version triggered it.
     fn create_schema(&mut self, path: &Path) -> Result<()> {
         let version: i32 = self
             .conn
@@ -147,13 +199,57 @@ impl Database {
                  supports (max {CURRENT_SCHEMA_VERSION}); upgrade inkentry to open this index."
             );
         }
-        // Below this build's stamp: an index written by an older ladder, or one
-        // predating the stamp entirely and recognisable only by holding tables.
+        if version > LAST_LEGACY_SCHEMA_VERSION {
+            // This build's own history, not the pre-ladder shapes below:
+            // migrate forward rather than rebuild, unless the registry itself
+            // says this range must rebuild.
+            return self.migrate_or_rebuild(
+                path,
+                version,
+                CURRENT_SCHEMA_VERSION,
+                INDEX_MIGRATIONS,
+            );
+        }
+        // At or below the old ladder's highest stamp: an index written by an
+        // older ladder, or one predating the stamp entirely and recognisable
+        // only by holding tables.
         if version > 0 || !self.is_empty_file()? {
             return self.rebuild(path, version);
         }
 
         self.create_fresh()
+    }
+
+    /// Migrate `found` forward to `target` through `registry`'s `Migrate`
+    /// steps, unless a registered version in `(found, target]` is a
+    /// [`IndexMigrationKind::Rebuild`] — in which case this rebuilds once,
+    /// carrying `usage` across, instead of running any step in that range.
+    ///
+    /// Split out of [`create_schema`](Self::create_schema) so a test can drive
+    /// the resolution logic against a synthetic registry and target without
+    /// the production [`CURRENT_SCHEMA_VERSION`] and [`INDEX_MIGRATIONS`]
+    /// having to move to exercise it.
+    fn migrate_or_rebuild(
+        &mut self,
+        path: &Path,
+        found: i32,
+        target: i32,
+        registry: &[(i32, IndexMigrationKind)],
+    ) -> Result<()> {
+        let must_rebuild = registry.iter().any(|&(v, kind)| {
+            v > found && v <= target && matches!(kind, IndexMigrationKind::Rebuild)
+        });
+        if must_rebuild {
+            return self.rebuild(path, found);
+        }
+        let steps: Vec<(i32, MigrationStep)> = registry
+            .iter()
+            .filter_map(|&(v, kind)| match kind {
+                IndexMigrationKind::Migrate(step) => Some((v, step)),
+                IndexMigrationKind::Rebuild => None,
+            })
+            .collect();
+        super::migration_ladder::apply_ladder(&self.conn, found, target, &steps, "index.db")
     }
 
     /// Replace an index this build did not write, carrying `usage` across.
@@ -472,7 +568,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{CURRENT_SCHEMA_VERSION, Database};
+    use super::{CURRENT_SCHEMA_VERSION, Database, IndexMigrationKind, Result};
     use rusqlite::Connection;
     use std::sync::OnceLock;
 
@@ -583,6 +679,231 @@ mod tests {
         drop(db);
         let db = Database::open(tmp.path()).expect("second open");
         assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+    }
+
+    // ── forward migration (17 and above) ─────────────────────────────────────
+
+    #[test]
+    fn migrate_or_rebuild_applies_registered_steps_in_place_and_preserves_existing_rows() {
+        register_sqlite_vec();
+        let mut db = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
+        let file_id = db.upsert_file("kept.rs", Some("rust"), "h", 0).unwrap();
+
+        fn add_marker_18(conn: &Connection) -> Result<()> {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN marker_18 TEXT")?;
+            Ok(())
+        }
+        fn add_marker_19(conn: &Connection) -> Result<()> {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN marker_19 TEXT")?;
+            Ok(())
+        }
+        let registry = [
+            (
+                CURRENT_SCHEMA_VERSION + 1,
+                IndexMigrationKind::Migrate(add_marker_18),
+            ),
+            (
+                CURRENT_SCHEMA_VERSION + 2,
+                IndexMigrationKind::Migrate(add_marker_19),
+            ),
+        ];
+
+        db.migrate_or_rebuild(
+            std::path::Path::new(":memory:"),
+            CURRENT_SCHEMA_VERSION,
+            CURRENT_SCHEMA_VERSION + 2,
+            &registry,
+        )
+        .expect("migrating forward through registered steps");
+
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION + 2);
+        let path: String = db
+            .conn
+            .query_row(
+                "SELECT path FROM files WHERE id = ?1",
+                rusqlite::params![file_id],
+                |r| r.get(0),
+            )
+            .expect("migrating in place must not lose the row that was there before it ran");
+        assert_eq!(path, "kept.rs");
+    }
+
+    #[test]
+    fn migrate_or_rebuild_rebuilds_once_when_the_registry_says_to_and_carries_usage() {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        let mut db = Database::open(&path).expect("open fresh");
+        db.upsert_file("gone.rs", Some("rust"), "h", 0).unwrap();
+        db.record_usage("search");
+
+        fn must_not_run(_: &Connection) -> Result<()> {
+            panic!("a migrate step registered alongside a later Rebuild entry must never run");
+        }
+        let registry = [
+            (
+                CURRENT_SCHEMA_VERSION + 1,
+                IndexMigrationKind::Migrate(must_not_run),
+            ),
+            (CURRENT_SCHEMA_VERSION + 2, IndexMigrationKind::Rebuild),
+        ];
+
+        db.migrate_or_rebuild(
+            &path,
+            CURRENT_SCHEMA_VERSION,
+            CURRENT_SCHEMA_VERSION + 2,
+            &registry,
+        )
+        .expect("a rebuild entry must resolve, not error");
+
+        assert_eq!(
+            user_version(&db.conn),
+            CURRENT_SCHEMA_VERSION,
+            "a rebuild always lands the store back at this build's real current schema, \
+             whatever synthetic target the caller was migrating toward"
+        );
+        assert_eq!(
+            db.stats().unwrap().file_count,
+            0,
+            "the rebuild must discard the derived row, exactly like the legacy rebuild path"
+        );
+        let mut stmt = db.conn.prepare("SELECT command FROM usage").unwrap();
+        let commands: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            commands,
+            vec!["search".to_string()],
+            "usage must survive this rebuild the same way it survives the legacy one"
+        );
+    }
+
+    #[test]
+    fn migrate_or_rebuild_leaves_the_index_at_the_last_completed_version_when_a_step_fails() {
+        register_sqlite_vec();
+        let mut db = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
+
+        fn add_marker_18(conn: &Connection) -> Result<()> {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN marker_18 TEXT")?;
+            Ok(())
+        }
+        fn fail_19(_: &Connection) -> Result<()> {
+            anyhow::bail!("synthetic failure for the rollback test")
+        }
+        let registry = [
+            (
+                CURRENT_SCHEMA_VERSION + 1,
+                IndexMigrationKind::Migrate(add_marker_18),
+            ),
+            (
+                CURRENT_SCHEMA_VERSION + 2,
+                IndexMigrationKind::Migrate(fail_19),
+            ),
+        ];
+
+        let err = db
+            .migrate_or_rebuild(
+                std::path::Path::new(":memory:"),
+                CURRENT_SCHEMA_VERSION,
+                CURRENT_SCHEMA_VERSION + 2,
+                &registry,
+            )
+            .expect_err("a failing step must surface as an error");
+        assert!(format!("{err:#}").contains("index.db"), "{err}");
+
+        assert_eq!(
+            user_version(&db.conn),
+            CURRENT_SCHEMA_VERSION + 1,
+            "the store must stay at the last version whose step actually completed"
+        );
+    }
+
+    // ── migration parity ──────────────────────────────────────────────────────
+
+    // Every non-internal `sqlite_master` row (tables, indexes, triggers, and
+    // each virtual table's own shadow tables), normalised so incidental
+    // whitespace differences in a `CREATE` statement's text don't register as
+    // a schema difference. The same comparison `memory.db`'s own parity test
+    // uses (`storage::memory::schema_tests::sqlite_master_signature`); no
+    // extra handling is needed for `chunks_fts`'s and `embeddings`'s shadow
+    // tables here, because both sides below execute byte-identical DDL, and
+    // FTS5/vec0 each derive a shadow table's `CREATE` statement
+    // deterministically from its virtual table's declaration — two
+    // independently created instances of the same declaration produce
+    // identical shadow rows, not merely same-shaped ones.
+    fn sqlite_master_signature(conn: &Connection) -> Vec<(String, String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT type, name, COALESCE(sql, '') FROM sqlite_master \
+                 WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+            )
+            .expect("preparing sqlite_master query");
+        stmt.query_map([], |row| {
+            let kind: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let sql: String = row.get(2)?;
+            Ok((
+                kind,
+                name,
+                sql.split_whitespace().collect::<Vec<_>>().join(" "),
+            ))
+        })
+        .expect("querying sqlite_master")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collecting sqlite_master rows")
+    }
+
+    // A store migrated forward from version 17 must end up indistinguishable
+    // from one created fresh, so the first real step (currently none —
+    // `index_migrate::INDEX_MIGRATIONS` is empty) is held to this from day one
+    // rather than only once it exists. The version-17 fixture is built here
+    // from the current `index_001_initial.sql`, since that file *is* version
+    // 17's shape; once a real step lands, this must switch to a committed
+    // fixture file produced by the last release binary that predates it,
+    // rather than be rebuilt from the current schema file, which would stop
+    // testing anything once the two diverge. Do not attempt to download that
+    // binary here.
+    #[test]
+    fn a_store_migrated_from_schema_version_17_matches_a_fresh_store() {
+        register_sqlite_vec();
+        let legacy_dir = tempfile::tempdir().unwrap();
+        let legacy_path = legacy_dir.path().join("index.db");
+        {
+            let conn = Connection::open(&legacy_path).unwrap();
+            conn.execute_batch(&format!(
+                "BEGIN;\n{}\nPRAGMA user_version = {CURRENT_SCHEMA_VERSION};\nCOMMIT;",
+                include_str!("../../migrations/index_001_initial.sql")
+            ))
+            .unwrap();
+        }
+
+        let migrated = Database::open(&legacy_path).expect("open must accept the current version");
+        let fresh = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
+
+        assert_eq!(
+            sqlite_master_signature(&migrated.conn),
+            sqlite_master_signature(&fresh.conn),
+            "a store migrated from schema version 17 must match one created fresh"
+        );
+    }
+
+    // ── pass-owed marker ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_pass_owed_marker_round_trips_and_clears() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open");
+
+        assert!(!db.pass_owed("graph_edges_reextract").unwrap());
+        db.mark_pass_owed("graph_edges_reextract").unwrap();
+        assert!(db.pass_owed("graph_edges_reextract").unwrap());
+        db.clear_pass_owed("graph_edges_reextract").unwrap();
+        assert!(
+            !db.pass_owed("graph_edges_reextract").unwrap(),
+            "clearing the marker must retire it, not just overwrite its value"
+        );
     }
 
     // Build something shaped like an index the old ladder wrote: real tables,
