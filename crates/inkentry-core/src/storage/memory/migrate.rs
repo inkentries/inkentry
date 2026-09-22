@@ -38,9 +38,11 @@ fn fault_due() -> bool {
     FAIL_AFTER_TABLES.with(|f| f.get())
 }
 
-/// ADR-101 step 12: splits `notes.tags`/`notes.linked_files` into
-/// `note_tags`/`note_files`, rebuilds `memory_fts` so tags stay searchable
-/// fed from `note_tags`, and drops the two columns.
+/// ADR-101 step 12. The DDL is `migrations/memory_012.sql` (new tables,
+/// `memory_fts` rebuilt to be fed from `note_tags`); this function runs it,
+/// copies the old columns into the new tables, then runs
+/// `memory_012_drop_legacy_columns.sql`. The copy is Rust rather than SQL
+/// because tag normalisation is Unicode NFC.
 ///
 /// Tags are normalised exactly as a fresh write would (D2): NFC, lowercase,
 /// trim, runs of whitespace/underscore to `-`; an empty result is dropped,
@@ -58,24 +60,8 @@ fn fault_due() -> bool {
 /// `inkentry index` re-check to correct (see ADR-101 D3/D5; that re-check is
 /// not implemented by this migration).
 fn add_note_tags_and_files(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE note_tags (
-             note_uuid TEXT NOT NULL REFERENCES notes(uuid) ON DELETE CASCADE,
-             tag       TEXT NOT NULL,
-             PRIMARY KEY (note_uuid, tag)
-         );
-         CREATE INDEX idx_note_tags_tag ON note_tags(tag);
-
-         CREATE TABLE note_files (
-             note_uuid  TEXT NOT NULL REFERENCES notes(uuid) ON DELETE CASCADE,
-             path       TEXT NOT NULL,
-             state      TEXT NOT NULL CHECK (state IN ('tracked','untracked','missing')),
-             checked_at INTEGER NOT NULL,
-             PRIMARY KEY (note_uuid, path)
-         );
-         CREATE INDEX idx_note_files_path ON note_files(path);",
-    )
-    .context("creating note_tags and note_files")?;
+    conn.execute_batch(include_str!("../../../migrations/memory_012.sql"))
+        .context("applying memory_012.sql")?;
 
     if fault_due() {
         anyhow::bail!("injected test fault after creating note_tags/note_files");
@@ -111,50 +97,10 @@ fn add_note_tags_and_files(conn: &Connection) -> Result<()> {
         }
     }
 
-    conn.execute_batch(
-        "DROP TRIGGER memory_fts_insert;
-         DROP TRIGGER memory_fts_delete;
-         DROP TRIGGER memory_fts_update;
-         DROP TABLE memory_fts;
-         CREATE VIRTUAL TABLE memory_fts USING fts5(
-             title,
-             body,
-             tags
-         );
-         INSERT INTO memory_fts(rowid, title, body, tags)
-         SELECT n.id, n.title, n.body,
-                COALESCE(
-                    (SELECT GROUP_CONCAT(nt.tag, ' ') FROM note_tags nt WHERE nt.note_uuid = n.uuid),
-                    ''
-                )
-         FROM notes n;
-
-         CREATE TRIGGER memory_fts_insert AFTER INSERT ON notes BEGIN
-             INSERT INTO memory_fts(rowid, title, body, tags) VALUES (new.id, new.title, new.body, '');
-         END;
-         CREATE TRIGGER memory_fts_delete BEFORE DELETE ON notes BEGIN
-             DELETE FROM memory_fts WHERE rowid = old.id;
-         END;
-         CREATE TRIGGER memory_fts_update AFTER UPDATE ON notes BEGIN
-             UPDATE memory_fts SET title = new.title, body = new.body WHERE rowid = new.id;
-         END;
-         CREATE TRIGGER note_tags_fts_insert AFTER INSERT ON note_tags BEGIN
-             UPDATE memory_fts
-             SET tags = (SELECT COALESCE(GROUP_CONCAT(tag, ' '), '') FROM note_tags WHERE note_uuid = new.note_uuid)
-             WHERE rowid = (SELECT id FROM notes WHERE uuid = new.note_uuid);
-         END;
-         CREATE TRIGGER note_tags_fts_delete AFTER DELETE ON note_tags BEGIN
-             UPDATE memory_fts
-             SET tags = (SELECT COALESCE(GROUP_CONCAT(tag, ' '), '') FROM note_tags WHERE note_uuid = old.note_uuid)
-             WHERE rowid = (SELECT id FROM notes WHERE uuid = old.note_uuid);
-         END;",
-    )
-    .context("rebuilding memory_fts to feed tags from note_tags")?;
-
-    conn.execute_batch(
-        "ALTER TABLE notes DROP COLUMN tags; ALTER TABLE notes DROP COLUMN linked_files;",
-    )
-    .context("dropping the legacy tags/linked_files columns")?;
+    conn.execute_batch(include_str!(
+        "../../../migrations/memory_012_drop_legacy_columns.sql"
+    ))
+    .context("applying memory_012_drop_legacy_columns.sql")?;
 
     Ok(())
 }
