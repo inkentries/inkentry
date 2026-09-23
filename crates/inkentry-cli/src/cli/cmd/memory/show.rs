@@ -11,6 +11,7 @@ pub(super) async fn memory_show(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
     // Fold in any fetched teammate notes before the lookup, so an entry a
     // teammate just published is visible by id on the default path without a
     // re-init (ADR-077 D1).
@@ -95,6 +96,18 @@ pub(super) async fn memory_show(
             }
         }
     }
+    super::super::events::record(
+        cfg,
+        mem_path,
+        backend_override,
+        "memory.show",
+        None,
+        Some(1),
+        std::slice::from_ref(&n.entity_id),
+        None,
+        started,
+        true,
+    );
     Ok(())
 }
 

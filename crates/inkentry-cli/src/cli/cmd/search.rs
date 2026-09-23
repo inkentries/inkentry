@@ -99,6 +99,9 @@ use crate::{
 const MEMORY_QA_TASK: &str = "Given a question, retrieve passages that answer the question";
 
 pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
+    // Recorded once here, before any work: an event's latency (D5) covers the
+    // whole command, and every exit point below records against this instant.
+    let started = std::time::Instant::now();
     // `--only-code` / `--only-memory` are mutually exclusive (clap enforces it);
     // absent both, search spans both corpora.
     let want_code = !args.only_memory;
@@ -110,7 +113,6 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     // index.db path still resolves the `.inkentry/` project and keys the memory
     // cross-project registry lookup, but the file need not exist yet).
     let (db_path, dep_projects) = resolve_project_and_deps(args.db.as_ref(), &cfg, want_code)?;
-    crate::storage::record_usage_at(&db_path, "search");
 
     let as_of = crate::utils::dates::parse_as_of(args.as_of.as_deref())?;
     let mem_path = db_path.with_file_name("memory.db");
@@ -323,7 +325,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     appendix.extend(fusion::memory_appendix(mem_attachments));
 
     if fused.is_empty() && appendix.is_empty() {
-        return print_empty(
+        let result = print_empty(
             &args,
             want_code,
             want_memory,
@@ -332,32 +334,81 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             memory_missing,
             rebuilt_unpopulated,
         );
+        super::events::record(
+            &cfg,
+            &mem_path,
+            None,
+            "search",
+            Some(0),
+            Some(0),
+            &[],
+            Some(0),
+            started,
+            result.is_ok(),
+        );
+        return result;
     }
 
     let all: Vec<UnifiedResult> = fused.into_iter().chain(appendix).collect();
+    let code_results = all.iter().filter(|u| u.code.is_some()).count() as i64;
+    let returned_memory_ids: Vec<String> = all
+        .iter()
+        .filter_map(|u| u.memory.as_ref())
+        .map(|m| m.entity_id.clone())
+        .collect();
+    let memory_results = returned_memory_ids.len() as i64;
 
     if let Some(budget) = args.budget {
-        return emit_budget(&args, all, budget);
+        let tokens_out = emit_budget(&args, all, budget);
+        super::events::record(
+            &cfg,
+            &mem_path,
+            None,
+            "search",
+            Some(code_results),
+            Some(memory_results),
+            &returned_memory_ids,
+            tokens_out.as_ref().ok().map(|&t| t as i64),
+            started,
+            tokens_out.is_ok(),
+        );
+        return tokens_out.map(|_| ());
     }
 
-    match crate::utils::effective_format(&args.format) {
-        "json" => println!("{}", serde_json::to_string_pretty(&all)?),
-        "jsonl" => {
-            for u in &all {
-                println!("{}", serde_json::to_string(u)?);
-            }
+    let tokens_out: i64 = all.iter().map(unified_token_estimate).sum::<usize>() as i64;
+    let result: Result<()> = match crate::utils::effective_format(&args.format) {
+        "json" => serde_json::to_string_pretty(&all)
+            .map(|s| println!("{s}"))
+            .map_err(anyhow::Error::from),
+        "jsonl" => all
+            .iter()
+            .try_for_each(|u| serde_json::to_string(u).map(|s| println!("{s}")))
+            .map_err(anyhow::Error::from),
+        _ => {
+            print_unified_text(&all);
+            Ok(())
         }
-        _ => print_unified_text(&all),
-    }
-
-    Ok(())
+    };
+    super::events::record(
+        &cfg,
+        &mem_path,
+        None,
+        "search",
+        Some(code_results),
+        Some(memory_results),
+        &returned_memory_ids,
+        Some(tokens_out),
+        started,
+        result.is_ok(),
+    );
+    result
 }
 
 /// Budget-aware packing over the fused, typed list. Memory items are estimated
 /// from `title + body`; code items use their stored token count or a content
 /// estimate. The envelope carries the same `token_budget`/`tokens_used`/
 /// `tokens_remaining` frame as the non-fused path did.
-fn emit_budget(args: &SearchArgs, all: Vec<UnifiedResult>, budget: usize) -> Result<()> {
+fn emit_budget(args: &SearchArgs, all: Vec<UnifiedResult>, budget: usize) -> Result<usize> {
     let mut remaining = budget;
     let mut packed: Vec<UnifiedResult> = Vec::new();
     for u in all {
@@ -399,7 +450,7 @@ fn emit_budget(args: &SearchArgs, all: Vec<UnifiedResult>, budget: usize) -> Res
             println!("tokens used: {tokens_used}/{budget}");
         }
     }
-    Ok(())
+    Ok(tokens_used)
 }
 
 fn unified_token_estimate(u: &UnifiedResult) -> usize {

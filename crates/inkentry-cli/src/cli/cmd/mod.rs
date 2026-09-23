@@ -4,6 +4,7 @@ pub(crate) mod color;
 pub mod context;
 mod daemon_llm;
 mod embed_worker;
+pub(crate) mod events;
 mod fusion;
 pub mod harvest;
 pub mod helpers;
