@@ -36,8 +36,33 @@ pub(super) async fn memory_list(
         super::outbox::poll_and_apply(cfg, mem_path).await;
     }
 
-    let backend = open_memory_backend(cfg, mem_path, effective_override).await?;
     let as_of = parse_as_of(args.as_of.as_deref())?;
+
+    // `--tag`/`--file` (ADR-101 D4) are exact filters backed by the
+    // `note_tags`/`note_files` indexes, which only the local sqlite store
+    // has. They bypass the `MemoryBackend` trait (which has no such method,
+    // and would need one on every backend for a filter two of the three
+    // cannot serve) and the cross-project/`--source-ref` combinations below,
+    // which is why they are handled up front and return early.
+    if args.tag.is_some() || args.file.is_some() {
+        anyhow::ensure!(
+            !git_notes,
+            "--tag/--file require the sqlite backend; re-run without --backend git-notes"
+        );
+        let store = crate::storage::MemoryStore::open(mem_path)?;
+        let notes = store.list_filtered_ext(
+            args.kind.as_deref(),
+            None,
+            args.tag.as_deref(),
+            args.file.as_deref(),
+            args.limit,
+            args.archived,
+            as_of,
+        )?;
+        return print_notes(&notes, &args.format);
+    }
+
+    let backend = open_memory_backend(cfg, mem_path, effective_override).await?;
     let mut notes = if let Some(ref sha_prefix) = args.source_ref {
         // (1) Harvest-provenance matches: entries whose `source_ref` COLUMN
         // records this commit (harvested entries, ADR-062). On the git-notes
@@ -96,20 +121,26 @@ pub(super) async fn memory_list(
         notes.extend(dep_notes);
     }
 
+    print_notes(&notes, &args.format)
+}
+
+/// Shared output for every `memory list` path (the normal query and the
+/// `--tag`/`--file` sqlite-direct path above).
+fn print_notes(notes: &[crate::storage::memory::Note], format: &str) -> Result<()> {
     if notes.is_empty() {
         println!("No memory entries found.");
         return Ok(());
     }
 
-    match crate::utils::effective_format(&args.format) {
-        "json" => println!("{}", serde_json::to_string_pretty(&notes)?),
+    match crate::utils::effective_format(format) {
+        "json" => println!("{}", serde_json::to_string_pretty(notes)?),
         "jsonl" => {
-            for n in &notes {
+            for n in notes {
                 println!("{}", serde_json::to_string(n)?);
             }
         }
         _ => {
-            for n in &notes {
+            for n in notes {
                 print_note_summary(n);
             }
         }

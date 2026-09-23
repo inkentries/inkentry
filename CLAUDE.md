@@ -180,7 +180,13 @@ storage/
     import.rs    — writes entries and carried edges that arrived from a portable
                    dump, keeping their identity, creation time and provenance
                    verbatim rather than minting new ones
-    notes.rs     — note insert/fetch/delete
+    notes.rs     — note insert/fetch/delete; hydrates `note_tags`/`note_files`
+                   onto every returned `Note`
+    migrate.rs   — the forward migration ladder (steps 12..MEMORY_SCHEMA_VERSION)
+    tags.rs      — normalize_tag: tag normalisation (ADR-101 D2), the one
+                   choke point every write path funnels a raw tag through
+    file_links.rs — resolve_file_link: linked-file path normalisation + git/disk
+                   state resolution (ADR-101 D3)
     search.rs    — memory FTS + semantic search
     tests.rs     — integration tests for NoteStore
   backend.rs     — StorageBackend trait (local vs remote)
@@ -201,7 +207,10 @@ migrations/  (crates/inkentry-core/migrations/)
   index_001_initial.sql  — index.db at its final shape (forward migrations layer
                            on top from schema version 17; see storage/db.rs,
                            storage/index_migrate.rs)
-  memory_001_initial.sql — memory.db at its final shape
+  memory_001_initial.sql — memory.db at schema version 11, frozen; a fresh
+                           store is created from it and climbs the ladder
+  memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):
+                           tags and linked files into rows
 ```
 
 ### inkentry-cli (`crates/inkentry-cli/src/`)
@@ -309,6 +318,7 @@ cli/
                         to know is an error, not a "no such entry"
       show.rs         — memory show subcommand
       supersede.rs    — memory supersede subcommand
+      tags.rs         — `inkentry memory tags`: tag vocabulary + counts (ADR-101)
       timeline.rs     — memory timeline subcommand
     plumbing/
       mod.rs               — PlumbingArgs/PlumbingCommand; dispatch; exit-2 on error
@@ -494,8 +504,12 @@ the int8 L2 distance is rescaled back to the f32 scale by `INT8_SCALE` on read
 (`storage/search.rs`). Memory-entry embeddings stay
 `FLOAT[896]`.
 
-Each store declares its final shape in one schema file and stamps `PRAGMA
-user_version`. Below the version its own old ladder last stamped, both are
+Each store has one initial schema file and stamps `PRAGMA user_version`.
+`memory_001_initial.sql` is frozen at version 11 (the shape 1.0 and 1.1
+shipped): a fresh `memory.db` is created from it and climbs the numbered
+steps in `migrations/memory_0NN.sql` to the current version, the same road an
+existing store takes, so the ladder is never collapsed into the initial file
+again. Below the version its own old ladder last stamped, both are
 still refused or rebuilt, never converted: `memory.db` **refuses** an earlier
 product's store and points at `inkentry import`, because its rows are
 authored; `index.db` **rebuilds** — discarding the old file and recreating it

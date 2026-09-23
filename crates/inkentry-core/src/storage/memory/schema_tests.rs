@@ -352,15 +352,45 @@ fn sqlite_master_signature(conn: &rusqlite::Connection) -> Vec<(String, String, 
     .expect("collecting sqlite_master rows")
 }
 
-// A store migrated forward from version 11 must end up indistinguishable
-// from one created fresh, so the first real step (currently none —
-// `migrate::MEMORY_MIGRATIONS` is empty) is held to this from day one rather
-// than only once it exists. The version-11 fixture is built here from the
-// current `memory_001_initial.sql`, since that file *is* version 11's shape;
-// once a real step 12 lands, this must switch to a committed fixture file
-// produced by the 1.1.0 release binary rather than be rebuilt
-// from the current schema file, which would stop testing anything once the
-// two diverge. Do not attempt to download that binary here.
+// `memory_001_initial.sql` is frozen at version 11: a fresh store is created
+// from it and climbs the same ladder a 1.1 store does. Executed on its own it
+// must therefore still produce the version-11 shape, with the comma-joined
+// columns and without anything a later step adds. This is the tripwire for
+// someone editing the file to fold a later step in.
+#[test]
+fn the_initial_schema_file_is_still_the_version_11_shape() {
+    register_sqlite_vec();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(include_str!("../../../migrations/memory_001_initial.sql"))
+        .unwrap();
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(notes)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        columns.iter().any(|c| c == "tags"),
+        "notes.tags is a version-11 column"
+    );
+    assert!(columns.iter().any(|c| c == "linked_files"));
+    let later: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name IN ('note_tags', 'note_files')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        later, 0,
+        "memory_001_initial.sql must not contain step 12's tables"
+    );
+}
+
+// A fresh store and a store the 1.1 binary wrote reach the current version by
+// the same ladder, so this holds by construction; it is kept as the statement
+// of that fact, and it is what fails first if creation ever stops climbing.
 #[test]
 fn a_store_migrated_from_schema_version_11_matches_a_fresh_store() {
     register_sqlite_vec();
@@ -378,11 +408,200 @@ fn a_store_migrated_from_schema_version_11_matches_a_fresh_store() {
     let migrated = MemoryStore::open(&legacy_path).expect("open must migrate, not refuse");
     let (_fresh_dir, fresh) = store();
 
+    let stamp: i32 = fresh
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stamp, super::MEMORY_SCHEMA_VERSION);
     assert_eq!(
         sqlite_master_signature(&migrated.conn),
         sqlite_master_signature(&fresh.conn),
-        "a store migrated from schema version 11 must match one created fresh"
     );
+}
+
+/// A version-11 store with awkward legacy data — mixed-case and duplicate
+/// tags, tags with spaces/underscores, an empty tag item, a comma-containing
+/// value (unrecoverably ambiguous under the old comma-joined format, so it
+/// splits exactly as the pre-migration reader did), an absolute path, a `./`
+/// prefix, a path outside the root, and NULL/empty-string columns — must
+/// migrate without failing, land in `note_tags`/`note_files`, stay
+/// searchable by tag through `memory_fts`, and lose the two old columns.
+#[test]
+fn migrating_awkward_legacy_tags_and_files_data() {
+    register_sqlite_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.db");
+    let uuids = [
+        "0199a0f1-4d3c-7c2a-9b1e-000000000001",
+        "0199a0f1-4d3c-7c2a-9b1e-000000000002",
+        "0199a0f1-4d3c-7c2a-9b1e-000000000003",
+    ];
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
+            include_str!("../../../migrations/memory_001_initial.sql")
+        ))
+        .unwrap();
+        // Mixed case + duplicate + spaces/underscores + empty item + a
+        // comma-containing value (the old format could not tell that apart
+        // from two separate tags).
+        conn.execute(
+            "INSERT INTO notes (uuid, kind, title, body, tags, linked_files, entity_id) \
+             VALUES (?1, 'note', 'a', 'body a', 'Auth, auth, auth_service, , a,b', './src/a.rs, /abs/outside.rs', 'e1')",
+            rusqlite::params![uuids[0]],
+        )
+        .unwrap();
+        // NULL tags/linked_files.
+        conn.execute(
+            "INSERT INTO notes (uuid, kind, title, body, tags, linked_files, entity_id) \
+             VALUES (?1, 'note', 'b', 'body b', NULL, NULL, 'e2')",
+            rusqlite::params![uuids[1]],
+        )
+        .unwrap();
+        // Empty-string tags/linked_files.
+        conn.execute(
+            "INSERT INTO notes (uuid, kind, title, body, tags, linked_files, entity_id) \
+             VALUES (?1, 'note', 'c', 'body c', '', '', 'e3')",
+            rusqlite::params![uuids[2]],
+        )
+        .unwrap();
+    }
+
+    let store = MemoryStore::open(&path).expect("migration must not fail on awkward data");
+
+    // Row 1: mixed case and duplicates collapse; underscores become dashes;
+    // the empty item drops out; and "a,b" — a value the old comma-joined
+    // format could never actually hold as one tag — splits into "a" and "b"
+    // exactly as the pre-migration reader always split it.
+    let mut tags: Vec<String> = store
+        .conn
+        .prepare("SELECT tag FROM note_tags WHERE note_uuid = ?1 ORDER BY tag")
+        .unwrap()
+        .query_map(rusqlite::params![uuids[0]], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    tags.sort();
+    assert_eq!(tags, vec!["a", "auth", "auth-service", "b"]);
+
+    let mut files: Vec<String> = store
+        .conn
+        .prepare("SELECT path FROM note_files WHERE note_uuid = ?1 ORDER BY path")
+        .unwrap()
+        .query_map(rusqlite::params![uuids[0]], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    files.sort();
+    // "./src/a.rs" loses its leading "./"; "/abs/outside.rs" has no root to
+    // validate against during a migration step and is carried across as-is.
+    assert_eq!(files, vec!["/abs/outside.rs", "src/a.rs"]);
+
+    // Rows 2 and 3 (NULL / empty-string legacy columns) end up with no rows
+    // in either table.
+    for uuid in &uuids[1..] {
+        let n: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM note_tags WHERE note_uuid = ?1",
+                rusqlite::params![uuid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "no legacy tags means no note_tags rows for {uuid}");
+    }
+
+    // Every migrated file row gets the honest placeholder state (D5): git and
+    // disk cannot be checked from inside a migration step.
+    let states: Vec<String> = store
+        .conn
+        .prepare("SELECT DISTINCT state FROM note_files")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(states, vec!["untracked"]);
+
+    // Tags stay searchable through memory_fts after the step. Quoted the
+    // same way `search_text` quotes a caller's query: an unquoted `-` is FTS5
+    // exclusion syntax, not a literal hyphen.
+    let query = crate::utils::fts5_quote_literal("auth-service");
+    let hits: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH ?1",
+            rusqlite::params![query],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1);
+
+    // The old columns are gone.
+    let has_tags_column: bool = store
+        .conn
+        .prepare("SELECT 1 FROM pragma_table_info('notes') WHERE name IN ('tags', 'linked_files')")
+        .unwrap()
+        .exists([])
+        .unwrap();
+    assert!(
+        !has_tags_column,
+        "tags/linked_files columns must be dropped"
+    );
+}
+
+/// A store that fails midway through step 12 (after the tables exist, before
+/// the rest of the step runs) must be left at schema version 11 with the old
+/// shape intact — the ladder's own transaction rolls the whole step back.
+#[test]
+fn a_store_that_fails_midway_through_step_12_is_left_at_version_11() {
+    use super::migrate::inject_failure_after_creating_tables;
+
+    register_sqlite_vec();
+    inject_failure_after_creating_tables();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
+            include_str!("../../../migrations/memory_001_initial.sql")
+        ))
+        .unwrap();
+    }
+
+    let err = match MemoryStore::open(&path) {
+        Ok(_) => panic!("the injected fault must surface"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("12"),
+        "the error must name the failing step: {err}"
+    );
+
+    // Re-open with a plain rusqlite connection (bypassing MemoryStore::open,
+    // which would try to migrate again) to inspect the store's real state.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 11, "a failed step must not advance the stamp");
+    let has_note_tags: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'note_tags'")
+        .unwrap()
+        .exists([])
+        .unwrap();
+    assert!(
+        !has_note_tags,
+        "the failing step's own tables must be rolled back, not left partially applied"
+    );
+    let has_tags_column: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('notes') WHERE name = 'tags'")
+        .unwrap()
+        .exists([])
+        .unwrap();
+    assert!(has_tags_column, "the old columns must still be present");
 }
 
 #[test]

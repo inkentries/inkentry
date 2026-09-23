@@ -1,9 +1,11 @@
--- Initial memory schema. Declares the final shape directly, at schema
--- version 11: a fresh store is created from this file rather than by
--- replaying the migration ladder (`storage/memory/migrate.rs`),
--- which only ever moves an existing store *up to* this shape. A store
--- carrying data from an earlier product is crossed with `inkentry import`,
--- never opened in place (ADR-078).
+-- Memory schema at version 11, the shape 1.0 and 1.1 shipped. FROZEN: this
+-- file is never edited again. Every later change is a numbered step
+-- (`memory_0NN.sql`, registered in `storage/memory/migrate.rs`), and a fresh
+-- store is created from this file at 11 and then climbs the ladder to the
+-- current version, exactly as a store from 1.1 does. The ladder below 11 was
+-- collapsed into this file at the 1.0 rename, once; it is not collapsed again.
+-- A store carrying data from an earlier product is crossed with `inkentry
+-- import`, never opened in place (ADR-078).
 
 -- `uuid` is the exported identity (a UUIDv7), NOT NULL and uniquely indexed
 -- from creation. `id` is a storage surrogate: `memory_fts` is an FTS5

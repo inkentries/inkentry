@@ -22,3 +22,7 @@
 5bee62a2820b1de394b7c14385d097b23ec11fdafe26180c61f8d79b21b903a1  spelunk-v0.7.1-aarch64-apple-darwin.tar.gz
 285ecbdec8bdb02d1e51234666fea077cd1ea8ba6879f8bed3fd136187a355de  spelunk-v0.9.3-aarch64-apple-darwin.tar.gz
 776ccfbe31c46a197672e030e4c8af9736cf8bd72db0ab7366869b5126c8062a  spelunk-v0.9.5-aarch64-apple-darwin.tar.gz
+
+# From 1.0 the assets are published under the current name, from
+# inkentries/inkentry. One asset, for the schema-11 memory.db wing.
+b426d3439f311de3402799cae4bd611d318196f00b41fe23200b24501b36124f  inkentry-v1.1.0-aarch64-apple-darwin.tar.gz

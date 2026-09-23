@@ -54,15 +54,13 @@ impl MemoryStore {
             let entity_id = crate::storage::entity_id::entity_id(kind, title, body);
             let insert_result = self.conn.execute(
                 "INSERT INTO notes \
-                 (uuid, kind, title, body, tags, linked_files, valid_at, created_at, entity_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (uuid, kind, title, body, valid_at, created_at, entity_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     super::uuid_v7_at(created_at),
                     kind,
                     title,
                     body,
-                    tags.join(","),
-                    linked_files.join(","),
                     valid_at,
                     created_at,
                     entity_id,

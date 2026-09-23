@@ -20,22 +20,33 @@ crates/inkentry-cli/tests/fixtures/upgrade-corpus/
 crates/inkentry-cli/tests/upgrade_corpus.rs   the suite
 ```
 
-## The corpus holds one wing, on purpose
+## The corpus holds two wings, on purpose
 
 | wing | producer | what it pins |
 | --- | --- | --- |
 | `git-notes-eras` | 0.7.1 / 0.9.3 / 0.9.5 | all three note-writing eras on one ref |
+| `memory-v1.1.0-schema-11` | 1.1.0 | a schema-11 `memory.db`, with the tag and path spellings schema step 12 has to carry from comma-joined columns into rows |
 
 **A wing earns its place by covering a path a real user's data actually takes.**
-Neither local database is such a path:
+No database written by the earlier product is such a path:
 
 - `index.db` is not carried across at all. The user reindexes.
 - `memory.db` crosses as a portable dump and is imported into a store the
   current binary creates.
 
-So no database written by an earlier release is ever opened in place by this
+So no database written by the earlier product is ever opened in place by this
 one. Wings for those covered migrations nothing performs, and they were removed
 together with the migration ladders they were defending.
+
+**A `memory.db` written by 1.0 or 1.1 is such a path.** It is stamped schema
+version 11 and migrates forward in place, so the first step after it is tested
+against a store the real 1.1.0 binary wrote. That wing is built with
+`INKENTRY_NO_SERVER=1`, which keeps the release from starting its bundled
+embedder and downloading a model: its entries carry no vectors. It is evidence
+about the relational content of a schema-11 store, not about `note_embeddings`.
+Releases from 1.0 on are downloaded from `inkentries/inkentry` under the
+current name; `generate.sh` picks the repository, asset name and binary name
+from the tag.
 
 **The notes ref is the exception**, and it is the reason this harness outlived
 them. It is renamed in place rather than exported, so the blobs on a migrating

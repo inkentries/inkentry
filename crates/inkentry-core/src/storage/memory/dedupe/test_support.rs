@@ -27,7 +27,10 @@ pub(super) fn open_store() -> MemoryStore {
     register_sqlite_vec();
     let conn = rusqlite::Connection::open(std::path::Path::new(":memory:"))
         .expect("open in-memory sqlite");
-    let store = MemoryStore { conn };
+    // No real on-disk location for an in-memory store: same fallback
+    // `MemoryStore::open` uses for `:memory:`.
+    let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let store = MemoryStore { conn, project_root };
     // Four tests below exist only to prove dedupe never leaves a live foreign-key
     // reference to a row it is about to delete; with enforcement off they pass
     // vacuously. Declared here for the same reason `MemoryStore::open` declares
@@ -81,15 +84,25 @@ fn full_table_snapshot(
 
 pub(super) type TableSnapshot = Vec<Vec<rusqlite::types::Value>>;
 
-// Snapshot of `notes` + `memory_edges` + `note_embeddings`, the three
-// tables `dedupe_entity_ids` can touch.
+// Snapshot of every table `dedupe_entity_ids` can touch: `notes` +
+// `memory_edges` + `note_embeddings`, plus `note_tags`/`note_files` (ADR-101),
+// which the tags/linked_files merge now writes instead of the two dropped
+// `notes` columns.
 pub(super) fn full_db_snapshot(
     store: &MemoryStore,
-) -> (TableSnapshot, TableSnapshot, TableSnapshot) {
+) -> (
+    TableSnapshot,
+    TableSnapshot,
+    TableSnapshot,
+    TableSnapshot,
+    TableSnapshot,
+) {
     (
         full_table_snapshot(store, "notes", "id"),
         full_table_snapshot(store, "memory_edges", "from_id, to_id, kind"),
         full_table_snapshot(store, "note_embeddings", "note_id"),
+        full_table_snapshot(store, "note_tags", "note_uuid, tag"),
+        full_table_snapshot(store, "note_files", "note_uuid, path"),
     )
 }
 

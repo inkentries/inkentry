@@ -58,14 +58,20 @@ fn row_count(mem_db: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-fn note_tags(mem_db: &Path, id: i64) -> String {
+// Tags moved from a comma-joined `notes.tags` column to rows in `note_tags`
+// (ADR-101); reads by `note_uuid`, not the storage-surrogate `id`, and
+// reconstructs the comma-joined form callers here compare against.
+fn note_tags(mem_db: &Path, uuid: &str) -> String {
     let conn = Connection::open(mem_db).expect("open memory.db");
-    conn.query_row(
-        "SELECT COALESCE(tags, '') FROM notes WHERE id = ?1",
-        rusqlite::params![id],
-        |r| r.get(0),
-    )
-    .unwrap_or_default()
+    let mut stmt = conn
+        .prepare("SELECT tag FROM note_tags WHERE note_uuid = ?1 ORDER BY tag")
+        .expect("prepare");
+    let tags: Vec<String> = stmt
+        .query_map(rusqlite::params![uuid], |r| r.get(0))
+        .expect("query")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collect");
+    tags.join(",")
 }
 
 // Parse every `{"id": ..., ...}` JSONL record out of `git notes --ref=inkentry
@@ -170,11 +176,11 @@ fn second_identical_add_merges_tags_into_the_existing_row() {
         .stdout(predicate::str::contains("Already recorded as"));
 
     let conn = Connection::open(&mem_db).unwrap();
-    let id: i64 = conn
-        .query_row("SELECT id FROM notes LIMIT 1", [], |r| r.get(0))
+    let uuid: String = conn
+        .query_row("SELECT uuid FROM notes LIMIT 1", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        note_tags(&mem_db, id),
+        note_tags(&mem_db, &uuid),
         "alpha,beta",
         "criterion 26: tags must union add-wins, neither dropped"
     );

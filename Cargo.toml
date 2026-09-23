@@ -30,6 +30,10 @@ axum-server = { version = "0.8", default-features = false, features = ["tls-rust
 # tree; `ring`/`tls12` match the provider already resolved via reqwest.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 uuid        = { version = "1", features = ["v4", "v7", "serde"] }
+# NFC normalisation for memory tags (ADR-101 D2). Already resolved transitively
+# via gix (gix-utils); named directly here so the version stays pinned to the
+# one already in the tree rather than resolving a second one.
+unicode-normalization = "0.1"
 tempfile    = "3"
 pretty_assertions = "1"
 serial_test = "4"

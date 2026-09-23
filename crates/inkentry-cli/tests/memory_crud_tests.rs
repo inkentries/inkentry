@@ -22,3 +22,5 @@ mod memory_list_source_ref;
 mod memory_reindex;
 #[path = "memory_crud_tests/memory_removed_commands.rs"]
 mod memory_removed_commands;
+#[path = "memory_crud_tests/memory_tags_and_filters.rs"]
+mod memory_tags_and_filters;

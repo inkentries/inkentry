@@ -30,6 +30,30 @@ pub(crate) fn apply_ladder(
     steps: &[(i32, MigrationStep)],
     label: &str,
 ) -> Result<()> {
+    run_ladder(conn, found_version, target_version, steps, label, true)
+}
+
+/// [`apply_ladder`] for a store this process has just created: the climb from
+/// the frozen initial schema to the current version is part of creation, not
+/// an upgrade of anything the user had, so nothing is announced.
+pub(crate) fn apply_ladder_quietly(
+    conn: &Connection,
+    found_version: i32,
+    target_version: i32,
+    steps: &[(i32, MigrationStep)],
+    label: &str,
+) -> Result<()> {
+    run_ladder(conn, found_version, target_version, steps, label, false)
+}
+
+fn run_ladder(
+    conn: &Connection,
+    found_version: i32,
+    target_version: i32,
+    steps: &[(i32, MigrationStep)],
+    label: &str,
+    announce: bool,
+) -> Result<()> {
     let mut at_version = found_version;
 
     for &(version, step) in steps {
@@ -71,7 +95,7 @@ pub(crate) fn apply_ladder(
         }
     }
 
-    if at_version != found_version {
+    if announce && at_version != found_version {
         eprintln!("{label}: migrated schema version {found_version} to {at_version}");
     }
     // A registry that stops short would otherwise hand back a store at an

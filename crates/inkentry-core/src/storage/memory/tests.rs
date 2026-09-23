@@ -997,15 +997,26 @@ fn union_tags_and_files_is_add_wins() {
         .add_note("note", "N", "b", &["alpha"], &["a.rs"], None, None)
         .unwrap();
 
-    let read = |store: &MemoryStore| -> (Option<String>, Option<String>) {
-        store
+    let read = |store: &MemoryStore| -> (Vec<String>, Vec<String>) {
+        let mut tags: Vec<String> = store
             .conn
-            .query_row(
-                "SELECT tags, linked_files FROM notes WHERE uuid = ?1",
-                rusqlite::params![id.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+            .prepare("SELECT tag FROM note_tags WHERE note_uuid = ?1")
             .unwrap()
+            .query_map(rusqlite::params![id.as_str()], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        tags.sort();
+        let mut files: Vec<String> = store
+            .conn
+            .prepare("SELECT path FROM note_files WHERE note_uuid = ?1")
+            .unwrap()
+            .query_map(rusqlite::params![id.as_str()], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        files.sort();
+        (tags, files)
     };
 
     // New values are appended; the existing ones survive.
@@ -1014,8 +1025,8 @@ fn union_tags_and_files_is_add_wins() {
             .union_tags_and_files(&id, &["beta".to_string()], &["b.rs".to_string()])
             .unwrap()
     );
-    assert_eq!(read(&store).0.as_deref(), Some("alpha,beta"));
-    assert_eq!(read(&store).1.as_deref(), Some("a.rs,b.rs"));
+    assert_eq!(read(&store).0, vec!["alpha", "beta"]);
+    assert_eq!(read(&store).1, vec!["a.rs", "b.rs"]);
 
     // Nothing new to add: no write, and nothing is dropped.
     assert!(
@@ -1024,7 +1035,7 @@ fn union_tags_and_files_is_add_wins() {
             .unwrap(),
         "a subset must not rewrite the row"
     );
-    assert_eq!(read(&store).0.as_deref(), Some("alpha,beta"));
+    assert_eq!(read(&store).0, vec!["alpha", "beta"]);
 }
 
 // The union rewrites `tags`, and `tags` is an FTS-indexed column — the
@@ -1048,6 +1059,86 @@ fn union_tags_keeps_fts_in_sync() {
         )
         .unwrap();
     assert_eq!(hits, 1, "the unioned tag must be searchable");
+}
+
+// ── ADR-101: tag normalisation and the entity-id collision merge ───────────
+
+// Two `add_note` calls with identical `{kind, title, body}` but different
+// (differently-cased) tags collide on `entity_id` and must merge into one
+// row rather than create a second — the "two INSERT OR IGNOREs" path ADR-101
+// D1 describes. `entity_id` itself must be unaffected by tags or files
+// either way: it is a pure function of kind/title/body (ADR-093).
+#[test]
+fn entity_id_collision_on_add_note_merges_tags_and_files_and_leaves_entity_id_unchanged() {
+    let store = open_store();
+    let (first, created_first) = store
+        .add_note("decision", "dup", "body", &["Auth"], &["a.rs"], None, None)
+        .unwrap();
+    assert!(created_first);
+    let entity_before = store.get(&first).unwrap().unwrap().entity_id;
+
+    let (second, created_second) = store
+        .add_note(
+            "decision",
+            "dup",
+            "body",
+            &["auth", "billing"],
+            &["b.rs"],
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert!(!created_second, "a byte-identical entry reuses the row");
+    assert_eq!(first, second, "the collision resolves to the same row");
+
+    let note = store.get(&first).unwrap().unwrap();
+    assert_eq!(
+        note.entity_id, entity_before,
+        "entity_id must not change when tags or files are added"
+    );
+    assert_eq!(note.tags, vec!["auth", "billing"], "tags merge and dedupe");
+    assert_eq!(note.linked_files, vec!["a.rs", "b.rs"], "files merge");
+}
+
+// A tag is normalised the same way regardless of which write path it
+// travelled through: `memory add`'s raw-string entry point and the collision
+// merge above both funnel through the same core normalisation (D2).
+#[test]
+fn add_note_normalises_tags_on_every_write_path() {
+    let store = open_store();
+    let (id, _) = store
+        .add_note(
+            "note",
+            "N",
+            "b",
+            &["  Auth_Service  ", "AUTH-SERVICE"],
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+    let note = store.get(&id).unwrap().unwrap();
+    assert_eq!(
+        note.tags,
+        vec!["auth-service"],
+        "differently-spelled input collapses to one normalised tag"
+    );
+}
+
+// A path outside the project root is refused rather than silently stored
+// with the wrong meaning (D3) — exercised at the `add_note` level, not just
+// the pure `file_links` helper, so the whole write path is covered.
+#[test]
+fn add_note_refuses_a_linked_file_that_escapes_the_project_root() {
+    let store = open_store();
+    let err = store
+        .add_note("note", "N", "b", &[], &["../../etc/passwd"], None, None)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("escapes the project root"),
+        "{err}"
+    );
 }
 
 // ── insert_embedding ─────────────────────────────────────────────────────────
@@ -1434,10 +1525,11 @@ fn superseded_note_excluded_by_default_included_with_archived() {
     );
 }
 
-// ── schema creation (there is no migration ladder) ───────────────────────────
-// `memory_001_initial.sql` declares the final shape and every statement in it
-// is `IF NOT EXISTS`, so creation is idempotent on a store this binary already
-// made, and a store stamped with any other version is refused outright.
+// ── schema creation ──────────────────────────────────────────────────────────
+// A fresh store is created from `memory_001_initial.sql` (frozen at version
+// 11) and migrated up the ladder; a store this binary already made is
+// accepted as is, and one stamped below 11 or above the current version is
+// refused outright.
 
 fn user_version(store: &MemoryStore) -> i32 {
     store
