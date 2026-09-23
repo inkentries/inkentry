@@ -522,6 +522,37 @@ git repository). A `missing` file is still stored — with a warning on stderr
 and the state in `--format json` output — never refused, since recording a
 decision about a file often precedes creating it.
 
+### Origin
+
+An entry can carry who or what wrote it
+([ADR-098](adr/098-metrics-and-evaluation-indexed-by-commit.md) D6): `human`,
+`agent`, or `harvest`, plus optional free-text `tool` and `model`. It is not
+part of the entry's identity (`entity_id`), so two otherwise-identical entries
+converge on one row whether or not they agree on origin.
+
+`memory add` fills it in from the caller's own declaration — see
+[Environment variables](config-reference.md#caller-declaration-adr-098-d5d6):
+set `INKENTRY_ACTOR` (`human` or `agent`), and optionally `INKENTRY_TOOL` /
+`INKENTRY_MODEL`, before running `inkentry`. Nothing is guessed: an
+undeclared caller leaves `origin` absent entirely, not a fabricated
+`"unknown"` value. `inkentry harvest` always stamps its own entries
+`actor_kind: harvest` with the model it used, regardless of any declared
+`INKENTRY_ACTOR`.
+
+`memory show` and `memory list --format json` include `origin` when it is
+present:
+
+```json
+{
+  "kind": "decision",
+  "title": "...",
+  "origin": { "actor_kind": "agent", "tool": "claude-code", "model": "claude-sonnet-5" }
+}
+```
+
+An entry written before this field existed, or by a caller that declared
+nothing, simply omits the key.
+
 ## Pulling in context from a URL
 
 `--from-url` fetches content from a GitHub issue, Linear ticket, or any web page and stores it as a memory entry. The title is inferred from the page automatically.
