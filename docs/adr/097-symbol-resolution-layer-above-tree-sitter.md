@@ -106,6 +106,16 @@ touches neither chunks nor vectors.
 So this change is a forward step on `index.db`, applied in place on open, using
 the same stamped, one-transaction-per-step pattern `memory.db` uses:
 
+> **Corrected (2026-09-23):** the two bullets below describe a fresh index
+> as built directly from `index_001_initial.sql` at the current version, with
+> that file updated on each shape change. That is not the model. Both initial
+> schema files are **frozen** at the shape 1.0 and 1.1 shipped (`index.db` at
+> 17, `memory.db` at 11): the ladder below them was collapsed into them once,
+> at the rename, and is not collapsed again. A fresh index is created from the
+> frozen file at 17 and climbs the `INDEX_MIGRATIONS` registry to the current
+> version, the same road an existing index takes. So `target_file` lands as
+> **one** thing, a registered step, and `index_001_initial.sql` is not touched.
+
 - The shape change is **a new ladder step plus an update to the current-shape
   file**, the way `memory.db` evolves. `index_001_initial.sql` is the schema a
   *fresh* store is built from directly, so it gains the column and

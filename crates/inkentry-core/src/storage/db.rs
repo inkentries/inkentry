@@ -14,14 +14,15 @@ pub struct Database {
 
 /// Version stamped into `PRAGMA user_version` by [`Database::open`].
 ///
-/// Every index this binary opens was created by this binary at the shape
-/// `index_001_initial.sql` declares, or reaches it one of two ways: a store
-/// stamped above [`LAST_LEGACY_SCHEMA_VERSION`] and below this migrates
-/// forward in place through the registry in `storage::index_migrate`, one
-/// version at a time, unless a registered version in that range asks to
-/// rebuild instead (`storage::index_migrate::IndexMigrationKind::Rebuild`) —
-/// for a change, like a different embedding space, that an in-place step
-/// cannot fix. Anything else — at or below [`LAST_LEGACY_SCHEMA_VERSION`], or
+/// Every index this binary opens reaches this version by the registry in
+/// `storage::index_migrate`: a fresh index is created from the frozen
+/// `index_001_initial.sql` at [`INITIAL_SCHEMA_VERSION`] and climbs from
+/// there, and a store stamped above [`LAST_LEGACY_SCHEMA_VERSION`] and below
+/// this migrates forward in place the same way, one version at a time, unless
+/// a registered version in that range asks to rebuild instead
+/// (`storage::index_migrate::IndexMigrationKind::Rebuild`) — for a change,
+/// like a different embedding space, that an in-place step cannot fix.
+/// Anything else — at or below [`LAST_LEGACY_SCHEMA_VERSION`], or
 /// from a build newer than this one — is discarded and rebuilt or refused,
 /// because an index is derived from the user's source tree and reindexing
 /// reproduces it exactly.
@@ -38,6 +39,11 @@ pub(super) const CURRENT_SCHEMA_VERSION: i32 = 17;
 /// something that does not exist. Nothing may reclaim this range:
 /// `CURRENT_SCHEMA_VERSION` only ever moves up from here.
 pub(super) const LAST_LEGACY_SCHEMA_VERSION: i32 = 16;
+
+/// The version `index_001_initial.sql` creates, and the one it is frozen at.
+/// The ladder below it was collapsed into that file once, at the 1.0 rename;
+/// every later shape is a numbered step, and the file is never edited again.
+pub(super) const INITIAL_SCHEMA_VERSION: i32 = LAST_LEGACY_SCHEMA_VERSION + 1;
 
 const _: () = assert!(
     CURRENT_SCHEMA_VERSION > LAST_LEGACY_SCHEMA_VERSION,
@@ -305,10 +311,28 @@ impl Database {
         // discarding a perfectly good index.
         self.conn
             .execute_batch(&format!(
-                "BEGIN;\n{}\nPRAGMA user_version = {CURRENT_SCHEMA_VERSION};\nCOMMIT;",
+                "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
                 include_str!("../../migrations/index_001_initial.sql")
             ))
             .context("creating index schema")?;
+
+        // The same road an existing store takes, so there is one way to reach
+        // the current shape. A `Rebuild` entry is meaningless for an index
+        // that holds nothing yet, so only the in-place steps run.
+        let steps: Vec<(i32, MigrationStep)> = INDEX_MIGRATIONS
+            .iter()
+            .filter_map(|&(v, kind)| match kind {
+                IndexMigrationKind::Migrate(step) => Some((v, step)),
+                IndexMigrationKind::Rebuild => None,
+            })
+            .collect();
+        super::migration_ladder::apply_ladder_quietly(
+            &self.conn,
+            INITIAL_SCHEMA_VERSION,
+            CURRENT_SCHEMA_VERSION,
+            &steps,
+            "index.db",
+        )?;
 
         // The scheme an empty index composes its embedding input under. Stamped
         // at creation, not on first index, because `ensure_*` readers treat an
@@ -568,7 +592,9 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{CURRENT_SCHEMA_VERSION, Database, IndexMigrationKind, Result};
+    use super::{
+        CURRENT_SCHEMA_VERSION, Database, INITIAL_SCHEMA_VERSION, IndexMigrationKind, Result,
+    };
     use rusqlite::Connection;
     use std::sync::OnceLock;
 
@@ -858,13 +884,10 @@ mod tests {
     // A store migrated forward from version 17 must end up indistinguishable
     // from one created fresh, so the first real step (currently none —
     // `index_migrate::INDEX_MIGRATIONS` is empty) is held to this from day one
-    // rather than only once it exists. The version-17 fixture is built here
-    // from the current `index_001_initial.sql`, since that file *is* version
-    // 17's shape; once a real step lands, this must switch to a committed
-    // fixture file produced by the last release binary that predates it,
-    // rather than be rebuilt from the current schema file, which would stop
-    // testing anything once the two diverge. Do not attempt to download that
-    // binary here.
+    // rather than only once it exists. `index_001_initial.sql` is frozen at
+    // version 17, and a fresh index climbs the same ladder a 1.1 index does, so
+    // this holds by construction; it is what fails first if creation ever
+    // stops climbing.
     #[test]
     fn a_store_migrated_from_schema_version_17_matches_a_fresh_store() {
         register_sqlite_vec();
@@ -873,13 +896,14 @@ mod tests {
         {
             let conn = Connection::open(&legacy_path).unwrap();
             conn.execute_batch(&format!(
-                "BEGIN;\n{}\nPRAGMA user_version = {CURRENT_SCHEMA_VERSION};\nCOMMIT;",
+                "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
                 include_str!("../../migrations/index_001_initial.sql")
             ))
             .unwrap();
         }
 
-        let migrated = Database::open(&legacy_path).expect("open must accept the current version");
+        let migrated = Database::open(&legacy_path).expect("open must migrate, not rebuild");
+        assert_eq!(user_version(&migrated.conn), CURRENT_SCHEMA_VERSION);
         let fresh = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
 
         assert_eq!(

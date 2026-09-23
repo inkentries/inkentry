@@ -43,6 +43,13 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   [ADR-083](docs/adr/083-memory-relevance-gate-in-unified-search.md).
 ### Internal
 
+- **Both initial schema files are frozen at the shape 1.0 and 1.1 shipped.**
+  `memory_001_initial.sql` stays at version 11 and `index_001_initial.sql` at
+  17; a fresh store is created from its file and climbs the numbered steps to
+  the current version, the same road an existing store takes. The ladder
+  below those versions was collapsed into the files once, at the rename, and
+  is not collapsed again. Nothing observable changes: a fresh store ends at
+  the same version and shape as before.
 - **`memory.db` can migrate forward again, starting at schema version 11.**
   `create_schema` used to refuse every stamp below the current version,
   legacy product or not; a future version bump would have locked out every

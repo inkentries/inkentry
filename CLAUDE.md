@@ -204,9 +204,9 @@ search/
   tokens.rs      — token-budget helpers
 
 migrations/  (crates/inkentry-core/migrations/)
-  index_001_initial.sql  — index.db at its final shape (forward migrations layer
-                           on top from schema version 17; see storage/db.rs,
-                           storage/index_migrate.rs)
+  index_001_initial.sql  — index.db at schema version 17, frozen; a fresh index
+                           is created from it and climbs the registry in
+                           storage/index_migrate.rs (see storage/db.rs)
   memory_001_initial.sql — memory.db at schema version 11, frozen; a fresh
                            store is created from it and climbs the ladder
   memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):
@@ -505,10 +505,11 @@ the int8 L2 distance is rescaled back to the f32 scale by `INT8_SCALE` on read
 `FLOAT[896]`.
 
 Each store has one initial schema file and stamps `PRAGMA user_version`.
-`memory_001_initial.sql` is frozen at version 11 (the shape 1.0 and 1.1
-shipped): a fresh `memory.db` is created from it and climbs the numbered
-steps in `migrations/memory_0NN.sql` to the current version, the same road an
-existing store takes, so the ladder is never collapsed into the initial file
+Both are frozen at the shape 1.0 and 1.1 shipped (`memory_001_initial.sql`
+at 11, `index_001_initial.sql` at 17): a fresh store is created from its file
+and climbs the numbered steps (`migrations/memory_0NN.sql`; the
+`INDEX_MIGRATIONS` registry) to the current version, the same road an
+existing store takes, so the ladder is never collapsed into an initial file
 again. Below the version its own old ladder last stamped, both are
 still refused or rebuilt, never converted: `memory.db` **refuses** an earlier
 product's store and points at `inkentry import`, because its rows are
