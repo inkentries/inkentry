@@ -16,29 +16,6 @@ use super::tags::normalize_tag;
 /// each one produces; never renumber or reorder an existing entry.
 pub(super) const MEMORY_MIGRATIONS: &[(i32, MigrationStep)] = &[(12, add_note_tags_and_files)];
 
-#[cfg(test)]
-thread_local! {
-    // Set by a test to make the step fail after creating `note_tags`/
-    // `note_files` but before anything else, so the ladder's own
-    // `BEGIN IMMEDIATE`/`ROLLBACK` around each step is exercised against this
-    // step's real body rather than a synthetic one.
-    static FAIL_AFTER_TABLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-pub(super) fn inject_failure_after_creating_tables() {
-    FAIL_AFTER_TABLES.with(|f| f.set(true));
-}
-
-#[cfg(not(test))]
-fn fault_due() -> bool {
-    false
-}
-#[cfg(test)]
-fn fault_due() -> bool {
-    FAIL_AFTER_TABLES.with(|f| f.get())
-}
-
 /// ADR-101 step 12. The DDL is `migrations/memory_012.sql` (new tables,
 /// `memory_fts` rebuilt to be fed from `note_tags`); this function runs it,
 /// copies the old columns into the new tables, then runs
@@ -114,6 +91,29 @@ fn add_note_tags_and_files(conn: &Connection) -> Result<()> {
 fn migration_clean_path(raw: &str) -> String {
     let slashed = raw.trim().replace('\\', "/");
     slashed.strip_prefix("./").unwrap_or(&slashed).to_string()
+}
+
+#[cfg(test)]
+thread_local! {
+    // Set by a test to make the step fail after creating `note_tags`/
+    // `note_files` but before anything else, so the ladder's own
+    // `BEGIN IMMEDIATE`/`ROLLBACK` around each step is exercised against this
+    // step's real body rather than a synthetic one.
+    static FAIL_AFTER_TABLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn inject_failure_after_creating_tables() {
+    FAIL_AFTER_TABLES.with(|f| f.set(true));
+}
+
+#[cfg(not(test))]
+fn fault_due() -> bool {
+    false
+}
+#[cfg(test)]
+fn fault_due() -> bool {
+    FAIL_AFTER_TABLES.with(|f| f.get())
 }
 
 #[cfg(test)]
