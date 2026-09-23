@@ -69,16 +69,25 @@ pub struct NearDuplicateRate {
     pub excluded_without_vector: u64,
 }
 
-/// `rec.entries` (ADR-098 D3, adapted to this slice: no `by_origin` split —
-/// D6 has not shipped, so an entry's origin cannot be told apart from
-/// `unknown` and the field is omitted entirely rather than faked). Every
-/// canonical kind is present with a 0 count when the store holds none of it,
-/// so the key set never depends on what happens to be stored.
+/// The four origin buckets `rec.entries.by_origin` always reports, present
+/// with a 0 count when the store holds none of it — the same "key set never
+/// depends on what happens to be stored" rule `total`/`active`/`in_window`
+/// already follow for kind.
+const ORIGIN_BUCKETS: &[&str] = &["human", "agent", "harvest", "unknown"];
+
+/// `rec.entries` (ADR-098 D3). Every canonical kind is present in
+/// `total`/`active`/`in_window` with a 0 count when the store holds none of
+/// it, so the key set never depends on what happens to be stored;
+/// `by_origin` (D6) follows the same rule over the four origin buckets.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EntryCounts {
     pub total: BTreeMap<String, u64>,
     pub active: BTreeMap<String, u64>,
     pub in_window: BTreeMap<String, u64>,
+    /// Active entries by `origin.actor_kind`, or `unknown` for an entry with
+    /// no origin recorded (an entry written before D6, or with no caller
+    /// declaration).
+    pub by_origin: BTreeMap<String, u64>,
 }
 
 /// Git facts a metrics window needs, gathered once by [`super::build_snapshot`]
@@ -152,6 +161,11 @@ pub struct StatusMetricsSummary {
     pub cmp_review_items_per_day: Rate,
     #[serde(rename = "rec.unresolved_conflicts")]
     pub rec_unresolved_conflicts: u64,
+    /// ADR-098 D3/D5: the compact events subset `inkentry status` shows under
+    /// "use, last 7 days" (explicit vs hook columns, automation rate). Always
+    /// the fixed [`super::EVENTS_WINDOW_DAYS`] window, independent of
+    /// `window_days` above (which only governs the state fields).
+    pub events: super::EventsMetrics,
 }
 
 /// Compute [`StatusMetricsSummary`] for the window `[window_start,
@@ -159,6 +173,7 @@ pub struct StatusMetricsSummary {
 /// together exactly when [`compute_state_metrics`]'s `git` is `None` (no git
 /// repository); passed in rather than fetched here so the caller can use the
 /// cheaper, `--numstat`-free commit listing ([`super::git::commit_shas_in_window`]).
+#[allow(clippy::too_many_arguments)]
 pub fn compute_status_metrics_summary(
     store: &MemoryStore,
     window_start: i64,
@@ -166,6 +181,7 @@ pub fn compute_status_metrics_summary(
     window_days: u32,
     commit_shas_in_window: Option<&[String]>,
     anchored_commit_shas: Option<&HashSet<String>>,
+    events: super::EventsMetrics,
 ) -> Result<StatusMetricsSummary> {
     let all_notes = store.all_notes_for_dedup()?;
     let created_at_by_id: HashMap<&NoteId, i64> =
@@ -220,6 +236,7 @@ pub fn compute_status_metrics_summary(
         rec_open_question_age_p50,
         cmp_review_items_per_day,
         rec_unresolved_conflicts,
+        events,
     })
 }
 
@@ -318,10 +335,18 @@ fn entry_counts(all_notes: &[Note], window_start: i64, window_end: i64) -> Entry
     let mut total: BTreeMap<String, u64> = NOTE_KINDS.iter().map(|k| (k.to_string(), 0)).collect();
     let mut active = total.clone();
     let mut in_window_counts = total.clone();
+    let mut by_origin: BTreeMap<String, u64> =
+        ORIGIN_BUCKETS.iter().map(|k| (k.to_string(), 0)).collect();
     for n in all_notes {
         *total.entry(n.kind.clone()).or_insert(0) += 1;
         if n.status == "active" {
             *active.entry(n.kind.clone()).or_insert(0) += 1;
+            let bucket = n
+                .origin
+                .as_ref()
+                .map(|o| o.actor_kind.as_str())
+                .unwrap_or("unknown");
+            *by_origin.entry(bucket.to_string()).or_insert(0) += 1;
         }
         if in_window(n.created_at, window_start, window_end) {
             *in_window_counts.entry(n.kind.clone()).or_insert(0) += 1;
@@ -331,6 +356,7 @@ fn entry_counts(all_notes: &[Note], window_start: i64, window_end: i64) -> Entry
         total,
         active,
         in_window: in_window_counts,
+        by_origin,
     }
 }
 
@@ -514,7 +540,7 @@ fn context_tokens_estimate(store: &MemoryStore) -> Result<u64> {
 /// an even-sized input this averages the two middle values (integer
 /// division, which is exact for the odd case and merely rounds down by at
 /// most half a second for the even one).
-fn median(mut values: Vec<i64>) -> Option<i64> {
+pub(super) fn median(mut values: Vec<i64>) -> Option<i64> {
     if values.is_empty() {
         return None;
     }
