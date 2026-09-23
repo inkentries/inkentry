@@ -20,12 +20,13 @@ crates/inkentry-cli/tests/fixtures/upgrade-corpus/
 crates/inkentry-cli/tests/upgrade_corpus.rs   the suite
 ```
 
-## The corpus holds two wings, on purpose
+## The corpus holds three wings, on purpose
 
 | wing | producer | what it pins |
 | --- | --- | --- |
 | `git-notes-eras` | 0.7.1 / 0.9.3 / 0.9.5 | all three note-writing eras on one ref |
 | `memory-v1.1.0-schema-11` | 1.1.0 | a schema-11 `memory.db`, with the tag and path spellings schema step 12 has to carry from comma-joined columns into rows |
+| `index-v1.1.0-schema-17` | 1.1.0 | a schema-17 `index.db` with files, chunks and graph edges and no vectors, which step 18 migrates in place |
 
 **A wing earns its place by covering a path a real user's data actually takes.**
 No database written by the earlier product is such a path:

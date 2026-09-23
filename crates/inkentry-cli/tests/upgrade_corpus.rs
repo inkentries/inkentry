@@ -88,6 +88,14 @@ struct Expect {
     successor_title: String,
     #[serde(default)]
     raw_tags_and_files: Vec<RawTagsAndFiles>,
+    #[serde(default)]
+    chunk_count: i64,
+    #[serde(default)]
+    file_count: i64,
+    #[serde(default)]
+    graph_edge_count: i64,
+    #[serde(default)]
+    embedding_count: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -383,6 +391,63 @@ fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
     );
 }
 
+// What step 18 owes an index the real 1.1.0 binary wrote: every file, chunk
+// and edge still there, `target_file` NULL on all of them (unresolved, the
+// bare-name fallback), and the graph-only re-extraction pass recorded as owed
+// so the next `inkentry index` fills the column without touching chunks.
+// The wing was built without an embedder, so it is evidence about the
+// relational content only; the embedding count it pins is zero.
+#[test]
+#[serial_test::serial]
+fn an_index_written_by_1_1_0_survives_the_move_to_the_current_schema() {
+    register_sqlite_vec();
+    let m = manifest();
+    let wing = wings_of_kind(&m, "index")
+        .into_iter()
+        .find(|w| w.id == "index-v1.1.0-schema-17")
+        .expect("the 1.1.0 index wing is in the manifest");
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = checkout(wing, tmp.path());
+    assert_eq!(
+        read_user_version(&raw(&db_path)),
+        17,
+        "the artifact must still be the unmigrated index the release wrote"
+    );
+
+    let db = Database::open(&db_path).expect("opening a 1.1.0 index must migrate it, not rebuild");
+    assert_eq!(db.rebuilt_from(), None, "a migration is not a rebuild");
+    assert_eq!(
+        read_user_version(&raw(&db_path)),
+        fresh_index_schema_version()
+    );
+
+    let conn = raw(&db_path);
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(count("SELECT count(*) FROM files"), wing.expect.file_count);
+    assert_eq!(
+        count("SELECT count(*) FROM chunks"),
+        wing.expect.chunk_count
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM graph_edges"),
+        wing.expect.graph_edge_count
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM graph_edges WHERE target_file IS NOT NULL"),
+        0,
+        "nothing the migration touched may look resolved"
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM embeddings_rowids"),
+        wing.expect.embedding_count,
+        "the wing was built without an embedder, and migration adds no vectors"
+    );
+    assert!(
+        db.pass_owed("graph_edges_reextract").unwrap(),
+        "an index that already holds edges owes the graph-only re-extraction"
+    );
+}
+
 // The ref carries blobs from three writing eras (legacy single-JSON, multi-line
 // JSONL without entity_id, entity-keyed event log) and a current read must
 // surface every one of them.
@@ -475,14 +540,11 @@ async fn git_notes_reads_every_era_on_the_ref() {
 // the answer.
 //
 // Index 17 -> 18: yes as well. 1.0 and 1.1 shipped writing index.db at the
-// frozen schema version 17, and step 18 (ADR-097: a nullable target_file
-// column on graph_edges) migrates that store in place rather than rebuilding
-// it. The `index-v1.1.0-schema-17` wing this owes is not yet captured: it is
-// added to the WINGS table in scripts/upgrade-corpus/generate.sh (built with
-// `INKENTRY_NO_SERVER=1`, so no model download is needed — chunks and graph
-// edges still land, just without vectors) but the generator has not been run
-// against a real release asset, so no fixture and no reading test exist here
-// yet. That is left for whoever next runs the generator with network access.
+// frozen schema version 17, and step 18 (a nullable target_file column on
+// graph_edges) migrates that store in place rather than rebuilding it. The
+// `index-v1.1.0-schema-17` wing and
+// `an_index_written_by_1_1_0_survives_the_move_to_the_current_schema` are the
+// answer.
 const CORPUS_COVERS_INDEX_SCHEMA: i32 = 18;
 const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 12;
 
