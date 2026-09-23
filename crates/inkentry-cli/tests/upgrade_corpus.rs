@@ -473,7 +473,17 @@ async fn git_notes_reads_every_era_on_the_ref() {
 // and step 12 migrates that store in place. The `memory-v1.1.0-schema-11` wing
 // and `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` are
 // the answer.
-const CORPUS_COVERS_INDEX_SCHEMA: i32 = 17;
+//
+// Index 17 -> 18: yes as well. 1.0 and 1.1 shipped writing index.db at the
+// frozen schema version 17, and step 18 (ADR-097: a nullable target_file
+// column on graph_edges) migrates that store in place rather than rebuilding
+// it. The `index-v1.1.0-schema-17` wing this owes is not yet captured: it is
+// added to the WINGS table in scripts/upgrade-corpus/generate.sh (built with
+// `INKENTRY_NO_SERVER=1`, so no model download is needed — chunks and graph
+// edges still land, just without vectors) but the generator has not been run
+// against a real release asset, so no fixture and no reading test exist here
+// yet. That is left for whoever next runs the generator with network access.
+const CORPUS_COVERS_INDEX_SCHEMA: i32 = 18;
 const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 12;
 
 #[test]

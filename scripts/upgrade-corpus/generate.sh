@@ -103,9 +103,18 @@ export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
 # files move out of comma-joined columns into rows) is applied to that store in
 # place. The wing is a store the real 1.1.0 binary wrote, holding the awkward
 # tag and path spellings that step has to carry across.
+#
+# index-v1.1.0-schema-17 answers the same question for index.db. 1.0 and 1.1
+# shipped writing index.db at the frozen schema version 17, and step 18
+# (ADR-097: a nullable target_file column on graph_edges) migrates that store
+# in place rather than rebuilding it. INKENTRY_NO_SERVER=1 (set by
+# sandbox_env_current) keeps the binary from downloading a model; chunks and
+# graph edges still land, just without vectors, which is enough to exercise
+# the migration and the graph-only re-extraction pass it schedules.
 WINGS=(
   "git-notes-eras|v0.9.5|git-notes"
   "memory-v1.1.0-schema-11|v1.1.0|memory"
+  "index-v1.1.0-schema-17|v1.1.0|index"
 )
 
 # Releases from 1.0 on were published under the current name, from the current
@@ -307,6 +316,10 @@ stage_db() {
 
 build_index_wing() {
   local wing_id="$1" tag="$2" work="$3" out="$4"
+  if is_current_name_release "$tag"; then
+    build_index_wing_current "$@"
+    return
+  fi
   local bin dim wire
   bin="$(fetch_release "$tag")"
   read -r dim wire <<<"$(stub_profile "$tag")"
@@ -321,6 +334,26 @@ build_index_wing() {
   # Old name: the project directory the released binary writes into.
   [[ -f "$repo/.spelunk/index.db" ]] || die "$tag produced no index.db"
   stage_db "$repo/.spelunk/index.db" "$out/index.db.gz"
+}
+
+# Schema-17 the way 1.0/1.1 actually wrote it, per the WINGS comment above:
+# no embedder, so chunks and graph edges land but every chunk is vector-less.
+# That is exactly what step 18 has to migrate in place, and what the graph-only
+# re-extraction pass it schedules then runs against — the pass touches no
+# chunk or embedding row, so it needs none for this wing to be a real test.
+build_index_wing_current() {
+  local wing_id="$1" tag="$2" work="$3" out="$4"
+  local bin
+  bin="$(fetch_release "$tag")"
+
+  local home="$work/home" repo="$work/repo"
+  mkdir -p "$home"
+  make_sample_repo "$repo"
+  ( sandbox_env_current "$home"; cd "$repo" && "$bin" index . --force --no-summaries >/dev/null )
+
+  local db="$repo/.inkentry/index.db"
+  [[ -f "$db" ]] || die "$tag produced no index.db"
+  stage_db "$db" "$out/index.db.gz"
 }
 
 # Add one entry and echo the id the binary assigned it, parsed from the
