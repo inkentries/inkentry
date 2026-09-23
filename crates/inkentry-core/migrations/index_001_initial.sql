@@ -1,9 +1,10 @@
--- index.db, at its final shape.
---
--- A fresh store is created directly from this file, at schema version 17,
--- rather than by replaying the forward-migration registry
--- (`storage/index_migrate.rs`), which only ever moves an existing store *up
--- to* this shape. Below schema version 17 there is still no ladder: those
+-- index.db at schema version 17, the shape 1.0 and 1.1 shipped. FROZEN: this
+-- file is never edited again. Every later change is a numbered step
+-- registered in `storage/index_migrate.rs`, and a fresh index is created from
+-- this file at 17 and then climbs that registry to the current version,
+-- exactly as an index from 1.1 does. The ladder below 17 was collapsed into
+-- this file at the 1.0 rename, once; it is not collapsed again. Below 17 there
+-- is still no ladder: those
 -- shapes predate `index_migrate` entirely, so the answer to one of them stays
 -- "discard and rebuild, then reindex", because an index is derived from the
 -- user's source tree and reindexing reproduces it exactly (ADR-078's
