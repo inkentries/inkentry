@@ -55,6 +55,12 @@ pub struct NoteRecord {
     /// Additive under `schema_version` 1: an older reader ignores the key.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub edges: Vec<CarriedEdge>,
+    /// Who or what produced this entry (ADR-098 D6). Optional and additive:
+    /// absent means no caller declared an actor, read as `unknown`; an older
+    /// blob predating this field reads the same way, via the reader's
+    /// unknown-key tolerance.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub origin: Option<super::origin::Origin>,
 }
 
 /// One outgoing graph edge as the carrier records it.
@@ -117,6 +123,7 @@ pub fn record_to_note(r: NoteRecord) -> Note {
         source_project: None,
         source_project_path: None,
         remote_id: r.remote_id,
+        origin: r.origin,
     }
 }
 
@@ -157,6 +164,7 @@ mod tests {
             entity_id: None,
             superseded_by_entity_id: None,
             edges: vec![],
+            origin: None,
         }
     }
 
@@ -246,6 +254,63 @@ mod tests {
         assert_eq!(
             back.edges,
             vec![CarriedEdge::new("relates_to", "e1".to_string())]
+        );
+    }
+
+    /// (D6) A record carrying an origin serializes it and round-trips.
+    #[test]
+    fn note_record_round_trips_with_origin() {
+        use crate::config::caller::ActorKind;
+
+        let mut rec = base_record();
+        rec.origin = Some(super::super::origin::Origin {
+            actor_kind: ActorKind::Agent,
+            tool: Some("claude-code".to_string()),
+            model: Some("claude-sonnet-5".to_string()),
+        });
+
+        let json = serde_json::to_string(&rec).expect("serialize");
+        assert!(json.contains("\"origin\""));
+
+        let back: NoteRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.origin, rec.origin);
+    }
+
+    /// (D6) A record without an origin omits the key, and an old blob that
+    /// never had the key still deserializes (reads as `None` — the same
+    /// unknown-key tolerance every other additive field in this carrier
+    /// relies on).
+    #[test]
+    fn note_record_round_trips_without_origin() {
+        let rec = base_record();
+        let json = serde_json::to_string(&rec).expect("serialize");
+        assert!(
+            !json.contains("\"origin\""),
+            "key omitted when None: {json}"
+        );
+
+        let old = r#"{"schema_version":1,"id":7,"kind":"note","title":"t","body":"b","tags":[],"linked_files":[],"created_at":1,"status":"active"}"#;
+        let back: NoteRecord = serde_json::from_str(old).expect("deserialize old blob");
+        assert_eq!(back.origin, None, "absent key reads as None");
+    }
+
+    /// origin plays no part in identity: two records that differ only in
+    /// origin resolve to the same entity_id.
+    #[test]
+    fn origin_does_not_change_entity_id() {
+        use crate::config::caller::ActorKind;
+
+        let mut with_origin = base_record();
+        with_origin.origin = Some(super::super::origin::Origin {
+            actor_kind: ActorKind::Human,
+            tool: None,
+            model: None,
+        });
+        let without_origin = base_record();
+
+        assert_eq!(
+            with_origin.resolve_entity_id(),
+            without_origin.resolve_entity_id()
         );
     }
 

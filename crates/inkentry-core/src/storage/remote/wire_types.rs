@@ -24,6 +24,16 @@ pub(super) struct AddNoteRequest {
     pub(super) source_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) valid_at: Option<i64>,
+    /// ADR-098 D6. Flat rather than a nested object, matching every other
+    /// field on this request. A server that predates these three simply does
+    /// not read them (see `docs/adr/098-metrics-and-evaluation-indexed-by-commit.md`
+    /// D6: storing them server-side is a follow-up, not implemented here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) origin_actor_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) origin_tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) origin_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -93,6 +103,9 @@ impl From<NoteResponse> for Note {
             source_project: None,
             source_project_path: None,
             remote_id: r.remote_id,
+            // The team-server wire (NoteResponse) does not carry origin back
+            // yet (ADR-098 D6: server-side storage is a follow-up).
+            origin: None,
         }
     }
 }

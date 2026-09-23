@@ -296,6 +296,14 @@ impl MemoryBackend for RemoteMemoryBackend {
             ),
             None => (None, None),
         };
+        let (origin_actor_kind, origin_tool, origin_model) = match &input.origin {
+            Some(o) => (
+                Some(o.actor_kind.as_str().to_string()),
+                o.tool.clone(),
+                o.model.clone(),
+            ),
+            None => (None, None, None),
+        };
         let body = AddNoteRequest {
             kind: input.kind,
             title: input.title,
@@ -307,6 +315,9 @@ impl MemoryBackend for RemoteMemoryBackend {
             vector_precision,
             source_ref: input.source_ref,
             valid_at: input.valid_at,
+            origin_actor_kind,
+            origin_tool,
+            origin_model,
         };
         // A write with no client vector makes the server embed, so it runs
         // under the server's embed admission queue and can be shed with a

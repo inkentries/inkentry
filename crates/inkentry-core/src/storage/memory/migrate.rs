@@ -8,7 +8,8 @@ use super::tags::normalize_tag;
 
 // Append only: number each step for the version it produces, and never
 // renumber or reorder an existing one.
-pub(super) const MEMORY_MIGRATIONS: &[(i32, MigrationStep)] = &[(12, add_note_tags_and_files)];
+pub(super) const MEMORY_MIGRATIONS: &[(i32, MigrationStep)] =
+    &[(12, add_note_tags_and_files), (13, add_events_and_origin)];
 
 // The copy is Rust rather than SQL because tag normalisation is Unicode NFC.
 //
@@ -61,6 +62,12 @@ fn add_note_tags_and_files(conn: &Connection) -> Result<()> {
     .context("applying memory_012_drop_legacy_columns.sql")?;
 
     Ok(())
+}
+
+// Step 13 has no data pass: both additions are pure DDL.
+fn add_events_and_origin(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../../migrations/memory_013.sql"))
+        .context("applying memory_013.sql")
 }
 
 fn migration_clean_path(raw: &str) -> String {

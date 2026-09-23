@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 mod dedupe;
 mod edges;
+pub mod events;
 mod file_links;
 mod import;
 mod import_state;
@@ -17,6 +18,7 @@ mod tags;
 mod uuid_v7;
 
 pub use dedupe::DedupeSummary;
+pub use events::{EventFields, EventRow, record_event_at};
 pub use file_links::{FileState, ResolvedFileLink, normalize_relative_path, resolve_file_link};
 pub use import::CarriedEdgeImport;
 pub use import_state::NotesImportMarker;
@@ -43,7 +45,7 @@ mod tests;
 /// that is the whole point of [`LAST_LEGACY_SCHEMA_VERSION`]: `user_version`
 /// is one i32 per file, shared with every stamp that ladder ever wrote, so a
 /// fresh numbering would make an old product's store read as a *newer* one.
-pub(super) const MEMORY_SCHEMA_VERSION: i32 = 12;
+pub(super) const MEMORY_SCHEMA_VERSION: i32 = 13;
 
 /// The highest `user_version` the pre-rename migration ladder ever stamped,
 /// across every released binary (0.9.6 stamped 9; 0.9.7 and 0.9.8 stamped
@@ -128,6 +130,11 @@ pub struct Note {
     /// never-synced local rows. Carried from the remote wire (ADR-059 D2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_id: Option<String>,
+    /// Who or what produced this entry (ADR-098 D6). `None` means no caller
+    /// declared an actor when the entry was written — read as `unknown`,
+    /// never as "known to be human". Not part of `entity_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<super::origin::Origin>,
 }
 
 impl MemoryStore {

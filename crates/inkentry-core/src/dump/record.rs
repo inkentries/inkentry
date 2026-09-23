@@ -105,6 +105,15 @@ pub struct MemoryEntry {
     pub remote_id: Option<String>,
     #[allow(dead_code)]
     pub namespace: Option<String>,
+    /// ADR-098 D6. Additive: absent on any dump written before this field
+    /// existed, which reads as no origin recorded, same as an entry an older
+    /// binary wrote locally.
+    #[serde(default)]
+    pub origin_actor_kind: Option<String>,
+    #[serde(default)]
+    pub origin_tool: Option<String>,
+    #[serde(default)]
+    pub origin_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

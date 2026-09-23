@@ -286,6 +286,11 @@ fn insert_entity(
                 crate::storage::entity_id::entity_id(&e.kind, &e.title, &e.body)
             });
             let status = e.status.as_deref().unwrap_or("active");
+            let origin = crate::storage::origin::Origin::from_parts(
+                e.origin_actor_kind.as_deref(),
+                e.origin_tool.clone(),
+                e.origin_model.clone(),
+            );
             let (id, created) = targets
                 .memory
                 .import_entry(
@@ -302,6 +307,7 @@ fn insert_entity(
                     e.invalid_at,
                     Some(&entity_id),
                     e.remote_id.as_deref(),
+                    origin.as_ref(),
                 )
                 .with_context(|| format!("importing memory entry {:?}", e.title))?;
             if created {
@@ -387,6 +393,11 @@ fn carrier_record(
         superseded_by_entity_id: None,
         // Filled from the dump's relationships, like the supersede field.
         edges: Vec::new(),
+        origin: crate::storage::origin::Origin::from_parts(
+            e.origin_actor_kind.as_deref(),
+            e.origin_tool.clone(),
+            e.origin_model.clone(),
+        ),
     }
 }
 
@@ -509,6 +520,9 @@ mod tests {
             entity_id: None,
             remote_id: None,
             namespace: None,
+            origin_actor_kind: None,
+            origin_tool: None,
+            origin_model: None,
         }))
     }
 
@@ -593,6 +607,73 @@ mod tests {
             Some(records[0].resolve_entity_id().as_str()),
             "the predecessor still points at its successor by entity id"
         );
+    }
+
+    /// ADR-098 D6: a dump entry carrying an origin lands it on both the
+    /// imported row and the carrier record it produces; one with no origin
+    /// (the common case for an existing dump-producer) reads back absent
+    /// on both, never a fabricated `unknown`.
+    #[test]
+    fn origin_round_trips_from_the_dump_into_the_store_and_the_carrier_record() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let memory = MemoryStore::open(tmp.path()).expect("open memory store");
+
+        let mut with_origin = memory_entry("e0", "has an origin");
+        if let Entity::MemoryEntry(e) = &mut with_origin {
+            e.origin_actor_kind = Some("agent".to_string());
+            e.origin_tool = Some("claude-code".to_string());
+            e.origin_model = Some("claude-sonnet-5".to_string());
+        }
+        let without_origin = memory_entry("e1", "has no origin");
+
+        let dump = Dump {
+            entities: vec![with_origin, without_origin],
+            relationships: vec![],
+            merged_memory_entries: 0,
+        };
+        let targets = ImportTargets {
+            memory: &memory,
+            registry: None,
+            index_db: None,
+        };
+        let outcome = apply(&dump, &targets).expect("apply");
+
+        let origin = memory
+            .list(Some("decision"), 10, false)
+            .expect("list")
+            .into_iter()
+            .find(|n| n.title == "has an origin")
+            .expect("the origin-carrying entry landed")
+            .origin
+            .expect("origin must round-trip onto the stored row");
+        assert_eq!(origin.actor_kind, crate::config::caller::ActorKind::Agent);
+        assert_eq!(origin.tool.as_deref(), Some("claude-code"));
+        assert_eq!(origin.model.as_deref(), Some("claude-sonnet-5"));
+
+        let no_origin = memory
+            .list(Some("decision"), 10, false)
+            .expect("list")
+            .into_iter()
+            .find(|n| n.title == "has no origin")
+            .expect("the origin-less entry landed");
+        assert_eq!(no_origin.origin, None);
+
+        let carrier_with_origin = outcome
+            .carrier_records
+            .iter()
+            .find(|r| r.title == "has an origin")
+            .expect("carrier record for the origin-carrying entry");
+        assert_eq!(
+            carrier_with_origin.origin.as_ref().map(|o| o.actor_kind),
+            Some(crate::config::caller::ActorKind::Agent)
+        );
+        let carrier_without_origin = outcome
+            .carrier_records
+            .iter()
+            .find(|r| r.title == "has no origin")
+            .expect("carrier record for the origin-less entry");
+        assert_eq!(carrier_without_origin.origin, None);
     }
 
     fn command_usage_dump(command: &str, at: i64) -> Dump {
@@ -696,6 +777,9 @@ mod tests {
                 entity_id: None,
                 remote_id: None,
                 namespace: None,
+                origin_actor_kind: None,
+                origin_tool: None,
+                origin_model: None,
             })));
 
         let targets = ImportTargets {

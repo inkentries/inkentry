@@ -89,6 +89,9 @@ impl EntryResponse {
             source_project: None,
             source_project_path: None,
             remote_id,
+            // The cloud API's entry shape does not carry origin (ADR-098 D6
+            // follow-up).
+            origin: None,
         }
     }
 }
