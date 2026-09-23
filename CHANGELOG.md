@@ -32,6 +32,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   content — aggregates only. `inkentry status` now prints a compact, cheap
   subset of the same metrics (and carries it under a new `metrics` field in
   `--format json`) whenever a memory store exists.
+- **`graph_edges` gains a nullable `target_file` column.** `index.db` moves to
+  schema version 18: `target_file` is the repo-relative path of the file that
+  defines a call edge's resolved target, `NULL` meaning unresolved (today's
+  bare-name join, unchanged). An existing store migrates in place on the next
+  open — embeddings are untouched — and the following `inkentry index` run
+  re-extracts every file's graph edges once to backfill the column, without
+  re-chunking or re-embedding. `plumbing graph-edges` JSONL gains a matching
+  optional `target_file` field. See
+  [ADR-097](docs/adr/097-symbol-resolution-layer-above-tree-sitter.md).
 ### Changed
 
 - **Unified `search` no longer hands memory half of every result page.** A

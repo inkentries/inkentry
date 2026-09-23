@@ -29,7 +29,7 @@ pub struct Database {
 ///
 /// It continues the old ladder's numbering rather than restarting at 1, for the
 /// reason [`LAST_LEGACY_SCHEMA_VERSION`] records.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 17;
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 18;
 
 /// The highest `user_version` the old migration ladder ever stamped.
 ///
@@ -882,12 +882,10 @@ mod tests {
     }
 
     // A store migrated forward from version 17 must end up indistinguishable
-    // from one created fresh, so the first real step (currently none —
-    // `index_migrate::INDEX_MIGRATIONS` is empty) is held to this from day one
-    // rather than only once it exists. `index_001_initial.sql` is frozen at
-    // version 17, and a fresh index climbs the same ladder a 1.1 index does, so
-    // this holds by construction; it is what fails first if creation ever
-    // stops climbing.
+    // from one created fresh. `index_001_initial.sql` is frozen at version 17,
+    // and a fresh index climbs the same `index_migrate::INDEX_MIGRATIONS`
+    // ladder a migrated 1.1 index does, so this holds by construction; it is
+    // what fails first if creation ever stops climbing.
     #[test]
     fn a_store_migrated_from_schema_version_17_matches_a_fresh_store() {
         register_sqlite_vec();
@@ -910,6 +908,83 @@ mod tests {
             sqlite_master_signature(&migrated.conn),
             sqlite_master_signature(&fresh.conn),
             "a store migrated from schema version 17 must match one created fresh"
+        );
+    }
+
+    // A schema-17 store already carrying a chunk, an embedding and a graph
+    // edge — the shape a real 1.0/1.1 index has by the time step 18 reaches
+    // it — is what ADR-097 §1's forward-migration promise is actually about:
+    // the expensive-to-reproduce rows must survive, and the step's own
+    // reextraction marker (proven in `index_migrate`'s own tests) is what
+    // tells the next `inkentry index` there is unresolved work left behind.
+    #[test]
+    fn migrating_a_populated_schema_17_index_keeps_its_chunk_and_embedding_and_owes_a_reextraction()
+    {
+        register_sqlite_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy_path = tmp.path().join("index.db");
+        {
+            let conn = Connection::open(&legacy_path).unwrap();
+            conn.execute_batch(&format!(
+                "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
+                include_str!("../../migrations/index_001_initial.sql")
+            ))
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (path, language, hash, indexed_at, mtime) \
+                 VALUES ('src/lib.rs', 'rust', 'h', 0, 0)",
+                [],
+            )
+            .unwrap();
+            let file_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content) \
+                 VALUES (?1, 'function', 'caller', 1, 3, 'fn caller() {}')",
+                rusqlite::params![file_id],
+            )
+            .unwrap();
+            let chunk_id = conn.last_insert_rowid();
+            let blob = crate::embeddings::vec_to_int8_blob(&vec![
+                0.1f32;
+                crate::embeddings::EMBEDDING_DIM
+            ]);
+            conn.execute(
+                "INSERT INTO embeddings (chunk_id, embedding) VALUES (?1, vec_int8(?2))",
+                rusqlite::params![chunk_id, blob],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO graph_edges (source_file, source_name, target_name, kind, line) \
+                 VALUES ('src/lib.rs', 'caller', 'callee', 'calls', 2)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db =
+            Database::open(&legacy_path).expect("a populated 17 store must migrate, not rebuild");
+
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.chunk_count, 1, "the chunk must survive the migration");
+        assert_eq!(
+            stats.embedding_count, 1,
+            "the embedding must survive the migration — recomputing it is what this step exists \
+             to avoid"
+        );
+        let edge_target_file: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT target_file FROM graph_edges WHERE target_name = 'callee'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_target_file, None, "a migrated edge starts unresolved");
+        assert!(
+            db.pass_owed("graph_edges_reextract").unwrap(),
+            "a migration that widened an existing graph_edges table must leave the \
+             reextraction pass owed"
         );
     }
 

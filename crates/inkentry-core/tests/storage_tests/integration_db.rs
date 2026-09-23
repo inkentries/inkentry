@@ -213,6 +213,7 @@ fn replace_edges_round_trips() {
             target_name: "helper".into(),
             kind: EdgeKind::Calls,
             line: 10,
+            target_file: None,
         },
         Edge {
             source_file: "src/main.rs".into(),
@@ -220,6 +221,7 @@ fn replace_edges_round_trips() {
             target_name: "std::io".into(),
             kind: EdgeKind::Imports,
             line: 1,
+            target_file: None,
         },
     ];
     db.replace_edges("src/main.rs", &edges).unwrap();
@@ -241,6 +243,7 @@ fn replace_edges_removes_stale_edges() {
         target_name: "old_fn".into(),
         kind: EdgeKind::Calls,
         line: 5,
+        target_file: None,
     }];
     db.replace_edges("src/a.rs", &e1).unwrap();
 
@@ -251,6 +254,7 @@ fn replace_edges_removes_stale_edges() {
         target_name: "new_fn".into(),
         kind: EdgeKind::Calls,
         line: 5,
+        target_file: None,
     }];
     db.replace_edges("src/a.rs", &e2).unwrap();
 

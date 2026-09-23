@@ -10,6 +10,13 @@ pub struct GraphEdge {
     pub target_name: String,
     pub kind: String,
     pub line: usize,
+    /// Repo-relative path of the file that defines `target_name`, when the
+    /// resolution tier bound this edge to a specific definition (ADR-097).
+    /// `None` means unresolved: every consumer's bare-name fallback still
+    /// applies. Omitted from JSONL entirely rather than emitted `null`, so
+    /// the field is additive to `plumbing graph-edges`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_file: Option<String>,
 }
 
 fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphEdge> {
@@ -23,6 +30,7 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphEdge> {
         target_name: row.get(2)?,
         kind: crate::indexer::graph::EdgeKind::parse(&kind).to_string(),
         line: row.get::<_, i64>(4)? as usize,
+        target_file: row.get(5)?,
     })
 }
 
@@ -40,14 +48,15 @@ impl Database {
         )?;
         for e in edges {
             self.conn.execute(
-                "INSERT INTO graph_edges (source_file, source_name, target_name, kind, line)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO graph_edges (source_file, source_name, target_name, kind, line, target_file)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     e.source_file,
                     e.source_name,
                     e.target_name,
                     e.kind.to_string(),
-                    e.line as i64
+                    e.line as i64,
+                    e.target_file,
                 ],
             )?;
         }
@@ -57,7 +66,7 @@ impl Database {
     /// All edges where `name` appears as source_name OR target_name.
     pub fn edges_for_symbol(&self, name: &str) -> Result<Vec<GraphEdge>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT source_file, source_name, target_name, kind, line
+            "SELECT source_file, source_name, target_name, kind, line, target_file
              FROM graph_edges
              WHERE source_name = ?1 OR target_name = ?1
              ORDER BY kind, target_name",
@@ -80,7 +89,7 @@ impl Database {
     /// All edges originating from `file_path`.
     pub fn edges_for_file(&self, file_path: &str) -> Result<Vec<GraphEdge>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT source_file, source_name, target_name, kind, line
+            "SELECT source_file, source_name, target_name, kind, line, target_file
              FROM graph_edges
              WHERE source_file = ?1
              ORDER BY kind, target_name",
@@ -103,13 +112,24 @@ impl Database {
         let mut seen = std::collections::HashSet::new();
         for chunk in names.chunks(chunk_size) {
             let ph = super::sql::placeholders(chunk.len());
+            // The callee side (first branch) disambiguates a resolved edge to
+            // the chunk in its own file, per ADR-097; an unresolved
+            // (target_file IS NULL) edge keeps today's every-same-name-chunk
+            // join. The caller side (second branch) has no such column to
+            // disambiguate on — source_name's file is always source_file, but
+            // that identity isn't threaded through this name-only match — so
+            // it is unchanged.
             let sql = format!(
                 "SELECT DISTINCT c.id
+                 FROM graph_edges ge
+                 JOIN chunks c ON c.name = ge.target_name
+                 LEFT JOIN files f ON f.id = c.file_id
+                 WHERE ge.source_name IN ({ph}) AND ge.kind = 'calls'
+                   AND (ge.target_file IS NULL OR ge.target_file = f.path)
+                 UNION
+                 SELECT DISTINCT c.id
                  FROM chunks c
                  WHERE c.name IN (
-                     SELECT target_name FROM graph_edges
-                     WHERE source_name IN ({ph}) AND kind = 'calls'
-                     UNION
                      SELECT source_name FROM graph_edges
                      WHERE target_name IN ({ph}) AND kind = 'calls'
                  )"
@@ -247,6 +267,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::super::Database;
+    use super::GraphEdge;
     use std::sync::OnceLock;
 
     /// Register the sqlite-vec extension exactly once per test process.
@@ -304,6 +325,7 @@ mod tests {
                 target_name: "callee".to_string(),
                 kind: crate::indexer::graph::EdgeKind::Calls,
                 line: 2,
+                target_file: None,
             }],
         )
         .expect("replace edges");
@@ -422,6 +444,79 @@ mod tests {
     // -------------------------------------------------------------------------
 
     use super::super::sql::SQLITE_MAX_BIND;
+
+    // ADR-097: a resolved edge (`target_file` set) must hit only the chunk
+    // in the file it names, not every same-named chunk repo-wide; an
+    // unresolved edge (`target_file` NULL) keeps today's bare-name fan-out.
+    #[test]
+    fn graph_neighbor_chunks_disambiguates_a_resolved_edge_by_target_file() {
+        let db = open_db();
+        let file_a = db
+            .upsert_file("a.rs", Some("rust"), "ha", 0)
+            .expect("upsert a.rs");
+        let file_b = db
+            .upsert_file("b.rs", Some("rust"), "hb", 0)
+            .expect("upsert b.rs");
+        let chunk_a = insert_named_chunk(&db, file_a, "dup");
+        let chunk_b = insert_named_chunk(&db, file_b, "dup");
+        db.upsert_file("caller.rs", Some("rust"), "hc", 0)
+            .expect("upsert caller.rs");
+        insert_named_chunk(&db, file_a, "caller_in_a");
+
+        // Resolved: this edge names a.rs as the definer, so only chunk_a
+        // must come back, even though a same-named chunk exists in b.rs.
+        db.replace_edges(
+            "a.rs",
+            &[crate::indexer::graph::Edge {
+                source_file: "a.rs".to_string(),
+                source_name: Some("caller_in_a".to_string()),
+                target_name: "dup".to_string(),
+                kind: crate::indexer::graph::EdgeKind::Calls,
+                line: 1,
+                target_file: Some("a.rs".to_string()),
+            }],
+        )
+        .expect("replace edges");
+
+        let resolved = db
+            .graph_neighbor_chunks(&["caller_in_a"])
+            .expect("resolved lookup");
+        assert_eq!(
+            resolved,
+            vec![chunk_a],
+            "a resolved edge must hit only the chunk in its own file"
+        );
+        assert!(
+            !resolved.contains(&chunk_b),
+            "the same-named chunk in the other file must not appear"
+        );
+
+        // Unresolved: no target_file, so both same-named chunks still match —
+        // today's behaviour, unchanged.
+        db.replace_edges(
+            "caller.rs",
+            &[crate::indexer::graph::Edge {
+                source_file: "caller.rs".to_string(),
+                source_name: Some("caller_elsewhere".to_string()),
+                target_name: "dup".to_string(),
+                kind: crate::indexer::graph::EdgeKind::Calls,
+                line: 1,
+                target_file: None,
+            }],
+        )
+        .expect("replace edges");
+
+        let mut unresolved = db
+            .graph_neighbor_chunks(&["caller_elsewhere"])
+            .expect("unresolved lookup");
+        unresolved.sort_unstable();
+        let mut expected = vec![chunk_a, chunk_b];
+        expected.sort_unstable();
+        assert_eq!(
+            unresolved, expected,
+            "an unresolved edge must still fan out to every same-named chunk"
+        );
+    }
 
     #[test]
     fn graph_neighbor_chunks_chunks_and_merges_distinct() {
@@ -582,6 +677,81 @@ mod tests {
                 .expect("empty ok")
                 .is_empty(),
             "chunks_mentioning_symbols must early-return empty map"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // target_file round-trip and JSONL shape (ADR-097)
+    // -------------------------------------------------------------------------
+
+    // A resolved edge round-trips its `target_file` through `replace_edges`
+    // and `edges_for_symbol`; an unresolved one stays `None`, not `Some("")`
+    // or a stray empty string.
+    #[test]
+    fn edges_for_symbol_round_trips_target_file() {
+        let db = open_db();
+        db.upsert_file("a.rs", Some("rust"), "ha", 0)
+            .expect("upsert file");
+        db.replace_edges(
+            "a.rs",
+            &[
+                crate::indexer::graph::Edge {
+                    source_file: "a.rs".to_string(),
+                    source_name: Some("resolved_caller".to_string()),
+                    target_name: "shared".to_string(),
+                    kind: crate::indexer::graph::EdgeKind::Calls,
+                    line: 1,
+                    target_file: Some("a.rs".to_string()),
+                },
+                crate::indexer::graph::Edge {
+                    source_file: "a.rs".to_string(),
+                    source_name: Some("unresolved_caller".to_string()),
+                    target_name: "elsewhere".to_string(),
+                    kind: crate::indexer::graph::EdgeKind::Calls,
+                    line: 2,
+                    target_file: None,
+                },
+            ],
+        )
+        .expect("replace edges");
+
+        let resolved = db.edges_for_symbol("shared").expect("query");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].target_file.as_deref(), Some("a.rs"));
+
+        let unresolved = db.edges_for_symbol("elsewhere").expect("query");
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].target_file, None);
+    }
+
+    // `target_file` carries `skip_serializing_if`, so `plumbing graph-edges`
+    // JSONL omits the key entirely when unresolved (additive-field contract,
+    // docs/stability.md) rather than emitting a `null`.
+    #[test]
+    fn graph_edge_json_omits_target_file_when_unresolved_and_includes_it_when_resolved() {
+        let unresolved = GraphEdge {
+            source_file: "a.rs".to_string(),
+            source_name: None,
+            target_name: "dup".to_string(),
+            kind: "calls".to_string(),
+            line: 1,
+            target_file: None,
+        };
+        let resolved = GraphEdge {
+            target_file: Some("a.rs".to_string()),
+            ..unresolved.clone()
+        };
+
+        let unresolved_json = serde_json::to_value(&unresolved).unwrap();
+        assert!(
+            unresolved_json.get("target_file").is_none(),
+            "unresolved must omit target_file, not emit null: {unresolved_json}"
+        );
+
+        let resolved_json = serde_json::to_value(&resolved).unwrap();
+        assert_eq!(
+            resolved_json.get("target_file"),
+            Some(&serde_json::Value::String("a.rs".to_string()))
         );
     }
 }

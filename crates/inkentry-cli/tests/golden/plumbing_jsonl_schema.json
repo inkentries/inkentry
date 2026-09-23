@@ -86,12 +86,16 @@
       }
     },
     "graph-edges": {
+      "$comment": "target_file (ADR-097) carries serde skip_serializing_if: present only when the resolution tier bound this edge to a specific definition.",
       "required": {
         "source_file": "string",
         "source_name": "string|null",
         "target_name": "string",
         "kind": "string",
         "line": "integer"
+      },
+      "optional": {
+        "target_file": "string"
       }
     },
     "read-memory": {

@@ -29,6 +29,7 @@ pub(super) fn graph_edges(args: PlumbingGraphEdgesArgs, db: &Database) -> Result
                     && x.target_name == e.target_name
                     && x.kind == e.kind
                     && x.line == e.line
+                    && x.target_file == e.target_file
             }) {
                 edges.push(e);
             }

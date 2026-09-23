@@ -743,6 +743,13 @@ The code graph is reachable from two places:
 Both read the graph built by `inkentry init`. Both are index-backed: there is no
 working-tree scan.
 
+`plumbing graph-edges` JSONL carries an optional `target_file` field
+(ADR-097): the repo-relative path of the file that defines `target_name`,
+present only when a resolution tier has bound the edge to a specific
+definition. Its absence means unresolved — the same bare-name identity the
+graph has always used, and the only state this column can hold today, ahead
+of the resolution tier that fills it.
+
 **Example** (real symbol and path from the inkentry repository, so these work as
 written against a clone of it):
 

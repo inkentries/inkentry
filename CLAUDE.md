@@ -211,6 +211,9 @@ migrations/  (crates/inkentry-core/migrations/)
                            store is created from it and climbs the ladder
   memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):
                            tags and linked files into rows
+  index_018.sql           — step 18 (ADR-097): a nullable target_file column
+                           on graph_edges, plus the index backing its widened
+                           (target_name, target_file) identity
 ```
 
 ### inkentry-cli (`crates/inkentry-cli/src/`)

@@ -701,6 +701,7 @@ mod tests {
             target_name: target.to_string(),
             kind: EdgeKind::Calls,
             line: 1,
+            target_file: None,
         };
         db.replace_edges("a.rs", &[edge("zeta"), edge("alpha"), edge("mu")])
             .unwrap();

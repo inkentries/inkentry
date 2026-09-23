@@ -64,6 +64,11 @@ pub struct Edge {
     pub kind: EdgeKind,
     /// 1-based source line where the relationship appears.
     pub line: usize,
+    /// Repo-relative path of the file that defines `target_name`, when a
+    /// resolution tier bound this edge to a specific definition (ADR-097).
+    /// `None` (today, always) means unresolved: consumers fall back to the
+    /// bare-name join every edge has always used.
+    pub target_file: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +96,7 @@ impl EdgeExtractor {
 
         let bytes = source.as_bytes();
         let mut out = Vec::new();
-        let mut seen: HashSet<(Option<String>, String, String)> = HashSet::new();
+        let mut seen: HashSet<(Option<String>, String, String, Option<String>)> = HashSet::new();
 
         walk(
             tree.root_node(),
@@ -117,7 +122,7 @@ fn walk(
     language: &str,
     enclosing: Option<&str>,
     out: &mut Vec<Edge>,
-    seen: &mut HashSet<(Option<String>, String, String)>,
+    seen: &mut HashSet<(Option<String>, String, String, Option<String>)>,
 ) {
     // Track the enclosing function/class as we descend.
     let new_scope = enclosing_scope(&node, src, language);
@@ -198,7 +203,7 @@ fn collect(
     language: &str,
     enclosing: Option<&str>,
     out: &mut Vec<Edge>,
-    seen: &mut HashSet<(Option<String>, String, String)>,
+    seen: &mut HashSet<(Option<String>, String, String, Option<String>)>,
 ) {
     let line = node.start_position().row + 1;
 
@@ -220,10 +225,17 @@ fn collect(
     };
 
     for (target, kind) in candidates {
+        // `target_file` is always `None` from this extractor today (no
+        // resolution tier is wired in yet); it is already part of the key so
+        // a future tier that legitimately splits one call site into several
+        // rows — same target_name, different target_file (ADR-097 §1
+        // cardinality) — doesn't collide with itself here.
+        let target_file: Option<String> = None;
         let key = (
             enclosing.map(str::to_owned),
             target.clone(),
             kind.to_string(),
+            target_file.clone(),
         );
         if seen.insert(key) {
             out.push(Edge {
@@ -232,6 +244,7 @@ fn collect(
                 target_name: target,
                 kind,
                 line,
+                target_file,
             });
         }
     }
