@@ -291,6 +291,10 @@ cli/
                         for the two re-exec'd children, and the check that a spawned
                         child really became the run lock's new holder
       embed_phase.rs — embedding phase of indexing
+      graph_reextract.rs — ADR-097 schema step 18's owed pass: re-extracts every
+                        indexed file's graph edges (not only changed ones) and
+                        restores their mention edges from stored chunks, without
+                        touching chunks or embeddings
       mentions.rs    — mention stopword filter used during indexing
       parse_phase.rs — parse/chunk phase of indexing
       phases.rs      — pre-embed (PageRank, summaries) and post-embed (tier-3 MMR,

@@ -72,6 +72,7 @@ mod background_log;
 mod continuation;
 mod crash_test_hook;
 mod embed_phase;
+mod graph_reextract;
 mod mentions;
 mod parse_phase;
 mod phases;
@@ -215,6 +216,12 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
     // marker here rather than on file count keeps a genuinely empty tree
     // reading as empty instead of as unrepaired.
     db.mark_reindexed()?;
+
+    // A migrated (not fresh) index may owe a full-repo graph-edges
+    // re-extraction (ADR-097, schema step 18): cheap to check, a no-op when
+    // nothing is owed, and independent of chunking/embedding, so it runs
+    // right after the parse walk rather than gated behind either.
+    graph_reextract::run_if_owed(&root_canonical, &db)?;
 
     // ── Pre-embed phases: PageRank + structural summaries ────────────────────
     // Offline, and run before the first embed so the embed queue is
