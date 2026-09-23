@@ -1,7 +1,8 @@
 //! `memory.db`'s forward migration ladder: steps 12..
 //! [`super::MEMORY_SCHEMA_VERSION`], applied by the store-agnostic runner in
 //! `storage::migration_ladder`. `create_schema` (`mod.rs`) is the only
-//! caller.
+//! caller, and it runs the ladder for a fresh store too, from the frozen
+//! `memory_001_initial.sql` at version 11.
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};

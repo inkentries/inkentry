@@ -1525,10 +1525,11 @@ fn superseded_note_excluded_by_default_included_with_archived() {
     );
 }
 
-// ── schema creation (there is no migration ladder) ───────────────────────────
-// `memory_001_initial.sql` declares the final shape and every statement in it
-// is `IF NOT EXISTS`, so creation is idempotent on a store this binary already
-// made, and a store stamped with any other version is refused outright.
+// ── schema creation ──────────────────────────────────────────────────────────
+// A fresh store is created from `memory_001_initial.sql` (frozen at version
+// 11) and migrated up the ladder; a store this binary already made is
+// accepted as is, and one stamped below 11 or above the current version is
+// refused outright.
 
 fn user_version(store: &MemoryStore) -> i32 {
     store

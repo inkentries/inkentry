@@ -352,13 +352,45 @@ fn sqlite_master_signature(conn: &rusqlite::Connection) -> Vec<(String, String, 
     .expect("collecting sqlite_master rows")
 }
 
-// A store migrated forward from version 11 must end up indistinguishable
-// from one created fresh. The version-11 fixture is `fixtures/memory_v11_schema.sql`,
-// taken verbatim from `git show v1.1.0:crates/inkentry-core/migrations/memory_001_initial.sql`
-// (the last release before step 12 existed) rather than rebuilt from the
-// current schema file — rebuilding it here would make the test vacuous the
-// moment the two diverge, since it would then be migrating a store shaped
-// exactly like the target rather than a real legacy one.
+// `memory_001_initial.sql` is frozen at version 11: a fresh store is created
+// from it and climbs the same ladder a 1.1 store does. Executed on its own it
+// must therefore still produce the version-11 shape, with the comma-joined
+// columns and without anything a later step adds. This is the tripwire for
+// someone editing the file to fold a later step in.
+#[test]
+fn the_initial_schema_file_is_still_the_version_11_shape() {
+    register_sqlite_vec();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(include_str!("../../../migrations/memory_001_initial.sql"))
+        .unwrap();
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(notes)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        columns.iter().any(|c| c == "tags"),
+        "notes.tags is a version-11 column"
+    );
+    assert!(columns.iter().any(|c| c == "linked_files"));
+    let later: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name IN ('note_tags', 'note_files')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        later, 0,
+        "memory_001_initial.sql must not contain step 12's tables"
+    );
+}
+
+// A fresh store and a store the 1.1 binary wrote reach the current version by
+// the same ladder, so this holds by construction; it is kept as the statement
+// of that fact, and it is what fails first if creation ever stops climbing.
 #[test]
 fn a_store_migrated_from_schema_version_11_matches_a_fresh_store() {
     register_sqlite_vec();
@@ -368,7 +400,7 @@ fn a_store_migrated_from_schema_version_11_matches_a_fresh_store() {
         let conn = rusqlite::Connection::open(&legacy_path).unwrap();
         conn.execute_batch(&format!(
             "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
-            include_str!("fixtures/memory_v11_schema.sql")
+            include_str!("../../../migrations/memory_001_initial.sql")
         ))
         .unwrap();
     }
@@ -376,10 +408,14 @@ fn a_store_migrated_from_schema_version_11_matches_a_fresh_store() {
     let migrated = MemoryStore::open(&legacy_path).expect("open must migrate, not refuse");
     let (_fresh_dir, fresh) = store();
 
+    let stamp: i32 = fresh
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stamp, super::MEMORY_SCHEMA_VERSION);
     assert_eq!(
         sqlite_master_signature(&migrated.conn),
         sqlite_master_signature(&fresh.conn),
-        "a store migrated from schema version 11 must match one created fresh"
     );
 }
 
@@ -404,7 +440,7 @@ fn migrating_awkward_legacy_tags_and_files_data() {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(&format!(
             "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
-            include_str!("fixtures/memory_v11_schema.sql")
+            include_str!("../../../migrations/memory_001_initial.sql")
         ))
         .unwrap();
         // Mixed case + duplicate + spaces/underscores + empty item + a
@@ -530,7 +566,7 @@ fn a_store_that_fails_midway_through_step_12_is_left_at_version_11() {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(&format!(
             "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
-            include_str!("fixtures/memory_v11_schema.sql")
+            include_str!("../../../migrations/memory_001_initial.sql")
         ))
         .unwrap();
     }

@@ -11,6 +11,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Tags and linked files are rows, with a vocabulary and exact filters.**
+  `memory.db` moves to schema version 12: tags and linked files leave the
+  comma-joined columns for `note_tags` and `note_files`, tags are normalised
+  on every write (NFC, lowercase, whitespace and underscores to `-`), and a
+  linked file records whether it is tracked, untracked or missing. New
+  `inkentry memory tags` lists the vocabulary with counts; `memory list`,
+  `context` and `search` take `--tag` and `--file`. An existing store
+  migrates in place on the next open; nothing is re-embedded. See
+  [ADR-101](docs/adr/101-normalised-tags-and-linked-files-in-the-memory-projection.md).
 - **`inkentry metrics snapshot`** computes a deterministic, commit-keyed
   state-metrics document from `memory.db` and (in a git repository) `git log`
   — entry counts by kind, commit coverage, supersede rate and time-to-supersede,

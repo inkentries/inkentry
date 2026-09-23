@@ -34,9 +34,10 @@ mod tests;
 ///
 /// A store stamped above [`LAST_LEGACY_SCHEMA_VERSION`] and below this is
 /// migrated forward in place by the ladder in `migrate.rs`, one version at a
-/// time, up to this constant. A fresh store is still created
-/// directly at `memory_001_initial.sql`'s shape and stamped here, not built by
-/// replaying the ladder from 11.
+/// time, up to this constant. A fresh store takes the same road: it is created
+/// from the frozen `memory_001_initial.sql` at [`INITIAL_SCHEMA_VERSION`] and
+/// climbs the ladder from there, so there is exactly one way to reach the
+/// current shape.
 ///
 /// It continues the old ladder's numbering rather than restarting at 1, and
 /// that is the whole point of [`LAST_LEGACY_SCHEMA_VERSION`]: `user_version`
@@ -54,6 +55,9 @@ pub(super) const MEMORY_SCHEMA_VERSION: i32 = 12;
 /// migrates it forward. Nothing may reclaim this range: `MEMORY_SCHEMA_VERSION`
 /// only ever moves up from here.
 pub(super) const LAST_LEGACY_SCHEMA_VERSION: i32 = 10;
+
+/// The version `memory_001_initial.sql` creates, and the one it is frozen at.
+pub(super) const INITIAL_SCHEMA_VERSION: i32 = LAST_LEGACY_SCHEMA_VERSION + 1;
 
 const _: () = assert!(
     MEMORY_SCHEMA_VERSION > LAST_LEGACY_SCHEMA_VERSION,
@@ -181,7 +185,8 @@ impl MemoryStore {
     /// between [`LAST_LEGACY_SCHEMA_VERSION`] and [`MEMORY_SCHEMA_VERSION`], or
     /// accept one already at the current version.
     ///
-    /// `memory_001_initial.sql` declares the final shape for a fresh store.
+    /// A fresh store is created from the frozen `memory_001_initial.sql` at
+    /// [`INITIAL_SCHEMA_VERSION`] and then migrated like any other.
     /// Anything else is refused rather than half-covered with a shape its rows
     /// do not fit, unless it falls in the migratable range — and *which*
     /// refusal matters, because the two say opposite things. A store from an
@@ -242,11 +247,17 @@ impl MemoryStore {
         // is a code-controlled constant.
         self.conn
             .execute_batch(&format!(
-                "BEGIN;\n{}\nPRAGMA user_version = {MEMORY_SCHEMA_VERSION};\nCOMMIT;",
+                "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
                 include_str!("../../../migrations/memory_001_initial.sql")
             ))
             .context("creating memory schema")?;
-        Ok(())
+        super::migration_ladder::apply_ladder_quietly(
+            &self.conn,
+            INITIAL_SCHEMA_VERSION,
+            MEMORY_SCHEMA_VERSION,
+            migrate::MEMORY_MIGRATIONS,
+            "memory.db",
+        )
     }
 
     /// True when the file has no user tables.

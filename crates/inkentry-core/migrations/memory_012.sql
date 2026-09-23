@@ -4,7 +4,6 @@
 -- This file is the DDL half of the step. `storage/memory/migrate.rs` runs it,
 -- then copies the old columns into the new tables (a Rust pass, because tag
 -- normalisation is Unicode NFC), then runs memory_012_drop_legacy_columns.sql.
--- `memory_001_initial.sql` declares the resulting shape for a fresh store.
 --
 -- `memory_fts` stops being an external-content table over `notes`: external
 -- content cannot draw a column from a second table, and tags now live in
