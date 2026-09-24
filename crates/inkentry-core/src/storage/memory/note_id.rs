@@ -1,9 +1,7 @@
 //! The identity of a memory entry.
 //!
-//! Every store this product talks to — the local SQLite store, a self-hosted
-//! team server, the hosted API — exports a UUIDv7. The integer rowid the local
-//! store keys on is a storage surrogate that never leaves
-//! `crate::storage::memory` (ADR-078).
+//! Every store exports a UUIDv7 as an entry's id. The integer rowid the local
+//! store keys on is a storage surrogate that never leaves `crate::storage::memory`.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::fmt;
@@ -11,9 +9,7 @@ use std::str::FromStr;
 
 /// The identity of a memory entry: an opaque, backend-minted token.
 ///
-/// Ordering is lexicographic over the raw token. For the UUIDv7s this product
-/// mints that coincides with creation order, but nothing depends on it beyond
-/// stable output ordering.
+/// Ordering is lexicographic over the token, which for UUIDv7s is creation order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NoteId(String);
 
@@ -29,11 +25,9 @@ impl fmt::Display for NoteId {
     }
 }
 
-/// Rejects only the empty string. Every other token is a valid opaque id:
-/// this type cannot know which backend will be asked to resolve it, so it
-/// must not impose that backend's shape at parse time. A bare integer parses
-/// and then fails to resolve, which is what produces the pointed
-/// [`unresolvable_id_message`] rather than a bare not-found.
+/// Rejects only the empty string. The type cannot know which backend will
+/// resolve an id, so it imposes no shape: a bare integer parses, then fails to
+/// resolve with [`unresolvable_id_message`].
 impl FromStr for NoteId {
     type Err = String;
 
@@ -73,10 +67,8 @@ impl<'de> Deserialize<'de> for NoteId {
 
 /// The message for an id that parsed but resolves to nothing.
 ///
-/// Entries were numbered with integers before UUIDs became the identity, so a
-/// numeric id in shell history or a script is the common way to land here and
-/// deserves to be named. There is no lookup path: the crossing is one-way and
-/// the old numbering did not survive it.
+/// A numeric id gets its own wording: entries were numbered with integers before
+/// UUIDs became the identity, and the old numbers do not map onto the new ids.
 pub fn unresolvable_id_message(id: &NoteId) -> String {
     if id.as_str().parse::<i64>().is_ok() {
         format!(
@@ -110,8 +102,6 @@ mod tests {
             serde_json::to_string(&uuid).unwrap(),
             "\"0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33\""
         );
-        // A token that happens to be numeric is still a string on the wire:
-        // the shape no longer varies with the content.
         let numeric: NoteId = "42".parse().unwrap();
         assert_eq!(serde_json::to_string(&numeric).unwrap(), "\"42\"");
     }

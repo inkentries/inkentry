@@ -1,20 +1,16 @@
-//! Linked-file normalisation and state resolution (ADR-101 D3).
+//! Linked-file path normalisation and state resolution.
 //!
-//! A raw path is made repository-relative, forward-slashed and stripped of a
-//! leading `./`; one that escapes the project root is refused. `state` is
-//! then read from git — `tracked` when `git ls-files` knows it at `HEAD`,
-//! `untracked` when it exists on disk only, `missing` otherwise — falling
-//! back to a disk-only check when the project is not a git repository (git is
-//! absent, or the command fails for any other reason). A `missing` path is
-//! still stored: the caller decides whether to warn, this module only reports
-//! the state.
+//! A raw path is made repository-relative and forward-slashed; one that escapes
+//! the project root is refused. Its [`FileState`] comes from git, falling back
+//! to a disk-only check when git is unavailable. A missing file is reported,
+//! not refused.
 
 use anyhow::{Context, Result};
 use std::path::{Component, Path, PathBuf};
 
 use crate::storage::note_record::now_secs;
 
-/// Where a linked file stands relative to the repository, as of `checked_at`.
+/// Where a linked file stands relative to the repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileState {
     /// Known to git at `HEAD`.
@@ -35,7 +31,7 @@ impl FileState {
     }
 }
 
-/// A path resolved against a project root, with the state it was found in at
+/// A path resolved against a project root, with the state it was in at
 /// `checked_at` (unix seconds).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedFileLink {
@@ -45,13 +41,10 @@ pub struct ResolvedFileLink {
     pub checked_at: i64,
 }
 
-/// Normalise `raw` against `root` and resolve its state. `root` need not
-/// exist on disk for the normalisation half (a path can be resolved before
-/// the project is materialised anywhere real, e.g. in a test); the state half
-/// degrades to `Missing` when `root` cannot be walked.
+/// Normalises `raw` against `root` and resolves its state.
 ///
-/// Errors when `raw` resolves outside `root` — the one case D3 refuses rather
-/// than stores.
+/// `root` need not exist on disk; the state then degrades to
+/// [`FileState::Missing`]. Errors when `raw` resolves outside `root`.
 pub fn resolve_file_link(root: &Path, raw: &str) -> Result<ResolvedFileLink> {
     let path = normalize_relative_path(root, raw)?;
     let state = determine_state(root, &path);
@@ -62,9 +55,10 @@ pub fn resolve_file_link(root: &Path, raw: &str) -> Result<ResolvedFileLink> {
     })
 }
 
-/// Repository-relative, forward-slashed, `./`-stripped form of `raw`, purely
-/// lexically (no filesystem access, so a path that does not exist yet still
-/// resolves). Errors when the result would lie outside `root`.
+/// The repository-relative, forward-slashed, `./`-stripped form of `raw`.
+///
+/// Purely lexical, so a path that does not exist yet still resolves. Errors when
+/// the result would lie outside `root`.
 pub fn normalize_relative_path(root: &Path, raw: &str) -> Result<String> {
     let slashed = raw.trim().replace('\\', "/");
     anyhow::ensure!(!slashed.is_empty(), "linked file path is empty");
@@ -100,10 +94,7 @@ pub fn normalize_relative_path(root: &Path, raw: &str) -> Result<String> {
     Ok(joined.join("/"))
 }
 
-/// Resolve `.`/`..` components against `path`'s own text, without touching
-/// the filesystem — `std::fs::canonicalize` would refuse a path that does not
-/// exist yet, which a linked file legitimately may not (D3: a `missing` link
-/// is stored, not refused).
+// Not `std::fs::canonicalize`: a linked file may legitimately not exist yet.
 fn lexically_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -118,11 +109,6 @@ fn lexically_normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// `tracked` when `git ls-files` finds `rel_path` at `HEAD` under `root`,
-/// `untracked` when it exists on disk only, `missing` otherwise. Falls back
-/// to the disk-only check whenever git is unavailable or `root` is not (or is
-/// no longer) a git repository — indistinguishable from "not a git
-/// repository" from here, which is the fallback D3 asks for either way.
 fn determine_state(root: &Path, rel_path: &str) -> FileState {
     if is_tracked_at_head(root, rel_path) {
         return FileState::Tracked;
@@ -134,9 +120,7 @@ fn determine_state(root: &Path, rel_path: &str) -> FileState {
     }
 }
 
-/// Runs `git -C <root> ls-files --error-unmatch -- <rel_path>`. The path
-/// argument is passed after `--` and never through a shell, so it can never
-/// be interpreted as a flag or expanded (ADR-101's security note).
+// `rel_path` follows `--` and bypasses the shell, so it is never read as a flag.
 fn is_tracked_at_head(root: &Path, rel_path: &str) -> bool {
     std::process::Command::new("git")
         .arg("-C")
@@ -241,7 +225,6 @@ mod tests {
 
     #[test]
     fn a_non_git_project_derives_state_from_disk_only() {
-        // `dir` is a plain directory, never `git init`-ed.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("present.txt"), b"x").unwrap();
         assert_eq!(

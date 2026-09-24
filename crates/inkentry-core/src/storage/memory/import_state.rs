@@ -1,17 +1,15 @@
-//! The `notes_import_state` marker: the OIDs that gate the read-path git-notes
-//! import (ADR-077 D2).
+//! The persisted OID markers that gate the git-notes import on read.
 //!
-//! A read compares the live notes-ref OIDs against these persisted values and
-//! runs the merge / import only when one moved. The working-ref OID is written
-//! in the SAME transaction as the imported rows, so a crash between "imported"
-//! and "recorded" cannot leave the two disagreeing.
+//! A read compares the live notes-ref OIDs against these values and merges or
+//! imports only when one moved. The working-ref OID is written in the same
+//! transaction as the imported rows, so a crash cannot leave the two disagreeing.
 
 use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
 
 use super::MemoryStore;
 
-/// The persisted OID markers gating the read-path git-notes import.
+/// The OIDs recorded by the last git-notes merge and import.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotesImportMarker {
     /// OID of `refs/notes/origin/inkentry` at the last merge; `None` if never merged.
@@ -21,8 +19,8 @@ pub struct NotesImportMarker {
 }
 
 impl MemoryStore {
-    /// Read the persisted notes-import OID markers. A store with no marker row
-    /// yet returns the default (both `None`).
+    /// Reads the persisted markers; a store with none yet returns the default
+    /// (both `None`).
     pub fn notes_import_state(&self) -> Result<NotesImportMarker> {
         self.conn
             .query_row(
@@ -41,8 +39,8 @@ impl MemoryStore {
             .map(Option::unwrap_or_default)
     }
 
-    /// Record the tracking-ref OID observed at the last merge, preserving the
-    /// working-ref marker. Upserts the single row (`id = 0`).
+    /// Records the tracking-ref OID observed at the last merge, leaving the
+    /// working-ref marker unchanged.
     pub fn set_notes_merged_tracking_oid(&self, oid: Option<&str>) -> Result<()> {
         self.conn
             .execute(
@@ -56,9 +54,9 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// Record the working-ref OID imported into this store, preserving the
-    /// tracking-ref marker. Called inside the import transaction so the marker
-    /// and the imported rows commit atomically (ADR-077 D2).
+    /// Records the working-ref OID imported into this store, leaving the
+    /// tracking-ref marker unchanged. Call it inside the import transaction so
+    /// the marker and the imported rows commit together.
     pub fn set_notes_imported_working_oid(&self, oid: Option<&str>) -> Result<()> {
         self.conn
             .execute(
@@ -116,7 +114,6 @@ mod tests {
         assert_eq!(marker.last_imported_working_oid.as_deref(), Some("w1"));
         assert_eq!(marker.last_merged_tracking_oid.as_deref(), Some("t1"));
 
-        // Updating one must not clear the other.
         store.set_notes_imported_working_oid(Some("w2")).unwrap();
         let marker = store.notes_import_state().unwrap();
         assert_eq!(marker.last_imported_working_oid.as_deref(), Some("w2"));

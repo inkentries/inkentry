@@ -19,24 +19,16 @@ pub(super) fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryEdg
 }
 
 impl MemoryStore {
-    /// Insert a note in a transaction that also sets `invalid_at` on the
-    /// superseded entry.
+    /// Inserts a note that supersedes `supersedes_id`, archiving the old entry
+    /// and linking the two, in one transaction.
     ///
-    /// Returns `(id, created)`, see `MemoryStore::add_note` for what
-    /// `created` means. ADR-068's fifth amendment (E1): this INSERT
-    /// populates `entity_id` just like `add_note`/`add_note_with_created_at`,
-    /// so it is subject to the same UNIQUE constraint and reuses the same
-    /// `recover_from_entity_id_collision`. On a collision, the *existing*
-    /// row's id is what the archive-`OLD` step below targets, not a fresh one.
+    /// Returns `(id, created)`; see [`MemoryStore::add_note`] for what `created`
+    /// means. When the content already exists, that entry is reused rather than
+    /// inserted. If it is `supersedes_id` itself, nothing is archived or linked,
+    /// so the entry is never made to supersede itself.
     ///
-    /// A collision can resolve to `supersedes_id` itself (a caller
-    /// superseding `old_id` with content byte-identical to `old_id`'s own
-    /// `{kind,title,body}`). Then there is nothing to archive and no edge to
-    /// add, since the "new" entry already is that row, so both steps are
-    /// skipped and the row is returned unchanged (`created = false`,
-    /// tags/linked_files already merged by the recovery above): a self-loop
-    /// of exactly the shape `dedupe.rs`'s own self-edge guard exists to
-    /// prevent, reached via this path instead.
+    /// Errors, without inserting anything, when `supersedes_id` is not an
+    /// active entry.
     #[allow(clippy::too_many_arguments)]
     pub fn add_note_superseding(
         &self,
@@ -73,8 +65,6 @@ impl MemoryStore {
                 linked_files,
             )?;
             if &id == supersedes_id {
-                // Self-collision guard: nothing to archive and no edge to add
-                // when the collision resolved to the supersede target itself.
                 return Ok((id, created));
             }
             let changed = self.conn.execute(
@@ -86,11 +76,7 @@ impl MemoryStore {
                 rusqlite::params![supersedes_id.as_str(), id.as_str()],
             )?;
             if changed == 0 {
-                // OLD is absent or already archived (e.g. a prior --supersedes
-                // call already claimed it). Mirrors supersede()'s existing
-                // reject-on-stale-OLD contract (ADR-068 E4): bail so the outer
-                // match rolls the whole transaction back, so the just-inserted
-                // new note is never committed and no carrier write happens.
+                // Bailing rolls back the insert, so a stale target leaves no new note.
                 anyhow::bail!("No active memory entry with id {supersedes_id} (old).");
             }
             self.conn.execute(
@@ -111,8 +97,8 @@ impl MemoryStore {
         }
     }
 
-    /// Archive `old_id` and link it to `new_id` as its replacement.
-    /// Sets `invalid_at` to now if not already set.
+    /// Archives `old_id` and links it to `new_id` as its replacement, setting
+    /// `invalid_at` if it is unset.
     pub fn supersede(&self, old_id: &NoteId, new_id: &NoteId) -> Result<bool> {
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<bool> {
@@ -144,8 +130,8 @@ impl MemoryStore {
         }
     }
 
-    /// Insert a directed edge between two notes.
-    /// `kind` must be one of: supersedes, relates_to, contradicts.
+    /// Inserts a directed edge between two notes. `kind` must be `supersedes`,
+    /// `relates_to` or `contradicts`.
     pub fn add_edge(&self, from_id: &NoteId, to_id: &NoteId, kind: &str) -> Result<()> {
         const VALID_KINDS: &[&str] = &["supersedes", "relates_to", "contradicts"];
         if !VALID_KINDS.contains(&kind) {
@@ -160,11 +146,8 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// Every edge of `kind` in the store, regardless of when it was created.
-    /// Callers that need a time window (e.g. `rec.supersede_rate`, ADR-098)
-    /// filter `created_at` themselves rather than parameterising the query
-    /// twice: the set is small (one row per supersede/relates_to/contradicts),
-    /// so filtering after the fact costs nothing extra.
+    /// Every edge of `kind`, regardless of when it was created. Callers that
+    /// need a time window filter on `created_at` themselves.
     pub fn edges_of_kind(&self, kind: &str) -> Result<Vec<MemoryEdge>> {
         let mut stmt = self.conn.prepare(
             "SELECT from_id, to_id, kind, created_at FROM memory_edges WHERE kind = ?1 ORDER BY created_at",
@@ -175,8 +158,7 @@ impl MemoryStore {
         Ok(edges)
     }
 
-    /// Return all outgoing and incoming edges for a note.
-    /// Returns `(outgoing, incoming)`.
+    /// Returns `(outgoing, incoming)` edges for a note.
     pub fn get_edges(&self, id: &NoteId) -> Result<(Vec<MemoryEdge>, Vec<MemoryEdge>)> {
         let mut stmt = self.conn.prepare(
             "SELECT from_id, to_id, kind, created_at FROM memory_edges WHERE from_id = ?1 ORDER BY created_at",
