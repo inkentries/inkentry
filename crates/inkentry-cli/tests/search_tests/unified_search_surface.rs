@@ -884,8 +884,10 @@ fn budget_zero_packs_nothing_but_stays_a_valid_envelope() {
 // caller's exact name matches only the caller's chunk, so `helper_xyz` can only
 // enter results via the call-graph appendix (it never matches the query text).
 fn indexed_code_project(home: &Path, proj: &Path) {
+    // The file path is indexed for full-text search, so it must share no word
+    // with the queries below: `helper_xyz` has to stay unreachable by text.
     std::fs::write(
-        proj.join("splines.rs"),
+        proj.join("geometry.rs"),
         "pub fn reticulate_splines() {\n    helper_xyz();\n}\n\n\
          pub fn helper_xyz() {\n    let _ = 1;\n}\n",
     )

@@ -27,15 +27,17 @@ impl Database {
             .unwrap()
             .as_secs() as i64;
 
+        let path_words = crate::search::lexical::identifier_subwords(path);
         self.conn.execute(
-            "INSERT INTO files (path, language, hash, indexed_at, mtime)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO files (path, language, hash, indexed_at, mtime, path_words)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(path) DO UPDATE SET
                 language   = excluded.language,
                 hash       = excluded.hash,
                 indexed_at = excluded.indexed_at,
-                mtime      = excluded.mtime",
-            rusqlite::params![path, language, hash, now, mtime],
+                mtime      = excluded.mtime,
+                path_words = excluded.path_words",
+            rusqlite::params![path, language, hash, now, mtime, path_words],
         )?;
 
         // ON CONFLICT UPDATE doesn't reset last_insert_rowid; fetch it explicitly.

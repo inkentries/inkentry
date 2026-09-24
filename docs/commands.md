@@ -398,8 +398,13 @@ Over the **code corpus**, `--only-text` scores the query's words as
 **independent terms** (BM25): a multi-word query ranks chunks that contain the
 terms in **any order** — a chunk containing more of the terms ranks above one
 containing fewer — rather than requiring them to appear as one contiguous
-phrase. Matching is case-insensitive and not stemmed (`bursts` matches `bursts`,
-not `burst`), following the FTS tokenizer.
+phrase. Matching is case-insensitive and stemmed (`burst` matches `bursts`).
+Common words such as `how`, `the` and `does` are dropped from the query unless
+it holds nothing else. A camelCase or PascalCase identifier also matches by its
+parts: `linear rag` reaches `LinearRag`, and the parts of a query identifier are
+searched too. Besides a chunk's text, the index holds its file path, docstring
+and structural summary; a hit in the symbol's name counts for most, then one in
+the path, docstring or summary, then one in the body.
 
 The **memory corpus** does not behave this way. Its text matcher quotes the
 whole query as a single FTS5 phrase, so a multi-word query matches only entries

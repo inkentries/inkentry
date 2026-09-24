@@ -29,7 +29,7 @@ pub struct Database {
 ///
 /// It continues the old ladder's numbering rather than restarting at 1, for the
 /// reason [`LAST_LEGACY_SCHEMA_VERSION`] records.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 17;
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 18;
 
 /// The highest `user_version` the old migration ladder ever stamped.
 ///
@@ -882,12 +882,9 @@ mod tests {
     }
 
     // A store migrated forward from version 17 must end up indistinguishable
-    // from one created fresh, so the first real step (currently none —
-    // `index_migrate::INDEX_MIGRATIONS` is empty) is held to this from day one
-    // rather than only once it exists. `index_001_initial.sql` is frozen at
-    // version 17, and a fresh index climbs the same ladder a 1.1 index does, so
-    // this holds by construction; it is what fails first if creation ever
-    // stops climbing.
+    // from one created fresh. `index_001_initial.sql` is frozen at version 17,
+    // and a fresh index climbs the same ladder a 1.1 index does, so this holds
+    // by construction; it is what fails first if creation ever stops climbing.
     #[test]
     fn a_store_migrated_from_schema_version_17_matches_a_fresh_store() {
         register_sqlite_vec();
@@ -911,6 +908,44 @@ mod tests {
             sqlite_master_signature(&fresh.conn),
             "a store migrated from schema version 17 must match one created fresh"
         );
+    }
+
+    // The code full-text rebuild re-indexes what a 1.1 index already holds,
+    // in place: chunks and vectors survive, and the new columns (path,
+    // docstring, camelCase parts) are searchable without a reindex.
+    #[test]
+    fn a_populated_schema_17_index_keeps_its_chunks_and_gains_the_new_full_text_index() {
+        register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
+                include_str!("../../migrations/index_001_initial.sql")
+            ))
+            .unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO files (path, language, hash, indexed_at) VALUES
+                       ('src/billing/InvoiceDetails.rs', 'rust', 'h', 0);
+                   INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content, metadata)
+                   VALUES (1, 'function', 'prorateCharge', 1, 3,
+                           'fn prorateCharge() { LinearRagSearch::go() }',
+                           '{"docstring":"/// Splits a subscription fee","parent_scope":null}');"#,
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(&path).expect("open must migrate, not rebuild");
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+        assert_eq!(db.stats().unwrap().chunk_count, 1);
+        for q in ["invoice details", "subscription", "prorate", "linear rag"] {
+            assert_eq!(
+                db.search_text(q, 10).unwrap().len(),
+                1,
+                "{q:?} must reach the migrated chunk"
+            );
+        }
     }
 
     // ── pass-owed marker ──────────────────────────────────────────────────────

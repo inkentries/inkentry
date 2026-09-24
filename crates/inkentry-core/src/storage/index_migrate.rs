@@ -3,9 +3,12 @@
 // `db.rs`, not in the shared ladder, so `memory.db`, which must never rebuild,
 // can share the ladder unchanged.
 
+use anyhow::{Context, Result};
+use rusqlite::{Connection, params};
+
 use crate::storage::migration_ladder::MigrationStep;
 
-// Unconstructed outside tests while the registry is empty.
+// No registered step rebuilds yet; `Rebuild` is constructed only by tests.
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(super) enum IndexMigrationKind {
@@ -17,12 +20,58 @@ pub(super) enum IndexMigrationKind {
 
 // Append only: number each step for the version it produces, and never
 // renumber or reorder an existing one.
-pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] = &[];
+pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] =
+    &[(18, IndexMigrationKind::Migrate(rebuild_code_fts))];
+
+/// The code full-text index rebuilt for retrieval (ADR-103): the DDL is
+/// `migrations/index_019.sql`; this backfills the identifier sub-words it adds
+/// to `files` and `chunks`. Paths go first because the chunk trigger reads
+/// them. Each chunk backfill `UPDATE` fires `chunks_fts_update`, which is what
+/// indexes the row, so the new table is complete once the loop ends. Nothing
+/// is re-parsed or re-embedded.
+fn rebuild_code_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../migrations/index_019.sql"))
+        .context("applying index_019.sql")?;
+
+    let files: Vec<(i64, String)> = conn
+        .prepare("SELECT id, path FROM files")
+        .context("preparing the file read")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .context("reading files")?
+        .collect::<rusqlite::Result<_>>()
+        .context("collecting files")?;
+    let mut update_file = conn.prepare("UPDATE files SET path_words = ?1 WHERE id = ?2")?;
+    for (id, path) in files {
+        let words = crate::search::lexical::identifier_subwords(&path);
+        update_file
+            .execute(params![(!words.is_empty()).then_some(words), id])
+            .with_context(|| format!("backfilling path words for file {id}"))?;
+    }
+
+    let rows: Vec<(i64, Option<String>, String, Option<String>)> = conn
+        .prepare("SELECT id, name, content, metadata FROM chunks")
+        .context("preparing the chunk read")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .context("reading chunks")?
+        .collect::<rusqlite::Result<_>>()
+        .context("collecting chunks")?;
+
+    let mut update =
+        conn.prepare("UPDATE chunks SET name_words = ?1, body_words = ?2 WHERE id = ?3")?;
+    for (id, name, content, metadata) in rows {
+        let (name_words, body_words) =
+            crate::storage::chunk_subwords(name.as_deref(), &content, metadata.as_deref());
+        update
+            .execute(params![name_words, body_words, id])
+            .with_context(|| format!("indexing chunk {id}"))?;
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
     use super::INDEX_MIGRATIONS;
-    use crate::storage::db::CURRENT_SCHEMA_VERSION;
+    use crate::storage::db::{CURRENT_SCHEMA_VERSION, INITIAL_SCHEMA_VERSION};
     use crate::storage::migration_ladder::{MigrationStep, assert_contiguous};
 
     fn unreachable_step(_: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -39,7 +88,7 @@ mod tests {
             .collect();
         assert_contiguous(
             &versions,
-            CURRENT_SCHEMA_VERSION + 1,
+            INITIAL_SCHEMA_VERSION + 1,
             CURRENT_SCHEMA_VERSION,
         );
     }

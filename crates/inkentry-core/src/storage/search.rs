@@ -2,6 +2,11 @@ use anyhow::Result;
 
 use super::Database;
 
+/// BM25 weights for `chunks_fts`'s columns, in declaration order: name, path,
+/// docstring, summary, content. Measured on a known-item evaluation (ADR-103);
+/// they mostly lift the first result rather than recall at ten.
+const FTS_COLUMN_WEIGHTS: (f64, f64, f64, f64, f64) = (6.0, 2.0, 2.0, 2.0, 1.0);
+
 impl Database {
     /// K-nearest-neighbour search using sqlite-vec.
     ///
@@ -73,38 +78,37 @@ impl Database {
 
     /// FTS5 full-text search. Returns results ranked by BM25 (best match first).
     ///
-    /// The query's words are scored as **independent terms** (BM25 bag-of-words
-    /// via [`crate::utils::fts5_match_query`]): a multi-word query ranks chunks
-    /// that contain the terms regardless of their order or adjacency, and a
-    /// chunk containing more of the terms ranks above one containing fewer. It
-    /// is deliberately not matched as a contiguous phrase. Tokenisation follows
-    /// the `chunks_fts` tokenizer (default `unicode61`: case-folded, no
-    /// stemming).
+    /// The query is built by [`crate::search::lexical::code_fts_query`]: its
+    /// words (and the parts of any compound identifier) are scored as
+    /// **independent terms**, so a chunk containing more of them ranks above
+    /// one containing fewer, regardless of order or adjacency. The index is
+    /// stemmed (`porter unicode61`) and BM25 weighs a hit in the symbol name
+    /// above one in the path, docstring or summary, and those above one in the
+    /// body ([`FTS_COLUMN_WEIGHTS`]).
     ///
-    /// BM25 in FTS5 returns negative values (more negative = better match).
-    /// We negate the score so that higher `distance` values indicate better matches,
-    /// consistent with the convention used in `SearchResult`.
+    /// `distance` is the raw BM25 score, which FTS5 makes more negative for a
+    /// better match, so lower is better here as it is for vector search.
     pub fn search_text(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<crate::search::SearchResult>> {
         let limit = limit.min(1_000);
-        let mut stmt = self.conn.prepare(
+        let (name, path, doc, summary, content) = FTS_COLUMN_WEIGHTS;
+        let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT c.id, c.node_type, c.name,
                     CAST(c.start_line AS INTEGER), CAST(c.end_line AS INTEGER),
                     c.content, f.path, f.language,
-                    bm25(chunks_fts) AS score
+                    bm25(chunks_fts, {name}, {path}, {doc}, {summary}, {content}) AS score
              FROM chunks_fts
              JOIN chunks c ON chunks_fts.rowid = c.id
              JOIN files  f ON c.file_id = f.id
              WHERE chunks_fts MATCH ?1
              ORDER BY score, f.path, c.start_line, c.end_line, c.id
              LIMIT ?2",
-        )?;
-        let fts_query = crate::utils::fts5_match_query(query);
+        ))?;
+        let fts_query = crate::search::lexical::code_fts_query(query);
         let rows = stmt.query_map(rusqlite::params![fts_query, limit as i64], |row| {
-            let bm25_score: f64 = row.get(8)?;
             Ok(crate::search::SearchResult {
                 chunk_id: row.get(0)?,
                 node_type: row.get(1)?,
@@ -114,9 +118,7 @@ impl Database {
                 content: row.get(5)?,
                 file_path: row.get(6)?,
                 language: row.get(7)?,
-                // Negate so that more-relevant results have a lower distance,
-                // matching the ascending-distance convention of vector search.
-                distance: (-bm25_score) as f32,
+                distance: row.get::<_, f64>(8)? as f32,
                 from_graph: false,
                 governing_specs: vec![],
                 token_count: 0,
@@ -717,27 +719,131 @@ mod tests {
         );
     }
 
-    // Stemming decision, locked in: `--mode text` uses the table's default FTS5
-    // tokenizer (`unicode61`), which case-folds but does NOT stem. So `bursts`
-    // matches the literal token `bursts`; a query for `burst` does NOT match a
-    // chunk that only contains `bursts`; and matching is case-insensitive.
-    // If the tokenizer ever gains stemming, this test flags it.
+    // `chunks_fts` stems (`porter unicode61`) and case-folds, so a query for
+    // `burst` reaches a chunk that only says `bursts`.
     #[test]
-    fn search_text_does_not_stem_and_is_case_insensitive() {
+    fn search_text_stems_and_is_case_insensitive() {
         let db = open_db();
         seed_chunk(&db, "the queue absorbs bursts of traffic");
 
+        for q in ["bursts", "burst", "BURSTS", "bursting"] {
+            assert!(
+                !db.search_text(q, 10).expect("ok").is_empty(),
+                "{q:?} must reach the chunk containing `bursts`"
+            );
+        }
+    }
+
+    #[test]
+    fn search_text_reaches_the_parts_of_a_camel_case_identifier() {
+        let db = open_db();
+        seed_chunk(&db, "fn run() { LinearRagSearch::new().go() }");
+
         assert!(
-            !db.search_text("bursts", 10).expect("ok").is_empty(),
-            "the exact token must match"
+            !db.search_text("linear rag", 10).expect("ok").is_empty(),
+            "the sub-words of `LinearRagSearch` must be searchable"
         );
+    }
+
+    #[test]
+    fn search_text_indexes_the_file_path_docstring_and_summary() {
+        let db = open_db();
+        let file_id = db
+            .upsert_file("src/billing/invoices.rs", Some("rust"), "h", 0)
+            .expect("upsert file");
+        let id = db
+            .insert_chunk(
+                file_id,
+                "function",
+                Some("f"),
+                1,
+                5,
+                "fn f() {}",
+                Some(r#"{"docstring":"/// Prorates the charge","parent_scope":null}"#),
+                4,
+            )
+            .expect("insert chunk");
+        db.update_chunk_summary(id, "applies a discount")
+            .expect("summary");
+
+        for q in ["invoices", "prorates", "discount"] {
+            let hits = db.search_text(q, 10).expect("ok");
+            assert_eq!(hits.len(), 1, "{q:?} must reach the chunk");
+        }
+    }
+
+    #[test]
+    fn search_text_ranks_a_name_match_above_a_body_match() {
+        let db = open_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", Some("rust"), "h", 0)
+            .expect("upsert file");
+        db.insert_chunk(
+            file_id,
+            "function",
+            Some("other"),
+            1,
+            2,
+            "fn other() { reconcile(); }",
+            None,
+            4,
+        )
+        .expect("insert chunk");
+        db.insert_chunk(
+            file_id,
+            "function",
+            Some("reconcile"),
+            3,
+            4,
+            "fn reconcile() {}",
+            None,
+            4,
+        )
+        .expect("insert chunk");
+
+        let hits = db.search_text("reconcile", 10).expect("ok");
+        assert_eq!(hits[0].name.as_deref(), Some("reconcile"));
         assert!(
-            db.search_text("burst", 10).expect("ok").is_empty(),
-            "unstemmed: a query for `burst` must NOT match a chunk containing only `bursts`"
+            hits[0].distance < hits[1].distance,
+            "distance is lower-is-better, as for vector search"
         );
+    }
+
+    #[test]
+    fn deleting_a_file_removes_its_chunks_from_the_full_text_index() {
+        let db = open_db();
+        let id = seed_chunk_in(&db, "src/gone.rs", "fn vanishingterm() {}");
+        assert_eq!(db.search_text("vanishingterm", 10).expect("ok").len(), 1);
+
+        db.conn
+            .execute("DELETE FROM chunks WHERE id = ?1", [id])
+            .expect("delete");
+        assert!(db.search_text("vanishingterm", 10).expect("ok").is_empty());
+    }
+
+    // Every index run rewrites `graph_rank` on every chunk; re-tokenising each
+    // one for it was pure cost. `total_changes` counts the rows a trigger
+    // writes too, so a fired trigger would show up as more than one change.
+    #[test]
+    fn an_unrelated_column_update_does_not_rewrite_the_full_text_row() {
+        let db = open_db();
+        let id = seed_chunk_in(&db, "src/a.rs", "fn steadyterm() {}");
+
+        let before = db.conn.total_changes();
+        db.conn
+            .execute(
+                "UPDATE chunks SET graph_rank = 0.5, embed_pending = 1 WHERE id = ?1",
+                [id],
+            )
+            .expect("update");
+        assert_eq!(db.conn.total_changes() - before, 1);
+
+        let before = db.conn.total_changes();
+        db.update_chunk_summary(id, "a summary").expect("summary");
         assert!(
-            !db.search_text("BURSTS", 10).expect("ok").is_empty(),
-            "matching is case-insensitive (unicode61 case-folding)"
+            db.conn.total_changes() - before > 1,
+            "a summary change must re-index the row"
         );
+        assert_eq!(db.search_text("steadyterm", 10).expect("ok").len(), 1);
     }
 }

@@ -199,12 +199,17 @@ search/
   mod.rs         — SearchResult struct; RRF_K, the one reciprocal-rank-fusion
                    constant shared by both within-corpus hybrid fusions and the
                    cross-corpus code+memory fusion (ADR-081)
+  lexical.rs     — identifier splitting (camelCase/snake_case) and the code
+                   FTS5 query builder, shared by indexing and search (ADR-103)
   tokens.rs      — token-budget helpers
 
 migrations/  (crates/inkentry-core/migrations/)
   index_001_initial.sql  — index.db at schema version 17, frozen; a fresh index
                            is created from it and climbs the registry in
                            storage/index_migrate.rs (see storage/db.rs)
+  index_019.sql          — code full-text index rebuilt for retrieval (ADR-103):
+                           stemmed, contentless, over name/path/docstring/
+                           summary/content plus identifier sub-words
   memory_001_initial.sql — memory.db at schema version 11, frozen; a fresh
                            store is created from it and climbs the ladder
   memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):
