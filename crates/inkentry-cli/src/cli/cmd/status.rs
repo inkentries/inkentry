@@ -114,8 +114,10 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         let stats = db.stats()?;
         let languages = db.language_stats().unwrap_or_default();
         let drift = db.drift_candidates(30, 10).unwrap_or_default();
-        let usage = db.usage_last_7_days().unwrap_or_default();
         let mem_path = db_path.with_file_name("memory.db");
+        // ADR-098: read from `events` (memory.db) rather than index.db's
+        // `usage` table, which this field used to source before D5 shipped.
+        let usage = events_command_counts_last_7_days(&mem_path);
         let (memory_count, memory_backend_kind) =
             match open_memory_backend(&cfg, &mem_path, None).await.ok() {
                 Some(b) => {
@@ -485,11 +487,13 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         );
     }
 
-    // Usage summary (last 7 days)
-    let usage = db.usage_last_7_days().unwrap_or_default();
+    // Usage summary (last 7 days). ADR-098: read from `events` (memory.db)
+    // rather than index.db's `usage` table, which this section used to
+    // source before D5 shipped.
+    let usage = events_command_counts_last_7_days(&mem_path_text);
     let total: i64 = usage.iter().map(|(_, n)| n).sum();
     if total > 0 {
-        const COMMANDS: &[&str] = &["search", "memory search"];
+        const COMMANDS: &[&str] = &["search", "context"];
         println!("\nUsage (last 7 days)");
         for cmd in COMMANDS {
             let count = usage
@@ -514,6 +518,26 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `(command, count)` for every event recorded against `mem_path` in the last
+/// 7 days (ADR-098 D5), or empty on any failure to open the store — the same
+/// best-effort posture `usage_last_7_days` had over `index.db`'s `usage`
+/// table before this replaced it.
+fn events_command_counts_last_7_days(mem_path: &std::path::Path) -> Vec<(String, i64)> {
+    if !mem_path.exists() {
+        return Vec::new();
+    }
+    const SEVEN_DAYS_SECS: i64 = 7 * 24 * 3600;
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        - SEVEN_DAYS_SECS;
+    MemoryStore::open(mem_path)
+        .ok()
+        .and_then(|s| s.events_command_counts_since(cutoff).ok())
+        .unwrap_or_default()
 }
 
 /// The cheap ADR-098 metrics subset for both `status --format json`'s

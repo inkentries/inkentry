@@ -13,7 +13,8 @@ use std::str::FromStr;
 /// [`MemoryStore::hydrate_tags_and_files`] — the row mappers below leave both
 /// empty.
 pub(super) const NOTE_COLUMNS: &str = "uuid, kind, title, body, \
-     created_at, status, superseded_by, source_ref, valid_at, invalid_at, entity_id";
+     created_at, status, superseded_by, source_ref, valid_at, invalid_at, entity_id, \
+     origin_actor_kind, origin_tool, origin_model";
 
 fn note_id_at(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<NoteId> {
     let raw: String = row.get(idx)?;
@@ -23,6 +24,22 @@ fn note_id_at(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<NoteId> {
 }
 
 // ── row mappers ──────────────────────────────────────────────────────────────
+
+fn origin_at(
+    row: &rusqlite::Row<'_>,
+    actor_kind_idx: usize,
+    tool_idx: usize,
+    model_idx: usize,
+) -> rusqlite::Result<Option<crate::storage::origin::Origin>> {
+    let actor_kind: Option<String> = row.get(actor_kind_idx)?;
+    let tool: Option<String> = row.get(tool_idx)?;
+    let model: Option<String> = row.get(model_idx)?;
+    Ok(crate::storage::origin::Origin::from_parts(
+        actor_kind.as_deref(),
+        tool,
+        model,
+    ))
+}
 
 pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
     Ok(Note {
@@ -51,6 +68,7 @@ pub(super) fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         source_project_path: None,
         // Not selected by the row-mapper queries; DB→Note callers don't need it.
         remote_id: None,
+        origin: origin_at(row, 11, 12, 13)?,
     })
 }
 
@@ -75,11 +93,12 @@ pub(super) fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Re
         valid_at: row.get(8)?,
         invalid_at: row.get(9)?,
         entity_id: row.get(10)?,
-        distance: Some(row.get(11)?),
+        distance: Some(row.get(14)?),
         score: None,
         source_project: None,
         source_project_path: None,
         remote_id: None,
+        origin: origin_at(row, 11, 12, 13)?,
     })
 }
 
@@ -211,6 +230,30 @@ impl MemoryStore {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Stamp an entry's origin (ADR-098 D6), overwriting whatever was there.
+    /// A separate call rather than a parameter of `add_note`, mirroring how
+    /// `insert_embedding` attaches a vector after the row exists: origin is
+    /// only ever set once, right after a fresh insert, and giving it its own
+    /// narrow write keeps every other insert path (import, migration,
+    /// reconcile) free to leave it untouched by default.
+    pub fn set_origin(
+        &self,
+        note_id: &NoteId,
+        origin: &crate::storage::origin::Origin,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET origin_actor_kind = ?1, origin_tool = ?2, origin_model = ?3 \
+             WHERE uuid = ?4",
+            rusqlite::params![
+                origin.actor_kind.as_str(),
+                origin.tool,
+                origin.model,
+                note_id.as_str()
+            ],
+        )?;
+        Ok(())
     }
 
     /// Normalise `tags` (D2) and resolve `linked_files` against

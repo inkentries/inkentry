@@ -21,6 +21,9 @@ pub struct NoteInput {
     /// ID of an existing entry that this entry supersedes.
     /// When set, the old entry's invalid_at is set to now() atomically.
     pub supersedes: Option<NoteId>,
+    /// Who or what is adding this entry (ADR-098 D6). `None` when the caller
+    /// declared no actor.
+    pub origin: Option<super::origin::Origin>,
 }
 
 /// The page size the team client asks for per request when walking a listing to
@@ -202,6 +205,11 @@ impl MemoryBackend for LocalMemoryBackend {
         };
         if let Some(blob) = &input.embedding {
             store.insert_embedding(&id, blob)?;
+        }
+        // Only on a genuinely new row: a collision means an existing entry
+        // already carries its own origin, which an add must not overwrite.
+        if created && let Some(origin) = &input.origin {
+            store.set_origin(&id, origin)?;
         }
         Ok((id, created))
     }

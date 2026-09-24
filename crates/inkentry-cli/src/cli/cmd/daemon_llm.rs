@@ -1,28 +1,11 @@
-//! LLM configuration handed to the auto-spawned `inkentry-server` daemon.
-//!
-//! Resolution happens here, in the user's own session, and splits into two
-//! channels:
-//!
-//! * **argv** carries the endpoint URL and model. Neither is secret, and `ps`
-//!   showing which endpoint a daemon serves is a diagnostic feature.
-//! * **the child environment** carries the credential, and nothing else does.
-//!
-//! The daemon is detached and long-lived, so it must never open the OS
-//! keychain itself: on macOS a keychain read from a background process with no
-//! session is an authorization prompt the user cannot see or answer. The CLI
-//! reads the credential once, here, and passes it out of band. `--llm-key` is
-//! therefore never emitted into the child's argv for any input, since argv is
-//! world-readable through the process table.
+// The credential travels only in the child's environment: argv is world-readable,
+// and the detached daemon cannot answer an OS keychain prompt.
 
 use anyhow::Result;
 use std::ffi::OsString;
 
 use inkentry_core::config::{Config, llm_key, secret_store::SecretStore};
 
-/// The LLM values a spawned daemon is configured with.
-///
-/// `key` is `Some` only when a credential actually resolved; it is never
-/// rendered into [`LlmSpawn::args`].
 #[derive(Default)]
 pub(super) struct LlmSpawn {
     pub url: Option<String>,
@@ -30,8 +13,7 @@ pub(super) struct LlmSpawn {
     pub key: Option<String>,
 }
 
-/// Hand-written so the credential cannot be leaked by a `{:?}` somewhere down
-/// the line: a derived `Debug` would print it verbatim.
+// Hand-written: a derived `Debug` would print the key.
 impl std::fmt::Debug for LlmSpawn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LlmSpawn")
@@ -42,7 +24,6 @@ impl std::fmt::Debug for LlmSpawn {
     }
 }
 
-/// Trim `raw` and treat a blank result as unset.
 fn normalize(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|v| !v.is_empty())
@@ -50,12 +31,6 @@ fn normalize(raw: Option<&str>) -> Option<String> {
 }
 
 impl LlmSpawn {
-    /// Resolve from a loaded [`Config`] plus optional per-spawn CLI overrides,
-    /// using an injected secret store.
-    ///
-    /// `Config` has already folded `INKENTRY_LLM_URL` / `INKENTRY_LLM_MODEL`
-    /// over the personal config file, so an override here is the top of the
-    /// precedence chain.
     pub(super) fn resolve_with_store(
         cfg: &Config,
         url_override: Option<&str>,
@@ -64,13 +39,10 @@ impl LlmSpawn {
     ) -> Result<Self> {
         let url = normalize(url_override).or_else(|| normalize(cfg.llm_url.as_deref()));
         let model = normalize(model_override).or_else(|| normalize(cfg.llm_model.as_deref()));
-        // Resolving the credential is the only secret-store read on this path,
-        // and it happens only here (never in `Config::load`).
         let key = llm_key::resolve_with_store(store)?;
         Ok(Self { url, model, key })
     }
 
-    /// Resolve using the host's default secret store.
     pub(super) fn resolve(
         cfg: &Config,
         url_override: Option<&str>,
@@ -80,20 +52,12 @@ impl LlmSpawn {
         Self::resolve_with_store(cfg, url_override, model_override, store.as_ref())
     }
 
-    /// The endpoint the daemon is to be configured with, and the model to send
-    /// it, or `None` when no endpoint resolved.
-    ///
-    /// A model with no endpoint to send it to is not a configuration, so the
-    /// model is reachable only through the endpoint. Both output channels read
-    /// the configuration from here, which is what keeps them from disagreeing.
+    // A model without an endpoint is not a configuration. `args` and `child_env`
+    // both read through here so they cannot disagree.
     fn endpoint(&self) -> Option<(&str, Option<&str>)> {
         Some((self.url.as_deref()?, self.model.as_deref()))
     }
 
-    /// The daemon arguments carrying the non-secret LLM values.
-    ///
-    /// Empty unless an endpoint URL resolved, which keeps the daemon arg list
-    /// byte-identical to an unconfigured spawn.
     pub(super) fn args(&self) -> Vec<OsString> {
         let Some((url, model)) = self.endpoint() else {
             return Vec::new();
@@ -106,18 +70,10 @@ impl LlmSpawn {
         args
     }
 
-    /// How the child's three LLM environment variables must be set, in order:
-    /// `Some` means set to that value, `None` means unset it on the child.
-    ///
-    /// Every variable is named on every spawn. The child otherwise inherits
-    /// this process's environment, and `inkentry-server`'s `--llm-url` /
-    /// `--llm-model` carry clap `env` attributes, so an inherited value the CLI
-    /// deliberately resolved away would still reach the daemon behind its back:
-    /// an exported `INKENTRY_LLM_URL=""` arrives as a present-but-empty endpoint
-    /// rather than as no endpoint. Naming all three makes the daemon's view
-    /// exactly what this process resolved, whatever the parent exported.
-    ///
-    /// The credential travels here and nowhere else.
+    // `None` means unset on the child. Every variable is named on every spawn:
+    // the server's `--llm-url`/`--llm-model` read these via clap `env`, so an
+    // inherited value we resolved away (e.g. an exported empty
+    // `INKENTRY_LLM_URL`) would otherwise reach the daemon.
     pub(super) fn child_env(&self) -> Vec<(&'static str, Option<String>)> {
         let (url, model) = match self.endpoint() {
             Some((url, model)) => (Some(url.to_string()), model.map(str::to_string)),
@@ -228,7 +184,6 @@ mod tests {
         );
     }
 
-    // A model with no endpoint to send it to is not a configuration.
     #[test]
     #[serial_test::serial]
     fn model_without_url_emits_nothing() {
@@ -308,11 +263,6 @@ mod tests {
         assert_eq!(env_entry(&spawn, "INKENTRY_LLM_KEY"), None);
     }
 
-    // The daemon reads INKENTRY_LLM_URL / INKENTRY_LLM_MODEL through clap `env`,
-    // so anything this process resolved away has to be cleared on the child
-    // rather than merely left out of argv. An exported `INKENTRY_LLM_URL=""` is
-    // the case that made this visible: it resolves to no endpoint here and used
-    // to arrive at the daemon as a present-but-empty one.
     #[test]
     #[serial_test::serial]
     fn a_resolved_endpoint_is_pinned_on_the_child_and_an_unresolved_one_is_cleared() {
@@ -342,9 +292,6 @@ mod tests {
         assert_eq!(env_entry(&blanked, "INKENTRY_LLM_MODEL"), None);
     }
 
-    // A model resolved without an endpoint emits no argv flag, so the child's
-    // model variable must be cleared too: leaving it set would configure a
-    // model the CLI decided not to send.
     #[test]
     #[serial_test::serial]
     fn a_model_without_an_endpoint_is_cleared_on_the_child() {
@@ -359,9 +306,6 @@ mod tests {
         assert_eq!(env_entry(&spawn, "INKENTRY_LLM_MODEL"), None);
     }
 
-    // Config::load has already folded INKENTRY_LLM_URL over the config file, so
-    // the value the CLI resolved is authoritative and must be spelled out in
-    // argv rather than left to the child's inherited environment.
     #[test]
     #[serial_test::serial]
     fn an_explicit_url_override_beats_the_inherited_env() {
@@ -407,9 +351,6 @@ mod tests {
         );
     }
 
-    // `INKENTRY_LLM_URL=""` reaches Config as `Some("")`, which is an override
-    // that blanks the personal config rather than falling through to it. The
-    // end state is no endpoint, not an `--llm-url ""` argument.
     #[test]
     #[serial_test::serial]
     fn a_blank_config_url_configures_no_endpoint() {
@@ -426,8 +367,6 @@ mod tests {
         assert!(spawn.args().is_empty(), "got {:?}", strings(&spawn.args()));
     }
 
-    // A blank flag value is an empty override, not an instruction to clear the
-    // configured endpoint: the lower-precedence source still applies.
     #[test]
     #[serial_test::serial]
     fn a_blank_url_override_falls_back_to_the_configured_url() {
@@ -471,9 +410,6 @@ mod tests {
         );
     }
 
-    // A store can hold a blank entry that `set_with_store` would have rejected
-    // (written by an older build, or hand-edited into secrets.toml). It must
-    // read as no credential, not as an empty-string one the child then carries.
     #[test]
     #[serial_test::serial]
     fn a_blank_stored_key_yields_no_child_env_entry() {
@@ -494,8 +430,6 @@ mod tests {
         assert_eq!(env_entry(&spawn, "INKENTRY_LLM_KEY"), None);
     }
 
-    // Trimming is what makes a stray newline from a piped `auth set-key` behave,
-    // so the value handed to the child must be the trimmed one.
     #[test]
     #[serial_test::serial]
     fn a_stored_key_reaches_the_child_trimmed() {
@@ -521,7 +455,6 @@ mod tests {
         );
     }
 
-    // A `{:?}` on this struct must never be the thing that leaks the key.
     #[test]
     #[serial_test::serial]
     fn debug_output_redacts_the_key() {
@@ -541,8 +474,6 @@ mod tests {
         assert!(rendered.contains("redacted"), "got {rendered}");
     }
 
-    // The spawn path must resolve the credential from whichever backend
-    // INKENTRY_SECRET_STORE selects, never by reaching past it to the keychain.
     #[test]
     #[serial_test::serial]
     fn resolves_from_a_file_backed_store_without_a_keychain() {

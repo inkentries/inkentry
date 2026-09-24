@@ -1,24 +1,3 @@
-//! LLM routing: which server, if any, serves `POST /llm/complete` for this
-//! project.
-//!
-//! Deliberately separate from embedding. `Config::resolve_inference_url` is
-//! the embed rule and is not consulted here; embedding keeps routing to the
-//! local tier exactly as it did before this module existed.
-//!
-//! The rule, in order:
-//!
-//! 1. Explicit offline: nothing runs, and nothing is probed.
-//! 2. The local inference tier advertises `llm.complete`: use it.
-//! 3. `llm_url` is set but the local server does not serve an LLM: **stop**.
-//!    The user asked for a local LLM; quietly sending their code to a remote
-//!    one instead is a privacy surprise, not a fallback.
-//! 4. An explicit `server_url` advertises `llm.complete`: use it.
-//! 5. Otherwise no LLM is available.
-//!
-//! Step 2 keys on what the reachable server actually advertises rather than on
-//! a config field, because a field cannot tell you whether the running daemon
-//! ever picked the value up.
-
 use std::path::Path;
 
 use crate::config::Config;
@@ -28,21 +7,14 @@ use super::llm_message::NoLlmReason;
 use super::probe::{get_inference_tier, get_tier};
 use super::tier::Tier;
 
-/// Where LLM inference goes for this invocation.
 #[derive(Debug, Clone)]
 pub enum LlmRoute {
-    /// The local inference tier serves the LLM. Carries the effective config
-    /// whose inference target is that tier's URL.
     Local(Config),
-    /// An explicitly configured `server_url` serves the LLM. Carries the
-    /// effective config whose inference target is that URL.
     Remote(Config),
-    /// No LLM to route to, and why.
     Unavailable(NoLlmReason),
 }
 
 impl LlmRoute {
-    /// The reason no LLM is available, or `None` when one is.
     pub fn reason(&self) -> Option<NoLlmReason> {
         match self {
             LlmRoute::Unavailable(reason) => Some(*reason),
@@ -50,7 +22,6 @@ impl LlmRoute {
         }
     }
 
-    /// The URL LLM requests will be sent to, or `None` when unavailable.
     #[cfg(test)]
     pub fn target_url(&self) -> Option<&str> {
         match self {
@@ -59,13 +30,8 @@ impl LlmRoute {
         }
     }
 
-    /// Build the LLM client for this route.
-    ///
-    /// The `Remote` arm cannot use plain `from_config`: that re-derives
-    /// "reached via an explicit remote" from the inference target being unset,
-    /// which this route has just set. Losing the flag would make a failure on
-    /// the remote tell the user to read `inkentry server logs`, which only ever
-    /// reads the local daemon's log.
+    // from_config infers explicit-remote from inference_url being unset, which the Remote route
+    // sets; using it would point remote failures at the local daemon's log.
     pub fn client(&self) -> Option<ServerInferenceClient> {
         match self {
             LlmRoute::Local(cfg) => ServerInferenceClient::from_config(cfg),
@@ -75,13 +41,7 @@ impl LlmRoute {
     }
 }
 
-/// Resolve where this project's LLM calls should go. See the module docs for
-/// the rule.
-///
-/// The remote is probed only on the arm that can actually use it, so steps 1
-/// to 3 reach no network at all.
 pub async fn resolve_llm_route(cfg: &Config, project_root: &Path) -> LlmRoute {
-    // Probing at all would defeat the point of an explicitly offline run.
     let explicit_offline = inkentry_core::config::no_server_env_set()
         || cfg.mode == Some(inkentry_core::config::SyncMode::Offline);
     if explicit_offline {
@@ -95,14 +55,7 @@ pub async fn resolve_llm_route(cfg: &Config, project_root: &Path) -> LlmRoute {
     remote_route(cfg, project_root, get_tier(cfg).await)
 }
 
-/// Everything the rule decides before an explicit `server_url` is worth
-/// probing: steps 2 and 3, plus step 5 as reached when there is no remote to
-/// try. `None` means `server_url` is set and step 4 must probe it.
-///
-/// Split from [`resolve_llm_route`] so that terminal is reachable from a test
-/// without a loopback probe: auto-discovery falls back to `DEFAULT_SERVER_PORT`, so on a
-/// machine running the local daemon there is no config that makes
-/// `resolve_llm_route` observe "no local server".
+// Split from resolve_llm_route so tests can reach the no-server_url terminal without a loopback probe.
 fn route_without_probing_the_remote(
     cfg: &Config,
     project_root: &Path,
@@ -116,18 +69,14 @@ fn route_without_probing_the_remote(
         .then_some(LlmRoute::Unavailable(NoLlmReason::NoLlmAnywhere))
 }
 
-/// Steps 2 and 3: decide from the local inference tier alone.
-///
-/// `None` means neither step applies and the caller may go on to probe an
-/// explicit `server_url`.
 fn local_route(cfg: &Config, project_root: &Path, inference_tier: &Tier) -> Option<LlmRoute> {
+    // Key on the advertised capability: config cannot say whether the running daemon picked it up.
     if inference_tier.caps().is_some_and(|c| c.llm_complete) {
         return Some(LlmRoute::Local(
             inference_tier.effective_config(cfg, project_root),
         ));
     }
-    // The privacy guard: an explicitly configured local endpoint means the
-    // remote is not an acceptable substitute, only a stale daemon to restart.
+    // Privacy guard: with llm_url set a remote is no substitute; the daemon needs a restart.
     if cfg.llm_url.is_some() {
         return Some(LlmRoute::Unavailable(
             NoLlmReason::LocalConfiguredButNotServed,
@@ -136,7 +85,6 @@ fn local_route(cfg: &Config, project_root: &Path, inference_tier: &Tier) -> Opti
     None
 }
 
-/// Step 4: decide from the tier reached by probing `server_url`.
 fn remote_route(cfg: &Config, project_root: &Path, remote_tier: &Tier) -> LlmRoute {
     if remote_tier.caps().is_some_and(|c| c.llm_complete)
         && let Some(url) = remote_tier.server_url()
@@ -181,7 +129,6 @@ mod tests {
         }
     }
 
-    // Health body advertising `llm.complete` alongside the usual set.
     fn health_with_llm() -> serde_json::Value {
         serde_json::json!({
             "status": "ok",
@@ -191,9 +138,7 @@ mod tests {
         })
     }
 
-    // Health body from a server with an embedder but no LLM. It still lists a
-    // legacy feature capability, which is exactly the version-skew trap that
-    // keying on anything other than `llm.complete` would fall into.
+    // Lists a legacy capability but not llm.complete: keying on anything else misfires under version skew.
     fn health_without_llm() -> serde_json::Value {
         serde_json::json!({
             "status": "ok",
@@ -222,14 +167,8 @@ mod tests {
             .expect("uri port is numeric")
     }
 
-    // Point loopback auto-discovery at `uri` for the duration of the returned
-    // guard, then restore whatever was there.
-    //
-    // Through the fixed-port fallback (step 3b), not the `server.port` file:
-    // step 3a now uses a responder only when the pid recorded beside the port
-    // is a live `inkentry-server` process reporting the recorded instance id,
-    // and a wiremock stand-in is neither. The state dir is still redirected at
-    // an empty temp dir, so nothing here reads the developer's own state.
+    // Uses the fixed-port discovery fallback, not the server.port file: that path trusts only a
+    // live inkentry-server pid, which wiremock is not.
     struct StateDirGuard {
         _tmp: tempfile::TempDir,
         previous_state_dir: Option<std::ffi::OsString>,
@@ -270,11 +209,6 @@ mod tests {
         }
     }
 
-    // ── explicit offline: no probe at all ────────────────────────────────────
-
-    // `mode = "offline"` must short-circuit before any probe. `server_url` and
-    // the loopback both point at mock servers with `expect(0)` health mocks, so
-    // a probe that does happen fails the test rather than passing quietly.
     #[tokio::test]
     #[serial_test::serial(inkentry_no_server_env)]
     async fn offline_mode_routes_nowhere_and_probes_nothing() {
@@ -328,10 +262,6 @@ mod tests {
         );
     }
 
-    // ── local branch ─────────────────────────────────────────────────────────
-
-    // The founder's own setup with no team server: a loopback daemon serving an
-    // LLM must be used, with no `server_url` involved anywhere.
     #[tokio::test]
     #[serial_test::serial(inkentry_no_server_env)]
     async fn loopback_with_an_llm_and_no_server_url_routes_local() {
@@ -344,9 +274,6 @@ mod tests {
         assert_eq!(route.target_url(), Some(loopback.uri().as_str()));
     }
 
-    // The founder's reported scenario: `server_url` set, loopback serving an
-    // LLM. Local must win, and the remote must never be probed. The remote is
-    // deliberately unroutable, so any attempt surfaces as a real failure.
     #[tokio::test]
     #[serial_test::serial(inkentry_no_server_env)]
     async fn loopback_with_an_llm_wins_over_an_llm_capable_server_url() {
@@ -358,7 +285,7 @@ mod tests {
         let cfg = Config {
             server_url: Some(remote.uri()),
             project_id: Some("team/proj".to_string()),
-            mode: None, // local_first, because server_url is set
+            mode: None,
             ..Default::default()
         };
         assert_eq!(
@@ -376,10 +303,6 @@ mod tests {
         );
     }
 
-    // The privacy guard. `llm_url` is configured, so the user asked for a local
-    // LLM; the running daemon has not picked it up. Falling through to the
-    // LLM-capable remote would ship their code somewhere they did not choose,
-    // so this must stop, and the remote must receive nothing.
     #[tokio::test]
     #[serial_test::serial(inkentry_no_server_env)]
     async fn configured_local_llm_not_served_stops_and_never_reaches_the_remote() {
@@ -408,23 +331,7 @@ mod tests {
         );
     }
 
-    // ── the two decision steps, exhaustively ─────────────────────────────────
-    //
-    // `get_tier` caches its probe in a process-wide cell with no reset hook, so
-    // the remote arm cannot be driven end to end from a unit test without
-    // making the result depend on test ordering. These cover the decision
-    // directly; `tests/command_llm_routing.rs` drives the same arms through a
-    // real `inkentry` process.
-
-    // No local server, no `server_url`: nothing to route to, and the reason
-    // must be the actionable one rather than the offline one, which belongs
-    // only to the explicit opt-out the two tests above pin.
-    //
-    // Driven off `Tier::Offline(OfflineReason::NoLocalServer)` rather than a real probe: loopback
-    // auto-discovery falls back to DEFAULT_SERVER_PORT, so an empty state dir does not
-    // mean "no local server" on a machine running the daemon this repo's own
-    // agent workflow encourages — it means the daemon answers and the route
-    // comes back `Local`.
+    // get_tier caches in a process-wide cell with no reset hook, so the decision functions are tested directly.
     #[test]
     fn nothing_configured_anywhere_reports_no_llm_not_offline() {
         let route = route_without_probing_the_remote(
@@ -440,8 +347,6 @@ mod tests {
         );
     }
 
-    // The other half of that terminal: a configured `server_url` must not be
-    // swallowed by it, or step 4 would never run.
     #[test]
     fn a_configured_server_url_still_reaches_the_remote_step() {
         let cfg = Config {
@@ -468,9 +373,6 @@ mod tests {
         assert_eq!(route.target_url(), Some("http://127.0.0.1:4655"));
     }
 
-    // The version-skew guard at the decision layer: a tier that advertises an
-    // embedder and other capabilities but not `llm.complete` has no LLM route
-    // behind it, so a legacy capability can never stand in for the LLM signal.
     #[test]
     fn local_route_declines_a_tier_without_llm_complete() {
         let mut caps = Capabilities::all();
@@ -504,8 +406,6 @@ mod tests {
         );
     }
 
-    // No local server at all plus a configured `llm_url` is still the stale or
-    // stopped daemon case, not "no LLM anywhere": the fix is still a restart.
     #[test]
     fn local_route_stops_when_llm_url_is_set_and_no_local_server_is_up() {
         let cfg = Config {
@@ -520,15 +420,8 @@ mod tests {
         );
     }
 
-    // The boundary of the privacy guard, pinned so a change to it is visible.
-    //
-    // In `cloud_first` the inference tier IS the configured `server_url`, so
-    // step 2 matches on the remote and step 3 never runs: a set `llm_url` does
-    // not stop an LLM call from going to the remote. That is consistent rather
-    // than an escape hatch, because `cloud_first` already routes embedding to
-    // the same remote, so chunk text leaves the machine there either way. In
-    // `local_first`, which is the default whenever `server_url` is set, the
-    // guard does apply.
+    // In cloud_first the inference tier is server_url itself, so the privacy guard never applies;
+    // embedding already sends chunk text to that remote.
     #[test]
     fn cloud_first_routes_to_the_remote_even_with_llm_url_set() {
         let cfg = Config {
@@ -544,8 +437,6 @@ mod tests {
         assert_eq!(route.target_url(), Some("https://team.example:4655"));
     }
 
-    // The same config in `local_first`, for contrast: there the guard stops the
-    // call rather than sending it to the remote.
     #[test]
     fn local_first_with_the_same_config_stops_instead_of_using_the_remote() {
         let cfg = Config {
@@ -591,10 +482,6 @@ mod tests {
         assert_eq!(route.target_url(), Some("https://team.example:4655"));
     }
 
-    // The remote arm must resolve its bearer against the remote's own origin.
-    // Pointing the inference target at `server_url` is what makes
-    // `bearer_for` (per-origin) ask about the right server rather than the
-    // loopback the embed path is using.
     #[test]
     fn remote_route_config_names_the_remote_origin_for_credential_resolution() {
         let cfg = Config {
@@ -655,8 +542,6 @@ mod tests {
             Some(NoLlmReason::NoLlmAnywhere)
         );
     }
-
-    // ── the route carries the explicit-remote distinction into the client ────
 
     #[test]
     fn unavailable_route_builds_no_client() {

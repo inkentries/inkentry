@@ -5,6 +5,7 @@ pub mod git_notes;
 pub mod memory;
 pub mod note_kind;
 pub mod note_record;
+pub mod origin;
 pub mod remote;
 
 // Storage sub-modules: each holds impl blocks for Database or standalone types.
@@ -42,15 +43,14 @@ pub use memory::{
 };
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{CarriedEdge, NoteRecord, carrier_token, now_millis, now_secs};
+pub use origin::Origin;
 pub use remote::credential_hint;
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
     RemoteMemoryBackend, SincePage, SyncEdgePush,
 };
 pub use specs::{SpecRecord, StaleSpec};
-pub use stats::{
-    DriftCandidate, EmbedTokenStats, IndexStats, LanguageStat, StalenessReport, record_usage_at,
-};
+pub use stats::{DriftCandidate, EmbedTokenStats, IndexStats, LanguageStat, StalenessReport};
 
 use anyhow::Result;
 use std::path::Path;

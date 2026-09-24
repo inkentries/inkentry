@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod caller;
 mod paths;
 mod persist;
 mod predicates;
@@ -18,6 +19,7 @@ pub mod server_keys;
 use paths::{find_project_config, inkentry_config_dir};
 use secret_store::SecretStore;
 
+pub use caller::CallerDeclaration;
 pub use paths::{
     find_project_db, find_project_dir, require_project_db, require_project_db_at, resolve_db,
 };
@@ -280,6 +282,16 @@ pub struct Config {
     /// [`Config::load_with_store`]).
     #[serde(default)]
     pub index: IndexConfig,
+
+    /// ADR-098 D5/D6: the caller's self-declaration
+    /// (`INKENTRY_TRIGGER`/`INKENTRY_ACTOR`/`INKENTRY_SESSION_REF`/
+    /// `INKENTRY_TOOL`/`INKENTRY_MODEL`), read once from the environment at
+    /// [`Config::load`] — never from a config file, and never guessed from a
+    /// TTY check. `#[serde(skip)]` for the same reason [`Self::inference_url`]
+    /// is: a per-invocation fact, not something a config file could sensibly
+    /// pin for every future run.
+    #[serde(skip)]
+    pub caller: CallerDeclaration,
 }
 
 /// One organization's WorkOS session.
@@ -378,6 +390,7 @@ impl Default for Config {
             store_in_git_notes: Self::default_store_in_git_notes(),
             org: None,
             index: IndexConfig::default(),
+            caller: CallerDeclaration::default(),
         }
     }
 }
@@ -589,6 +602,11 @@ impl Config {
                 cfg.mode = Some(SyncMode::CloudFirst);
             }
         }
+
+        // ADR-098 D5/D6: read once here, never from either config file and
+        // never re-derived per command, so every command in this process
+        // shares one declaration.
+        cfg.caller = CallerDeclaration::from_env();
 
         Ok(cfg)
     }

@@ -115,6 +115,7 @@ pub async fn memory_sync(
     mem_path: &std::path::Path,
     cfg: &Config,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
     let tier = capability::get_tier(cfg).await;
     capability::require_tier1("sync", tier, cfg.server_url.as_deref())?;
     let (base_url, project_id, key) = sync_target("sync", cfg, args.project.as_deref()).await?;
@@ -225,6 +226,18 @@ pub async fn memory_sync(
             edges_note
         );
     }
+    super::super::events::record(
+        cfg,
+        mem_path,
+        None,
+        "sync",
+        None,
+        Some(pulled.applied as i64 + pushed.created as i64),
+        &[],
+        None,
+        started,
+        true,
+    );
     Ok(())
 }
 

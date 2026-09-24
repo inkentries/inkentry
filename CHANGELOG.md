@@ -40,6 +40,28 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   same-named function elsewhere, and TSX and JSX files now get call and import
   edges. Your next `inkentry index` upgrades an existing index in place: it
   re-extracts edges only, without re-embedding.
+- **A local event log and entry origin.** `memory.db` moves to schema version
+  13: a new `events` table records one best-effort row per `search`,
+  `context`, `memory add`/`supersede`/`list`/`show`, `harvest` and `sync`
+  call, after its response is written and never affecting exit status or
+  output. `INKENTRY_TRIGGER` (`explicit`/`hook`) and `INKENTRY_ACTOR`
+  (`human`/`agent`) let a caller declare itself; undeclared reads `unknown`
+  and is never guessed. `INKENTRY_SESSION_REF` groups a session's events
+  (stored hashed); `INKENTRY_TOOL`/`INKENTRY_MODEL` are free text.
+  `inkentry metrics snapshot` gains an `events` block (`use.*`/`auto.*`
+  rates, per-command call counts by trigger, actor breakdown, latency/token
+  medians) over its own fixed 7-day window; `inkentry status` gains a
+  matching compact "Use, last 7 days" section. `inkentry metrics clear`
+  empties the table. A memory entry can also record its `origin` (`human` /
+  `agent` / `harvest`, plus free-text `tool`/`model`) — not part of its
+  identity — filled in from the same declaration on `memory add`, and always
+  `harvest` on entries `inkentry harvest` writes. Exposed by `memory show`
+  and `memory list --format json`; round-trips through git-notes and the
+  portable dump format. `usage` in `index.db` is no longer written to by the
+  CLI (`inkentry status`'s usage summary now reads `events` instead); the
+  table itself is untouched.
+  See [ADR-098](docs/adr/098-metrics-and-evaluation-indexed-by-commit.md) D5/D6.
+
 ### Changed
 
 - **Unified `search` no longer hands memory half of every result page.** A

@@ -71,6 +71,7 @@ fn note_input(kind: &str, title: &str) -> NoteInput {
         source_ref: None,
         valid_at: None,
         supersedes: None,
+        origin: None,
     }
 }
 
@@ -422,6 +423,7 @@ fn make_note_record(id: i64, title: &str) -> NoteRecord {
         remote_id: None,
         superseded_by_entity_id: None,
         edges: Vec::new(),
+        origin: None,
     }
 }
 
@@ -3782,6 +3784,7 @@ fn note_for(title: &str, id: i64, created_at: i64) -> Note {
         source_project: None,
         source_project_path: None,
         remote_id: None,
+        origin: None,
     }
 }
 

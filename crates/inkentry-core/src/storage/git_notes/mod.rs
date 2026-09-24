@@ -541,6 +541,10 @@ fn entity_update_record(
         entity_id: Some(note_entity_id(base)),
         superseded_by_entity_id,
         edges,
+        // Carried forward defensively; the fold never picks a state-update
+        // record as its group's base (it is never the earliest-created copy),
+        // so this value is not what a reader ultimately sees.
+        origin: base.origin.clone(),
     }
 }
 

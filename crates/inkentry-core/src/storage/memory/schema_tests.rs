@@ -604,6 +604,76 @@ fn a_store_that_fails_midway_through_step_12_is_left_at_version_11() {
     assert!(has_tags_column, "the old columns must still be present");
 }
 
+// ── step 13 (ADR-098 D5/D6): events table + origin columns ─────────────────────
+
+#[test]
+fn step_13_on_a_fresh_store_creates_an_empty_events_table_and_readable_origin_columns() {
+    let (_dir, store) = store();
+    assert_eq!(
+        store.events_in_window(0, i64::MAX).unwrap(),
+        Vec::new(),
+        "a fresh store's events table starts empty"
+    );
+    let id = add(&store, "fresh note");
+    let note = store.get(&id).unwrap().expect("just-inserted note");
+    assert_eq!(
+        note.origin, None,
+        "a note added with no origin reads back as absent, not a guess"
+    );
+}
+
+#[test]
+fn step_13_on_a_12_stamped_store_with_rows_adds_events_and_leaves_existing_rows_with_no_origin() {
+    use crate::storage::migration_ladder::apply_ladder;
+
+    register_sqlite_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
+            include_str!("../../../migrations/memory_001_initial.sql")
+        ))
+        .unwrap();
+        // Climb only as far as step 12, leaving the store stamped exactly
+        // where a real ADR-101-migrated store would sit before this step
+        // ever runs.
+        apply_ladder(&conn, 11, 12, super::migrate::MEMORY_MIGRATIONS, "test.db").unwrap();
+        conn.execute(
+            "INSERT INTO notes (uuid, kind, title, body, created_at, status, entity_id) \
+             VALUES ('0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e01', 'decision', 'pre-13 row', 'b', \
+             1700000000, 'active', 'pre13entity')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = MemoryStore::open(&path).expect("opening a 12-stamped store must migrate it");
+    let version: i32 = store
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, super::MEMORY_SCHEMA_VERSION);
+
+    assert_eq!(
+        store.events_in_window(0, i64::MAX).unwrap(),
+        Vec::new(),
+        "step 13 creates the events table empty, it does not backfill it"
+    );
+
+    let id: NoteId = NoteId::from_str("0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e01").unwrap();
+    let note = store
+        .get(&id)
+        .unwrap()
+        .expect("the pre-existing row must survive the migration");
+    assert_eq!(note.title, "pre-13 row");
+    assert_eq!(
+        note.origin, None,
+        "a row written before step 13 has no origin_actor_kind and must read as absent"
+    );
+}
+
 #[test]
 fn a_store_from_a_future_build_is_refused() {
     register_sqlite_vec();

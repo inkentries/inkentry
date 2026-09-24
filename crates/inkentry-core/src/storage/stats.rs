@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::path::Path;
 
 use super::Database;
 
@@ -295,23 +294,6 @@ impl Database {
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("querying usage stats")
     }
-}
-
-/// Record a command invocation at `db_path` without requiring a `Database` handle.
-/// Opens a raw connection and inserts into the `usage` table. Fire-and-forget.
-pub fn record_usage_at(db_path: &Path, command: &str) {
-    use rusqlite::Connection;
-    let Ok(conn) = Connection::open(db_path) else {
-        return;
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let _ = conn.execute(
-        "INSERT INTO usage (command, called_at) VALUES (?1, ?2)",
-        rusqlite::params![command, now],
-    );
 }
 
 #[cfg(test)]

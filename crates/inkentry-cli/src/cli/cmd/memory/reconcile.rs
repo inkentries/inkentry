@@ -1024,6 +1024,7 @@ mod init_import_tests {
             source_ref: None,
             valid_at: None,
             supersedes: None,
+            origin: None,
         }
     }
 
@@ -1339,6 +1340,7 @@ mod init_import_tests {
                 source_ref: None,
                 valid_at: None,
                 supersedes: None,
+                origin: None,
             })
             .await
             .expect("git-notes add");
@@ -1397,6 +1399,7 @@ mod init_import_tests {
             entity_id: None,
             superseded_by_entity_id: None,
             edges: Vec::new(),
+            origin: None,
         };
         crate::storage::append_to_git_notes(Some(git_root), &legacy)
             .await
@@ -1516,6 +1519,7 @@ mod init_import_tests {
                 source_ref: None,
                 valid_at: None,
                 supersedes: None,
+                origin: None,
             })
             .await
             .expect("git-notes add");
@@ -1578,6 +1582,7 @@ mod init_import_tests {
                 source_ref: None,
                 valid_at: None,
                 supersedes: None,
+                origin: None,
             })
             .await
             .context("git-notes add A")?;
@@ -1593,6 +1598,7 @@ mod init_import_tests {
                 source_ref: None,
                 valid_at: None,
                 supersedes: None,
+                origin: None,
             })
             .await
             .context("git-notes add B")?;
@@ -1796,6 +1802,7 @@ mod init_import_tests {
                     source_ref: None,
                     valid_at: None,
                     supersedes: None,
+                    origin: None,
                 })
                 .await
                 .expect("git-notes add");

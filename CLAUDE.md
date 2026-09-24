@@ -81,6 +81,9 @@ lib.rs           — crate root; re-exports public modules
 error.rs         — InkentryError enum
 config/
   mod.rs         — Config struct; load from ~/.config/inkentry/config.toml
+  caller.rs      — ADR-098 D5/D6: CallerDeclaration (Trigger, ActorKind), read once
+                   from INKENTRY_TRIGGER/ACTOR/SESSION_REF/TOOL/MODEL at Config::load
+                   into Config::caller; session_ref is hashed here, never kept raw
   sync_mode.rs   — SyncMode enum: offline / local_first / cloud_first mode selection
   project_id.rs  — project-id derivation from git remote / local fallback
   paths.rs       — config-dir + project/db discovery
@@ -123,17 +126,20 @@ llm/
   mod.rs         — LlmBackend trait, Message struct, Token type
 
 metrics/
-  mod.rs         — ADR-098 state-metrics snapshot facade: Header/Snapshot types,
-                   build_snapshot (full `inkentry metrics snapshot`) and
-                   build_status_summary (the cheap subset `inkentry status`
-                   prints). State source only: no events block yet,
-                   and no eval (the CLI never runs one)
+  mod.rs         — ADR-098 snapshot facade: Header/Snapshot types, build_snapshot
+                   (full `inkentry metrics snapshot`) and build_status_summary (the
+                   cheap subset `inkentry status` prints). State + events sources;
+                   no eval (the CLI never runs one, D7)
   git.rs         — plain commit-history facts for a window: HEAD's sha/commit
                    time, and commits reachable from it with (for the full
                    snapshot) their `git log --numstat` line counts, or (for
                    status's cheaper path) just their shas
   state.rs       — the rec.*/cmp.* metric computations themselves, against a
                    MemoryStore and the git facts above
+  events.rs      — the use.*/auto.* metric computations (D3) over EventRow rows
+                   from the local `events` table (D5): session grouping,
+                   automation rates, per-command call counts, latency/token
+                   medians
 
 indexer/
   mod.rs         — re-exports Chunk, ChunkKind, SourceParser
@@ -178,6 +184,9 @@ storage/
   specs.rs       — spec record CRUD
   stats.rs       — aggregate statistics queries
   note_record.rs — NoteRecord struct (memory entry)
+  origin.rs      — Origin (ADR-098 D6): who/what produced an entry (actor_kind,
+                   tool, model), not part of entity_id. from_caller derives it from
+                   Config::caller; harvest() is the only way actor_kind = harvest
   entity_id.rs   — entity_id: the content-addressed identity a memory entry carries
                    across the local store, refs/notes/inkentry and a server. A pure
                    function of (kind, title, body), so two machines recording the
@@ -203,6 +212,11 @@ storage/
     file_links.rs — resolve_file_link: linked-file path normalisation + git/disk
                    state resolution (ADR-101 D3)
     search.rs    — memory FTS + semantic search
+    events.rs    — ADR-098 D5: the local `events` table. record_event_at is the
+                   one best-effort, short-busy-timeout write path every recording
+                   call site funnels through; events_in_window/
+                   events_command_counts_since/clear_events back the metrics
+                   events source, status's 7-day usage summary, and `metrics clear`
     tests.rs     — integration tests for NoteStore
   backend.rs     — StorageBackend trait (local vs remote)
   remote/
@@ -230,6 +244,9 @@ migrations/  (crates/inkentry-core/migrations/)
                            store is created from it and climbs the ladder
   memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):
                            tags and linked files into rows
+  memory_013.sql — step 13 (ADR-098 D5/D6): the `events` table and the
+                           nullable notes.origin_actor_kind/origin_tool/origin_model
+                           columns; both pure additions, no data pass
 ```
 
 ### inkentry-cli (`crates/inkentry-cli/src/`)
@@ -278,6 +295,10 @@ cli/
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all
                    three, pinned so nothing is left to inheritance)
+    events.rs    — ADR-098 D5: `record()`, the one call every recording command
+                   (search, context, memory add/supersede/list/show, harvest, sync)
+                   funnels through. Gates on a local sqlite store existing and not
+                   being remote-primary; builds EventFields from Config::caller
     fusion.rs    — cross-corpus rank fusion + the unified code/memory result envelope (ADR-081)
     harvest.rs   — `inkentry harvest` handler (top-level; capture memory from
                    git history + session logs). Shares its implementation and
@@ -288,9 +309,10 @@ cli/
     link.rs      — `inkentry link/unlink/autoclean` handlers
     links.rs     — `inkentry links` handler
     import.rs    — `inkentry import` handler (portable dump; see docs/dump-format.md)
-    metrics.rs   — `inkentry metrics snapshot` handler and the compact section
-                   `status` prints; CLI-thin, resolves the project and renders
-                   what `inkentry_core::metrics` computes (ADR-098)
+    metrics.rs   — `inkentry metrics snapshot`/`clear` handlers and the compact
+                   sections `status` prints (state metrics, and "Use, last 7
+                   days" from the events block); CLI-thin, resolves the project
+                   and renders what `inkentry_core::metrics` computes (ADR-098)
     misc.rs      — `inkentry chunks` / `inkentry languages` handlers
     search.rs    — `inkentry search` handler (unified code+memory, RRF fusion, corpus filters)
     server.rs    — `inkentry server start/stop/status/logs` daemon management

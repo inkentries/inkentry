@@ -1,20 +1,5 @@
-//! HTTP client for WorkOS-direct device-flow auth.
-//!
-//! Every token leg the CLI needs is a WorkOS PUBLIC-CLIENT exchange —
-//! `client_id` only, no secret — so the CLI talks to WorkOS directly rather
-//! than routing auth through cloud-api.
-//!
-//! WorkOS endpoints (all under `https://api.workos.com/user_management`):
-//!   POST /authorize/device   — start the device-authorization grant
-//!   POST /authenticate       — exchange a device code, refresh, or switch org
-//!
-//! Org selection happens browser-side on WorkOS's hosted approval page, so the
-//! CLI never sees `organization_selection_required` and there is no
-//! pending-token / select-org step.
-//!
-//! cloud-api is still used for ONE thing — `GET /v1/me` resolves an org slug to
-//! its local org UUID before a switch (see [`fetch_me`]). That call carries the
-//! WorkOS access token as a bearer; cloud-api validates it.
+// Token exchanges are WorkOS public-client calls (`client_id` only, no secret),
+// made directly. cloud-api is used only for `GET /v1/me`.
 
 use std::time::Duration;
 
@@ -23,36 +8,22 @@ use serde::Deserialize;
 
 use inkentry_core::config::{AuthTokens, Config};
 
-/// Default cloud API base URL (used for `GET /v1/me`, and as the cloud-vs-
-/// self-hosted origin boundary for bearer resolution, ADR-071 D2). Single
-/// source of truth lives in `inkentry_core::config::server_keys`, which also
-/// reads it (and its `INKENTRY_CLOUD_URL` override) when deciding credential
-/// kind; re-exported here.
 pub use inkentry_core::config::server_keys::DEFAULT_CLOUD_URL;
 
-/// Default WorkOS User Management API base URL.
 pub const DEFAULT_WORKOS_URL: &str = "https://api.workos.com";
 
-/// Embedded PUBLIC-CLIENT `client_id` for the **production** WorkOS environment
-/// (inkentry project, "Production" env → `obedient-paradise-94.authkit.app`).
-/// Must match cloud-api's `workos_client_id` in `terraform/prod.tfvars`, since
-/// cloud-api validates every access token's issuer against this client.
+// Must match cloud-api's `workos_client_id` (terraform/prod.tfvars); it validates
+// every access token's issuer against this client.
 pub const WORKOS_CLIENT_ID_PROD: &str = "client_01M0K17J4JW69SMCQCYGZS566G";
 
-/// Embedded PUBLIC-CLIENT `client_id` for the **dev / staging** WorkOS environment
-/// (inkentry project, "Staging" env → `animated-petal-54-staging.authkit.app`).
-/// Must match cloud-api's `workos_client_id` in `terraform/dev.tfvars`.
+// Must match cloud-api's `workos_client_id` (terraform/dev.tfvars).
 pub const WORKOS_CLIENT_ID_DEV: &str = "client_01M0K17HRZTY5F13BC0N5ZEJVE";
 
-/// RFC 8628 device-code grant type.
 const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
-/// OAuth refresh-token grant type (also used for silent org-switch).
 const GRANT_REFRESH_TOKEN: &str = "refresh_token";
 
-/// HTTP request timeout for non-polling auth calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Build the shared reqwest client used for all auth calls.
 pub fn build_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -60,10 +31,6 @@ pub fn build_client() -> Result<reqwest::Client> {
         .context("building HTTP client")
 }
 
-/// Resolve the WorkOS base URL.
-///
-/// `INKENTRY_WORKOS_URL` overrides the default (used by tests to point at a mock
-/// server). Trailing slashes are trimmed.
 pub fn workos_url() -> String {
     std::env::var("INKENTRY_WORKOS_URL")
         .ok()
@@ -73,14 +40,6 @@ pub fn workos_url() -> String {
         .to_string()
 }
 
-/// Resolve the embedded WorkOS `client_id` for the active environment.
-///
-/// Selection mirrors the cloud-url default-vs-override pattern already used for
-/// the rest of the CLI's environment config:
-///   1. `INKENTRY_WORKOS_CLIENT_ID` — explicit override (tests / bespoke envs).
-///   2. Otherwise derived from `cloud_url`: the production cloud host
-///      (`api.inkentry.com`) selects the prod client_id; anything else (a dev
-///      override, localhost, a staging host) selects the dev client_id.
 pub fn workos_client_id(cloud_url: &str) -> String {
     if let Ok(v) = std::env::var("INKENTRY_WORKOS_CLIENT_ID")
         && !v.trim().is_empty()
@@ -94,10 +53,6 @@ pub fn workos_client_id(cloud_url: &str) -> String {
     }
 }
 
-/// Whether `cloud_url` targets the production inkentry cloud API host.
-///
-/// Only the canonical production host counts as prod; every other host (dev
-/// overrides, staging, localhost) falls through to the dev environment.
 fn is_prod_cloud_url(cloud_url: &str) -> bool {
     let host = cloud_url
         .trim()
@@ -107,12 +62,8 @@ fn is_prod_cloud_url(cloud_url: &str) -> bool {
     host.eq_ignore_ascii_case("api.inkentry.com")
 }
 
-// ── Wire types ────────────────────────────────────────────────────────────────
-
-/// `POST /authorize/device` response (WorkOS shape).
 #[derive(Debug, Deserialize)]
 pub struct DeviceCodeResponse {
-    /// Opaque handle — never parsed by the CLI.
     pub device_code: String,
     pub user_code: String,
     pub verification_uri: String,
@@ -121,47 +72,31 @@ pub struct DeviceCodeResponse {
     pub interval: u64,
 }
 
-/// One `orgs[]` entry from `GET /v1/me`.
-///
-/// `id` is the **local org UUID**; `workos_org_id` is the provider-assigned id
-/// (e.g. `org_01KV…`) carried in the access-token JWT. Extra fields (e.g.
-/// `role`) are ignored.
+// `id` is the local org UUID; `workos_org_id` is the provider's id, as carried in
+// the access token's `org_id` claim.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MeOrg {
     pub id: String,
     pub name: String,
     pub slug: String,
-    /// Provider-assigned org id — matches the `org_id` claim in the access-token JWT.
     #[serde(default)]
     pub workos_org_id: Option<String>,
 }
 
-/// `GET /v1/me` response (only the membership list is consumed by the CLI).
 #[derive(Debug, Clone, Deserialize)]
 pub struct MeResponse {
     #[serde(default)]
     pub orgs: Vec<MeOrg>,
 }
 
-/// Raw WorkOS `/authenticate` success body.
-///
-/// WorkOS returns the rotated `access_token` (a JWT) and `refresh_token`. The
-/// expiry and organisation are carried in the access-token JWT claims (`exp`,
-/// `org_id`); `organization_id` is also echoed at the top level on org-scoped
-/// authentications, which we prefer when present.
 #[derive(Debug, Clone, Deserialize)]
 struct WorkosAuthResponse {
     access_token: String,
     refresh_token: String,
-    /// Echoed for org-scoped sessions; falls back to the JWT `org_id` claim.
     #[serde(default)]
     organization_id: Option<String>,
 }
 
-/// A successful token exchange, normalised into the persisted [`AuthTokens`].
-///
-/// Built from a [`WorkosAuthResponse`] by decoding the access-token JWT for its
-/// `exp` (→ `expires_at`) and `org_id` claims.
 #[derive(Debug, Clone)]
 pub struct TokenSuccess {
     pub access_token: String,
@@ -171,9 +106,7 @@ pub struct TokenSuccess {
 }
 
 impl TokenSuccess {
-    /// Convert a normalised success body into the persisted [`AuthTokens`]
-    /// shape, recording the origin of the cloud host the tokens were issued for
-    /// so the access token is later released only to that origin.
+    // `cloud_origin` limits where the access token is later released.
     pub fn into_auth_tokens(self, cloud_origin: String) -> AuthTokens {
         AuthTokens {
             access_token: self.access_token,
@@ -186,8 +119,6 @@ impl TokenSuccess {
 }
 
 impl WorkosAuthResponse {
-    /// Normalise the WorkOS body into a [`TokenSuccess`], deriving `expires_at`
-    /// and `org_id` from the access-token JWT claims.
     fn into_success(self) -> TokenSuccess {
         let claims = decode_jwt_claims(&self.access_token).unwrap_or_default();
         let expires_at = claims.exp.unwrap_or(0);
@@ -201,29 +132,20 @@ impl WorkosAuthResponse {
     }
 }
 
-/// The subset of JWT claims the CLI reads from a WorkOS access token.
 #[derive(Debug, Default, Deserialize)]
 struct JwtClaims {
-    /// Absolute expiry (Unix seconds).
     exp: Option<i64>,
-    /// WorkOS organisation id the token is scoped to.
     org_id: Option<String>,
 }
 
-/// Decode the claims (second segment) of a JWT without verifying the signature.
-///
-/// The CLI does not validate the token — WorkOS issued it over TLS and the
-/// server re-validates on every request. We only need the `exp` and `org_id`
-/// claims to populate local state, so a base64url-decode of the payload is
-/// sufficient. Returns `None` if the token is malformed.
+// Unverified: WorkOS issued the token and the server re-validates it on every request.
 fn decode_jwt_claims(token: &str) -> Option<JwtClaims> {
     let payload_b64 = token.split('.').nth(1)?;
     let bytes = base64url_decode(payload_b64)?;
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Decode unpadded base64url (RFC 4648 §5) into bytes. Returns `None` on any
-/// invalid character. A small standalone decoder so the CLI needs no base64 dep.
+// Hand-rolled to avoid a base64 dependency.
 fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     fn val(c: u8) -> Option<u32> {
         match c {
@@ -252,7 +174,6 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// WorkOS `/authenticate` 4xx error body (RFC 8628 + WorkOS error codes).
 #[derive(Debug, Deserialize)]
 struct ErrorResponse {
     error: String,
@@ -260,12 +181,6 @@ struct ErrorResponse {
     error_description: Option<String>,
 }
 
-// ── Device flow ───────────────────────────────────────────────────────────────
-
-/// `POST /user_management/authorize/device` to start the device grant.
-///
-/// Sends only `client_id` (public-client init); WorkOS returns the device code,
-/// user code, verification URLs, expiry, and poll interval.
 pub async fn initiate_device(
     client: &reqwest::Client,
     workos_url: &str,
@@ -289,29 +204,18 @@ pub async fn initiate_device(
         .context("parsing device authorization response")
 }
 
-/// Outcome of a single poll of `/authenticate` (device-code grant).
 pub enum PollOutcome {
-    /// Success — tokens are ready to persist.
     Success(TokenSuccess),
-    /// User has not yet approved.
     Pending,
-    /// Server requests slower polling (RFC 8628 §3.5).
     SlowDown,
-    /// HTTP 429 — back off.
     RateLimit,
-    /// Device code expired.
     Expired,
-    /// User explicitly denied.
     Denied,
-    /// invalid_grant (e.g. code already used or revoked).
     InvalidGrant(String),
-    /// A WorkOS MFA / step-up challenge — non-fatal; complete in the browser.
     Challenge(Option<String>),
-    /// Transient network / parse error.
     Error(anyhow::Error),
 }
 
-/// Poll `POST /user_management/authenticate` once with the device-code grant.
 pub async fn poll_token(
     client: &reqwest::Client,
     workos_url: &str,
@@ -371,11 +275,7 @@ pub async fn poll_token(
     }
 }
 
-/// `POST /user_management/authenticate` with the refresh-token grant.
-///
-/// With `organization_id` set this is a silent org-switch; without it, a plain
-/// refresh reverts to the account's default org. A non-member / unknown
-/// organisation surfaces as a clear error.
+// Without `organization_id` the grant reverts to the account's default org.
 pub async fn refresh_token(
     client: &reqwest::Client,
     workos_url: &str,
@@ -402,27 +302,8 @@ pub async fn refresh_token(
     token_or_error(resp, "refreshing token").await
 }
 
-/// Ensure the access token in `auth` is fresh before a cloud-api call.
-///
-/// WorkOS access tokens are short-lived (~5 min), so a token read straight from
-/// the cached session is frequently already expired by the time the CLI runs —
-/// every cloud-api call would then `401`. This guard refreshes proactively when
-/// the token is at/past expiry (with a small skew window, see
-/// [`AuthTokens::is_expired`]) using the stored refresh token directly against
-/// WorkOS (refresh grant), hands the rotated tokens to `persist`, and returns
-/// the tokens to use.
-///
-/// The refresh re-sends `auth.org_id` as `organization_id` so a prior `org
-/// switch` survives rotation — WorkOS's refresh grant otherwise reverts to the
-/// account's default org when `organization_id` is omitted, silently undoing
-/// the switch on every expiry (see [`refresh_token`]).
-///
-/// When the token is still valid, `auth` is returned unchanged (no network
-/// call). A refresh failure (revoked/expired refresh token) surfaces a clear
-/// "run `inkentry login`" error rather than a raw 401 from the downstream call.
-///
-/// `persist` is invoked with the rotated tokens so the caller controls *where*
-/// they are written (the global config in production, a temp path in tests).
+// Re-sends `auth.org_id` so an org switch survives rotation; the refresh grant
+// otherwise reverts to the default org.
 pub async fn ensure_fresh_token(
     client: &reqwest::Client,
     workos_url: &str,
@@ -448,39 +329,15 @@ pub async fn ensure_fresh_token(
     Ok(rotated)
 }
 
-/// The `organization_id` to re-request on a plain refresh: `auth.org_id` when
-/// set, `None` when empty (an orgless account, or tokens predating org
-/// tracking) so the refresh grant falls back to its default-org behaviour
-/// instead of sending an empty `organization_id` form field.
+// An empty id (orgless account) must not be sent as an empty `organization_id` field.
 pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
     (!org_id.is_empty()).then_some(org_id)
 }
 
-/// Resolve the bearer token to send to `server_url`, refreshing the stored
-/// WorkOS access token first if it has expired.
-///
-/// Resolution goes through [`Config::bearer_for`] (ADR-071 D2): only a
-/// cloud-origin `server_url` can ever resolve to the `[auth]` access token,
-/// so a self-hosted `server_url` never mistakes an unrelated cloud login for
-/// its own credential. Because access tokens are short-lived, commands that
-/// hit cloud-api directly (e.g. `inkentry sync`, `inkentry plumbing pull`) must
-/// guard against using an already-expired token, which would 401.
-///
-/// Behaviour:
-///   - When `[auth]` tokens are present AND the resolved bearer was derived
-///     from them (i.e. `server_url` is the cloud origin) AND they are
-///     expired, refresh directly against WorkOS, persist the rotated tokens,
-///     and return the fresh access token.
-///   - Otherwise return the resolved bearer unchanged: a self-hosted
-///     server-key or an env override is not refreshable here, and a
-///     still-valid token needs no network round-trip.
-///
-/// A refresh failure surfaces a clear "run `inkentry login`" error.
 pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<Option<String>> {
     let resolved = cfg.bearer_for(server_url)?;
 
-    // Only the WorkOS-login bearer (the cloud kind, the resolved org's cached
-    // session) is refreshable; a self-hosted server-key is returned as-is.
+    // Only the WorkOS-login bearer is refreshable; a self-hosted server-key is returned as-is.
     let Some(auth) = cfg
         .cloud_session()?
         .filter(|a| Some(a.access_token.as_str()) == resolved.as_deref())
@@ -505,10 +362,6 @@ pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<O
     Ok(Some(fresh.access_token))
 }
 
-/// `GET /v1/me` (cloud-api) — fetch the caller's identity and org memberships.
-///
-/// Authenticated with the stored WorkOS access token as a bearer. Used to
-/// resolve an org slug to its local org UUID before a silent switch.
 pub async fn fetch_me(
     client: &reqwest::Client,
     cloud_url: &str,
@@ -533,19 +386,12 @@ pub async fn fetch_me(
     anyhow::bail!("GET /v1/me failed ({status}): {body}");
 }
 
-/// Best-effort display name for the org identified by `workos_org_id`.
-///
-/// Calls `GET /v1/me` with a short (5 s) timeout independent of the caller's
-/// client, finds the entry whose `workos_org_id` matches, and returns
-/// `"<name> (<slug>)"`. Returns `None` on any error (network, timeout, missing
-/// field, org not found) so the caller can fall back to the raw org id without
-/// failing.
+// Best-effort with a short timeout: a slow or failing `/v1/me` must never delay or fail login.
 pub async fn lookup_org_display_name(
     cloud_url: &str,
     access_token: &str,
     workos_org_id: &str,
 ) -> Option<String> {
-    // Build a client with a tight timeout so a slow /v1/me never delays login.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -557,8 +403,6 @@ pub async fn lookup_org_display_name(
         .map(|o| format!("{} ({})", o.name, o.slug))
 }
 
-/// Parse a `TokenSuccess` from a 2xx WorkOS response, mapping known error bodies
-/// (notably a non-member organisation) to readable errors.
 async fn token_or_error(resp: reqwest::Response, ctx: &str) -> Result<TokenSuccess> {
     let status = resp.status();
     if status.is_success() {
@@ -583,8 +427,6 @@ async fn token_or_error(resp: reqwest::Response, ctx: &str) -> Result<TokenSucce
 mod tests {
     use super::*;
 
-    /// Build a minimal unsigned JWT with the given claims payload (header and
-    /// signature are placeholders — the CLI never verifies them).
     fn fake_jwt(claims: &serde_json::Value) -> String {
         fn b64url(bytes: &[u8]) -> String {
             const ALPHABET: &[u8] =
@@ -629,7 +471,6 @@ mod tests {
 
     #[test]
     fn into_success_prefers_top_level_org_then_falls_back_to_claim() {
-        // Top-level organization_id wins.
         let resp = WorkosAuthResponse {
             access_token: fake_jwt(&serde_json::json!({ "exp": 999, "org_id": "org_claim" })),
             refresh_token: "rt".into(),
@@ -639,7 +480,6 @@ mod tests {
         assert_eq!(s.org_id, "org_top");
         assert_eq!(s.expires_at, 999);
 
-        // Falls back to the JWT claim when absent.
         let resp = WorkosAuthResponse {
             access_token: fake_jwt(&serde_json::json!({ "exp": 1000, "org_id": "org_claim" })),
             refresh_token: "rt".into(),
@@ -650,8 +490,6 @@ mod tests {
         assert_eq!(s.expires_at, 1000);
     }
 
-    // The origin passed to `into_auth_tokens` is the one the access token is
-    // later released only to (ADR-095 D3), so it must be recorded verbatim.
     #[test]
     fn into_auth_tokens_records_the_supplied_origin() {
         let success = TokenSuccess {
@@ -666,7 +504,6 @@ mod tests {
 
     #[test]
     fn workos_client_id_prod_for_canonical_host() {
-        // No override env set in this case path.
         let prev = std::env::var("INKENTRY_WORKOS_CLIENT_ID").ok();
         unsafe { std::env::remove_var("INKENTRY_WORKOS_CLIENT_ID") };
         assert_eq!(
@@ -686,10 +523,6 @@ mod tests {
         }
     }
 
-    // Guard the embedded prod `client_id` against an accidental revert to the
-    // retired "Spelunk Config" WorkOS project (client_01KTY5G1EK45Y93B0RB9Q1D2Q2
-    // → complete-cake-68.authkit.app). Production moved to the inkentry WorkOS
-    // project on 2026-08-27; this value must match terraform/prod.tfvars.
     #[test]
     fn prod_client_id_is_current_inkentry_prod_value() {
         assert_eq!(
@@ -707,11 +540,6 @@ mod tests {
         assert!(!is_prod_cloud_url("http://127.0.0.1:8080"));
     }
 
-    // The default cloud URL and the prod-host check are two constants that have
-    // to name the same host, and nothing else forces them to agree. Move one
-    // without the other and the default silently classifies as non-prod, so
-    // every real login quietly picks up the DEV WorkOS client id: an auth
-    // failure with no wrong-looking line of code anywhere.
     #[test]
     fn default_cloud_url_is_recognised_as_prod() {
         assert!(
@@ -721,22 +549,16 @@ mod tests {
         );
     }
 
-    // ── ensure_fresh_token (expiry guard) ────────────────────────────────────────
-
-    /// A still-valid access token is returned unchanged with NO network call and
-    /// NO persist call (the persist closure would panic if invoked).
     #[tokio::test]
     async fn ensure_fresh_token_noop_when_valid() {
         let auth = AuthTokens {
             access_token: "at-valid".into(),
             refresh_token: "rt".into(),
-            // Far in the future ⇒ not expired.
             expires_at: 5_000_000_000,
             org_id: "org_1".into(),
             cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
         let client = build_client().unwrap();
-        // workos_url points nowhere reachable; it must never be hit.
         let out = ensure_fresh_token(&client, "http://127.0.0.1:1", "client_test", &auth, |_| {
             panic!("persist must not be called when the token is still valid");
         })
@@ -745,8 +567,6 @@ mod tests {
         assert_eq!(out, auth);
     }
 
-    /// An expired access token is refreshed via WorkOS, the rotated tokens are
-    /// handed to `persist`, and the fresh tokens are returned.
     #[tokio::test]
     async fn ensure_fresh_token_refreshes_and_persists_when_expired() {
         use std::sync::{Arc, Mutex};
@@ -771,7 +591,7 @@ mod tests {
         let expired = AuthTokens {
             access_token: "at-expired".into(),
             refresh_token: "rt-old".into(),
-            expires_at: 0, // definitely past expiry
+            expires_at: 0,
             org_id: "org_1".into(),
             cloud_origin: DEFAULT_CLOUD_URL.to_string(),
         };
@@ -795,10 +615,6 @@ mod tests {
         );
     }
 
-    /// Regression test for the org-switch-doesn't-stick bug: a refresh of an
-    /// expired token scoped to a switched-to org (`auth.org_id`) must re-send
-    /// that same org as `organization_id`, so the session stays scoped to it
-    /// instead of silently reverting to the account's default org.
     #[tokio::test]
     async fn ensure_fresh_token_preserves_switched_org_across_refresh() {
         use wiremock::matchers::{body_string_contains, method, path};
@@ -807,8 +623,6 @@ mod tests {
         let server = MockServer::start().await;
         let fresh_jwt =
             fake_jwt(&serde_json::json!({ "exp": 5_000_000_000_i64, "org_id": "org_switched" }));
-        // The mock only answers a request whose form body names the switched
-        // org; a plain refresh (no organization_id) would 404 here instead.
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
             .and(body_string_contains("organization_id=org_switched"))
@@ -821,8 +635,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Simulates state right after `org switch org_switched`: the access
-        // token has since expired, but auth.org_id still names the switched org.
         let expired_after_switch = AuthTokens {
             access_token: "at-expired".into(),
             refresh_token: "rt-old".into(),
@@ -848,8 +660,6 @@ mod tests {
         );
     }
 
-    // A refresh changes the access token, not the host it was issued for, so
-    // the rotated tokens must carry the same `cloud_origin` (ADR-095 D3).
     #[tokio::test]
     async fn ensure_fresh_token_preserves_cloud_origin_across_refresh() {
         use wiremock::matchers::{method, path};
@@ -869,7 +679,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Issued for the production origin; the rotation must not drop it.
         let expired = AuthTokens {
             access_token: "at-expired".into(),
             refresh_token: "rt-old".into(),
@@ -889,9 +698,6 @@ mod tests {
         );
     }
 
-    /// An account with no active org (`org_id` empty — e.g. tokens from before
-    /// `org switch` was ever used) falls back to a plain refresh: no
-    /// `organization_id` field is sent at all, matching prior behaviour.
     #[tokio::test]
     async fn ensure_fresh_token_empty_org_id_sends_plain_refresh() {
         use wiremock::matchers::{method, path};
@@ -940,8 +746,6 @@ mod tests {
         .expect("plain refresh with no org should still succeed");
     }
 
-    /// When the refresh grant is rejected (revoked/expired refresh token), the
-    /// error carries a clear "run `inkentry login`" hint instead of a raw 401.
     #[tokio::test]
     async fn ensure_fresh_token_refresh_failure_says_run_login() {
         use wiremock::matchers::{method, path};
@@ -974,10 +778,6 @@ mod tests {
         );
     }
 
-    // ── Wire-level tests for initiate_device ─────────────────────────────────────
-
-    /// `initiate_device` sends a form-encoded `client_id` and parses the
-    /// WorkOS device-code response shape correctly.
     #[tokio::test]
     async fn initiate_device_sends_client_id_and_parses_response() {
         use wiremock::matchers::{method, path};
@@ -1025,8 +825,6 @@ mod tests {
         );
     }
 
-    /// A non-2xx from `initiate_device` is surfaced as a clear error (not a
-    /// panic or an opaque parse failure).
     #[tokio::test]
     async fn initiate_device_error_response_surfaces_status() {
         use wiremock::matchers::{method, path};
@@ -1050,11 +848,6 @@ mod tests {
         );
     }
 
-    // ── Wire-level tests for poll_token ────────────────────────────────────────
-
-    /// A WorkOS MFA/step-up response (`mfa_required`) must map to
-    /// `PollOutcome::Challenge` — it is non-fatal so the polling loop can
-    /// continue and the operator completes the challenge in the browser.
     #[tokio::test]
     async fn poll_token_mfa_required_is_non_fatal_challenge() {
         use wiremock::matchers::{method, path};
@@ -1078,9 +871,6 @@ mod tests {
         );
     }
 
-    /// All four WorkOS step-up/MFA error codes must map to `PollOutcome::Challenge`
-    /// so the operator can complete the challenge in the browser rather than having
-    /// the CLI exit with an error.
     #[tokio::test]
     async fn poll_token_all_mfa_codes_are_non_fatal() {
         use wiremock::matchers::{method, path};
@@ -1106,8 +896,6 @@ mod tests {
         }
     }
 
-    /// `authorization_pending` must yield `PollOutcome::Pending` so the loop
-    /// keeps polling without surfacing an error.
     #[tokio::test]
     async fn poll_token_authorization_pending_is_pending() {
         use wiremock::matchers::{method, path};
@@ -1131,8 +919,6 @@ mod tests {
         );
     }
 
-    /// A successful device-code exchange returns `PollOutcome::Success` with the
-    /// correct tokens, decoding `exp` and `org_id` from the JWT payload.
     #[tokio::test]
     async fn poll_token_success_decodes_jwt_claims() {
         use wiremock::matchers::{method, path};
@@ -1162,23 +948,6 @@ mod tests {
         assert_eq!(tok.expires_at, 4_000_000_000_i64);
     }
 
-    // ── --org login-then-switch integration ───────────────────────────────────
-    //
-    // The `--org` flow in `login.rs` is:
-    //   1. Device-code login yields initial tokens (org chosen browser-side).
-    //   2. `switch_org` is called with those initial tokens + the `--org` slug.
-    //   3. `switch_org` calls GET /v1/me (slug → local UUID) then WorkOS refresh
-    //      with `organization_id` (the local UUID).
-    //
-    // The full `login()` function sleeps (device polling) and calls
-    // `process::exit`, so we test the critical switch leg directly through the
-    // public `switch_org` helper that `login` calls, verifying the end-to-end
-    // wire contract of the login-then-switch path.
-
-    /// After a device login yields an initial token for org A, passing `--org
-    /// <beta-slug>` re-scopes via `switch_org`: GET /v1/me resolves the slug to
-    /// its WorkOS org id and POST /authenticate (refresh grant + organization_id)
-    /// returns tokens scoped to the target org.
     #[tokio::test]
     async fn login_then_switch_org_resolves_slug_and_refreshes() {
         use wiremock::matchers::{method, path};
@@ -1191,7 +960,6 @@ mod tests {
 
         let server = MockServer::start().await;
 
-        // GET /v1/me — returns two orgs; beta is the one the user wants to switch to.
         Mock::given(method("GET"))
             .and(path("/v1/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1207,7 +975,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // POST /authenticate (refresh grant) — must carry the resolved WorkOS org id.
         let beta_jwt = fake_jwt(&serde_json::json!({
             "exp": 5_000_000_000_i64,
             "org_id": BETA_WORKOS
@@ -1223,8 +990,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Simulate the initial tokens that a device login would have yielded
-        // (scoped to acme, the org picked browser-side).
         let initial_tokens = inkentry_core::config::AuthTokens {
             access_token: "at-initial-acme".into(),
             refresh_token: "rt-initial-acme".into(),
@@ -1245,17 +1010,11 @@ mod tests {
         .await
         .expect("login-then-switch should succeed");
 
-        // Rotated session org_id is the WorkOS org id echoed by /authenticate.
         assert_eq!(switched.org_id, BETA_WORKOS);
         assert_eq!(switched.refresh_token, "rt-beta");
         assert_eq!(switched.expires_at, 5_000_000_000_i64);
     }
 
-    /// When `--org` targets an org the user is NOT a member of, WorkOS returns
-    /// `organization_not_found`, which must surface as a clear membership error
-    /// — NOT a panic or an opaque HTTP error. This guards the login-then-switch
-    /// path specifically (the slug resolves via /v1/me but WorkOS rejects the
-    /// refresh grant).
     #[tokio::test]
     async fn login_then_switch_org_not_member_surfaces_clear_error() {
         use wiremock::matchers::{method, path};
@@ -1278,8 +1037,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // WorkOS rejects the refresh because the user is not actually a member
-        // (e.g. membership in the local DB is stale).
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
             .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
@@ -1315,10 +1072,6 @@ mod tests {
         );
     }
 
-    // ── lookup_org_display_name ───────────────────────────────────────────────
-
-    /// When `/v1/me` returns an org whose `workos_org_id` matches the token's
-    /// org id, `lookup_org_display_name` resolves it to `"<name> (<slug>)"`.
     #[tokio::test]
     async fn lookup_org_display_name_resolves_name_and_slug() {
         use wiremock::matchers::{method, path};
@@ -1352,8 +1105,6 @@ mod tests {
         );
     }
 
-    /// When the `workos_org_id` field is absent from all `orgs[]` entries,
-    /// `lookup_org_display_name` returns `None` (best-effort fallback).
     #[tokio::test]
     async fn lookup_org_display_name_returns_none_when_workos_org_id_missing() {
         use wiremock::matchers::{method, path};
@@ -1364,7 +1115,6 @@ mod tests {
             .and(path("/v1/me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "orgs": [
-                    // No workos_org_id field — older server or different shape.
                     { "id": "11111111-1111-1111-1111-111111111111",
                       "name": "Acme Corp", "slug": "acme", "role": "admin" }
                 ]
@@ -1382,8 +1132,6 @@ mod tests {
         );
     }
 
-    /// When `/v1/me` returns a non-2xx, `lookup_org_display_name` returns `None`
-    /// instead of propagating an error (best-effort, never makes login fail).
     #[tokio::test]
     async fn lookup_org_display_name_returns_none_on_server_error() {
         use wiremock::matchers::{method, path};
@@ -1406,7 +1154,6 @@ mod tests {
         );
     }
 
-    /// When there are multiple orgs, the correct one is matched by `workos_org_id`.
     #[tokio::test]
     async fn lookup_org_display_name_matches_correct_org() {
         use wiremock::matchers::{method, path};
@@ -1437,7 +1184,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Token is scoped to the second org.
         let display = lookup_org_display_name(&server.uri(), "at-test", "org_BBBB").await;
         assert_eq!(
             display.as_deref(),

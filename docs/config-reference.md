@@ -541,6 +541,23 @@ section lists the complete set, including `INKENTRY_CONFIG_DIR`,
 `INKENTRY_STATE_DIR`, `RUST_LOG`, and `EDITOR`/`VISUAL`, which don't map onto a
 field here.
 
+### Caller declaration (ADR-098 D5/D6)
+
+These five have no `config.toml` field to override — there is nothing to
+persist, since each is a fact about *this invocation*, not the project. Read
+once at startup, they feed the local `events` table and a memory entry's
+`origin`. Undeclared always reads as `unknown` (or, for `origin`, as no
+origin at all); none is ever guessed from a TTY check, since a wrong guess
+would silently corrupt the automation metrics they exist to produce.
+
+| Variable | Effect |
+|----------|--------|
+| `INKENTRY_TRIGGER` | `explicit` or `hook`. Anything else (including unset) is `unknown`. |
+| `INKENTRY_ACTOR` | `human` or `agent`. Anything else (including unset) is `unknown`. `inkentry harvest` always stamps its own entries' origin as `harvest` regardless of this variable — a caller cannot claim `harvest` for itself. |
+| `INKENTRY_SESSION_REF` | Opaque session identifier. Stored as a truncated SHA-256 hash, never the raw value. Groups this invocation's recorded event with others from the same session. |
+| `INKENTRY_TOOL` | Free text naming the calling tool (e.g. `claude-code`), carried onto an entry's `origin.tool`. |
+| `INKENTRY_MODEL` | Free text naming the model in use, carried onto an entry's `origin.model`. |
+
 ---
 
 ## What's next

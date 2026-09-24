@@ -46,6 +46,9 @@ pub(super) async fn memory_add(
     backend_override: Option<&str>,
     pre_init_notes: bool,
 ) -> Result<()> {
+    // Recorded once here; the event (ADR-098 D5) is written after the
+    // response below, against this instant.
+    let started = std::time::Instant::now();
     // Honor the auto-discovered server tier (ADR-004): loopback auto-discovery
     // sets the capability tier without populating `cfg.server_url`, so without
     // this bridge `try_embed_via_server` cannot reach the local embedder and the
@@ -268,6 +271,7 @@ pub(super) async fn memory_add(
                 source_ref: None,
                 valid_at,
                 supersedes: args.supersedes.clone(),
+                origin: crate::storage::Origin::from_caller(&cfg.caller),
             })
             .await?;
         primary_backend = Some(backend);
@@ -330,6 +334,7 @@ pub(super) async fn memory_add(
                 .iter()
                 .map(|to| CarriedEdge::new("relates_to", to.clone()))
                 .collect(),
+            origin: crate::storage::Origin::from_caller(&cfg.caller),
         };
         // Secret scan already ran above; no second check needed here.
         match append_to_git_notes(Some(project_root), &record).await {
@@ -485,6 +490,23 @@ pub(super) async fn memory_add(
     // for a project that deliberately opted out of one.
     if !placeholder_path {
         super::outbox::nudge_after_write(cfg, mem_path).await;
+    }
+
+    if !pre_init_notes {
+        let tokens_out = crate::search::tokens::estimate_tokens(&title)
+            + crate::search::tokens::estimate_tokens(&body);
+        super::super::events::record(
+            cfg,
+            mem_path,
+            backend_override,
+            "memory.add",
+            None,
+            Some(1),
+            std::slice::from_ref(&entity_id),
+            Some(tokens_out as i64),
+            started,
+            true,
+        );
     }
     Ok(())
 }

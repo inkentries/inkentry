@@ -65,9 +65,11 @@ fn metrics_snapshot_json_is_valid_and_omits_commit_metrics_outside_a_git_repo() 
         body["state"].get("cmp.lines_per_decision").is_none(),
         "lines_per_decision must be absent outside a git repo: {body}"
     );
-    assert!(body.get("events").is_none(), "no events block: {body}");
+    assert!(
+        body["events"].is_object(),
+        "the events block is always present, even with zero recorded events: {body}"
+    );
     assert!(body.get("eval").is_none(), "no eval block, ever: {body}");
-    assert!(body["state"].get("events").is_none());
     assert!(
         body["state"]["rec.entries"]["total"].is_object(),
         "rec.entries must be present: {body}"

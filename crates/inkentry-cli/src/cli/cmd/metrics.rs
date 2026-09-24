@@ -6,7 +6,9 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use inkentry_core::metrics::{MedianSeconds, Rate, Snapshot, StatusMetricsSummary, build_snapshot};
+use inkentry_core::metrics::{
+    EventsMetrics, MedianSeconds, Rate, Snapshot, StatusMetricsSummary, build_snapshot,
+};
 
 use crate::config::Config;
 use crate::storage::MemoryStore;
@@ -21,6 +23,9 @@ pub struct MetricsArgs {
 pub enum MetricsCommand {
     /// Compute a deterministic state-metrics snapshot for this project (ADR-098)
     Snapshot(MetricsSnapshotArgs),
+    /// Empty the local event log (ADR-098 D5). Nothing else in `memory.db` is
+    /// touched: entries, tags, linked files and edges all survive.
+    Clear,
 }
 
 #[derive(Args, Debug)]
@@ -39,7 +44,21 @@ pub struct MetricsSnapshotArgs {
 pub async fn metrics(args: MetricsArgs, cfg: Config) -> Result<()> {
     match args.command {
         MetricsCommand::Snapshot(a) => snapshot(a, cfg).await,
+        MetricsCommand::Clear => clear(cfg).await,
     }
+}
+
+/// `inkentry metrics clear`: empty the local `events` table. The store's
+/// entries, tags, linked files and edges are a separate concern (D5: "the
+/// whole of the privacy story a separate file would have given" is that
+/// clearing `events` alone is sufficient — nothing else needs touching).
+async fn clear(cfg: Config) -> Result<()> {
+    let db_path = crate::config::require_project_db(&cfg.db_path, false)?;
+    let mem_path = db_path.with_file_name("memory.db");
+    let store = MemoryStore::open(&mem_path)?;
+    let cleared = store.clear_events()?;
+    println!("Cleared {cleared} recorded event(s).");
+    Ok(())
 }
 
 async fn snapshot(args: MetricsSnapshotArgs, cfg: Config) -> Result<()> {
@@ -143,6 +162,66 @@ fn print_snapshot_summary(snap: &Snapshot) {
         "cmp.tokens_context_estimate  {}",
         s.cmp_tokens_context_estimate
     );
+    println!();
+    print_events_summary(&snap.events);
+}
+
+/// The `events` block (ADR-098 D3), shared by the full snapshot summary and
+/// `inkentry status`'s compact section below it.
+fn print_events_summary(e: &EventsMetrics) {
+    println!("events ({}d window)", e.window_days);
+    println!(
+        "  use.sessions_with_context    {}",
+        format_pct(&e.use_sessions_with_context)
+    );
+    println!(
+        "  use.search_hit_rate          {}",
+        format_pct(&e.use_search_hit_rate)
+    );
+    println!(
+        "  use.search_before_write      {}",
+        format_pct(&e.use_search_before_write)
+    );
+    println!(
+        "  auto.read_rate               {}",
+        format_pct(&e.auto_read_rate)
+    );
+    println!(
+        "  auto.write_rate              {}",
+        format_pct(&e.auto_write_rate)
+    );
+    for (cmd, counts) in &e.calls {
+        println!(
+            "  calls.{cmd:<20} {} (explicit {}, hook {}, unknown {})",
+            counts.total, counts.explicit, counts.hook, counts.unknown
+        );
+    }
+    let by_actor: Vec<String> = e
+        .by_actor
+        .iter()
+        .filter(|(_, n)| **n > 0)
+        .map(|(k, n)| format!("{k}:{n}"))
+        .collect();
+    println!(
+        "  by_actor                     {}",
+        if by_actor.is_empty() {
+            "none".to_string()
+        } else {
+            by_actor.join(" ")
+        }
+    );
+    println!(
+        "  latency_ms_p50               {}",
+        e.latency_ms_p50
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "n/a".to_string())
+    );
+    println!(
+        "  tokens_out_p50               {}",
+        e.tokens_out_p50
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "n/a".to_string())
+    );
 }
 
 /// The compact status section: the cheap subset of the metrics above,
@@ -186,6 +265,37 @@ pub(super) fn print_status_summary(summary: &StatusMetricsSummary) {
         format_bare_duration(summary.rec_open_question_age_p50.median_seconds)
     );
     println!("  conflicts    {}", summary.rec_unresolved_conflicts);
+    print_status_use_section(&summary.events);
+}
+
+/// The compact "use, last 7 days" section (ADR-098 D3/D5): explicit vs hook
+/// columns per named command, and the two automation rates. Always the fixed
+/// [`inkentry_core::metrics::EVENTS_WINDOW_DAYS`] window, shown only when at
+/// least one event was recorded — an untouched project prints nothing extra.
+fn print_status_use_section(e: &EventsMetrics) {
+    let total_calls: u64 = e.calls.values().map(|c| c.total).sum();
+    if total_calls == 0 {
+        return;
+    }
+    println!("\nUse, last {}d", e.window_days);
+    println!(
+        "  {:<14}  {:<8}  {:<8}  {:<8}",
+        "command", "explicit", "hook", "unknown"
+    );
+    for (cmd, counts) in &e.calls {
+        if counts.total == 0 {
+            continue;
+        }
+        println!(
+            "  {:<14}  {:<8}  {:<8}  {:<8}",
+            cmd, counts.explicit, counts.hook, counts.unknown
+        );
+    }
+    println!(
+        "  automation     read {}  write {}",
+        format_pct(&e.auto_read_rate),
+        format_pct(&e.auto_write_rate)
+    );
 }
 
 fn short_sha(sha: &str) -> &str {

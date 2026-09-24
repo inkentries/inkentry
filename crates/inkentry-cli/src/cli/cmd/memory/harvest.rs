@@ -203,6 +203,7 @@ async fn memory_harvest_git(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
     // Validate the user-supplied ref first, so a malicious option-shaped
     // `--branch`/`--git-range` value is rejected even before the LLM precheck.
     let user_ref = args
@@ -337,6 +338,7 @@ async fn memory_harvest_git(
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
+    let mut stored_entity_ids: Vec<String> = Vec::new();
     const DEDUP_THRESHOLD: f64 = 0.15;
 
     let estimate_tokens = |s: &str| s.len() / 3;
@@ -536,6 +538,7 @@ async fn memory_harvest_git(
                     source_ref: Some(full_sha.clone()),
                     valid_at: None,
                     supersedes: None,
+                    origin: Some(crate::storage::Origin::harvest(cfg.llm_model.clone())),
                 })
                 .await
             {
@@ -551,6 +554,7 @@ async fn memory_harvest_git(
             let short_sha = &full_sha[..full_sha.len().min(8)];
             cprintln!("  + [{kind}] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
             stored += 1;
+            stored_entity_ids.push(crate::storage::entity_id::entity_id(kind, &title, &body));
         }
     }
 
@@ -560,6 +564,18 @@ async fn memory_harvest_git(
         pre_filtered.len(),
         llm_skipped,
         dedup_skipped
+    );
+    super::super::events::record(
+        cfg,
+        mem_path,
+        backend_override,
+        "harvest",
+        None,
+        Some(stored as i64),
+        &stored_entity_ids,
+        None,
+        started,
+        true,
     );
     Ok(())
 }
@@ -618,6 +634,7 @@ async fn memory_harvest_failures(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
     let user_ref = args
         .branch
         .clone()
@@ -738,6 +755,7 @@ async fn memory_harvest_failures(
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
+    let mut stored_entity_ids: Vec<String> = Vec::new();
     const DEDUP_THRESHOLD: f64 = 0.15;
 
     let estimate_tokens = |s: &str| s.len() / 3;
@@ -915,6 +933,7 @@ async fn memory_harvest_failures(
                     source_ref: Some(full_sha.clone()),
                     valid_at: None,
                     supersedes: None,
+                    origin: Some(crate::storage::Origin::harvest(cfg.llm_model.clone())),
                 })
                 .await
             {
@@ -930,11 +949,28 @@ async fn memory_harvest_failures(
             let short_sha = &full_sha[..full_sha.len().min(8)];
             cprintln!("  + [antipattern] #{note_id}: {title}  \x1b[2m({short_sha})\x1b[0m");
             stored += 1;
+            stored_entity_ids.push(crate::storage::entity_id::entity_id(
+                "antipattern",
+                &title,
+                &body,
+            ));
         }
     }
 
     println!(
         "\nStored {stored} antipattern(s). Skipped {secret_skipped} with a possible secret, {dedup_skipped} near-duplicate."
+    );
+    super::super::events::record(
+        cfg,
+        mem_path,
+        backend_override,
+        "harvest",
+        None,
+        Some(stored as i64),
+        &stored_entity_ids,
+        None,
+        started,
+        true,
     );
     Ok(())
 }

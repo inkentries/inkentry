@@ -11,11 +11,9 @@ use crate::{
     storage::{NoteId, open_memory_backend},
 };
 
-/// Fallback per-section limit when `--kind` names a kind not in SECTIONS.
 const DEFAULT_UNKNOWN_KIND_LIMIT: usize = 20;
 
-/// Kinds for which the cross-project dep pass runs (§3 ADR-003).
-/// `handoff` and `question` are strictly local — session/project-scoped noise.
+// Session-scoped kinds (handoff, question, intent) never cross projects.
 const DEP_PASS_KINDS: &[&str] = &["decision", "requirement"];
 
 /// Agent-facing entry-point command: pull the most relevant memory sections
@@ -83,15 +81,13 @@ pub struct ContextArgs {
 
 struct Section {
     kind: &'static str,
-    /// Fetch this many entries before optional path post-filter. `context` runs
-    /// every session/compaction, so defaults stay small — use `--limit` to widen.
+    // Small on purpose: `context` runs every session and compaction.
     default_limit: usize,
 }
 
 const SECTIONS: &[Section] = &[
     // The roster of other live sessions is the only time-sensitive item at
-    // session start, so it is displayed first. `default_limit` matches the cap
-    // the staleness utility used, so overlap coverage does not regress.
+    // session start, so it is displayed first.
     Section {
         kind: "intent",
         default_limit: 20,
@@ -114,7 +110,6 @@ const SECTIONS: &[Section] = &[
     },
 ];
 
-/// Effective per-section entry cap for `kind` given an optional `--limit` override.
 fn section_limit(kind: &str, limit_override: Option<usize>) -> usize {
     let default = SECTIONS
         .iter()
@@ -124,31 +119,21 @@ fn section_limit(kind: &str, limit_override: Option<usize>) -> usize {
     limit_override.unwrap_or(default)
 }
 
-/// Token weight of a note for `--budget` packing (title + body).
 fn note_tokens(n: &Note) -> usize {
     crate::search::tokens::estimate_tokens(&n.title)
         + crate::search::tokens::estimate_tokens(&n.body)
 }
 
-/// Truncate each section (local + appended dep notes) to its effective
-/// per-section limit, so cross-project appends can't exceed --limit / defaults.
 fn cap_sections(sections: &mut [(String, Vec<Note>)], limit_override: Option<usize>) {
     for (kind, notes) in sections.iter_mut() {
         notes.truncate(section_limit(kind, limit_override));
     }
 }
 
-/// Order in which sections compete for `--budget`: durable "why"
-/// (decision, requirement) survives first, then the caller's own handoffs, then
-/// ephemeral questions, and the `intent` roster of *other* sessions drops first
-/// — so intents can never crowd out handoffs/decisions under a tight budget.
-/// Display/emission order is independent of this (see `SECTIONS`).
+// Budget packing order, independent of display order: the ephemeral intent
+// roster of other sessions drops first so it never crowds out durable memory.
 const PACK_PRIORITY: &[&str] = &["decision", "requirement", "handoff", "question", "intent"];
 
-/// Greedily drop notes then conventions that don't fit `budget`. Notes are
-/// packed in `PACK_PRIORITY` order so durable memory wins a tight budget, but
-/// the `sections` Vec is not reordered: display order stays as assembled.
-/// Returns the tokens actually packed. Conventions pack after all sections.
 fn apply_budget(
     sections: &mut [(String, Vec<Note>)],
     conventions: &mut Vec<crate::conventions::ConventionRecord>,
@@ -163,13 +148,12 @@ fn apply_budget(
             false
         }
     };
-    // Pack by priority, then any kind not in the priority list in existing
-    // order (defensive: no such kind today). `sections` is never reordered.
     for kind in PACK_PRIORITY {
         if let Some((_, notes)) = sections.iter_mut().find(|(k, _)| k == kind) {
             notes.retain(|n| fits(note_tokens(n)));
         }
     }
+    // Kinds outside PACK_PRIORITY pack afterwards, in existing order.
     for (kind, notes) in sections.iter_mut() {
         if PACK_PRIORITY.contains(&kind.as_str()) {
             continue;
@@ -186,9 +170,12 @@ fn apply_budget(
 }
 
 pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
+    // Recorded once here; every exit point below records against this
+    // instant (ADR-098 D5).
+    let started = std::time::Instant::now();
     cfg.validate()?;
-    // ADR-067: fail closed when there is no local `.inkentry/` project instead of
-    // silently using the global store. `--db` is an explicit override, exempt.
+    // Fail closed without a local `.inkentry/` project rather than use the global
+    // store; `--db` is exempt.
     let mem_path = match args.db.clone() {
         Some(p) => p,
         None => crate::config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db"),
@@ -199,12 +186,10 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         _ => None,
     };
 
-    // A teammate's `git fetch` lands their notes on a tracking ref that nothing
-    // else merges into `memory.db`, so without this they stay invisible on the
-    // default context path (ADR-077 D1).
+    // A teammate's fetched notes sit on a tracking ref that nothing else merges
+    // into `memory.db`.
     crate::cli::cmd::memory::reconcile::refresh_read_path_from_git_notes(&cfg, &mem_path, be).await;
 
-    // Discovery nudge: warn once when unimported server.db notes exist.
     crate::cli::cmd::memory::reconcile::maybe_emit_nudge(&mem_path, &cfg);
     crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path).await;
     let backend = open_memory_backend(&cfg, &mem_path, be).await?;
@@ -219,17 +204,13 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     )
     .await?;
 
-    // Cross-project dep pass (ADR-003): for decision and requirement sections,
-    // append locked/cross-project entries from linked projects.
-    // `handoff` and `question` are always local (§3 ADR-003).
     if !args.local_only {
         let index_db_path = args
             .index_db
             .clone()
             .unwrap_or_else(|| crate::config::resolve_db(None, &cfg.db_path));
         let mut seen: std::collections::HashSet<(String, NoteId)> = Default::default();
-        // Seed seen from all local notes to avoid printing a dep note that
-        // somehow shares an ID with a local note.
+        // Seeded with local notes so a dep note sharing a local id is skipped.
         for (_, notes) in &sections {
             for n in notes {
                 seen.insert((String::new(), n.id.clone()));
@@ -237,37 +218,29 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         }
         let dep_notes = collect_dep_cross_cutting(&index_db_path, &mut seen).await;
 
-        // Merge dep notes into the appropriate section buckets.
         for dep_note in dep_notes {
             let kind = dep_note.kind.clone();
             if !DEP_PASS_KINDS.contains(&kind.as_str()) {
                 continue;
             }
-            // If a --kind filter is active, only include matching dep notes.
             if let Some(ref kf) = args.kind
                 && &kind != kf
             {
                 continue;
             }
-            // Find the matching section bucket and append.
             if let Some((_, notes)) = sections.iter_mut().find(|(k, _)| k == &kind) {
                 notes.push(dep_note);
             }
         }
     }
 
-    // Cap each section (incl. cross-project appends) to its per-section limit.
+    // Cross-project appends must not exceed the per-section limit.
     cap_sections(&mut sections, args.limit);
 
-    // Collision-avoidance signal: files this worktree has already touched that
-    // another live session claims via an intent. Derived from the fetched
-    // (post-`--path`, post-cap) intent set and computed BEFORE `--budget`
-    // packing, so budget-dropping the roster can never drop a warning. Local by
-    // construction: `worktree_modified_files()` is this worktree, and intents
-    // never cross projects (not in DEP_PASS_KINDS).
+    // Computed before `--budget` packing so dropping the roster can never drop a
+    // warning.
     let overlaps = compute_overlaps(&sections);
 
-    // Load conventions from the index DB (best-effort; skip if unavailable).
     let mut conventions: Vec<crate::conventions::ConventionRecord> =
         if !args.no_conventions && args.kind.is_none() {
             load_conventions(args.index_db.as_deref(), &cfg)
@@ -275,10 +248,28 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
             vec![]
         };
 
-    // Token-budget safety net: pack output to fit --budget (mirrors search).
     let budget_used = args
         .budget
         .map(|b| apply_budget(&mut sections, &mut conventions, b));
+
+    let returned_ids: Vec<String> = sections
+        .iter()
+        .flat_map(|(_, notes)| notes.iter().map(|n| n.entity_id.clone()))
+        .collect();
+    let memory_results = returned_ids.len() as i64;
+    let tokens_out = budget_used.unwrap_or_else(|| {
+        sections
+            .iter()
+            .flat_map(|(_, notes)| notes.iter().map(note_tokens))
+            .sum::<usize>()
+            + conventions
+                .iter()
+                .map(|c| {
+                    crate::search::tokens::estimate_tokens(&c.category)
+                        + crate::search::tokens::estimate_tokens(&c.description)
+                })
+                .sum::<usize>()
+    }) as i64;
 
     match crate::utils::effective_format(&args.format) {
         "json" => {
@@ -297,8 +288,6 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         _ => {
             for (kind, notes) in &sections {
                 if kind == "intent" {
-                    // Show the section iff there is a warning to raise or a
-                    // roster to list; overlap warnings come before the roster.
                     if overlaps.is_empty() && notes.is_empty() {
                         continue;
                     }
@@ -327,11 +316,21 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
             }
         }
     }
+    super::events::record(
+        &cfg,
+        &mem_path,
+        None,
+        "context",
+        None,
+        Some(memory_results),
+        &returned_ids,
+        Some(tokens_out),
+        started,
+        true,
+    );
     Ok(())
 }
 
-/// Load conventions from the project index DB.
-/// Returns an empty vec if the DB doesn't exist or conventions table is empty.
 fn load_conventions(
     index_db_override: Option<&std::path::Path>,
     cfg: &Config,
@@ -373,10 +372,7 @@ async fn collect_sections(
             .collect()
     };
 
-    // `--tag`/`--file` (ADR-101 D4) are exact filters applied over the
-    // already-fetched, already-hydrated notes — cheap here because `context`
-    // fetches small per-section limits to begin with. `--path` stays a
-    // substring match (unchanged, pre-dating ADR-101); `--file` is exact.
+    // Filters run over the fetched notes, which is cheap at these small limits.
     let normalised_tag = tag_filter.map(crate::storage::normalize_tag);
     for (kind, limit) in sections {
         let mut notes = backend.list(Some(kind), limit, false, None).await?;
@@ -410,10 +406,6 @@ fn print_section_header(kind: &str) {
     println!();
 }
 
-/// Files this worktree has modified that an active intent also claims. Returns
-/// a sorted, de-duplicated list of paths (the set intersection of the intent
-/// roster's `linked_files` and `worktree_modified_files()`). Skips the git
-/// discovery entirely when no intent lists any file, so a solo dev pays nothing.
 fn compute_overlaps(sections: &[(String, Vec<Note>)]) -> Vec<String> {
     let intent_files: std::collections::HashSet<&str> = sections
         .iter()
@@ -425,6 +417,7 @@ fn compute_overlaps(sections: &[(String, Vec<Note>)]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
+    // Skips git discovery when no intent lists a file, so a solo dev pays nothing.
     if intent_files.is_empty() {
         return Vec::new();
     }
@@ -437,9 +430,8 @@ fn compute_overlaps(sections: &[(String, Vec<Note>)]) -> Vec<String> {
     overlaps
 }
 
-/// One collision-avoidance line per overlapping file. The wording is kept stable
-/// so anything keying on the string (docs, agents) stays valid; it is emitted
-/// plain (no ANSI) so that match holds regardless of the color policy.
+// Docs and agents match on this wording; printed without ANSI so it holds under
+// any color policy.
 fn print_overlap_warning(file: &str) {
     println!("⚠  Overlap: {file} is listed in an active intent");
 }
@@ -448,7 +440,6 @@ fn print_conventions_section(records: &[crate::conventions::ConventionRecord]) {
     cprintln!("\x1b[1;34m── Conventions \x1b[0m");
     println!();
 
-    // Group by language for readability.
     let mut by_lang: std::collections::BTreeMap<&str, Vec<&crate::conventions::ConventionRecord>> =
         std::collections::BTreeMap::new();
     for r in records {
@@ -474,9 +465,6 @@ mod tests {
     use crate::conventions::ConventionRecord;
     use clap::Parser;
 
-    // A distinct, ordering-preserving id per test entry. These tests assert
-    // which entries survive trimming, so the ids only need to be stable and
-    // comparable, not real UUIDs.
     fn test_id(n: i64) -> NoteId {
         format!("test-entry-{n:04}")
             .parse()
@@ -503,15 +491,12 @@ mod tests {
             source_project: None,
             source_project_path: None,
             remote_id: None,
+            origin: None,
         }
     }
 
-    // Anti-drift guard: every kind a retrieval path selects on must be a
-    // canonical kind that `memory add --kind` accepts. Retrieval selects on a
-    // subset of NOTE_KINDS (not every valid kind appears in the default context
-    // view), so this asserts membership, not equality — but it means a kind
-    // that `context` filters on can never be one `memory add` would reject,
-    // which is exactly the silent-drop the kind-validation fix closes.
+    // Membership, not equality: the default view selects on a subset of the
+    // canonical kinds.
     #[test]
     fn every_retrieval_kind_is_a_canonical_kind() {
         use inkentry_core::storage::is_valid_note_kind;
@@ -534,14 +519,11 @@ mod tests {
 
     #[test]
     fn default_limits_are_small_for_every_section() {
-        // Regression: question/requirement defaults were once 500.
         assert_eq!(section_limit("handoff", None), 3);
         assert_eq!(section_limit("question", None), 10);
         assert_eq!(section_limit("decision", None), 10);
         assert_eq!(section_limit("requirement", None), 10);
-        // The intent roster caps at 20, matching prior overlap coverage.
         assert_eq!(section_limit("intent", None), 20);
-        // Unknown kind falls back to the shared default.
         assert_eq!(section_limit("mystery", None), DEFAULT_UNKNOWN_KIND_LIMIT);
     }
 
@@ -553,8 +535,6 @@ mod tests {
 
     #[test]
     fn cap_sections_bounds_cross_project_appends() {
-        // A section holding local + appended dep notes past its limit is trimmed
-        // to the per-section default, keeping the earliest (local) entries.
         let mut sections = vec![(
             "decision".to_string(),
             (0..25).map(|i| note(i, "decision", "t", "b")).collect(),
@@ -566,7 +546,6 @@ mod tests {
 
     #[test]
     fn budget_truncates_output_to_fit() {
-        // Each note ~ title+body tokens; a tight budget keeps only the earliest.
         let body = "x".repeat(400); // ~100 tokens
         let mut sections = vec![(
             "decision".to_string(),
@@ -574,7 +553,7 @@ mod tests {
         )];
         let mut conv: Vec<ConventionRecord> = vec![];
         let used = apply_budget(&mut sections, &mut conv, 250);
-        // 250-token budget fits 2 notes (~101 each), not the 3rd.
+        // 250 tokens fits two notes of ~101 each, not a third.
         assert_eq!(sections[0].1.len(), 2);
         assert!(used <= 250);
         assert!(used > 0);
@@ -609,10 +588,6 @@ mod tests {
         assert!(conv.len() < 5);
     }
 
-    // ── Coverage pass ────────────────────────────────────────────────────────
-
-    /// Minimal parser so we can exercise `ContextArgs` clap parsing (incl. the
-    /// declared `conflicts_with`) without pulling in the whole top-level `Cli`.
     #[derive(clap::Parser, Debug)]
     struct TestCli {
         #[command(flatten)]
@@ -621,13 +596,10 @@ mod tests {
 
     #[test]
     fn limit_and_budget_conflict_is_enforced_at_arg_level() {
-        // Declared `conflicts_with` must actually reject both together, not just
-        // be present in the attribute.
         assert!(
             TestCli::try_parse_from(["inkentry", "--limit", "5", "--budget", "100"]).is_err(),
             "--limit + --budget must be rejected"
         );
-        // Each alone parses and lands in the right field.
         let l = TestCli::try_parse_from(["inkentry", "--limit", "5"]).expect("limit alone parses");
         assert_eq!(l.ctx.limit, Some(5));
         assert_eq!(l.ctx.budget, None);
@@ -649,8 +621,6 @@ mod tests {
 
     #[test]
     fn budget_exact_fit_keeps_all_and_uses_full_budget() {
-        // 3 notes of ~101 tokens each; budget == exact total keeps all 3, and an
-        // entry sitting exactly at the remaining budget is kept (tc <= remaining).
         let body = "x".repeat(400); // 100 tokens; title "ti" -> 1 => 101 each
         let mut sections = vec![(
             "decision".to_string(),
@@ -674,7 +644,6 @@ mod tests {
         assert_eq!(sections[0].1.len(), 3, "generous budget emits everything");
         assert_eq!(used, 303, "used is the true sum, not the budget");
         assert!(used <= 100_000, "used never exceeds the budget");
-        // Mirrors the caller's `tokens_remaining = budget - used`: non-negative.
         assert_eq!(100_000 - used, 99_697);
     }
 
@@ -693,9 +662,6 @@ mod tests {
 
     #[test]
     fn budget_greedy_skips_oversized_then_packs_later_smaller() {
-        // Documents the greedy-by-fit (non-strict-prefix) semantics that mirror
-        // `search --budget`: an oversized head entry is skipped but a later
-        // smaller one can still be packed. Relative order of survivors is kept.
         let big = "x".repeat(800); // 200 tokens, id 0
         let small = "x".repeat(400); // 101 tokens, id 1
         let mut sections = vec![(
@@ -718,10 +684,6 @@ mod tests {
 
     #[test]
     fn budget_packs_by_priority_not_display_order() {
-        // Budget is spent in PACK_PRIORITY order, not display order: `decision`
-        // outranks `handoff`, so under a tight budget the decision survives even
-        // though handoff is emitted first. Section slots and their display order
-        // stay stable (a starved section ends up empty, not removed).
         let big = "x".repeat(800); // title(1)+body(200) = 201 tokens
         let small = "x".repeat(400); // title(1)+body(100) = 101 tokens
         let mut sections = vec![
@@ -732,8 +694,7 @@ mod tests {
             ),
         ];
         let mut conv: Vec<ConventionRecord> = vec![];
-        // 201-token budget: decision (101) packs first and fits; handoff (201)
-        // no longer fits the 100 that remain — reversed vs a display-order pass.
+        // decision (101) packs first; handoff (201) no longer fits the 100 left.
         let used = apply_budget(&mut sections, &mut conv, 201);
         assert_eq!(sections.len(), 2, "section slots and order are preserved");
         assert_eq!(sections[0].0, "handoff");
@@ -748,9 +709,6 @@ mod tests {
 
     #[test]
     fn budget_prioritizes_durable_over_questions() {
-        // Under a tight budget, durable decision/requirement notes must survive
-        // while ephemeral questions drop first, regardless of the fact that
-        // `question` is displayed before decision/requirement.
         let body = "x".repeat(400); // title(1)+body(100) = 101 tokens each
         let mut sections = vec![
             ("handoff".to_string(), vec![note(0, "handoff", "ti", &body)]),
@@ -778,10 +736,8 @@ mod tests {
             ),
         ];
         let mut conv: Vec<ConventionRecord> = vec![];
-        // 505 tokens = 2 decisions + 2 requirements + 1 handoff (5 * 101). All
-        // durable notes plus handoff fit; the 3 questions are dropped first.
+        // 505 = 5 * 101: everything except the three questions fits.
         let used = apply_budget(&mut sections, &mut conv, 505);
-        // Emission order is unchanged.
         let kinds: Vec<&str> = sections.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(kinds, ["handoff", "question", "decision", "requirement"]);
         assert_eq!(sections[0].1.len(), 1, "handoff kept (outranks question)");
@@ -793,9 +749,6 @@ mod tests {
 
     #[test]
     fn budget_drops_intent_roster_before_any_other_kind() {
-        // The intent roster of *other* sessions is the most ephemeral content, so
-        // it packs LAST: a budget that fits every other kind but not everything
-        // must starve intent first, never handoff/question/decision/requirement.
         let body = "x".repeat(400); // title(1)+body(100) = 101 tokens each
         let mut sections = vec![
             ("intent".to_string(), vec![note(0, "intent", "ti", &body)]),
@@ -814,8 +767,7 @@ mod tests {
             ),
         ];
         let mut conv: Vec<ConventionRecord> = vec![];
-        // 404 tokens = 4 * 101: fits handoff + question + decision + requirement,
-        // leaving nothing for the intent roster.
+        // 404 = 4 * 101: fits every kind but intent.
         let used = apply_budget(&mut sections, &mut conv, 404);
         assert!(sections[0].1.is_empty(), "intent roster drops first");
         assert_eq!(sections[1].1.len(), 1, "handoff survives");
@@ -827,8 +779,6 @@ mod tests {
 
     #[test]
     fn compute_overlaps_returns_empty_without_any_intent_files() {
-        // No intent section, or intents with no linked_files, means no worktree
-        // discovery and no overlaps — the solo-dev fast path.
         assert!(compute_overlaps(&[]).is_empty());
         let sections = vec![("intent".to_string(), vec![note(0, "intent", "ti", "body")])];
         assert!(
@@ -839,8 +789,6 @@ mod tests {
 
     #[test]
     fn budget_preserves_display_order_of_sections() {
-        // The retain pass reorders nothing: whatever budget survivors remain,
-        // the sections Vec keeps its assembled display order.
         let body = "x".repeat(400);
         let mut sections = vec![
             ("handoff".to_string(), vec![note(0, "handoff", "ti", &body)]),
@@ -858,7 +806,6 @@ mod tests {
             ),
         ];
         let mut conv: Vec<ConventionRecord> = vec![];
-        // A budget that only fits some notes still must not shuffle the Vec.
         apply_budget(&mut sections, &mut conv, 150);
         let kinds: Vec<&str> = sections.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(kinds, ["handoff", "question", "decision", "requirement"]);
@@ -866,16 +813,12 @@ mod tests {
 
     #[test]
     fn cap_keeps_locals_and_trims_dep_overflow() {
-        // Post-append order in production is locals-first then dep appends
-        // (context.rs collects locals, then pushes dep notes). cap_sections
-        // truncate() therefore keeps every local before any dep note.
         let mut notes: Vec<Note> = (0..8).map(|i| note(i, "decision", "local", "b")).collect();
         notes.extend((100..108).map(|i| note(i, "decision", "dep", "b")));
         let mut sections = vec![("decision".to_string(), notes)];
         cap_sections(&mut sections, None); // decision default = 10
         let kept = &sections[0].1;
         assert_eq!(kept.len(), 10);
-        // All 8 locals survive...
         for (idx, expected) in (0..8).enumerate() {
             assert_eq!(
                 kept[idx].id,
@@ -883,14 +826,13 @@ mod tests {
                 "local {expected} must survive"
             );
         }
-        // ...and only the first two dep notes (the overflow tail is trimmed).
         assert_eq!(kept[8].id, test_id(100));
         assert_eq!(kept[9].id, test_id(101));
     }
 
     #[test]
     fn note_tokens_handles_empty_and_huge_bodies() {
-        // estimate_tokens floors at 1, so an empty note weighs title(1)+body(1).
+        // estimate_tokens floors at 1, so an empty note weighs 2.
         assert_eq!(note_tokens(&note(0, "decision", "", "")), 2);
         // Huge body: 4000 chars -> 1000 tokens, plus 1 for the 1-char title.
         let huge = note(1, "decision", "t", &"x".repeat(4000));
