@@ -21,6 +21,7 @@ mod edges;
 mod initialisers;
 mod locals;
 mod queries;
+mod receivers;
 #[cfg(test)]
 mod tests;
 mod visibility;
@@ -90,6 +91,10 @@ pub(super) struct Candidate<'t> {
     /// The callee token of an unqualified, receiver-less call: the only call
     /// shape a lexical binding can decide.
     bare_callee: Option<tree_sitter::Node<'t>>,
+    /// For `receiver.method(…)`, the receiver and the method's name.
+    receiver: Option<(tree_sitter::Node<'t>, String)>,
+    /// A path's own edge (`Foo` in `Foo::new()`): the path token.
+    path: Option<tree_sitter::Node<'t>>,
 }
 
 impl<'t> Candidate<'t> {
@@ -98,6 +103,18 @@ impl<'t> Candidate<'t> {
             target,
             kind,
             bare_callee: None,
+            receiver: None,
+            path: None,
+        }
+    }
+
+    pub(super) fn type_path(target: String, path: tree_sitter::Node<'t>) -> Self {
+        Self {
+            target,
+            kind: EdgeKind::Calls,
+            bare_callee: None,
+            receiver: None,
+            path: Some(path),
         }
     }
 
@@ -106,6 +123,22 @@ impl<'t> Candidate<'t> {
             target,
             kind: EdgeKind::Calls,
             bare_callee: Some(callee),
+            receiver: None,
+            path: None,
+        }
+    }
+
+    pub(super) fn receiver_call(
+        target: String,
+        receiver: tree_sitter::Node<'t>,
+        method: &str,
+    ) -> Self {
+        Self {
+            target,
+            kind: EdgeKind::Calls,
+            bare_callee: None,
+            receiver: Some((receiver, method.to_owned())),
+            path: None,
         }
     }
 }
@@ -289,12 +322,23 @@ fn collect(
             mut target,
             kind,
             bare_callee,
+            receiver,
+            path,
         } = candidate;
         let mut target_file = None;
         if kind == EdgeKind::Calls
             && let Some(scopes) = ctx.scopes
         {
-            match scopes.resolve(bare_callee, &target) {
+            let callee = match (bare_callee, &receiver, path) {
+                (Some(node), _, _) => locals::Callee::Bare(node),
+                (None, Some((receiver, method)), _) => locals::Callee::Receiver {
+                    receiver: *receiver,
+                    method,
+                },
+                (None, None, Some(node)) => locals::Callee::Path(node),
+                (None, None, None) => locals::Callee::Other,
+            };
+            match scopes.resolve(callee, &target, src) {
                 locals::Resolution::SameFile => target_file = Some(ctx.file_path.to_owned()),
                 locals::Resolution::Suppress => continue,
                 locals::Resolution::Alias(original) => target = original,

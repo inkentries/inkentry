@@ -38,23 +38,27 @@ pub(super) fn rust_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Ca
                             && let Ok(name) = name_node.utf8_text(src)
                             && !is_rust_builtin(name)
                         {
-                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
+                            out.push(match func.child_by_field_name("path") {
+                                Some(path) => Candidate::receiver_call(name.to_owned(), path, name),
+                                None => Candidate::edge(name.to_owned(), EdgeKind::Calls),
+                            });
                         }
                         // Emit the type/path: `EdgeExtractor::extract` → `EdgeExtractor`
                         if let Some(path_node) = func.child_by_field_name("path")
                             && let Ok(path) = path_node.utf8_text(src)
                             && !is_rust_builtin(path)
                         {
-                            out.push(Candidate::edge(path.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::type_path(path.to_owned(), path_node));
                         }
                     }
                     // obj.method(…) — index the method name.
                     "field_expression" => {
                         if let Some(field) = func.child_by_field_name("field")
+                            && let Some(receiver) = func.child_by_field_name("value")
                             && let Ok(name) = field.utf8_text(src)
                             && !is_rust_builtin(name)
                         {
-                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::receiver_call(name.to_owned(), receiver, name));
                         }
                     }
                     _ => {}
@@ -109,10 +113,11 @@ pub(super) fn python_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<
                     // obj.method(…)
                     "attribute" => {
                         if let Some(attr) = func.child_by_field_name("attribute")
+                            && let Some(receiver) = func.child_by_field_name("object")
                             && let Ok(name) = attr.utf8_text(src)
                             && !is_python_builtin(name)
                         {
-                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::receiver_call(name.to_owned(), receiver, name));
                         }
                     }
                     _ => {}
@@ -148,10 +153,11 @@ pub(super) fn js_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Cand
                     // obj.method(…)
                     "member_expression" => {
                         if let Some(prop) = func.child_by_field_name("property")
+                            && let Some(receiver) = func.child_by_field_name("object")
                             && let Ok(name) = prop.utf8_text(src)
                             && !is_js_builtin(name)
                         {
-                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::receiver_call(name.to_owned(), receiver, name));
                         }
                     }
                     _ => {}
@@ -184,9 +190,19 @@ pub(super) fn go_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Cand
                             out.push(Candidate::bare_call(name.to_owned(), func));
                         }
                     }
+                    // The edge keeps the whole `x.Method` text; the method name
+                    // is what resolution looks up.
                     "selector_expression" => {
                         if let Ok(text) = func.utf8_text(src) {
-                            out.push(Candidate::edge(text.to_owned(), EdgeKind::Calls));
+                            let method = func
+                                .child_by_field_name("field")
+                                .and_then(|f| f.utf8_text(src).ok());
+                            out.push(match (func.child_by_field_name("operand"), method) {
+                                (Some(receiver), Some(method)) => {
+                                    Candidate::receiver_call(text.to_owned(), receiver, method)
+                                }
+                                _ => Candidate::edge(text.to_owned(), EdgeKind::Calls),
+                            });
                         }
                     }
                     _ => {}
@@ -237,8 +253,8 @@ pub(super) fn java_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Ca
             if let Some(name) = node.child_by_field_name("name")
                 && let Ok(text) = name.utf8_text(src)
             {
-                out.push(if node.child_by_field_name("object").is_some() {
-                    Candidate::edge(text.to_owned(), EdgeKind::Calls)
+                out.push(if let Some(receiver) = node.child_by_field_name("object") {
+                    Candidate::receiver_call(text.to_owned(), receiver, text)
                 } else {
                     Candidate::bare_call(text.to_owned(), name)
                 });
@@ -297,7 +313,13 @@ pub(super) fn php_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Can
                 && let Ok(name) = name_node.utf8_text(src)
                 && !is_php_builtin(name)
             {
-                out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
+                let receiver = node
+                    .child_by_field_name("object")
+                    .or_else(|| node.child_by_field_name("scope"));
+                out.push(match receiver {
+                    Some(receiver) => Candidate::receiver_call(name.to_owned(), receiver, name),
+                    None => Candidate::edge(name.to_owned(), EdgeKind::Calls),
+                });
             }
         }
         // class C extends Base implements I, J { … }
@@ -383,11 +405,13 @@ pub(super) fn ruby_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Ca
                         }
                     }
                     other if !is_ruby_builtin(other) => {
-                        out.push(if node.child_by_field_name("receiver").is_some() {
-                            Candidate::edge(other.to_owned(), EdgeKind::Calls)
-                        } else {
-                            Candidate::bare_call(other.to_owned(), method)
-                        });
+                        out.push(
+                            if let Some(receiver) = node.child_by_field_name("receiver") {
+                                Candidate::receiver_call(other.to_owned(), receiver, other)
+                            } else {
+                                Candidate::bare_call(other.to_owned(), method)
+                            },
+                        );
                     }
                     _ => {}
                 }
@@ -441,10 +465,11 @@ pub(super) fn csharp_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<
                     // obj.Method() / Type.Method() — method name is the `name` field.
                     "member_access_expression" => {
                         if let Some(name_node) = func.child_by_field_name("name")
+                            && let Some(receiver) = func.child_by_field_name("expression")
                             && let Ok(name) = name_node.utf8_text(src)
                             && !is_csharp_builtin(name)
                         {
-                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::receiver_call(name.to_owned(), receiver, name));
                         }
                     }
                     _ => {}
@@ -559,7 +584,12 @@ pub(super) fn swift_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<C
                         if let Some(name) = navigation_suffix_name(&callee, src)
                             && !is_swift_builtin(&name)
                         {
-                            out.push(Candidate::edge(name, EdgeKind::Calls));
+                            out.push(match callee.child(0) {
+                                Some(receiver) => {
+                                    Candidate::receiver_call(name.clone(), receiver, &name)
+                                }
+                                None => Candidate::edge(name, EdgeKind::Calls),
+                            });
                         }
                     }
                     _ => {}

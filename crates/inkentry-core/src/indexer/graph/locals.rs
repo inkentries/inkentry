@@ -58,6 +58,27 @@ struct PendingDef<'t> {
     own_scope: Option<usize>,
 }
 
+struct Callable {
+    /// Where a bare call reaches it.
+    reach: super::visibility::Reach,
+    /// The type it is a member of, keyed by [`super::receivers::owner`].
+    owner: Option<String>,
+}
+
+/// The shape of a call, which decides what the file's scopes can say about it.
+pub(super) enum Callee<'t> {
+    /// Unqualified and receiver-less: the callee token.
+    Bare(tree_sitter::Node<'t>),
+    /// `receiver.method(…)` or `Qualifier::method(…)`.
+    Receiver {
+        receiver: tree_sitter::Node<'t>,
+        method: &'t str,
+    },
+    /// The type or module named by a path (`Foo` in `Foo::new()`).
+    Path(tree_sitter::Node<'t>),
+    Other,
+}
+
 struct Def {
     kind: DefKind,
     /// For a value, whether every binding of it here is initialised by a
@@ -75,13 +96,15 @@ pub(super) struct FileScopes {
     /// enclosing for the methods defined in it.
     class_body: Vec<bool>,
     defs: HashMap<(usize, String), Def>,
-    /// Where each callable this file defines can be reached by its bare
-    /// name.
-    callables: HashMap<String, Vec<super::visibility::Reach>>,
+    /// Every callable this file defines, by name.
+    callables: HashMap<String, Vec<Callable>>,
     /// Whether a call token can denote a variable at all. In Ruby, Java and
     /// PHP a call always names a method or function, whatever a same-named
     /// local holds.
     calls_reach_values: bool,
+    language: String,
+    /// The types declared at the top of the file, by name.
+    file_types: HashMap<String, String>,
 }
 
 impl FileScopes {
@@ -97,6 +120,8 @@ impl FileScopes {
             defs: HashMap::new(),
             callables: HashMap::new(),
             calls_reach_values: !matches!(language, "ruby" | "java" | "php"),
+            language: language.to_owned(),
+            file_types: super::receivers::file_types(root, src),
         };
 
         let names = query.capture_names();
@@ -207,7 +232,10 @@ impl FileScopes {
                     .callables
                     .entry(name.to_owned())
                     .or_default()
-                    .push(super::visibility::reach_of(node, method, language));
+                    .push(Callable {
+                        reach: super::visibility::reach_of(node, method, language),
+                        owner: super::receivers::owner(node, src, language),
+                    });
             }
             if kind == DefKind::Import && aliased.is_none() {
                 aliased = super::aliases::original_name(node, src, language);
@@ -241,17 +269,17 @@ impl FileScopes {
         0
     }
 
-    /// Resolve a call to `name`. `bare_callee` is the callee token when the
-    /// call is unqualified and receiver-less, the one shape a lexical binding
-    /// can decide; any other call can only match a definition by name.
-    pub(super) fn resolve(
-        &self,
-        bare_callee: Option<tree_sitter::Node<'_>>,
-        name: &str,
-    ) -> Resolution {
-        if let Some(node) = bare_callee
-            && let Some((scope, def)) = self.binding(node, name)
-        {
+    /// Resolve a call to `name`.
+    pub(super) fn resolve(&self, callee: Callee<'_>, name: &str, src: &[u8]) -> Resolution {
+        let node = match callee {
+            Callee::Bare(node) => node,
+            Callee::Receiver { receiver, method } => {
+                return claim(self.receiver_reaches(receiver, method, src));
+            }
+            Callee::Path(node) => return self.reached_by_bare_name(node, name),
+            Callee::Other => return Resolution::Unresolved,
+        };
+        if let Some((scope, def)) = self.binding(node, name) {
             match def.kind {
                 DefKind::Callable => return self.reached_by_bare_name(node, name),
                 DefKind::Import => {
@@ -269,26 +297,57 @@ impl FileScopes {
                 DefKind::Value => return Resolution::Unresolved,
             }
         }
-        match bare_callee {
-            // A bare call no scope binds may still reach a definition the
-            // query scoped too narrowly (a JS function declaration is hoisted
-            // to the scope around it), but only where that name is visible.
-            Some(node) => self.reached_by_bare_name(node, name),
-            None if self.callables.contains_key(name) => Resolution::SameFile,
-            None => Resolution::Unresolved,
+        // A bare call no scope binds may still reach a definition the query
+        // scoped too narrowly (a JS function declaration is hoisted to the
+        // scope around it), but only where that name is visible.
+        self.reached_by_bare_name(node, name)
+    }
+
+    /// Whether `receiver.method(…)` reaches a method this file defines: through
+    /// the enclosing type's own, unrebound self-reference, or a qualifier that
+    /// statically names one of this file's types or its own module.
+    fn receiver_reaches(&self, receiver: tree_sitter::Node<'_>, method: &str, src: &[u8]) -> bool {
+        use super::receivers::{Receiver, classify};
+        let defines = |owner: Option<&str>| {
+            self.callables
+                .get(method)
+                .is_some_and(|defs| defs.iter().any(|d| d.owner.as_deref() == owner))
+        };
+        match classify(receiver, src, &self.language) {
+            Receiver::SelfOf { owner, go_method } => {
+                // A Go receiver name stays the receiver only while no closure
+                // parameter, `:=` or range variable rebinds it.
+                let still_the_receiver = go_method.is_none_or(|m| {
+                    let name = receiver.utf8_text(src).unwrap_or_default();
+                    self.binding(receiver, name).map(|(scope, _)| scope)
+                        == self.scope_of_node.get(&m.id()).copied()
+                });
+                still_the_receiver && defines(Some(&owner))
+            }
+            Receiver::TypeName(name) => {
+                let shadowed = self
+                    .binding(receiver, name)
+                    .is_some_and(|(_, def)| def.kind != DefKind::Callable);
+                !shadowed
+                    && self
+                        .file_types
+                        .get(name)
+                        .is_some_and(|owner| defines(Some(owner)))
+            }
+            Receiver::Module => self.callables.get(method).is_some_and(|defs| {
+                defs.iter()
+                    .any(|d| d.owner.is_none() && matches!(d.reach, super::visibility::Reach::File))
+            }),
+            Receiver::Other => false,
         }
     }
 
     fn reached_by_bare_name(&self, call: tree_sitter::Node<'_>, name: &str) -> Resolution {
-        let reached = self
-            .callables
-            .get(name)
-            .is_some_and(|reaches| reaches.iter().any(|r| r.covers(call)));
-        if reached {
-            Resolution::SameFile
-        } else {
-            Resolution::Unresolved
-        }
+        claim(
+            self.callables
+                .get(name)
+                .is_some_and(|defs| defs.iter().any(|d| d.reach.covers(call))),
+        )
     }
 
     fn binding(&self, node: tree_sitter::Node<'_>, name: &str) -> Option<(usize, &Def)> {
@@ -306,5 +365,13 @@ impl FileScopes {
             }
             scope = self.parent[scope];
         }
+    }
+}
+
+fn claim(reached: bool) -> Resolution {
+    if reached {
+        Resolution::SameFile
+    } else {
+        Resolution::Unresolved
     }
 }

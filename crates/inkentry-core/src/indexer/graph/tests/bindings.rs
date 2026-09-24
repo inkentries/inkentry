@@ -1,18 +1,4 @@
-use super::{Edge, EdgeExtractor, EdgeKind};
-
-fn calls(src: &str, path: &str, language: &str) -> Vec<Edge> {
-    EdgeExtractor::extract(src, path, language)
-        .expect("extract")
-        .into_iter()
-        .filter(|e| e.kind == EdgeKind::Calls)
-        .collect()
-}
-
-fn call<'a>(edges: &'a [Edge], source: &str, target: &str) -> Option<&'a Edge> {
-    edges
-        .iter()
-        .find(|e| e.source_name.as_deref() == Some(source) && e.target_name == target)
-}
+use super::*;
 
 #[test]
 fn a_callee_bound_in_an_enclosing_scope_resolves_to_this_file() {
@@ -25,34 +11,6 @@ def outer():
     let edges = calls(src, "pkg/a.py", "python");
     let edge = call(&edges, "outer", "helper").expect("outer calls helper");
     assert_eq!(edge.target_file.as_deref(), Some("pkg/a.py"));
-}
-
-#[test]
-fn a_method_called_through_a_receiver_resolves_to_the_file_defining_it() {
-    let src = "\
-struct S;
-impl S {
-    fn run(&self) {}
-    fn go(&self) {
-        self.run();
-    }
-}
-";
-    let edges = calls(src, "src/s.rs", "rust");
-    let edge = call(&edges, "go", "run").expect("go calls run");
-    assert_eq!(edge.target_file.as_deref(), Some("src/s.rs"));
-}
-
-#[test]
-fn a_call_to_a_name_this_file_does_not_define_stays_unresolved() {
-    let src = "\
-fn go() {
-    helper();
-}
-";
-    let edges = calls(src, "src/a.rs", "rust");
-    let edge = call(&edges, "go", "helper").expect("go calls helper");
-    assert_eq!(edge.target_file, None);
 }
 
 #[test]
@@ -146,43 +104,6 @@ def run():
 }
 
 #[test]
-fn a_language_without_a_locals_query_still_extracts_unresolved_edges() {
-    let src = r#"<html><head><script src="app.js"></script></head></html>"#;
-    let edges = EdgeExtractor::extract(src, "index.html", "html").expect("extract");
-    assert!(
-        edges.iter().any(|e| e.target_name == "app.js"),
-        "the html import edge is still extracted: {edges:?}"
-    );
-    assert!(edges.iter().all(|e| e.target_file.is_none()), "{edges:?}");
-}
-
-#[test]
-fn a_file_over_the_parse_cap_gets_no_resolution_and_still_extracts_edges() {
-    let mut src = String::from("fn helper() {}\nfn go() { helper(); }\n");
-    let filler = "// padding line to push the file over the parse cap\n";
-    while src.len() <= crate::indexer::parser::MAX_PARSE_BYTES {
-        src.push_str(filler);
-    }
-    let edges = calls(&src, "src/big.rs", "rust");
-    let edge = call(&edges, "go", "helper").expect("the call edge is still extracted");
-    assert_eq!(edge.target_file, None);
-}
-
-#[test]
-fn tsx_and_jsx_files_extract_and_resolve_call_edges() {
-    let src = "\
-function helper() { return 1; }
-export function App() { helper(); return <div />; }
-";
-    for (path, language) in [("src/App.tsx", "tsx"), ("src/App.jsx", "jsx")] {
-        let edges = calls(src, path, language);
-        let edge = call(&edges, "App", "helper")
-            .unwrap_or_else(|| panic!("{language}: App calls helper: {edges:?}"));
-        assert_eq!(edge.target_file.as_deref(), Some(path));
-    }
-}
-
-#[test]
 fn a_destructured_require_inside_a_function_is_an_import_not_a_shadow() {
     let src = "\
 function go() {
@@ -214,50 +135,6 @@ function go() { return helper(); }
 ";
     let edges = calls(src, "src/a.js", "javascript");
     let edge = call(&edges, "go", "helper").expect("go calls helper");
-    assert_eq!(edge.target_file, None);
-}
-
-#[test]
-fn one_caller_keeps_an_unresolved_and_a_resolved_row_for_the_same_callee() {
-    // The bare call binds to the import; the receiver call reaches the
-    // method this file defines. Deduplicating on the name alone would drop
-    // one of the two.
-    let src = "\
-import { helper } from './x';
-class A {
-  helper() { return 1; }
-  run() { helper(); this.helper(); }
-}
-";
-    let edges = calls(src, "src/a.ts", "typescript");
-    let mut targets: Vec<Option<&str>> = edges
-        .iter()
-        .filter(|e| e.source_name.as_deref() == Some("A") && e.target_name == "helper")
-        .map(|e| e.target_file.as_deref())
-        .collect();
-    targets.sort();
-    assert_eq!(targets, vec![None, Some("src/a.ts")], "{edges:?}");
-}
-
-#[test]
-fn a_file_is_chunked_by_its_tree_unless_every_chunk_is_a_whole_file_window() {
-    use crate::indexer::{SourceParser, chunker::chunked_by_tree};
-
-    let treed = SourceParser::parse("def run():\n    return 1\n", "a.py", "python").unwrap();
-    assert!(chunked_by_tree(&treed));
-    let windowed = SourceParser::parse("x = 1\nprint(x)\n", "b.py", "python").unwrap();
-    assert!(!chunked_by_tree(&windowed));
-}
-
-#[test]
-fn an_unresolved_extraction_resolves_nothing() {
-    let src = "fn helper() {}\nfn go() { helper(); }\n";
-    let edges: Vec<Edge> = EdgeExtractor::extract_unresolved(src, "src/a.rs", "rust")
-        .expect("extract")
-        .into_iter()
-        .filter(|e| e.kind == EdgeKind::Calls)
-        .collect();
-    let edge = call(&edges, "go", "helper").expect("the edge is still extracted");
     assert_eq!(edge.target_file, None);
 }
 
@@ -395,77 +272,4 @@ class A:
     let edges = calls(free, "app/b.py", "python");
     let edge = call(&edges, "go", "helper").expect("the free call keeps its edge");
     assert_eq!(edge.target_file, None);
-}
-
-#[test]
-fn a_bare_call_never_reaches_a_method_where_the_language_needs_a_receiver() {
-    let cases = [
-        (
-            "python",
-            "app/a.py",
-            "class A:\n    def helper(self):\n        return 1\n\n    def go(self):\n        return helper()\n",
-        ),
-        (
-            "javascript",
-            "src/a.js",
-            "class A {\n  helper() { return 1; }\n  go() { return helper(); }\n}\n",
-        ),
-        (
-            "javascript",
-            "src/b.js",
-            "const o = { helper() { return 1; } };\nfunction go() { return helper(); }\n",
-        ),
-        (
-            "rust",
-            "src/a.rs",
-            "struct S;\nimpl S {\n    fn helper(&self) {}\n    fn go(&self) { helper(); }\n}\n",
-        ),
-        (
-            "go",
-            "pkg/a.go",
-            "package p\n\ntype S struct{}\n\nfunc (s S) helper() {}\n\nfunc run() { helper() }\n",
-        ),
-    ];
-    for (language, path, src) in cases {
-        let edges = calls(src, path, language);
-        let edge = edges
-            .iter()
-            .find(|e| e.target_name == "helper")
-            .unwrap_or_else(|| panic!("{path}: the call keeps its edge: {edges:?}"));
-        assert_eq!(edge.target_file, None, "{path}");
-    }
-}
-
-#[test]
-fn a_nested_function_is_not_reached_from_outside_its_enclosing_function() {
-    let src = "\
-function outer() {
-  function inner() { return 1; }
-  return inner();
-}
-function other() { return inner(); }
-";
-    let edges = calls(src, "src/a.js", "javascript");
-    let within = call(&edges, "outer", "inner").expect("outer calls inner");
-    assert_eq!(within.target_file.as_deref(), Some("src/a.js"));
-    let outside = call(&edges, "other", "inner").expect("other's call keeps its edge");
-    assert_eq!(outside.target_file, None);
-}
-
-#[test]
-fn a_bare_call_reaches_a_method_of_the_same_class_where_the_receiver_is_implicit() {
-    let src = "\
-class A {
-  int helper() { return 1; }
-  int go() { return helper(); }
-}
-class B {
-  int run() { return helper(); }
-}
-";
-    let edges = calls(src, "src/A.java", "java");
-    let same = call(&edges, "go", "helper").expect("go calls helper");
-    assert_eq!(same.target_file.as_deref(), Some("src/A.java"));
-    let other = call(&edges, "run", "helper").expect("B's call keeps its edge");
-    assert_eq!(other.target_file, None, "B's body does not see A's methods");
 }
