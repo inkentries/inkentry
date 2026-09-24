@@ -1,24 +1,8 @@
-//! Liveness and progress-baseline state for the background embed worker, so
-//! `inkentry status` reports what it knows about its own subprocess instead of
-//! guessing from chunk counts (which cannot distinguish a running job from an
-//! abandoned one).
-//!
-//! Mirrors the server's own pid-file shape: one small state file per datum,
-//! written 0600 into the same state directory as the server's pid/port files
-//! (`capability::inkentry_state_dir`, the single resolver both share, so an
-//! `INKENTRY_STATE_DIR` override applies to worker and server files alike), a
-//! `pid_is_alive` liveness check, and a foreign-pid classification so a
-//! recycled pid is never misreported as a live worker. Files are keyed by a
-//! hash of the index path because workers are per-project while the state
-//! dir is per-machine.
-//!
-//! Two files per project:
-//! - `embed-worker-<key>.pid`: pid of the process running the embed phase
-//! - `embed-worker-<key>.baseline`: `<started_at_unix> <pending_tokens>` at
-//!   worker start, letting `status` derive a measured-this-run,
-//!   token-weighted ETA (tokens drained since start over elapsed time). The
-//!   rate is never persisted across runs; a cached rate is a defect because
-//!   the token estimate's bias is corpus-dependent.
+// State files are keyed by a hash of the index path: workers are per-project,
+// the state dir is per-machine. `embed-worker-<key>.baseline` holds
+// `<started_at_unix> <pending_tokens>` at worker start. The ETA rate is measured
+// per run and never persisted, because the token estimate's bias is
+// corpus-dependent.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -27,8 +11,6 @@ use super::server::{create_state_dir, pid_is_alive, write_state_file};
 use crate::capability::inkentry_state_dir;
 use crate::storage::Database;
 
-/// Per-project key for the worker state files: hash of the canonicalised
-/// index path (two projects must never share a liveness file).
 fn worker_key(db_path: &Path) -> String {
     let canonical = inkentry_core::utils::canonicalize(db_path);
     let hash = blake3::hash(canonical.to_string_lossy().as_bytes());
@@ -43,20 +25,13 @@ fn baseline_file(state_dir: &Path, key: &str) -> PathBuf {
     state_dir.join(format!("embed-worker-{key}.baseline"))
 }
 
-/// RAII liveness marker held by whichever process runs the embed phase (the
-/// detached worker, or a foreground `inkentry index` resume). Best-effort:
-/// state-file failures must never fail the embed itself.
-///
-/// Dropped on clean exit; a killed worker leaves the files behind, which the
-/// next `status` classifies as a dead pid and cleans up.
+// Best-effort: state-file failures must not fail the embed.
 pub(super) struct EmbedWorkerGuard {
     pid_path: PathBuf,
     baseline_path: PathBuf,
 }
 
 impl EmbedWorkerGuard {
-    /// Record this process as the live embed worker for `db_path`. `None`
-    /// when the state dir is unusable (embedding proceeds unrecorded).
     pub(super) fn acquire(db: &Database, db_path: &Path) -> Option<Self> {
         let state_dir = inkentry_state_dir().ok()?;
         create_state_dir(&state_dir).ok()?;
@@ -66,8 +41,6 @@ impl EmbedWorkerGuard {
 
         write_state_file(&pid_path, &format!("{}\n", std::process::id())).ok()?;
 
-        // Baseline for the token-weighted ETA. Failure to write it only costs
-        // the ETA, not the liveness record.
         let pending = db
             .embed_token_stats()
             .map(|s| s.pending_tokens)
@@ -89,21 +62,14 @@ impl Drop for EmbedWorkerGuard {
     }
 }
 
-/// What `status` knows about the worker for a project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WorkerLiveness {
-    /// The recorded pid is alive and its command line looks like a inkentry
-    /// index run.
     Alive,
-    /// No recorded worker, a dead pid, or a pid recycled by an unrelated
-    /// process (foreign). Never reported as running.
     NotRunning,
 }
 
-/// Classify a recorded worker pid. Pure so the alive/foreign matrix is unit
-/// testable without real processes; `looks_like_worker` is the command-line
-/// identity check (a pid can be recycled by an unrelated process after a
-/// crash, and that must not read as a live embed run).
+// A pid can be recycled by an unrelated process after a crash, so liveness alone
+// must not read as a running embed.
 fn classify_worker_pid(alive: bool, looks_like_worker: bool) -> WorkerLiveness {
     if alive && looks_like_worker {
         WorkerLiveness::Alive
@@ -112,22 +78,14 @@ fn classify_worker_pid(alive: bool, looks_like_worker: bool) -> WorkerLiveness {
     }
 }
 
-/// True when `name` is exactly the inkentry binary's file name (its Windows
-/// extension included), never a substring match. A checkout path or an
-/// unrelated binary can easily contain "inkentry" somewhere in it; only exact
-/// identity is safe to trust.
+// Exact match, never substring: a checkout path or unrelated binary can contain
+// "inkentry".
 fn is_inkentry_exe_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("inkentry") || name.eq_ignore_ascii_case("inkentry.exe")
 }
 
-/// Judge a `ps -o args=`-style command-line string against the two real
-/// invocation shapes (`<exe> index <path> --_embed-phases ...` detached, or
-/// `<exe> index <path>` foreground resume): argv0's file name must be the
-/// inkentry binary exactly, and some later token must be the exact `index`
-/// subcommand. Matching on parsed argv0/tokens instead of a substring search
-/// over the whole line is what stops a checkout path that happens to contain
-/// both words (e.g. `.../inkentry/index-workspace/...`) from satisfying the
-/// check on identity alone.
+// Matches parsed argv0 and tokens rather than a substring over the line, which a
+// path like `.../inkentry/index-workspace/...` would satisfy.
 #[cfg(any(unix, test))]
 fn command_looks_like_index_run(command_line: &str) -> bool {
     let mut tokens = command_line.split_whitespace();
@@ -141,10 +99,8 @@ fn command_looks_like_index_run(command_line: &str) -> bool {
     is_inkentry_exe_name(exe_name) && tokens.any(|t| t == "index")
 }
 
-/// Judge a `tasklist /FO CSV /NH` line by its leading quoted image-name field,
-/// compared exactly rather than as a substring. `tasklist` exposes no argv, so
-/// unlike the Unix path there is no `index` token to check; exact image-name
-/// equality is the most identity can be narrowed to here.
+// `tasklist` exposes no argv, so exact image-name equality is the strongest
+// identity check available.
 #[cfg(any(windows, test))]
 fn tasklist_line_matches_inkentry(line: &str) -> bool {
     let image_name = line
@@ -156,8 +112,6 @@ fn tasklist_line_matches_inkentry(line: &str) -> bool {
     is_inkentry_exe_name(image_name)
 }
 
-/// Return `true` when `pid`'s command line looks like a inkentry index run
-/// (the detached `--_embed-phases` worker or a foreground resume).
 fn process_looks_like_index_run(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -190,8 +144,6 @@ fn process_looks_like_index_run(pid: u32) -> bool {
     }
 }
 
-/// Read and classify the recorded worker for `db_path`. Stale state (dead or
-/// foreign pid) is cleaned up so it cannot be re-read as live later.
 pub(super) fn worker_liveness(db_path: &Path) -> WorkerLiveness {
     let Ok(state_dir) = inkentry_state_dir() else {
         return WorkerLiveness::NotRunning;
@@ -207,7 +159,6 @@ pub(super) fn worker_liveness(db_path: &Path) -> WorkerLiveness {
     match classify_worker_pid(pid_is_alive(pid), process_looks_like_index_run(pid)) {
         WorkerLiveness::Alive => WorkerLiveness::Alive,
         WorkerLiveness::NotRunning => {
-            // Dead or foreign: the recorded state is stale, remove it.
             let _ = std::fs::remove_file(&pid_path);
             let _ = std::fs::remove_file(baseline_file(&state_dir, &key));
             WorkerLiveness::NotRunning
@@ -215,9 +166,6 @@ pub(super) fn worker_liveness(db_path: &Path) -> WorkerLiveness {
     }
 }
 
-/// Token-weighted ETA for a live worker: tokens drained since the recorded
-/// baseline over elapsed wall time, applied to the tokens still pending.
-/// `None` before any measurable progress (calibrating) or without a baseline.
 pub(super) fn worker_eta(db_path: &Path, pending_tokens_now: i64) -> Option<Duration> {
     let state_dir = inkentry_state_dir().ok()?;
     let key = worker_key(db_path);
@@ -233,7 +181,6 @@ pub(super) fn worker_eta(db_path: &Path, pending_tokens_now: i64) -> Option<Dura
     )
 }
 
-/// Pure ETA math over the baseline: measured this run, token-weighted.
 fn eta_from_baseline(
     started_at: i64,
     pending_at_start: i64,
@@ -257,8 +204,6 @@ fn eta_from_baseline(
 mod tests {
     use super::*;
 
-    // ── classify_worker_pid: liveness × identity matrix ─────────────────────
-
     #[test]
     fn alive_and_matching_command_is_a_live_worker() {
         assert_eq!(classify_worker_pid(true, true), WorkerLiveness::Alive);
@@ -275,14 +220,8 @@ mod tests {
 
     #[test]
     fn foreign_pid_is_never_reported_as_a_live_worker() {
-        // A pid recycled by an unrelated process after a crash: alive, but the
-        // command line is not a inkentry index run. Reporting it as "Embedding
-        // in progress" is exactly the guess D4 removes.
         assert_eq!(classify_worker_pid(true, false), WorkerLiveness::NotRunning);
     }
-
-    // ── command_looks_like_index_run: identity from parsed argv, not a raw
-    //    substring search over the whole command line ─────────────────────
 
     #[test]
     fn detached_embed_worker_command_line_matches() {
@@ -300,9 +239,6 @@ mod tests {
 
     #[test]
     fn path_containing_both_substrings_but_wrong_binary_does_not_match() {
-        // The exact shape that broke `status`: a checkout path carries both
-        // "inkentry" and "index" as path segments, but the running binary is
-        // the test harness, not `inkentry` itself.
         assert!(!command_looks_like_index_run(
             "/home/user/inkentry/index-workspace/target/debug/deps/e2e_cli-abc123 some_test_name"
         ));
@@ -328,8 +264,6 @@ mod tests {
         assert!(!command_looks_like_index_run("   "));
     }
 
-    // ── is_inkentry_exe_name: exact identity, both platforms' names ────────
-
     #[test]
     fn exact_binary_names_match_case_insensitively() {
         assert!(is_inkentry_exe_name("inkentry"));
@@ -345,10 +279,6 @@ mod tests {
         assert!(!is_inkentry_exe_name("my-inkentry-thing.exe"));
     }
 
-    // ── tasklist_line_matches_inkentry: Windows CSV image-name field ───────
-    // Reasoned through rather than run (tasklist isn't available here), but
-    // the parsing is pure and platform-independent so it's exercised on any host.
-
     #[test]
     fn tasklist_csv_line_with_exact_image_name_matches() {
         assert!(tasklist_line_matches_inkentry(
@@ -363,8 +293,6 @@ mod tests {
         ));
     }
 
-    // ── worker_key: per-project isolation ───────────────────────────────────
-
     #[test]
     fn worker_key_differs_per_project() {
         let a = worker_key(Path::new("/proj-a/.inkentry/index.db"));
@@ -375,46 +303,33 @@ mod tests {
 
     #[test]
     fn worker_key_is_stable_for_the_same_path() {
-        // Writer (worker) and reader (status) derive the key independently;
-        // any nondeterminism here silently severs status from its worker.
         let p = Path::new("/proj-a/.inkentry/index.db");
         assert_eq!(worker_key(p), worker_key(p));
     }
 
-    // ── eta_from_baseline: measured-this-run token rate ─────────────────────
-
     #[test]
     fn eta_scales_with_pending_tokens_at_the_measured_rate() {
-        // 1000 tokens drained in 100 s → 10 tokens/s; 5000 pending → 500 s.
         let eta = eta_from_baseline(0, 6000, 100, 5000).expect("measurable progress");
         assert_eq!(eta, Duration::from_secs(500));
     }
 
     #[test]
     fn eta_is_none_while_calibrating() {
-        // No tokens drained yet: no measured rate, no ETA (never a guess).
         assert!(eta_from_baseline(0, 6000, 100, 6000).is_none());
-        // Zero elapsed time.
         assert!(eta_from_baseline(100, 6000, 100, 5000).is_none());
-        // Nothing pending.
         assert!(eta_from_baseline(0, 6000, 100, 0).is_none());
     }
 
     #[test]
     fn eta_tolerates_a_clock_step_or_regressed_baseline() {
-        // A baseline from the future or pending that grew (concurrent
-        // re-index) must yield None, not a negative/panicking duration.
         assert!(eta_from_baseline(200, 6000, 100, 5000).is_none());
         assert!(eta_from_baseline(0, 5000, 100, 6000).is_none());
     }
 
     #[test]
     fn eta_survives_extreme_token_counts_without_panicking() {
-        // i64::MAX-scale token sums (a corrupt baseline file is user-writable
-        // input) must not overflow checked_sub or Duration::from_secs_f64.
         let eta = eta_from_baseline(0, i64::MAX, 1, i64::MAX - 1000);
         assert!(eta.is_some(), "a huge but finite ETA is still an ETA");
-        // Underflow direction: pending_at_start negative, pending_now MAX.
         assert!(eta_from_baseline(0, i64::MIN, 1, i64::MAX).is_none());
     }
 }

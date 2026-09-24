@@ -1,24 +1,11 @@
-//! Cross-corpus rank fusion for unified search (ADR-081).
-//!
-//! Two retrieval pipelines produce two independently-ranked lists — code chunks
-//! and memory entries — whose per-corpus relevance numbers are on incomparable
-//! scales (a code-search `distance` from one instruction prefix versus a QA
-//! `distance` from another). Merging by those numbers is silently wrong. This
-//! module fuses the two lists by **rank position only**: each item's score is
-//! `1 / (RRF_K + corpus_rank)`, so the cross-corpus order never reads the
-//! incomparable magnitudes. With equal weights and disjoint corpora this is a
-//! pure interleave (code rank *i* ties memory rank *i*, broken code-before-
-//! memory), and the whole merge is a total, float-free, deterministic order.
+// Fuses by rank position only: code and memory distances come from different
+// instruction prefixes and are not comparable. Score is `1 / (RRF_K + corpus_rank)`;
+// ties break code-before-memory.
 
 use inkentry_core::search::{RRF_K, SearchResult};
 use inkentry_core::storage::memory::Note;
 use serde::Serialize;
 
-/// One entry in the fused, heterogeneous result list — a `SearchResult` or a
-/// `Note` under its own key, tagged with a `type` discriminator and its fusion
-/// metadata. Ranked members carry `fused_rank`/`fused_score`/`corpus_rank`;
-/// `--graph` enrichment neighbours are appended after the ranked members with
-/// all three `null`, since they are attachments, not ranked members.
 #[derive(Debug, Serialize)]
 pub(crate) struct UnifiedResult {
     #[serde(rename = "type")]
@@ -39,18 +26,13 @@ enum Payload {
 
 struct Ranked {
     corpus_rank: usize,
-    /// Code before memory at equal `corpus_rank` (the cross-corpus tie-break).
     corpus_priority: u8,
     payload: Payload,
 }
 
-/// Fuse the two per-corpus ranked lists into one, truncated to `limit`.
-///
-/// `code` and `memory` must already be in each corpus's own ranked order; their
-/// 1-based positions become `corpus_rank`. The merge is stable-sorted by
-/// `(corpus_rank, corpus_priority)` — equivalent to `fused_score` descending but
-/// with no float comparison — so it is a total, deterministic order independent
-/// of `HashMap` iteration or float equality.
+// Inputs must already be in each corpus's ranked order. Sorting by
+// `(corpus_rank, corpus_priority)` equals `fused_score` descending without float
+// comparison.
 pub(crate) fn fuse(code: Vec<SearchResult>, memory: Vec<Note>, limit: usize) -> Vec<UnifiedResult> {
     let mut ranked: Vec<Ranked> = Vec::with_capacity(code.len() + memory.len());
     for (i, r) in code.into_iter().enumerate() {
@@ -68,8 +50,6 @@ pub(crate) fn fuse(code: Vec<SearchResult>, memory: Vec<Note>, limit: usize) -> 
         });
     }
 
-    // Stable sort keeps each corpus's internal order at equal keys; the key
-    // orders by rank first, then code-before-memory. No float comparison.
     ranked.sort_by_key(|r| (r.corpus_rank, r.corpus_priority));
     ranked.truncate(limit);
 
@@ -94,17 +74,13 @@ pub(crate) fn fuse(code: Vec<SearchResult>, memory: Vec<Note>, limit: usize) -> 
         .collect()
 }
 
-/// Wrap `--graph` enrichment neighbours as unranked appendix members: `type`
-/// `code`, `from_graph` already set by the caller, and every fusion-metadata
-/// field `null`.
+// Attachments (graph neighbours, cross-project entries) were not ranked against
+// the query, so they carry null fusion metadata: a `corpus_rank` would let them
+// displace ranked results.
 pub(crate) fn graph_appendix(neighbours: Vec<SearchResult>) -> Vec<UnifiedResult> {
     neighbours.into_iter().map(unranked_code).collect()
 }
 
-/// The memory side of the same rule: `--expand-graph` neighbours and
-/// cross-project entries were reached from a hit or picked by tag, never ranked
-/// against the query, so they get null fusion metadata rather than a
-/// `corpus_rank` that would let them displace a ranked result.
 pub(crate) fn memory_appendix(attachments: Vec<Note>) -> Vec<UnifiedResult> {
     attachments.into_iter().map(unranked_memory).collect()
 }
@@ -179,8 +155,6 @@ mod tests {
         }
     }
 
-    // Code rank i ties memory rank i, resolved code-before-memory, so a
-    // balanced pair of lists interleaves code, memory, code, memory…
     #[test]
     fn interleaves_code_before_memory_at_equal_rank() {
         let out = fuse(
@@ -198,8 +172,6 @@ mod tests {
         assert_eq!(ranks, vec![Some(1), Some(2), Some(3), Some(4)]);
     }
 
-    // fused_score is exactly 1/(RRF_K + corpus_rank); code rank 1 and memory
-    // rank 1 therefore carry the SAME fused_score (the tie the priority breaks).
     #[test]
     fn fused_score_is_one_over_k_plus_corpus_rank() {
         let out = fuse(vec![code(1, 0.0)], vec![note("m2", 0.0)], 10);
@@ -210,9 +182,6 @@ mod tests {
         assert_eq!(out[1].corpus_rank, Some(1));
     }
 
-    // Fusion is rank-based, never distance-based: a code item with a huge
-    // per-corpus distance but corpus_rank 1 still outranks a memory item with a
-    // tiny distance but corpus_rank 1 — the raw magnitudes are never compared.
     #[test]
     fn orders_by_rank_not_by_incomparable_distance() {
         let out = fuse(vec![code(1, 999.0)], vec![note("m2", 0.0001)], 10);
@@ -242,12 +211,9 @@ mod tests {
             3,
         );
         assert_eq!(out.len(), 3);
-        // Interleave: code1, mem3, code2 — the 4th (mem4) is dropped.
         assert_eq!(out[2].code.as_ref().unwrap().chunk_id, 2);
     }
 
-    // Same inputs must serialise byte-identically across runs (no HashMap /
-    // float-equality dependence in the merge).
     #[test]
     fn deterministic_ordering_across_runs() {
         let build = || {
@@ -262,8 +228,6 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    // Every ranked member carries the discriminator and all three fusion-metadata
-    // fields, and exactly one of code/memory is present, matching `type`.
     #[test]
     fn ranked_member_envelope_shape() {
         let out = fuse(vec![code(1, 0.1)], vec![note("m2", 1.0)], 10);
@@ -281,8 +245,6 @@ mod tests {
         }
     }
 
-    // A memory attachment must carry the same null fusion metadata as a code
-    // graph neighbour: no corpus_rank, so it cannot displace a ranked result.
     #[test]
     fn memory_appendix_members_are_unranked_memory() {
         let out = memory_appendix(vec![note("m7", 1.0)]);
@@ -294,8 +256,6 @@ mod tests {
         assert!(v.get("memory").is_some());
     }
 
-    // Graph-appendix members append after the ranked list with null fusion
-    // metadata and type "code".
     #[test]
     fn graph_appendix_members_are_unranked_code() {
         let mut neighbour = code(99, 0.0);
