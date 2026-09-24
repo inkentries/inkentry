@@ -50,6 +50,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   which only the re-rank read; an existing index keeps them, unused, until its
   files are re-indexed. See
   [ADR-102](docs/adr/102-remove-linearrag-from-code-search.md).
+
+### Security
+
+- **Dependencies refreshed, including the fix for RUSTSEC-2026-0306.**
+  `faster-hex`, reached through the git library, moves to 0.10.1, which bounds
+  an AVX2 read that could run past its input on x86. Nothing to do beyond
+  upgrading.
+
 ### Internal
 
 - **Both initial schema files are frozen at the shape 1.0 and 1.1 shipped.**

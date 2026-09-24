@@ -35,7 +35,6 @@ uuid        = { version = "1", features = ["v4", "v7", "serde"] }
 # one already in the tree rather than resolving a second one.
 unicode-normalization = "0.1"
 tempfile    = "3"
-pretty_assertions = "1"
 serial_test = "4"
 wiremock    = "0.6"
 dirs        = "7"
