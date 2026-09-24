@@ -1,17 +1,12 @@
 //! Storage methods for the `conventions` table.
-//!
-//! All SQL uses parameterised queries — no string formatting into SQL.
-//! This module deliberately does NOT import from `crate::conventions` to avoid
-//! a circular dependency (conventions::mod imports Database from here).
+
+// Must not import `crate::conventions`, which imports `Database` from here.
 
 use anyhow::Result;
 
 use super::Database;
 
-/// Lightweight row returned by `all_chunks_for_conventions`.
-///
-/// Mirrors `crate::conventions::extractor::ChunkSummary` but lives in the
-/// storage layer so neither module depends on the other.
+/// A chunk in the compact form convention extraction reads.
 #[derive(Debug, Clone)]
 pub struct RawChunkRow {
     pub language: String,
@@ -21,11 +16,7 @@ pub struct RawChunkRow {
     pub file_path: String,
 }
 
-/// A stored convention record — mirrors `crate::conventions::ConventionRecord`.
-///
-/// Duplicating the struct here would require keeping two types in sync, so we
-/// use a plain tuple for insert (caller passes fields), and define a concrete
-/// return struct that re-exports to `crate::conventions`.
+/// A row of the `conventions` table.
 #[derive(Debug, Clone)]
 pub struct ConventionRow {
     pub language: String,
@@ -37,10 +28,8 @@ pub struct ConventionRow {
 }
 
 impl Database {
-    /// Return all chunks in a compact form suitable for convention extraction.
-    ///
-    /// Detects whether a chunk has a doc comment by checking whether its
-    /// content starts with a recognised doc-comment prefix.
+    /// Returns every chunk in the compact form convention extraction reads,
+    /// recording whether its content starts with a doc-comment prefix.
     pub fn all_chunks_for_conventions(&self) -> Result<Vec<RawChunkRow>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.node_type,
@@ -65,10 +54,7 @@ impl Database {
             .map_err(Into::into)
     }
 
-    /// Replace all convention records with `records`.
-    ///
-    /// Runs inside a single transaction: DELETE + batch INSERT.
-    /// All SQL is parameterised — no format! calls.
+    /// Replaces all convention records with `records` in one transaction.
     pub fn replace_conventions(&self, records: &[ConventionRow]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM conventions", [])?;
@@ -128,8 +114,6 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConventionRow> {
     })
 }
 
-// ── Doc-comment detection ─────────────────────────────────────────────────────
-
 /// Returns `true` if `content` starts with any common doc-comment prefix.
 pub fn has_doc_prefix(content: &str) -> bool {
     let trimmed = content.trim_start();
@@ -141,8 +125,6 @@ pub fn has_doc_prefix(content: &str) -> bool {
         || trimmed.starts_with("'''")
         || trimmed.starts_with("* ")
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

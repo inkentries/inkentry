@@ -1,9 +1,3 @@
-//! `memory.db`'s forward migration ladder: steps 12..
-//! [`super::MEMORY_SCHEMA_VERSION`], applied by the store-agnostic runner in
-//! `storage::migration_ladder`. `create_schema` (`mod.rs`) is the only
-//! caller, and it runs the ladder for a fresh store too, from the frozen
-//! `memory_001_initial.sql` at version 11.
-
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
@@ -12,31 +6,17 @@ use crate::storage::migration_ladder::MigrationStep;
 use super::notes::split_csv;
 use super::tags::normalize_tag;
 
-/// The production ladder. Add steps at the end, numbered for the version
-/// each one produces; never renumber or reorder an existing entry.
+// Append only: number each step for the version it produces, and never
+// renumber or reorder an existing one.
 pub(super) const MEMORY_MIGRATIONS: &[(i32, MigrationStep)] = &[(12, add_note_tags_and_files)];
 
-/// ADR-101 step 12. The DDL is `migrations/memory_012.sql` (new tables,
-/// `memory_fts` rebuilt to be fed from `note_tags`); this function runs it,
-/// copies the old columns into the new tables, then runs
-/// `memory_012_drop_legacy_columns.sql`. The copy is Rust rather than SQL
-/// because tag normalisation is Unicode NFC.
-///
-/// Tags are normalised exactly as a fresh write would (D2): NFC, lowercase,
-/// trim, runs of whitespace/underscore to `-`; an empty result is dropped,
-/// and duplicates collapse via `INSERT OR IGNORE`.
-///
-/// Paths cannot be normalised the same way. A migration step is `fn(&Connection)
-/// -> Result<()>` — pure SQL/Rust with no project root and no git to check
-/// against — so a legacy path only gets a superficial cleanup (a leading
-/// `./` stripped, backslashes to `/`) and is otherwise stored as-is,
-/// including one that a live write would refuse as escaping the root: this
-/// step must not fail the whole migration over data it cannot validate.
-/// Every migrated row is stamped `state = 'untracked'`, `checked_at = 0`.
-/// Neither is knowable here; `0` is a sentinel distinguishable from a real
-/// check time, left for a live write's re-resolution or a future
-/// `inkentry index` re-check to correct (see ADR-101 D3/D5; that re-check is
-/// not implemented by this migration).
+// The copy is Rust rather than SQL because tag normalisation is Unicode NFC.
+//
+// A step has no project root or git to validate paths against, so legacy paths
+// get only `migration_clean_path` and are stored even when a live write would
+// refuse them: failing the migration over data it cannot validate is worse.
+// Migrated files are stamped `untracked` with `checked_at = 0`, a sentinel
+// distinguishable from a real check time.
 fn add_note_tags_and_files(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../../../migrations/memory_012.sql"))
         .context("applying memory_012.sql")?;
@@ -83,11 +63,6 @@ fn add_note_tags_and_files(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Best-effort cleanup with no project root to validate against (see the
-/// step's own doc comment): a leading `./` is stripped and backslashes
-/// become forward slashes. Nothing else is checked, so an absolute or
-/// out-of-root path from an old store is carried across unchanged rather
-/// than failing the migration.
 fn migration_clean_path(raw: &str) -> String {
     let slashed = raw.trim().replace('\\', "/");
     slashed.strip_prefix("./").unwrap_or(&slashed).to_string()
@@ -95,10 +70,8 @@ fn migration_clean_path(raw: &str) -> String {
 
 #[cfg(test)]
 thread_local! {
-    // Set by a test to make the step fail after creating `note_tags`/
-    // `note_files` but before anything else, so the ladder's own
-    // `BEGIN IMMEDIATE`/`ROLLBACK` around each step is exercised against this
-    // step's real body rather than a synthetic one.
+    // Lets a test fail the step after the tables exist, to exercise the
+    // ladder's rollback against the real step body.
     static FAIL_AFTER_TABLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

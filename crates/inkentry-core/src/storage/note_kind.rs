@@ -1,21 +1,12 @@
-//! Canonical set of memory-entry kinds and the strict parser that guards
-//! `inkentry memory add --kind`.
+//! The canonical memory-entry kinds and a strict parser for a user-supplied kind.
 //!
-//! A memory entry's `kind` steers every retrieval path: `inkentry context`
-//! selects handoffs/questions/decisions/requirements by kind, `memory failures`
-//! selects `antipattern`, and `memory list --kind` filters on an exact match.
-//! An entry stored under a kind outside this set (a typo like `decisions`, or a
-//! bogus value) is therefore invisible to all of them. This module is the
-//! single source of truth for which kinds are valid, so a kind added here
-//! becomes storable — and, once a retrieval path selects on it, retrievable —
-//! everywhere.
+//! Retrieval selects entries by kind, so an entry stored under a kind outside
+//! [`NOTE_KINDS`] (a typo such as `decisions`) is invisible to it.
 
-/// The nine canonical kinds a memory entry may have.
+/// The kinds a memory entry may have.
 ///
-/// Retrieval paths (`inkentry context`, `memory failures`) deliberately select
-/// on a *subset* of these — not every valid kind appears in the default context
-/// view — but every kind they select on must be a member here, so validation
-/// and retrieval cannot drift (guarded by tests).
+/// Retrieval selects on a subset of these, and every kind it selects on must be
+/// a member.
 pub const NOTE_KINDS: [&str; 9] = [
     "decision",
     "context",
@@ -33,12 +24,11 @@ pub fn is_valid_note_kind(kind: &str) -> bool {
     NOTE_KINDS.contains(&kind)
 }
 
-/// Strict parser for a user-supplied `--kind`.
+/// Returns `kind` unchanged when it is one of [`NOTE_KINDS`], otherwise an error
+/// naming the value and listing the valid kinds.
 ///
-/// Returns the kind unchanged when it is canonical, or an error that names the
-/// offending value and lists every valid kind. Shaped as a clap value parser
-/// (`Fn(&str) -> Result<String, String>`) so an invalid `--kind` is rejected at
-/// argument-parse time — before any store is opened — with a non-zero exit.
+/// The signature is that of a clap value parser, so an invalid `--kind` is
+/// rejected before any store is opened.
 pub fn parse_note_kind(kind: &str) -> Result<String, String> {
     if is_valid_note_kind(kind) {
         Ok(kind.to_string())
@@ -54,8 +44,6 @@ pub fn parse_note_kind(kind: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    // The canonical set is exactly the nine documented kinds — pins the
-    // contract so neither an accidental addition nor a removal slips through.
     #[test]
     fn canonical_set_is_exactly_the_nine_documented_kinds() {
         let mut got = NOTE_KINDS.to_vec();
@@ -96,9 +84,6 @@ mod tests {
         }
     }
 
-    // The rejection message must name the offending value and list every valid
-    // kind, so the CLI (and any other caller) can surface a self-correcting
-    // error.
     #[test]
     fn parse_rejects_unknown_naming_value_and_listing_kinds() {
         let err = parse_note_kind("decisions").expect_err("must reject");

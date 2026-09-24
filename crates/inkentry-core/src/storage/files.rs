@@ -12,12 +12,9 @@ pub struct FileRecord {
 }
 
 impl Database {
-    /// Insert or update a file record. `mtime` is the file's filesystem
-    /// modification time in unix seconds (0 when unavailable), persisted so the
-    /// embed queue can order by file recency without re-stat()ing at
-    /// queue-build time. On a hash-unchanged file the caller skips this call
-    /// entirely, so a file's stored mtime is only refreshed when it is
-    /// re-parsed.
+    /// Inserts or updates a file record. `mtime` is the file's modification
+    /// time in unix seconds (0 when unavailable), which the embed queue orders
+    /// by. It is refreshed only when the file is re-parsed.
     pub fn upsert_file(
         &self,
         path: &str,
@@ -59,9 +56,8 @@ impl Database {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
-    /// Returns the stored filesystem mtime (unix secs) for a file path, or None
-    /// if not indexed. The persisted counterpart of the recency key the embed
-    /// queue orders on.
+    /// Returns the stored modification time (unix seconds) for a file path, or
+    /// None if not indexed.
     pub fn file_mtime(&self, path: &str) -> Result<Option<i64>> {
         let mut stmt = self
             .conn
@@ -70,12 +66,9 @@ impl Database {
         Ok(rows.next()?.map(|r| r.get(0)).transpose()?)
     }
 
-    /// Whether a file has at least one stored chunk. A hash-current file with
-    /// zero chunks means a prior parse committed `upsert_file`'s new hash but
-    /// was interrupted before any chunk of that file landed (no transaction
-    /// spans the two writes - see `process_text_file` in the CLI's parse
-    /// phase); the hash-only skip check alone cannot see that half-indexed
-    /// state.
+    /// Whether a file has at least one stored chunk. A file whose hash is
+    /// current but has none was interrupted between storing its hash and its
+    /// first chunk, which the hash check alone cannot detect.
     pub fn file_has_chunks(&self, path: &str) -> Result<bool> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM chunks c JOIN files f ON f.id = c.file_id \
@@ -108,8 +101,6 @@ impl Database {
 
     /// List all indexed file paths under the given root prefix.
     pub fn file_paths_under(&self, root: &str) -> Result<Vec<(i64, String)>> {
-        // Escape LIKE metacharacters in the user-supplied root so that '%' and '_'
-        // in real directory names are treated as literals.
         let prefix = format!("{}%", super::escape_like(root));
         let mut stmt = self
             .conn
@@ -123,8 +114,6 @@ impl Database {
 
     /// List all indexed files under the given root prefix, including hash and indexed_at.
     pub fn file_records_under(&self, root: &str) -> Result<Vec<FileRecord>> {
-        // Escape LIKE metacharacters in the user-supplied root so that '%' and '_'
-        // in real directory names are treated as literals.
         let prefix = format!("{}%", super::escape_like(root));
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, path, language, hash, indexed_at FROM files WHERE path LIKE ?1 ESCAPE '\\'",

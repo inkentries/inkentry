@@ -2,16 +2,12 @@
 
 use uuid::{Builder, Uuid};
 
-/// Mint a UUIDv7 whose embedded timestamp is `created_at` (unix seconds),
-/// never the wall clock.
+/// Mints a UUIDv7 whose embedded timestamp is `created_at` (unix seconds)
+/// rather than the wall clock.
 ///
-/// An import replays an entire back catalogue in a single pass. Minting from
-/// the wall clock would stamp every historical entry with one instant and
-/// destroy the ordering v7 exists to carry — for all of history at once, and
-/// irreversibly. Seeding from each entry's own creation time preserves it.
-///
-/// The low bits are random, so entries sharing a `created_at` still receive
-/// distinct identifiers.
+/// An import replays a back catalogue in one pass, so wall-clock minting would
+/// give every entry the same instant and lose the ordering v7 carries. The low
+/// bits are random, so entries sharing a `created_at` still get distinct ids.
 pub fn uuid_v7_at(created_at: i64) -> String {
     let millis = created_at.max(0).saturating_mul(1_000) as u64;
     // v4's version and variant nibbles sit in bytes 6 and 8; taking only

@@ -1,13 +1,9 @@
 //! Content-addressed identity for memory entries.
 //!
-//! `entity_id` is the canonical identity of a memory entry on every surface —
-//! the local store, `refs/notes/inkentry`, and the server. It is a pure function
-//! of the entry's semantic core, so any reader can recompute it from the entry
-//! itself with no coordination, and two machines that independently record the
-//! same decision land on the same id.
-//!
-//! See ADR-068 for the canonical form. The field set and encoding are frozen for
-//! `schema_version` 1: changing either is a version bump and a new ADR.
+//! An entry's `entity_id` is a pure function of its kind, title and body, so any
+//! reader can recompute it without coordination and two machines that record the
+//! same decision get the same id. The field set and encoding are frozen: changing
+//! either changes every id.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -15,11 +11,8 @@ use std::collections::BTreeMap;
 
 use super::memory::Note;
 
-/// Canonical JSON bytes hashed to produce an `entity_id`.
-///
-/// `BTreeMap` supplies the code-point-sorted keys; serde supplies the compact
-/// separators and raw (non-`\u`-escaped) UTF-8. The exact stored bytes of each
-/// field are hashed — no normalization, trimming, or case folding.
+// The encoding is frozen: sorted keys, compact separators, raw UTF-8, and the
+// field text hashed exactly as stored (no trimming, normalisation or case folding).
 fn canonical_bytes(kind: &str, title: &str, body: &str) -> Vec<u8> {
     let map = BTreeMap::from([("body", body), ("kind", kind), ("title", title)]);
     let mut buf = Vec::new();
@@ -29,12 +22,11 @@ fn canonical_bytes(kind: &str, title: &str, body: &str) -> Vec<u8> {
     buf
 }
 
-/// The canonical identity of a memory entry: lowercase-hex `sha256` over the
-/// canonical JSON of exactly `{body, kind, title}`.
+/// The identity of a memory entry: lowercase-hex SHA-256 over the canonical
+/// JSON of `{body, kind, title}`.
 ///
-/// Deliberately excludes `created_at`, `tags`, `linked_files`, `status`,
-/// `superseded_by`, and every machine-local id: identity must not move when
-/// mutable metadata does, or converge across machines becomes impossible.
+/// Timestamps, tags, linked files, status and machine-local ids are excluded, so
+/// the identity does not change when mutable metadata does.
 pub fn entity_id(kind: &str, title: &str, body: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical_bytes(kind, title, body));
@@ -46,17 +38,15 @@ pub fn note_entity_id(n: &Note) -> String {
     entity_id(&n.kind, &n.title, &n.body)
 }
 
-/// How many characters of an `entity_id` a person sees and quotes (ADR-093 D2).
+/// How many characters of an `entity_id` are shown to and quoted by users.
 ///
-/// Wide enough that two entries in a project-sized store sharing it is
-/// negligible, narrow enough to type and to compare by eye. A display width,
-/// not a stored one: it can change without touching the column.
+/// A display width only; nothing stored depends on it.
 pub const ENTITY_ID_HANDLE_LEN: usize = 12;
 
-/// The shortest prefix that is looked up as an `entity_id` (ADR-093 D2).
+/// The shortest prefix looked up as an `entity_id`.
 ///
-/// Below this an accidental match against unrelated input stops being
-/// implausible, so a shorter token is not tried as a handle at all.
+/// A shorter token is never tried as a handle, because an accidental match
+/// against unrelated input would stop being implausible.
 pub const ENTITY_ID_MIN_PREFIX_LEN: usize = 8;
 
 /// The handle of an entry: the leading [`ENTITY_ID_HANDLE_LEN`] characters of
@@ -80,8 +70,6 @@ pub fn is_entity_id_lookup(token: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// The worked example from ADR-068. Pins the canonical bytes and the digest
-    /// against any future refactor of the encoder.
     #[test]
     fn matches_adr_worked_example() {
         assert_eq!(
@@ -104,8 +92,6 @@ mod tests {
         );
     }
 
-    /// Field values are not concatenated: moving text across the field boundary
-    /// must change the id (JSON framing prevents the classic splice collision).
     #[test]
     fn fields_do_not_splice() {
         assert_ne!(
@@ -114,8 +100,6 @@ mod tests {
         );
     }
 
-    /// Raw UTF-8, not `\u`-escaped, and no Unicode normalization: NFC and NFD
-    /// spellings of the same grapheme are distinct ids.
     #[test]
     fn no_unicode_normalization() {
         let nfc = "café";
@@ -128,8 +112,6 @@ mod tests {
         assert!(canonical_bytes("decision", nfc, "b").ends_with("café\"}".as_bytes()));
     }
 
-    /// Control characters and quotes are JSON-escaped, so a field value cannot
-    /// forge the surrounding structure.
     #[test]
     fn json_escapes_are_applied() {
         let bytes = canonical_bytes("decision", "a\"b", "c\nd");

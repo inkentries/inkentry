@@ -1,22 +1,10 @@
-//! Storage-internal SQL helpers.
-
-/// Maximum number of bound parameters to place in a single statement.
-///
-/// SQLite caps bound parameters per statement at `SQLITE_LIMIT_VARIABLE_NUMBER`
-/// (default 999 on older builds, 32766 on SQLite >= 3.32). Callers chunk their
-/// input lists at this size and run one statement per chunk so that a large
-/// input slice never exceeds the limit at prepare/bind time. For a statement
-/// that binds the same slice twice, halve this budget.
+// Callers chunk input lists at this size to stay under SQLite's bound-parameter
+// cap (999 on older builds). Halve it for a statement that binds the same slice
+// twice.
 pub(crate) const SQLITE_MAX_BIND: usize = 30_000;
 
-/// Build a comma-separated list of `n` anonymous bind placeholders: `?,?,?`.
-///
-/// Returns an empty string for `n == 0` (callers must early-return on empty
-/// input rather than emit an empty `IN ()` clause).
-///
-/// Anonymous `?` placeholders are used (rather than numbered `?N`) so that a
-/// query needing the same value set in two clauses can simply bind the value
-/// slice twice — no `?N` bookkeeping.
+// Empty for `n == 0`, so callers must return early rather than emit `IN ()`.
+// Anonymous `?` rather than `?N` lets a query bind the same slice twice.
 pub(crate) fn placeholders(n: usize) -> String {
     if n == 0 {
         return String::new();

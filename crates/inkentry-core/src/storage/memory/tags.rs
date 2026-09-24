@@ -1,7 +1,5 @@
-//! Tag normalisation (ADR-101 D2): the one transform every write path
-//! (`memory add`, import, harvest, git-notes import, the entity-id collision
-//! merge) funnels a raw tag through, via `MemoryStore::add_note` and friends,
-//! before it reaches `note_tags`. The original spelling is not kept.
+//! Tag normalisation: the one transform every write path applies to a raw tag
+//! before it is stored. The original spelling is not kept.
 
 use unicode_normalization::UnicodeNormalization;
 
