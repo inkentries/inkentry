@@ -209,6 +209,7 @@ mod tests {
             entity_id: Some(entity_id("decision", "HTTP layer", "use axum")),
             superseded_by_entity_id: None,
             edges: vec![],
+            origin: None,
         }
     }
 

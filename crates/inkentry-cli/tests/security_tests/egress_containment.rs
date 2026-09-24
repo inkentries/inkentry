@@ -344,6 +344,58 @@ async fn memory_add_list_zero_egress() {
     trap.assert_clean().await;
 }
 
+// ── event recording (ADR-098 D5): a local-only INSERT, nothing else ────────────
+
+#[tokio::test]
+async fn event_recording_zero_egress() {
+    ensure_sqlite_vec();
+    let home = TempDir::new().expect("home");
+    let project = TempDir::new().expect("project");
+    let state_dir = TempDir::new().expect("state dir");
+    init_git_repo(project.path());
+    write_project(project.path());
+
+    local_tier_cmd(home.path(), project.path(), state_dir.path())
+        .arg("init")
+        .arg("--no-index")
+        .assert()
+        .success();
+
+    let trap = EgressTrap::start().await;
+
+    // A full caller declaration, so the recording path actually runs
+    // (trigger/actor parsing, session_ref hashing) rather than falling
+    // through the "undeclared" no-op branch.
+    let mut add_cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    trap.wire(&mut add_cmd);
+    add_cmd
+        .env("INKENTRY_TRIGGER", "explicit")
+        .env("INKENTRY_ACTOR", "agent")
+        .env("INKENTRY_SESSION_REF", "egress-test-session")
+        .env("INKENTRY_TOOL", "claude-code")
+        .env("INKENTRY_MODEL", "claude-sonnet-5")
+        .arg("memory")
+        .arg("add")
+        .arg("--kind")
+        .arg("note")
+        .arg("--title")
+        .arg("egress test note")
+        .arg("--body")
+        .arg("written by egress_containment.rs");
+    add_cmd.assert().success();
+
+    let mut context_cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
+    trap.wire(&mut context_cmd);
+    context_cmd
+        .env("INKENTRY_TRIGGER", "hook")
+        .env("INKENTRY_ACTOR", "agent")
+        .env("INKENTRY_SESSION_REF", "egress-test-session")
+        .arg("context");
+    context_cmd.assert().success();
+
+    trap.assert_clean().await;
+}
+
 // ── metrics snapshot (ADR-098): memory.db + local git log, nothing else ────────
 
 #[tokio::test]

@@ -217,6 +217,80 @@ fn only_text_interleaves_code_and_memory_in_fused_order() {
     assert!(mem["memory"]["id"].as_str().is_some());
 }
 
+// ── ADR-098 D5: event recording never perturbs search/context stdout ───────────
+//
+// `search` and `context` promise deterministic stdout (CLAUDE.md: "Never add
+// output to search, context or memory stdout"). Event recording writes only
+// to `memory.db`, after the response above it is already printed, so running
+// the same command twice in a row — the second run recording against a
+// `memory.db` the first run's own event just landed in — must produce
+// byte-identical stdout both times.
+
+#[test]
+fn search_stdout_is_byte_identical_whether_or_not_an_earlier_call_recorded_an_event() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    project_with_code_and_memory(home.path(), proj.path());
+
+    let run = || {
+        inkentry_bin_in(home.path())
+            .env("INKENTRY_NO_SERVER", "1")
+            .env("INKENTRY_TRIGGER", "explicit")
+            .env("INKENTRY_ACTOR", "agent")
+            .current_dir(proj.path())
+            .args([
+                "search",
+                "authentication",
+                "--only-text",
+                "--format",
+                "json",
+                "--no-stale-check",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+
+    let first = run();
+    // By now `memory.db` holds the first call's recorded event; the second
+    // call records into a store the first call already wrote to.
+    let second = run();
+    assert_eq!(
+        first, second,
+        "search stdout must not depend on whether an event was already recorded"
+    );
+}
+
+#[test]
+fn context_stdout_is_byte_identical_whether_or_not_an_earlier_call_recorded_an_event() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    project_with_code_and_memory(home.path(), proj.path());
+
+    let run = || {
+        inkentry_bin_in(home.path())
+            .env("INKENTRY_NO_SERVER", "1")
+            .env("INKENTRY_TRIGGER", "hook")
+            .env("INKENTRY_ACTOR", "agent")
+            .current_dir(proj.path())
+            .args(["context", "--format", "json", "--no-conventions"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+
+    let first = run();
+    let second = run();
+    assert_eq!(
+        first, second,
+        "context stdout must not depend on whether an event was already recorded"
+    );
+}
+
 // A corpus pair deep enough for the fused order to distinguish ordering rules:
 // three code chunks and three memory entries all matching "reticulation". The
 // memory bodies repeat the term and the code chunks mention it once, so the two

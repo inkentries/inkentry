@@ -14,6 +14,7 @@ pub(super) async fn memory_list(
     backend_override: Option<&str>,
     pre_init_notes: bool,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
     // Read from git notes when it's the explicit backend (`--backend git-notes`)
     // or the ADR-068 D3 pre-init carrier: `mem_path` is a placeholder in both, so
     // skip the SQLite-oriented nudge and cross-project pass (they'd open the
@@ -59,7 +60,16 @@ pub(super) async fn memory_list(
             args.archived,
             as_of,
         )?;
-        return print_notes(&notes, &args.format);
+        let result = print_notes(&notes, &args.format);
+        record_list_event(
+            cfg,
+            mem_path,
+            effective_override,
+            &notes,
+            started,
+            result.is_ok(),
+        );
+        return result;
     }
 
     let backend = open_memory_backend(cfg, mem_path, effective_override).await?;
@@ -121,7 +131,41 @@ pub(super) async fn memory_list(
         notes.extend(dep_notes);
     }
 
-    print_notes(&notes, &args.format)
+    let result = print_notes(&notes, &args.format);
+    record_list_event(
+        cfg,
+        mem_path,
+        effective_override,
+        &notes,
+        started,
+        result.is_ok(),
+    );
+    result
+}
+
+/// Shared best-effort event recording (ADR-098 D5) for both `memory list`
+/// paths above.
+fn record_list_event(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    backend_override: Option<&str>,
+    notes: &[crate::storage::memory::Note],
+    started: std::time::Instant,
+    ok: bool,
+) {
+    let returned_ids: Vec<String> = notes.iter().map(|n| n.entity_id.clone()).collect();
+    super::super::events::record(
+        cfg,
+        mem_path,
+        backend_override,
+        "memory.list",
+        None,
+        Some(returned_ids.len() as i64),
+        &returned_ids,
+        None,
+        started,
+        ok,
+    );
 }
 
 /// Shared output for every `memory list` path (the normal query and the

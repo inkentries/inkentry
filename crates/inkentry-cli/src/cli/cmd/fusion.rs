@@ -152,6 +152,7 @@ mod tests {
             source_project: None,
             source_project_path: None,
             remote_id: None,
+            origin: None,
         }
     }
 

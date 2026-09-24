@@ -57,6 +57,7 @@ impl MemoryStore {
         invalid_at: Option<i64>,
         entity_id: Option<&str>,
         remote_id: Option<&str>,
+        origin: Option<&crate::storage::origin::Origin>,
     ) -> Result<(NoteId, bool)> {
         // Carried verbatim when present. Recomputing a key the writer already
         // holds would fork the entry from every other copy of it the moment
@@ -91,12 +92,19 @@ impl MemoryStore {
             return Err(self.identity_already_taken(uuid, remote_id));
         }
 
-        self.recover_from_entity_id_collision(
+        let (id, created) = self.recover_from_entity_id_collision(
             insert,
             &entity_id,
             &tags.iter().map(String::as_str).collect::<Vec<_>>(),
             &linked_files.iter().map(String::as_str).collect::<Vec<_>>(),
-        )
+        )?;
+        // Only on a genuinely new row: a collision means this store already
+        // holds the entity under its own origin, which a re-import must not
+        // overwrite.
+        if created && let Some(origin) = origin {
+            self.set_origin(&id, origin)?;
+        }
+        Ok((id, created))
     }
 
     /// Which identity this store already holds, said in the dump's terms.

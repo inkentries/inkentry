@@ -170,6 +170,9 @@ fn apply_budget(
 }
 
 pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
+    // Recorded once here; every exit point below records against this
+    // instant (ADR-098 D5).
+    let started = std::time::Instant::now();
     cfg.validate()?;
     // Fail closed without a local `.inkentry/` project rather than use the global
     // store; `--db` is exempt.
@@ -249,6 +252,25 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         .budget
         .map(|b| apply_budget(&mut sections, &mut conventions, b));
 
+    let returned_ids: Vec<String> = sections
+        .iter()
+        .flat_map(|(_, notes)| notes.iter().map(|n| n.entity_id.clone()))
+        .collect();
+    let memory_results = returned_ids.len() as i64;
+    let tokens_out = budget_used.unwrap_or_else(|| {
+        sections
+            .iter()
+            .flat_map(|(_, notes)| notes.iter().map(note_tokens))
+            .sum::<usize>()
+            + conventions
+                .iter()
+                .map(|c| {
+                    crate::search::tokens::estimate_tokens(&c.category)
+                        + crate::search::tokens::estimate_tokens(&c.description)
+                })
+                .sum::<usize>()
+    }) as i64;
+
     match crate::utils::effective_format(&args.format) {
         "json" => {
             let mut output = serde_json::json!({
@@ -294,6 +316,18 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
             }
         }
     }
+    super::events::record(
+        &cfg,
+        &mem_path,
+        None,
+        "context",
+        None,
+        Some(memory_results),
+        &returned_ids,
+        Some(tokens_out),
+        started,
+        true,
+    );
     Ok(())
 }
 
@@ -457,6 +491,7 @@ mod tests {
             source_project: None,
             source_project_path: None,
             remote_id: None,
+            origin: None,
         }
     }
 

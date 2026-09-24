@@ -12,6 +12,7 @@ pub(super) async fn memory_supersede(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let Some(new_note) = super::resolve::resolve_note(backend.as_ref(), &args.new_id).await? else {
         anyhow::bail!("No memory entry with id {} (new).", args.new_id);
@@ -93,5 +94,18 @@ pub(super) async fn memory_supersede(
     // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
     // `local_first` supersede's outbox drains promptly. See `outbox.rs`.
     super::outbox::nudge_after_write(cfg, mem_path).await;
+
+    super::super::events::record(
+        cfg,
+        mem_path,
+        backend_override,
+        "memory.supersede",
+        None,
+        Some(1),
+        std::slice::from_ref(&new_note.entity_id),
+        None,
+        started,
+        true,
+    );
     Ok(())
 }

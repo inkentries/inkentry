@@ -161,10 +161,10 @@ async fn two_runs_over_the_same_state_are_byte_identical() {
     );
 }
 
-// ── no events/eval keys, no identifying content ─────────────────────────────
+// ── events block present, no eval, no identifying content ──────────────────
 
 #[tokio::test]
-async fn snapshot_carries_no_events_or_eval_block_and_no_entry_identifiers() {
+async fn snapshot_carries_a_top_level_events_block_no_eval_and_no_entry_identifiers() {
     let store = open_store();
     store
         .add_note(
@@ -186,11 +186,11 @@ async fn snapshot_carries_no_events_or_eval_block_and_no_entry_identifiers() {
 
     assert!(
         json["state"].get("events").is_none(),
-        "no events block: {json}"
+        "the events block lives beside state, not inside it: {json}"
     );
     assert!(
-        json.get("events").is_none(),
-        "no top-level events block: {json}"
+        json["events"].is_object(),
+        "the events block is always present, even with zero recorded events: {json}"
     );
     assert!(json.get("eval").is_none(), "no eval block, ever: {json}");
 
@@ -202,6 +202,56 @@ async fn snapshot_carries_no_events_or_eval_block_and_no_entry_identifiers() {
     assert!(
         !rendered.contains("a very distinctive decision body"),
         "snapshot must not carry entry bodies: {rendered}"
+    );
+}
+
+// ── events block: seeded rows drive the formulas ────────────────────────────
+
+#[tokio::test]
+async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_window() {
+    use inkentry_core::storage::memory::{EventFields, record_event_at};
+
+    register_sqlite_vec();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = MemoryStore::open(tmp.path()).expect("open memory store");
+    let dir = non_git_dir();
+    // Anchors the window end near "now" (`add_note` stamps `created_at` from
+    // the wall clock), so the events recorded below — also stamped from the
+    // wall clock — fall inside the events block's own 7-day window.
+    store
+        .add_note("decision", "Use X", "because Y", &[], &[], None, None)
+        .unwrap();
+
+    let fields = |command: &'static str, trigger: &'static str| EventFields {
+        command,
+        surface: "cli",
+        trigger,
+        actor_kind: "human",
+        session_ref: None,
+        code_results: Some(1),
+        memory_results: Some(0),
+        returned_ids: None,
+        tokens_out: Some(42),
+        latency_ms: Some(10),
+        ok: true,
+    };
+    record_event_at(tmp.path(), fields("search", "explicit"));
+    record_event_at(tmp.path(), fields("search", "hook"));
+
+    let snap = build_snapshot(&store, dir.path(), "proj".into(), "0.0.0-test".into(), 30)
+        .await
+        .unwrap();
+    let json = serde_json::to_value(&snap).unwrap();
+
+    assert_eq!(json["events"]["calls"]["search"]["total"], 2);
+    assert_eq!(json["events"]["calls"]["search"]["explicit"], 1);
+    assert_eq!(json["events"]["calls"]["search"]["hook"], 1);
+    assert_eq!(json["events"]["auto.read_rate"]["numerator"], 1);
+    assert_eq!(json["events"]["auto.read_rate"]["denominator"], 2);
+    let rendered = serde_json::to_string(&json).unwrap();
+    assert!(
+        !rendered.contains("rrftieterm") && rendered.len() < 20_000,
+        "sanity: the events block stays small and carries no query text"
     );
 }
 

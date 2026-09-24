@@ -663,6 +663,13 @@ computes `rec.near_duplicate_rate` (a full embedding scan) or
 snapshot --json` for those. `--format json` carries the same subset under a
 `metrics` field, `null` when there is no readable local memory store.
 
+Right below it, whenever at least one event has been recorded, a "Use, last
+7 days" section shows `context`/`search`/`memory.add` call counts split into
+explicit/hook/unknown columns, plus the read and write automation rates
+(ADR-098 D5) — the same `events` block `inkentry metrics snapshot` emits,
+condensed. `--format json`'s `metrics` field gains the identical `events`
+object additively.
+
 **Example:**
 
 ```bash
@@ -1361,42 +1368,48 @@ the code index. See
 
 ## inkentry metrics
 
-State metrics computed from `memory.db` and (when the project is a git
-repository) `git log`, keyed by commit ([ADR-098](adr/098-metrics-and-evaluation-indexed-by-commit.md)).
-This is the **state** source only: no events, no evals. The CLI never runs an
-eval and never emits an `eval` block.
+State and events metrics computed from `memory.db` and (when the project is a
+git repository) `git log`
+([ADR-098](adr/098-metrics-and-evaluation-indexed-by-commit.md)). No `eval`
+source: the CLI never runs an eval and never emits an `eval` block (ADR-098
+D7).
 
 ```
 inkentry metrics snapshot [--window-days 30] [--json]
+inkentry metrics clear
 ```
 
 `inkentry metrics snapshot --json` prints one deterministic JSON document
 (`"schema": "inkentry.metrics/1"`) to stdout: a `header` (project id, HEAD's
 commit sha and commit time when in a git repository, the inkentry version,
-the embedder's model id/dimension/precision, and the window in days) and a
-`state` block of `rec.*`/`cmp.*` metrics, each rate carrying its own
-numerator and denominator. No network, no model calls, and no entry ids,
-titles, paths or query text — aggregates only.
+the embedder's model id/dimension/precision, and the window in days), a
+`state` block of `rec.*`/`cmp.*` metrics, and an `events` block of
+`use.*`/`auto.*` metrics plus per-command call counts, each rate carrying its
+own numerator and denominator. No network, no model calls, and no entry ids,
+titles, paths, query text or raw session references — aggregates only.
 
-Deterministic means exactly that: given the same repository state, two runs
-produce byte-identical output. There is no `generated_at` field, and the
-window closes at the later of HEAD's commit time and the newest memory
-entry's `created_at`, never at the wall clock, so an entry recorded since the
-last commit is still counted. A project
-that is not a git repository (or has no commits yet) has every commit-based
-metric — `rec.commit_coverage`, `cmp.lines_per_decision` — **absent** from
-the document, not reported as zero.
+Deterministic means exactly that: given the same repository state and the
+same recorded `events` rows, two runs produce byte-identical output. There is
+no `generated_at` field, and the window closes at the later of HEAD's commit
+time and the newest memory entry's `created_at`, never at the wall clock, so
+an entry recorded since the last commit is still counted. A project that is
+not a git repository (or has no commits yet) has every commit-based metric —
+`rec.commit_coverage`, `cmp.lines_per_decision` — **absent** from the
+document, not reported as zero.
 
 Without `--json`, the same numbers print as a short human summary.
 
-`--window-days N` (default 30) sets the window every metric below is computed
-over.
+`--window-days N` (default 30) sets the window the `state` block's metrics
+are computed over. The `events` block always uses its own fixed 7-day
+window, ending at the same instant the state window does — event metrics are
+usage-recency questions, not something a longer historical window changes
+the meaning of.
 
-**State metrics (v1 slice):**
+**State metrics:**
 
 | id | what it is |
 |---|---|
-| `rec.entries` | total / active / in-window entry counts, by kind |
+| `rec.entries` | total / active / in-window entry counts, by kind; active entries also broken down `by_origin` (`human` / `agent` / `harvest` / `unknown`, ADR-098 D6) |
 | `rec.commit_coverage` | commits in the window with at least one entry anchored to them (by `source_ref` or the git-notes attachment), over commits in the window |
 | `rec.supersede_rate` | entries superseded in the window, over active decisions at window start |
 | `rec.time_to_supersede_p50` | median seconds between a superseding entry and what it superseded |
@@ -1407,9 +1420,32 @@ over.
 | `cmp.review_items_per_day` | `decision`/`requirement`/`question`/`antipattern` entries recorded in the window, over the window's length in days |
 | `cmp.tokens_context_estimate` | estimated token count (chars/4) of the entries a default `inkentry context` would print |
 
-Not implemented in this slice, and deliberately absent from the document:
-`events`-source metrics (need the `memory.db` migration in #292) and every
-`eval`-source metric (the CLI never runs an eval, per ADR-098 D7).
+**Events metrics**, from the local `events` table
+([ADR-098 D5](adr/098-metrics-and-evaluation-indexed-by-commit.md)) — never
+reproducible from a commit alone, since they describe what actually happened
+on this machine:
+
+| id | what it is |
+|---|---|
+| `use.sessions_with_context` | sessions with a `context` event among their first three, over sessions with a declared `INKENTRY_SESSION_REF` |
+| `use.search_hit_rate` | `search` events with a nonzero result count, over all `search` events |
+| `use.search_before_write` | `memory add` events preceded in the same session by a `search` or `context` event, over all `memory add` events |
+| `auto.read_rate` | `search`/`context` events with `trigger = hook`, over all `search`/`context` events |
+| `auto.write_rate` | `memory add`/`memory supersede` events with `trigger = hook`, over all of those events |
+| `calls.{context,search,memory.add}` | total call count for each, split into `explicit`/`hook`/`unknown` by declared trigger |
+| `by_actor` | every recorded event's count, by declared actor (`human`/`agent`/`harvest`/`unknown`) |
+| `latency_ms_p50` / `tokens_out_p50` | median recorded latency and output-token estimate across every recorded event |
+
+`use.acted_on_rate` and `use.recall_miss_rate` (named in ADR-098 D3) are not
+computed: the first needs a session-end boundary this schema does not
+record, and the second is a state-derived formula with its own future home,
+not an events one. `inkentry status` prints a compact "Use, last 7 days"
+section built from the same `events` block whenever a memory store exists.
+
+`inkentry metrics clear` empties the local `events` table. Nothing else in
+`memory.db` is touched — entries, tags, linked files and edges all survive.
+This is the whole of the privacy story the event log needs: there is no
+separate file to delete.
 
 ---
 
@@ -1640,3 +1676,8 @@ and publish on your next push.
 | `INKENTRY_STATE_DIR` | Override the runtime state directory (default `~/.local/state/inkentry/`) that holds the server's pid/port/log/db files and the embed worker's pid/baseline files. Every reader and writer resolves through this same variable, so it is safe to redirect wholesale (useful for test isolation, containers, or a non-default `HOME`). |
 | `RUST_LOG=debug` | Enable verbose logging |
 | `EDITOR` / `VISUAL` | Editor opened by `inkentry memory add` when `--body` is omitted |
+| `INKENTRY_TRIGGER` | `explicit` or `hook`: how this invocation was triggered, for the local event log (ADR-098 D5) and an entry's `origin`. Any other value, or unset, reads as `unknown`. Never guessed from a TTY check. |
+| `INKENTRY_ACTOR` | `human` or `agent`: who is triggering this invocation. Any other value, or unset, reads as `unknown`. `inkentry harvest` always records its own entries' origin as `harvest`, regardless of this variable. |
+| `INKENTRY_SESSION_REF` | Opaque session identifier, used to group this invocation's recorded event with others from the same session. Stored as a truncated SHA-256 hash, never in the clear. Unset means the event joins no session. |
+| `INKENTRY_TOOL` | Free text naming the calling tool (e.g. `claude-code`), carried onto an entry's `origin.tool` when `INKENTRY_ACTOR` is also set. |
+| `INKENTRY_MODEL` | Free text naming the model the caller is running under, carried onto an entry's `origin.model` when `INKENTRY_ACTOR` is also set. |

@@ -235,8 +235,10 @@ pub(super) async fn harvest_claude_code(
         }
     });
 
+    let started = std::time::Instant::now();
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
+    let mut stored_entity_ids: Vec<String> = Vec::new();
     const DEDUP_THRESHOLD: f64 = 0.15;
 
     let estimate_tokens = |s: &str| s.len() / 3;
@@ -421,6 +423,7 @@ pub(super) async fn harvest_claude_code(
                     source_ref: Some(source_ref.clone()),
                     valid_at: None,
                     supersedes: None,
+                    origin: Some(crate::storage::Origin::harvest(cfg.llm_model.clone())),
                 })
                 .await
             {
@@ -436,12 +439,25 @@ pub(super) async fn harvest_claude_code(
             let short_id = &session_id[..session_id.len().min(8)];
             cprintln!("  + [{kind}] #{note_id}: {title}  \x1b[2m({short_id}…)\x1b[0m");
             stored += 1;
+            stored_entity_ids.push(crate::storage::entity_id::entity_id(kind, &title, &body));
         }
     }
 
     println!(
         "\nHarvested {stored} entries from {} sessions. Skipped {} near-duplicate.",
         total, dedup_skipped
+    );
+    super::super::events::record(
+        cfg,
+        mem_path,
+        backend_override,
+        "harvest",
+        None,
+        Some(stored as i64),
+        &stored_entity_ids,
+        None,
+        started,
+        true,
     );
     Ok(())
 }

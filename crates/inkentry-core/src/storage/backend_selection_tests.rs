@@ -589,6 +589,7 @@ async fn oss_route_shapes_are_reached_for_every_backend_call() {
         source_ref: None,
         valid_at: None,
         supersedes: None,
+        origin: None,
     };
     assert_eq!(
         be.add(input).await.unwrap().0.as_str(),

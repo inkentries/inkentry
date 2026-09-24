@@ -41,6 +41,7 @@ fn note_input(title: &str) -> NoteInput {
         source_ref: None,
         valid_at: None,
         supersedes: None,
+        origin: None,
     }
 }
 

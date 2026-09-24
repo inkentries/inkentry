@@ -378,6 +378,7 @@ async fn add_retries_a_shed_429_instead_of_failing_the_write() {
             source_ref: None,
             valid_at: None,
             supersedes: None,
+            origin: None,
         })
         .await
         .expect("a transient 429 must not fail the write");
@@ -438,6 +439,7 @@ fn note_input(title: &str) -> NoteInput {
         source_ref: None,
         valid_at: None,
         supersedes: None,
+        origin: None,
     }
 }
 

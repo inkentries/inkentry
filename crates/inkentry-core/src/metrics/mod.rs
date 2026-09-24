@@ -1,21 +1,27 @@
 //! ADR-098 metrics snapshot: `inkentry metrics snapshot` and the summary
 //! `inkentry status` prints alongside it.
 //!
-//! Only the **state** source (D1) is implemented here: everything is
+//! Two of the three sources (D1) are implemented here. **State** is
 //! reproducible from a commit and a repository (`memory.db`, `refs/notes/
-//! inkentry`, `git log`), with no instrumentation. The **events** source
-//! needs the `memory.db` migration work in #292 and is omitted entirely
-//! rather than faked; the **eval** source is never computed by the CLI (D7)
-//! and never appears here at all.
+//! inkentry`, `git log`), with no instrumentation. **Events** are
+//! observations, computed from the local `events` table (D5) a command
+//! records into after its own response is written — not reproducible from a
+//! commit alone, since they describe what actually happened on this machine.
+//! The **eval** source is never computed by the CLI (D7) and never appears
+//! here at all.
 //!
-//! [`build_snapshot`] is deterministic: given the same repository state it
-//! returns byte-identical data. No wall clock, no network, no model calls —
-//! the window closes at the later of HEAD's committer time and the newest
-//! memory entry's `created_at`.
+//! [`build_snapshot`]'s state block is deterministic: given the same
+//! repository state it returns byte-identical data, with no wall clock, no
+//! network and no model calls — the window closes at the later of HEAD's
+//! committer time and the newest memory entry's `created_at`. The events
+//! block is deterministic given the same `events` rows, which is the whole
+//! of what determinism can mean for an observation.
 
+mod events;
 mod git;
 mod state;
 
+pub use events::{CallCounts, EventsMetrics, compute_events_metrics};
 pub use state::{
     EntryCounts, GitWindowFacts, MedianSeconds, NearDuplicateRate, Rate, StateMetrics,
     StatusMetricsSummary, compute_state_metrics, compute_status_metrics_summary,
@@ -68,7 +74,14 @@ pub struct Snapshot {
     pub schema: &'static str,
     pub header: Header,
     pub state: StateMetrics,
+    pub events: EventsMetrics,
 }
+
+/// The events source's own window: always 7 days (D3's `use.*`/`auto.*`
+/// formulas are usage-recency questions, independent of the state block's
+/// `--window-days`), ending at the same `window_end` the state block anchors
+/// to (D7: both blocks describe one snapshot).
+pub const EVENTS_WINDOW_DAYS: u32 = 7;
 
 /// The window closes at the later of HEAD's committer time and the newest
 /// entry, never at the wall clock: the document stays a function of the
@@ -122,6 +135,10 @@ pub async fn build_snapshot(
         git_facts.as_ref(),
     )?;
 
+    let events_window_start = window_end - i64::from(EVENTS_WINDOW_DAYS) * 86_400;
+    let event_rows = store.events_in_window(events_window_start, window_end)?;
+    let events = compute_events_metrics(&event_rows, EVENTS_WINDOW_DAYS);
+
     Ok(Snapshot {
         schema: SCHEMA,
         header: Header {
@@ -136,6 +153,7 @@ pub async fn build_snapshot(
             window_days,
         },
         state,
+        events,
     })
 }
 
@@ -166,6 +184,10 @@ pub async fn build_status_summary(
         None => (None, None),
     };
 
+    let events_window_start = window_end - i64::from(EVENTS_WINDOW_DAYS) * 86_400;
+    let event_rows = store.events_in_window(events_window_start, window_end)?;
+    let events = compute_events_metrics(&event_rows, EVENTS_WINDOW_DAYS);
+
     compute_status_metrics_summary(
         store,
         window_start,
@@ -173,5 +195,6 @@ pub async fn build_status_summary(
         window_days,
         commit_shas.as_deref(),
         anchored_commit_shas.as_ref(),
+        events,
     )
 }
