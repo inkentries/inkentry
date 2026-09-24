@@ -1,4 +1,3 @@
-pub mod rag;
 pub mod tokens;
 
 use serde::{Deserialize, Serialize};

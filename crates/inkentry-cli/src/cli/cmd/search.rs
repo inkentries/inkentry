@@ -88,7 +88,7 @@ use crate::{
     capability,
     config::Config,
     registry::{Project, resolve_project_context},
-    search::{SearchResult, rag},
+    search::SearchResult,
     storage::{Database, MemoryStore},
 };
 
@@ -229,9 +229,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     // ── Per-corpus retrieval → two ranked lists ───────────────────────────────
     let code_list: Vec<SearchResult> = if want_code {
         match &code_vec {
-            Some(v) => {
-                search_all_dbs_linearrag(&db_path, &dep_projects, &args.query, v, fetch_limit)?
-            }
+            Some(v) => search_all_dbs_hybrid(&db_path, &dep_projects, &args.query, v, fetch_limit)?,
             None => {
                 // `--only-text`, an unavailable embedder, or zero coverage: FTS
                 // over the primary index covers every chunk from parse time.
@@ -682,9 +680,10 @@ fn annotate_specs(all: &mut [SearchResult], primary_db_path: &std::path::Path) {
     }
 }
 
-/// LinearRAG search across a primary DB and any dep projects.
-/// Runs LinearRAG on each DB independently and merges by distance, deduped.
-pub(crate) fn search_all_dbs_linearrag(
+/// Hybrid (vector KNN + full-text, RRF-fused) search across a primary DB and
+/// any dep projects, each searched independently and merged by distance,
+/// deduped.
+pub(crate) fn search_all_dbs_hybrid(
     primary_db_path: &std::path::Path,
     dep_projects: &[Project],
     query: &str,
@@ -692,12 +691,13 @@ pub(crate) fn search_all_dbs_linearrag(
     limit: usize,
 ) -> Result<Vec<SearchResult>> {
     let primary_db = Database::open(primary_db_path)?;
-    let fetch = (limit * 2).max(limit + 10);
-    let mut all = rag::linearrag_search(&primary_db, query_vec, query, fetch).unwrap_or_default();
+    let mut all = primary_db
+        .search_hybrid(query, query_vec, limit)
+        .unwrap_or_default();
 
     for dep in dep_projects {
         match Database::open(&dep.db_path) {
-            Ok(dep_db) => match rag::linearrag_search(&dep_db, query_vec, query, fetch) {
+            Ok(dep_db) => match dep_db.search_hybrid(query, query_vec, limit) {
                 Ok(mut dep_results) => {
                     let name = project_display_name(&dep.root_path);
                     let root = dep.root_path.to_string_lossy().into_owned();
@@ -705,17 +705,14 @@ pub(crate) fn search_all_dbs_linearrag(
                     all.append(&mut dep_results);
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "linearrag search failed on dep {}: {e}",
-                        dep.db_path.display()
-                    )
+                    tracing::warn!("hybrid search failed on dep {}: {e}", dep.db_path.display())
                 }
             },
             Err(e) => tracing::warn!("could not open dep DB {}: {e}", dep.db_path.display()),
         }
     }
 
-    // Sort by ascending distance (lower = better score in LinearRAG output).
+    // Ascending distance: `search_hybrid` reports the inverse RRF score.
     // The dedupe below keeps the first row per (path, start, end), so at equal
     // distance the tie-break picks which project's copy survives — leaving that
     // to sort order alone made a shared chunk flip owner between runs.

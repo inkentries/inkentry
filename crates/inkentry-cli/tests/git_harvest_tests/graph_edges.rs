@@ -119,10 +119,32 @@ fn graph_edges_symbol_filter_finds_edges_across_files() {
         has_edge(&rows, "main", "greet", "calls"),
         "the symbol filter must reach the caller in another file: {rows:?}"
     );
+}
+
+#[test]
+fn graph_edges_symbol_filter_finds_edges_out_of_the_definition() {
+    let (_tmp, db_path, config_path) = index_fixture_project();
+
+    // `greet` only calls `format!`, a builtin the graph skips, so the edge out
+    // of a definition is exercised on `sum_slice`, which calls `sum`.
+    let result = inkentry_cmd(&db_path, &config_path)
+        .arg("graph-edges")
+        .arg("--symbol")
+        .arg("sum_slice")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let rows = parse_jsonl(&result.stdout);
+    assert_edge_fields(&rows);
     assert!(
-        rows.iter()
-            .any(|row| row["source_file"] == "src/lib.rs" && row["source_name"] == "greet"),
-        "the symbol filter must also reach edges out of the definition: {rows:?}"
+        has_edge(&rows, "sum_slice", "sum", "calls"),
+        "the symbol filter must reach edges out of the definition: {rows:?}"
     );
 }
 

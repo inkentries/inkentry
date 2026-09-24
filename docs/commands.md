@@ -388,8 +388,9 @@ behind it: the probe still runs, and the coverage counts are still read, so a
 run that finds nothing still says whether the index was only partly embedded.
 Pass both to skip the probe and stay quiet.
 
-`--only-code` and `--only-memory` are mutually exclusive. Semantic ranking uses
-LinearRAG: a two-stage entity-activation + personalised PageRank pipeline.
+`--only-code` and `--only-memory` are mutually exclusive. Semantic ranking over
+the code corpus fuses vector nearest-neighbour search with full-text search by
+reciprocal rank fusion.
 `--only-text` needs no embedding model or server; it still runs over the
 full-text index, so it needs `inkentry init` first like every `search`.
 
@@ -747,8 +748,8 @@ working-tree scan.
 written against a clone of it):
 
 ```bash
-inkentry search linearrag_search --graph
-inkentry plumbing graph-edges --symbol linearrag_search
+inkentry search search_hybrid --graph
+inkentry plumbing graph-edges --symbol search_hybrid
 inkentry plumbing graph-edges --file crates/inkentry-core/src/storage/db.rs
 ```
 
