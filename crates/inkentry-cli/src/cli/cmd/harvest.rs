@@ -1,10 +1,3 @@
-//! `inkentry harvest`: capture memory from git history and session logs.
-//!
-//! Harvest is two things wearing one command: the one-time backfill over a
-//! range of history, and the continuous capture the post-commit hook runs after
-//! every commit. It shares its whole implementation, and its memory-store
-//! resolution, with the deprecated `inkentry memory harvest` alias.
-
 use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
@@ -29,8 +22,6 @@ pub struct HarvestArgs {
     pub backend: String,
 }
 
-/// Top-level `inkentry harvest`. Delegates to the shared harvest runner, which
-/// resolves the memory store identically to `inkentry memory harvest`.
 pub async fn harvest(args: HarvestArgs, cfg: Config) -> Result<()> {
     super::memory::run_harvest(args.harvest, args.db, &args.backend, &cfg).await
 }
