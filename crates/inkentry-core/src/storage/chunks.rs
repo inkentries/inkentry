@@ -311,6 +311,7 @@ impl Database {
         let mut stmt = self.conn.prepare_cached(
             "SELECT target_name FROM graph_edges
              WHERE source_name = ?1 AND kind = 'calls'
+             GROUP BY source_file, target_name
              ORDER BY target_name",
         )?;
         let rows = stmt.query_map(rusqlite::params![name], |row| row.get::<_, String>(0))?;
@@ -728,6 +729,7 @@ mod tests {
             target_name: target.to_string(),
             kind: EdgeKind::Calls,
             line: 1,
+            target_file: None,
         };
         db.replace_edges("a.rs", &[edge("zeta"), edge("alpha"), edge("mu")])
             .unwrap();

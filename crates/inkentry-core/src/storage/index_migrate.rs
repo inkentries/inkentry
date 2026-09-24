@@ -8,20 +8,36 @@ use rusqlite::{Connection, params};
 
 use crate::storage::migration_ladder::MigrationStep;
 
-// No registered step rebuilds yet; `Rebuild` is constructed only by tests.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(super) enum IndexMigrationKind {
     Migrate(MigrationStep),
     // A `Rebuild` anywhere between the found version and the target makes the
     // store rebuild once instead of running any step in that range.
+    // Unconstructed outside tests: no registered step rebuilds yet.
+    #[allow(dead_code)]
     Rebuild,
 }
 
 // Append only: number each step for the version it produces, and never
 // renumber or reorder an existing one.
 pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] =
-    &[(18, IndexMigrationKind::Migrate(rebuild_code_fts))];
+    &[
+        (18, IndexMigrationKind::Migrate(add_target_file)),
+        (19, IndexMigrationKind::Migrate(rebuild_code_fts)),
+    ];
+
+// Existing edges read as unresolved until a graph-only re-extraction fills
+// `target_file`. That pass is owed only when the store holds edges, so a fresh
+// index climbing the registry owes nothing.
+fn add_target_file(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    conn.execute_batch(include_str!("../../migrations/index_018.sql"))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO index_meta (key, value)
+         SELECT ?1, '1' WHERE EXISTS (SELECT 1 FROM graph_edges)",
+        rusqlite::params![super::db::GRAPH_EDGES_REEXTRACT],
+    )?;
+    Ok(())
+}
 
 /// The code full-text index rebuilt for retrieval (ADR-103): the DDL is
 /// `migrations/index_019.sql`; this backfills the identifier sub-words it adds

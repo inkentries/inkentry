@@ -32,6 +32,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   content — aggregates only. `inkentry status` now prints a compact, cheap
   subset of the same metrics (and carries it under a new `metrics` field in
   `--format json`) whenever a memory store exists.
+- **Call edges now say when the callee is defined in the calling file.** A
+  call that binds to a definition in the calling file's own scope carries
+  that file as `target_file` in `plumbing graph-edges` output (omitted when
+  unresolved).
+  A call through a parameter or local variable no longer produces an edge to a
+  same-named function elsewhere, and TSX and JSX files now get call and import
+  edges. Your next `inkentry index` upgrades an existing index in place: it
+  re-extracts edges only, without re-embedding.
 ### Changed
 
 - **Unified `search` no longer hands memory half of every result page.** A
@@ -62,6 +70,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `--only-text` JSON now reports `distance` as the raw BM25 score, lower
   being better, as for vector results. See
   [ADR-103](docs/adr/103-code-full-text-index-for-retrieval.md).
+
+### Security
+
+- **Dependencies refreshed, including the fix for RUSTSEC-2026-0306.**
+  `faster-hex`, reached through the git library, moves to 0.10.1, which bounds
+  an AVX2 read that could run past its input on x86. Nothing to do beyond
+  upgrading.
+
 ### Internal
 
 - **Both initial schema files are frozen at the shape 1.0 and 1.1 shipped.**

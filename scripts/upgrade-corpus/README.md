@@ -20,30 +20,33 @@ crates/inkentry-cli/tests/fixtures/upgrade-corpus/
 crates/inkentry-cli/tests/upgrade_corpus.rs   the suite
 ```
 
-## The corpus holds two wings, on purpose
+## The corpus holds three wings, on purpose
 
 | wing | producer | what it pins |
 | --- | --- | --- |
 | `git-notes-eras` | 0.7.1 / 0.9.3 / 0.9.5 | all three note-writing eras on one ref |
 | `memory-v1.1.0-schema-11` | 1.1.0 | a schema-11 `memory.db`, with the tag and path spellings schema step 12 has to carry from comma-joined columns into rows |
+| `index-v1.1.0-schema-17` | 1.1.0 | a schema-17 `index.db` of the sample repository: files, chunks, full-text index and graph edges that schema step 18 migrates in place |
 
 **A wing earns its place by covering a path a real user's data actually takes.**
-No database written by the earlier product is such a path:
+No database written by the earlier product (0.x) is such a path:
 
-- `index.db` is not carried across at all. The user reindexes.
-- `memory.db` crosses as a portable dump and is imported into a store the
+- its `index.db` is not carried across at all. The user reindexes.
+- its `memory.db` crosses as a portable dump and is imported into a store the
   current binary creates.
 
 So no database written by the earlier product is ever opened in place by this
 one. Wings for those covered migrations nothing performs, and they were removed
 together with the migration ladders they were defending.
 
-**A `memory.db` written by 1.0 or 1.1 is such a path.** It is stamped schema
-version 11 and migrates forward in place, so the first step after it is tested
-against a store the real 1.1.0 binary wrote. That wing is built with
-`INKENTRY_NO_SERVER=1`, which keeps the release from starting its bundled
-embedder and downloading a model: its entries carry no vectors. It is evidence
-about the relational content of a schema-11 store, not about `note_embeddings`.
+**Both databases written by 1.0 or 1.1 are such a path.** `memory.db` is
+stamped schema version 11 and `index.db` 17, and each migrates forward in place
+(an index keeps its embeddings rather than being rebuilt), so the first step
+after each is tested against a store the real 1.1.0 binary wrote. Both wings
+are built with `INKENTRY_NO_SERVER=1`, which keeps the release from starting
+its bundled embedder and downloading a model, so **neither carries vectors**.
+They are evidence about the relational content of those stores, not about
+`note_embeddings` or the index's `embeddings` table.
 Releases from 1.0 on are downloaded from `inkentries/inkentry` under the
 current name; `generate.sh` picks the repository, asset name and binary name
 from the tag.

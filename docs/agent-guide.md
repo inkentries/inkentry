@@ -623,8 +623,15 @@ inkentry plumbing graph-edges --symbol validate_token
 ```
 
 ```json
-{"source_file":"src/auth/middleware.rs","source_name":"handle_request","target_name":"validate_token","kind":"calls","line":28}
+{"source_file":"src/auth/middleware.rs","source_name":"handle_request","target_name":"validate_token","kind":"calls","line":28,"target_file":"src/auth/middleware.rs"}
 ```
+
+`target_file`, when present, is the calling file itself: the call was bound to a
+definition in that file's own scope. It is omitted otherwise, including for a
+callee imported from another file, so the edge may match any definition with
+that name.
+A call whose callee is a parameter or local variable produces no edge, because
+it cannot reach a definition elsewhere in the repository.
 
 ---
 

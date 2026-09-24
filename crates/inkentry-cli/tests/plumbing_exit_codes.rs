@@ -358,9 +358,7 @@ fn graph_edges_unindexed_file_is_a_hard_error() {
 fn graph_edges_indexed_file_without_edges_is_an_empty_set() {
     let project = TempDir::new().expect("create project dir");
     std::fs::create_dir_all(project.path().join("src")).expect("create src");
-    // Indexing records a "mentions" edge for every identifier long enough to
-    // look like a symbol, so an edge-free file needs identifiers below that
-    // length and nothing called or imported.
+    // An edge-free file calls and imports nothing.
     std::fs::write(
         project.path().join("src/leaf.rs"),
         "pub fn ab() -> u8 {\n    42\n}\n",

@@ -8,7 +8,7 @@
 // independent record of what the old binary wrote rather than an echo of what
 // today's code happens to produce.
 //
-// The corpus holds two wings, and the reason it holds so few is the point.
+// The corpus holds three wings, and the reason it holds so few is the point.
 //
 // A wing earns its place by covering a path a real user's data actually takes.
 // No database written by the earlier product is such a path: its `index.db` is
@@ -17,9 +17,10 @@
 // were archaeology, and they went with the migration ladders they were
 // defending.
 //
-// A `memory.db` written by 1.0 or 1.1 is such a path. It is stamped schema
-// version 11 and is migrated forward in place, so the store a real 1.1.0
-// binary wrote is what the first step after it has to carry across.
+// Both databases written by 1.0 or 1.1 are such a path. `memory.db` is stamped
+// schema version 11 and `index.db` 17, and each is migrated forward in place,
+// so the store a real 1.1.0 binary wrote is what the first step after it has
+// to carry across.
 //
 // The notes ref is the exception, and it is why the harness survives them. It
 // is renamed in place rather than exported, so a migrating user really does
@@ -34,7 +35,9 @@
 
 use std::path::{Path, PathBuf};
 
-use inkentry_core::storage::{Database, GitNotesBackend, MemoryBackend, MemoryStore};
+use inkentry_core::storage::{
+    Database, GRAPH_EDGES_REEXTRACT, GitNotesBackend, MemoryBackend, MemoryStore,
+};
 use inkentry_core::test_support::git_command;
 use serde::Deserialize;
 
@@ -88,6 +91,14 @@ struct Expect {
     successor_title: String,
     #[serde(default)]
     raw_tags_and_files: Vec<RawTagsAndFiles>,
+    #[serde(default)]
+    file_count: usize,
+    #[serde(default)]
+    chunk_count: usize,
+    #[serde(default)]
+    embedding_count: usize,
+    #[serde(default)]
+    graph_edge_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,6 +462,75 @@ async fn git_notes_reads_every_era_on_the_ref() {
     }
 }
 
+// What schema step 18 owes an index the real 1.1.0 binary wrote: it opens in
+// place rather than being rebuilt, keeps every file, chunk and edge row it
+// held, and every existing edge gains `target_file` as NULL (unresolved) with
+// a re-extraction owed to fill it. The wing carries no vectors (see the corpus
+// README), so the embedding count is only held to what was captured.
+#[test]
+#[serial_test::serial]
+fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
+    register_sqlite_vec();
+    let m = manifest();
+    let wing = wings_of_kind(&m, "index")
+        .into_iter()
+        .find(|w| w.id == "index-v1.1.0-schema-17")
+        .expect("the 1.1.0 index wing is in the manifest");
+    let tmp = tempfile::tempdir().unwrap();
+    let path = checkout(wing, tmp.path());
+
+    assert_eq!(wing.expect.schema_version, 17);
+    assert_eq!(
+        read_user_version(&raw(&path)),
+        17,
+        "the artifact must still be the unmigrated index the release wrote"
+    );
+    assert!(
+        wing.expect.chunk_count > 0 && wing.expect.graph_edge_count > 0,
+        "the wing must hold chunks and edges for their survival to mean anything"
+    );
+
+    let db = Database::open(&path).expect("a 1.1.0 index must open");
+    assert_eq!(
+        db.rebuilt_from(),
+        None,
+        "the index must migrate in place, not be discarded and rebuilt"
+    );
+    let stats = db.stats().expect("stats");
+    assert_eq!(stats.file_count as usize, wing.expect.file_count);
+    assert_eq!(stats.chunk_count as usize, wing.expect.chunk_count);
+    assert_eq!(stats.embedding_count as usize, wing.expect.embedding_count);
+    assert!(
+        db.pass_owed(GRAPH_EDGES_REEXTRACT).unwrap(),
+        "the migrated index must owe the re-extraction that fills target_file"
+    );
+    drop(db);
+
+    let conn = raw(&path);
+    assert_eq!(read_user_version(&conn), fresh_index_schema_version());
+    let (edges, unresolved): (i64, i64) = conn
+        .query_row(
+            "SELECT count(*), count(*) FILTER (WHERE target_file IS NULL) FROM graph_edges",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("graph_edges has a target_file column after migrating");
+    assert_eq!(
+        edges as usize, wing.expect.graph_edge_count,
+        "no edge may be lost"
+    );
+    assert_eq!(unresolved, edges, "every existing edge starts unresolved");
+
+    // Step 19 rebuilds the code full-text index from the chunks it finds.
+    let fts_rows: i64 = conn
+        .query_row("SELECT count(*) FROM chunks_fts", [], |r| r.get(0))
+        .expect("chunks_fts exists after migrating");
+    assert_eq!(
+        fts_rows as usize, wing.expect.chunk_count,
+        "every chunk must be in the rebuilt full-text index"
+    );
+}
+
 // ── The corpus has to start collecting again when there is something to collect
 //
 // The wing list is change-boundary driven, and it once stopped advancing
@@ -459,12 +539,11 @@ async fn git_notes_reads_every_era_on_the_ref() {
 // ever opened a stamped store and the suite went on passing, because a suite
 // can only test the wings it has.
 //
-// It now holds no database wing at all, which is correct and is also exactly
-// the state that failure looked like. What makes the two distinguishable is
-// this assertion. No released version of this product has database data that
-// crosses into a newer one: `index.db` is rebuilt by reindexing and `memory.db`
-// crosses as a portable dump. The first release to break that is the first one
-// whose databases belong in here.
+// A corpus that holds no wing for a store because none is needed looks exactly
+// like that failure. What makes the two distinguishable is this assertion: it
+// fires whenever a store's schema version moves past what the corpus was last
+// checked against, and asks whether a shipped version of that store has to
+// cross the move.
 //
 // The numbers below are an acknowledgement, not a derivation. Deriving them
 // from the crate constants would make the check tautological.
@@ -473,7 +552,16 @@ async fn git_notes_reads_every_era_on_the_ref() {
 // and step 12 migrates that store in place. The `memory-v1.1.0-schema-11` wing
 // and `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` are
 // the answer.
-const CORPUS_COVERS_INDEX_SCHEMA: i32 = 17;
+//
+// Index 17 -> 18: yes as well. 1.0 and 1.1 shipped writing index.db at 17, and
+// step 18 migrates it in place instead of rebuilding it, so its embeddings are
+// kept. The `index-v1.1.0-schema-17` wing and
+// `an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema` are the
+// answer.
+//
+// Index 18 -> 19: no. No release wrote 18; the same 1.1.0 wing climbs through
+// both steps, and the test above checks what step 19 rebuilds.
+const CORPUS_COVERS_INDEX_SCHEMA: i32 = 19;
 const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 12;
 
 #[test]

@@ -73,6 +73,13 @@ pub fn detect_language(path: &std::path::Path) -> Option<&'static str> {
     }
 }
 
+/// Inputs larger than this are chunked by sliding window instead of parsed.
+/// Guards against adversarial inputs that make tree-sitter's GLR parser
+/// allocate exponential memory (e.g. deeply-nested pointer declarators): the
+/// parse's time budget only bounds CPU time, and memory can spike before its
+/// first progress callback fires.
+pub(crate) const MAX_PARSE_BYTES: usize = 512 * 1024;
+
 pub(crate) fn ts_language_pub(name: &str) -> Result<tree_sitter::Language> {
     ts_walker::ts_language(name)
 }
@@ -152,11 +159,6 @@ impl SourceParser {
             return Ok(text::parse_notebook(source, file_path));
         }
 
-        // Guard against adversarial inputs that cause tree-sitter's GLR parser to
-        // allocate exponential memory (e.g. deeply-nested pointer declarators).
-        // The 5-second time budget only bounds CPU time; memory can still spike
-        // before the first progress callback fires.
-        const MAX_PARSE_BYTES: usize = 512 * 1024;
         if source.len() > MAX_PARSE_BYTES {
             tracing::warn!(
                 "{file_path}: input too large ({} bytes > {MAX_PARSE_BYTES}), using sliding window",

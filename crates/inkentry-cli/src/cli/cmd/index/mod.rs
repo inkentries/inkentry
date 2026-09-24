@@ -72,6 +72,7 @@ mod background_log;
 mod continuation;
 mod crash_test_hook;
 mod embed_phase;
+mod graph_pass;
 mod parse_phase;
 mod phases;
 mod run_lock;

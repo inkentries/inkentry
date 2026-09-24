@@ -4,15 +4,12 @@ use indicatif::{MultiProgress, ProgressBar};
 
 use super::super::ui::{is_tty, progress_style, short_path};
 use super::IndexArgs;
+use super::graph_pass;
 #[cfg(feature = "rich-formats")]
 use crate::indexer::docparser::parse_doc;
 use crate::{
-    indexer::{
-        graph::EdgeExtractor,
-        parser::{
-            SourceParser, detect_doc_language, detect_language, detect_text_language,
-            is_binary_file,
-        },
+    indexer::parser::{
+        SourceParser, detect_doc_language, detect_language, detect_text_language, is_binary_file,
     },
     search::tokens::estimate_tokens,
     storage::Database,
@@ -84,6 +81,8 @@ fn filtered_notice(filtered: u64) -> String {
 struct ParseAcc {
     indexed: u64,
     skipped: u64,
+    /// Every unchanged file's edges must be re-extracted this run.
+    reextract_edges: bool,
 }
 
 /// Collect source files from `root`, parse them, store chunks + graph edges,
@@ -125,6 +124,7 @@ pub(super) fn run_parse_phase(
     let mut acc = ParseAcc {
         indexed: 0,
         skipped: 0,
+        reextract_edges: graph_pass::reextraction_owed(db)?,
     };
 
     for entry in &files {
@@ -170,6 +170,7 @@ pub(super) fn run_parse_phase(
     }
 
     let removed = cleanup_stale(&files, root, db)?;
+    graph_pass::finish(db, acc.reextract_edges)?;
     let ParseAcc { indexed, .. } = acc;
 
     // The embed queue is not built here: it is rebuilt from the DB
@@ -510,6 +511,10 @@ fn process_text_file(
         && existing == hash
         && db.file_has_chunks(path_str)?
     {
+        if acc.reextract_edges {
+            let chunked_by_tree = db.file_chunked_by_tree(path_str)?;
+            graph_pass::store_edges(db, &source, path_str, language, chunked_by_tree);
+        }
         acc.skipped += 1;
         return Ok(());
     }
@@ -532,19 +537,22 @@ fn process_text_file(
     db.delete_embeddings_for_file(file_id)?;
     db.delete_chunks_for_file(file_id)?;
 
-    // Extract and store graph edges for this file (structural: calls/imports/extends).
-    match EdgeExtractor::extract(&source, path_str, language) {
-        Ok(edges) => {
-            if let Err(e) = db.replace_edges(path_str, &edges) {
-                tracing::warn!("graph edge storage failed for {path_str}: {e}");
-            }
-        }
-        Err(e) => tracing::warn!("graph extraction failed for {path_str}: {e}"),
-    }
+    graph_pass::store_edges(
+        db,
+        &source,
+        path_str,
+        language,
+        graph_pass::chunked_by_tree_as_stored(&chunks),
+    );
 
     store_chunks(&chunks, path_str, file_id, db)?;
     acc.indexed += 1;
     Ok(())
+}
+
+/// A chunk `store_chunks` drops rather than store.
+pub(super) fn holds_secret(chunk: &crate::indexer::Chunk) -> bool {
+    crate::indexer::secrets::contains_secret(&chunk.embedding_text())
 }
 
 /// Insert a slice of parsed chunks into the DB. The embed queue is rebuilt from
@@ -563,7 +571,7 @@ fn store_chunks(
         // metadata JSON is built — ensures a secret in the docstring never lands
         // in stored metadata either. See secrets.rs module doc: this is
         // best-effort defense-in-depth, not a security boundary.
-        if crate::indexer::secrets::contains_secret(&chunk.embedding_text()) {
+        if holds_secret(chunk) {
             tracing::warn!(
                 "skipping chunk '{}' in {path_str} (possible secret detected)",
                 chunk.name.as_deref().unwrap_or("<anonymous>"),
@@ -1250,6 +1258,7 @@ mod tests {
         let mut acc = ParseAcc {
             indexed: 0,
             skipped: 0,
+            reextract_edges: false,
         };
 
         let path_str = "huge.rs";

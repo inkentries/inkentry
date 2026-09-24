@@ -457,10 +457,6 @@ not tell you what went wrong:
 assert!(r.confidence >= 0.9, "confidence={}", r.confidence);
 ```
 
-**Changing.** `pretty_assertions` is declared as a dev-dependency in all four
-crates and imported in none. Either adopt it (`use pretty_assertions::assert_eq;`)
-or drop it. Until that is decided, do not add new usage.
-
 ### What to test
 
 Bug fixes need a test that fails without the fix. Features need the happy path
