@@ -72,7 +72,6 @@ mod background_log;
 mod continuation;
 mod crash_test_hook;
 mod embed_phase;
-mod mentions;
 mod parse_phase;
 mod phases;
 mod run_lock;

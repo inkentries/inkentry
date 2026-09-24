@@ -117,8 +117,8 @@ result with its 1-hop neighbours, and `plumbing graph-edges` exposes the exact
 edges underneath for scripts and agents.
 
 ```bash
-inkentry search linearrag_search --graph                 # the symbol's chunk + its 1-hop neighbours
-inkentry plumbing graph-edges --symbol linearrag_search  # exact edges as JSONL
+inkentry search search_hybrid --graph                    # the symbol's chunk + its 1-hop neighbours
+inkentry plumbing graph-edges --symbol search_hybrid     # exact edges as JSONL
 inkentry plumbing graph-edges --file crates/inkentry-core/src/storage/db.rs   # every edge in a file
 ```
 

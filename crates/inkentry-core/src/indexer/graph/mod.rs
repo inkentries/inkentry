@@ -26,7 +26,8 @@ pub enum EdgeKind {
     Calls,
     Extends,
     Implements,
-    /// All symbol mentions within a chunk — broader than Calls, used for LinearRAG C matrix.
+    /// No longer written. Kept so the rows an older index still holds parse
+    /// as themselves rather than as an unknown kind.
     Mentions,
 }
 

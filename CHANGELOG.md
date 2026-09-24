@@ -41,6 +41,15 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `--only-memory` is unaffected — it shows the full memory page, ungated, and
   is now the way to see what the default suppressed. See
   [ADR-083](docs/adr/083-memory-relevance-gate-in-unified-search.md).
+- **Code search ranks by the hybrid pool alone; the LinearRAG re-rank is
+  gone.** Its personalised-PageRank term pushed chunks that mention many
+  symbols (changelog sections, large modules) to the top of unrelated queries.
+  On a known-item evaluation over this repository and over Lago, removing it
+  raised Recall@10 from 0.57 to 0.75 and Recall@1 from 0.01-0.09 to 0.33,
+  and searches got faster. Indexing no longer writes `mentions` graph edges,
+  which only the re-rank read; an existing index keeps them, unused, until its
+  files are re-indexed. See
+  [ADR-102](docs/adr/102-remove-linearrag-from-code-search.md).
 ### Internal
 
 - **Both initial schema files are frozen at the shape 1.0 and 1.1 shipped.**

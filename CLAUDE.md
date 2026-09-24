@@ -199,8 +199,6 @@ search/
   mod.rs         — SearchResult struct; RRF_K, the one reciprocal-rank-fusion
                    constant shared by both within-corpus hybrid fusions and the
                    cross-corpus code+memory fusion (ADR-081)
-  rag.rs         — linearrag_search: LinearRAG two-stage retrieval (entity
-                   activation + personalised PageRank)
   tokens.rs      — token-budget helpers
 
 migrations/  (crates/inkentry-core/migrations/)
@@ -288,7 +286,6 @@ cli/
                         for the two re-exec'd children, and the check that a spawned
                         child really became the run lock's new holder
       embed_phase.rs — embedding phase of indexing
-      mentions.rs    — mention stopword filter used during indexing
       parse_phase.rs — parse/chunk phase of indexing
       phases.rs      — pre-embed (PageRank, summaries) and post-embed (tier-3 MMR,
                         conventions) phase runners, shared by the foreground path and
