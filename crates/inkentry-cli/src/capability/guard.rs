@@ -1,17 +1,7 @@
-//! Feature-gating guards: turn a `Tier` into either `Ok` or an actionable
-//! "requires inkentry-server" error.
-
 use super::tier::Tier;
 
-/// Guidance for an *inference*-backed feature (semantic `memory search`,
-/// `memory timeline`, `harvest`) that has no reachable server.
-///
-/// Emitted at client construction, where reachability is unknown: when
-/// `server_url` is set, construction always succeeds, so this message only ever
-/// fires with `server_url` unset. It therefore carries no configured-server
-/// hint; a team-server-unreachable hint, if ever wanted, must be produced at the
-/// inference call site where the connection failure is observed. `server_url`
-/// advice stays `require_tier1`'s job for the genuinely team-only features.
+// Fires only with server_url unset (client construction succeeds whenever it is set),
+// so it never advises server_url.
 pub fn inference_server_required_message(feature: &str) -> String {
     format!(
         "'inkentry {feature}' requires inkentry-server.\n\
@@ -19,17 +9,6 @@ pub fn inference_server_required_message(feature: &str) -> String {
     )
 }
 
-/// Return `Ok(())` if the tier is `Server`, otherwise return an `anyhow::Error`
-/// with the standard locked-feature message format.
-///
-/// The message is scoped to the actual failure state: with a configured
-/// `server_url` the fix is never "set server_url" (it already is), it is that
-/// the configured server could not be served from.
-///
-/// Callers append `?` to propagate the error:
-/// ```ignore
-/// require_tier1("memory search", tier, cfg.server_url.as_deref())?;
-/// ```
 pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> anyhow::Result<()> {
     if tier.is_server() {
         return Ok(());
@@ -48,21 +27,9 @@ pub fn require_tier1(feature: &str, tier: &Tier, server_url: Option<&str>) -> an
     }
 }
 
-/// Guard for a feature that moves memory to or from an explicitly-configured
-/// server (`sync`, `plumbing push`, `plumbing pull`): a self-hosted team server or
-/// Inkentry Cloud both work identically here. Distinct from features that
-/// merely need *an* inference-capable server ([`require_tier1`]).
-///
-/// `require_tier1` alone can't distinguish an auto-discovered loopback
-/// inference server (tier `Server`, `server_url` unset, never a memory store,
-/// ADR-004) from an explicitly-configured team/cloud server, so callers check
-/// `require_tier1` first, then this guard confirms the server was configured
-/// explicitly rather than merely auto-discovered.
-///
-/// Explicit-config-only: reads `cfg.server_url` and nothing else, never
-/// probing reachability. Every current caller has already established
-/// reachability via `require_tier1`, so this only answers one question: was
-/// the server set explicitly? Returns the configured `server_url` on success.
+// Tier::Server alone cannot tell an auto-discovered loopback server (never a memory store)
+// from a configured one, so callers run require_tier1 first and this confirms the config.
+// Never probes reachability.
 pub fn require_explicit_server_url(
     feature: &str,
     cfg: &crate::config::Config,
@@ -82,11 +49,6 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
-    // ── inference_server_required_message ────────────────────────────────────
-
-    /// No server reachable AND no `server_url` configured (solo user, no local
-    /// server running): the message must point at the zero-setup local server
-    /// and must NOT mention `server_url` (the misleading team-infra advice).
     #[test]
     fn inference_msg_no_server_url_points_at_local_start_only() {
         let msg = inference_server_required_message("memory search");
@@ -101,17 +63,11 @@ mod tests {
         );
     }
 
-    /// Feature name is interpolated (harvest reuses this via
-    /// `harvest_requires_server`, preserving its Tier-0 substring contract).
-    /// The subject is the top-level command, so the Tier-0 line names
-    /// `inkentry harvest`, not the deprecated `inkentry memory harvest` spelling.
     #[test]
     fn inference_msg_interpolates_feature_and_keeps_harvest_substring() {
         let msg = inference_server_required_message("harvest");
         assert!(msg.contains("'inkentry harvest' requires inkentry-server"));
     }
-
-    // ── require_tier1 ────────────────────────────────────────────────────────
 
     #[test]
     fn require_tier1_ok_for_server() {
@@ -137,8 +93,6 @@ mod tests {
 
     #[test]
     fn require_tier1_err_for_offline_with_url_names_that_server() {
-        // server_url is already configured; the message must name the failing
-        // server, never tell the operator to set what is already set.
         let tier = Tier::Offline(OfflineReason::NoLocalServer);
         let err = require_tier1("plan", &tier, Some("https://bad:4655")).unwrap_err();
         let msg = err.to_string();
@@ -163,14 +117,6 @@ mod tests {
         assert!(msg.contains("'inkentry plumbing push'"));
     }
 
-    // ── require_explicit_server_url ──────────────────────────────────────────
-    //
-    // `sync`, `plumbing push`, and `plumbing pull` move memory to/from an
-    // explicitly-configured team server; an auto-discovered loopback
-    // inference server must never satisfy them (ADR-004). This guard checks
-    // configuration presence only, never reachability, so it stays usable
-    // before any network call is made.
-
     #[test]
     fn require_explicit_server_url_errs_when_unset() {
         let cfg = Config {
@@ -194,9 +140,6 @@ mod tests {
         );
     }
 
-    /// `plumbing push` and `sync` must refuse with the exact same message
-    /// shape (only the feature name differs), so they can't drift apart
-    /// again.
     #[test]
     fn require_explicit_server_url_message_is_identical_in_shape_across_features() {
         let cfg = Config {
