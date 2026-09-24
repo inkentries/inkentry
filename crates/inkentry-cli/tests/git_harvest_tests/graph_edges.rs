@@ -7,7 +7,9 @@
 // runs its assertions at all.
 
 use crate::plumbing_helpers;
-use plumbing_helpers::{index_fixture_project, inkentry_bin, inkentry_cmd, parse_jsonl};
+use plumbing_helpers::{
+    index_fixture_project, index_project_dir, inkentry_bin, inkentry_cmd, parse_jsonl,
+};
 
 use predicates::prelude::*;
 use serde_json::Value;
@@ -92,6 +94,87 @@ fn graph_edges_main_file_emits_both_call_and_import_edges() {
         import["source_name"].is_null(),
         "an import edge is not attributed to a symbol: {import}"
     );
+}
+
+// ── resolved target file ──────────────────────────────────────────────────────
+
+fn edge_row<'a>(rows: &'a [Value], source: &str, target: &str) -> &'a Value {
+    rows.iter()
+        .find(|row| {
+            row["source_name"] == *source && row["target_name"] == *target && row["kind"] == "calls"
+        })
+        .unwrap_or_else(|| panic!("expected a `{source} -> {target}` call edge: {rows:?}"))
+}
+
+#[test]
+fn graph_edges_carries_target_file_only_for_a_resolved_edge() {
+    let project = TempDir::new().unwrap();
+    std::fs::create_dir_all(project.path().join("src")).unwrap();
+    std::fs::write(
+        project.path().join("src/a.rs"),
+        "fn helper() {}\npub fn go() {\n    helper();\n    other();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(project.path().join("src/b.rs"), "pub fn other() {}\n").unwrap();
+    let (_tmp, db_path, config_path) = index_project_dir(project.path());
+
+    let out = inkentry_cmd(&db_path, &config_path)
+        .args(["graph-edges", "--file", "src/a.rs"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows = parse_jsonl(&out);
+
+    assert_eq!(
+        edge_row(&rows, "go", "helper")["target_file"],
+        "src/a.rs",
+        "`helper` is defined in the calling file"
+    );
+    let unresolved = edge_row(&rows, "go", "other");
+    assert!(
+        unresolved.get("target_file").is_none(),
+        "a callee defined only in another file is not placed: {unresolved}"
+    );
+}
+
+#[test]
+fn graph_edges_keeps_rows_that_differ_only_in_target_file_when_filters_merge() {
+    // One line calls `helper` twice: the bare call binds to the import and
+    // stays unresolved, the receiver call reaches this file's own method.
+    let project = TempDir::new().unwrap();
+    std::fs::create_dir_all(project.path().join("src")).unwrap();
+    std::fs::write(
+        project.path().join("src/a.ts"),
+        "import { helper } from './x';\n\
+         class A {\n  helper() { return 1; }\n  run() { helper(); this.helper(); }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/b.ts"),
+        "export function helper() { return 2; }\n",
+    )
+    .unwrap();
+    let (_tmp, db_path, config_path) = index_project_dir(project.path());
+
+    let out = inkentry_cmd(&db_path, &config_path)
+        // The two rows arrive through `--symbol`, so it is the merge's own
+        // de-duplication that has to keep them apart.
+        .args(["graph-edges", "--file", "src/b.ts", "--symbol", "helper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows = parse_jsonl(&out);
+    let mut targets: Vec<Option<&str>> = rows
+        .iter()
+        .filter(|row| row["target_name"] == "helper" && row["kind"] == "calls")
+        .map(|row| row.get("target_file").and_then(Value::as_str))
+        .collect();
+    targets.sort();
+    assert_eq!(targets, vec![None, Some("src/a.ts")], "{rows:?}");
 }
 
 // ── symbol filter ─────────────────────────────────────────────────────────────

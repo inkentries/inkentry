@@ -5,24 +5,38 @@
 
 use crate::storage::migration_ladder::MigrationStep;
 
-// Unconstructed outside tests while the registry is empty.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(super) enum IndexMigrationKind {
     Migrate(MigrationStep),
     // A `Rebuild` anywhere between the found version and the target makes the
     // store rebuild once instead of running any step in that range.
+    // Unconstructed outside tests: no registered step rebuilds yet.
+    #[allow(dead_code)]
     Rebuild,
 }
 
 // Append only: number each step for the version it produces, and never
 // renumber or reorder an existing one.
-pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] = &[];
+pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] =
+    &[(18, IndexMigrationKind::Migrate(add_target_file))];
+
+// Existing edges read as unresolved until a graph-only re-extraction fills
+// `target_file`. That pass is owed only when the store holds edges, so a fresh
+// index climbing the registry owes nothing.
+fn add_target_file(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    conn.execute_batch(include_str!("../../migrations/index_018.sql"))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO index_meta (key, value)
+         SELECT ?1, '1' WHERE EXISTS (SELECT 1 FROM graph_edges)",
+        rusqlite::params![super::db::GRAPH_EDGES_REEXTRACT],
+    )?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
     use super::INDEX_MIGRATIONS;
-    use crate::storage::db::CURRENT_SCHEMA_VERSION;
+    use crate::storage::db::{CURRENT_SCHEMA_VERSION, INITIAL_SCHEMA_VERSION};
     use crate::storage::migration_ladder::{MigrationStep, assert_contiguous};
 
     fn unreachable_step(_: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -39,7 +53,7 @@ mod tests {
             .collect();
         assert_contiguous(
             &versions,
-            CURRENT_SCHEMA_VERSION + 1,
+            INITIAL_SCHEMA_VERSION + 1,
             CURRENT_SCHEMA_VERSION,
         );
     }

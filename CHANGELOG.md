@@ -32,6 +32,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   content — aggregates only. `inkentry status` now prints a compact, cheap
   subset of the same metrics (and carries it under a new `metrics` field in
   `--format json`) whenever a memory store exists.
+- **Call edges now say when the callee is defined in the calling file.** A
+  call that binds to a definition in the calling file's own scope carries
+  that file as `target_file` in `plumbing graph-edges` output (omitted when
+  unresolved).
+  A call through a parameter or local variable no longer produces an edge to a
+  same-named function elsewhere, and TSX and JSX files now get call and import
+  edges. Your next `inkentry index` upgrades an existing index in place: it
+  re-extracts edges only, without re-embedding.
 ### Changed
 
 - **Unified `search` no longer hands memory half of every result page.** A

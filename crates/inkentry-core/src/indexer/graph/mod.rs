@@ -8,10 +8,22 @@
 //! A single recursive tree walk visits every node.  Per-language helper
 //! functions decide whether a given node carries an edge; the rest of the
 //! traversal logic is shared.  Call edges are deduplicated per
-//! (source_name, target_name) pair to keep the graph compact.
+//! (source_name, target_name, target_file) to keep the graph compact.
+//!
+//! Where the language has a vendored locals query, each call edge's callee is
+//! also bound within the file (`locals`): an edge to a definition this file
+//! makes carries it as `target_file`, and a call whose callee is a parameter
+//! or local variable is dropped, since it cannot reach a repo definition.
 
+mod aliases;
 mod builtins;
 mod edges;
+mod initialisers;
+mod locals;
+mod queries;
+#[cfg(test)]
+mod tests;
+mod visibility;
 
 use anyhow::Result;
 use std::collections::HashSet;
@@ -65,6 +77,37 @@ pub struct Edge {
     pub kind: EdgeKind,
     /// 1-based source line where the relationship appears.
     pub line: usize,
+    /// The file defining the callee this edge resolved to; `None` when
+    /// unresolved, which consumers treat as "any definition named
+    /// `target_name`".
+    pub target_file: Option<String>,
+}
+
+/// An edge a language helper found at one node, before resolution.
+pub(super) struct Candidate<'t> {
+    target: String,
+    kind: EdgeKind,
+    /// The callee token of an unqualified, receiver-less call: the only call
+    /// shape a lexical binding can decide.
+    bare_callee: Option<tree_sitter::Node<'t>>,
+}
+
+impl<'t> Candidate<'t> {
+    pub(super) fn edge(target: String, kind: EdgeKind) -> Self {
+        Self {
+            target,
+            kind,
+            bare_callee: None,
+        }
+    }
+
+    pub(super) fn bare_call(target: String, callee: tree_sitter::Node<'t>) -> Self {
+        Self {
+            target,
+            kind: EdgeKind::Calls,
+            bare_callee: Some(callee),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,9 +117,21 @@ pub struct Edge {
 pub struct EdgeExtractor;
 
 impl EdgeExtractor {
-    /// Extract all structural edges from `source`.
-    /// Returns an empty vec on parse failure rather than an error.
+    /// Extract all structural edges from `source`, resolving call targets
+    /// within the file. Returns an empty vec on parse failure rather than an
+    /// error.
     pub fn extract(source: &str, file_path: &str, language: &str) -> Result<Vec<Edge>> {
+        Self::run(source, file_path, language, true)
+    }
+
+    /// [`extract`](Self::extract) without the locals pass, for a file the
+    /// chunker handled as a sliding window rather than by its tree: every
+    /// edge stays unresolved.
+    pub fn extract_unresolved(source: &str, file_path: &str, language: &str) -> Result<Vec<Edge>> {
+        Self::run(source, file_path, language, false)
+    }
+
+    fn run(source: &str, file_path: &str, language: &str, resolve: bool) -> Result<Vec<Edge>> {
         let ts_lang = match super::parser::ts_language_pub(language) {
             Ok(l) => l,
             Err(_) => return Ok(vec![]),
@@ -91,21 +146,33 @@ impl EdgeExtractor {
         };
 
         let bytes = source.as_bytes();
-        let mut out = Vec::new();
-        let mut seen: HashSet<(Option<String>, String, String)> = HashSet::new();
-
-        walk(
-            tree.root_node(),
-            bytes,
+        // Over the parse cap the chunker never uses the tree, so neither
+        // does resolution, whoever the caller is.
+        let scopes = (resolve && source.len() <= super::parser::MAX_PARSE_BYTES)
+            .then(|| locals::FileScopes::analyse(&tree, bytes, language))
+            .flatten();
+        let ctx = Ctx {
+            src: bytes,
             file_path,
             language,
-            None,
-            &mut out,
-            &mut seen,
-        );
+            scopes: scopes.as_ref(),
+        };
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+
+        walk(tree.root_node(), &ctx, None, &mut out, &mut seen);
         Ok(out)
     }
 }
+
+struct Ctx<'a> {
+    src: &'a [u8],
+    file_path: &'a str,
+    language: &'a str,
+    scopes: Option<&'a locals::FileScopes>,
+}
+
+type SeenKey = (Option<String>, String, String, Option<String>);
 
 // ---------------------------------------------------------------------------
 // Tree walker
@@ -113,22 +180,20 @@ impl EdgeExtractor {
 
 fn walk(
     node: tree_sitter::Node<'_>,
-    src: &[u8],
-    file_path: &str,
-    language: &str,
+    ctx: &Ctx<'_>,
     enclosing: Option<&str>,
     out: &mut Vec<Edge>,
-    seen: &mut HashSet<(Option<String>, String, String)>,
+    seen: &mut HashSet<SeenKey>,
 ) {
     // Track the enclosing function/class as we descend.
-    let new_scope = enclosing_scope(&node, src, language);
+    let new_scope = enclosing_scope(&node, ctx.src, ctx.language);
     let eff = new_scope.as_deref().or(enclosing);
 
-    collect(&node, src, file_path, language, eff, out, seen);
+    collect(&node, ctx, eff, out, seen);
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            walk(child, src, file_path, language, eff, out, seen);
+            walk(child, ctx, eff, out, seen);
         }
     }
 }
@@ -139,8 +204,8 @@ fn enclosing_scope(node: &tree_sitter::Node<'_>, src: &[u8], language: &str) -> 
         ("rust", "function_item") => "name",
         ("python", "function_definition") => "name",
         ("python", "class_definition") => "name",
-        ("javascript" | "typescript", "function_declaration") => "name",
-        ("javascript" | "typescript", "class_declaration") => "name",
+        ("javascript" | "jsx" | "typescript" | "tsx", "function_declaration") => "name",
+        ("javascript" | "jsx" | "typescript" | "tsx", "class_declaration") => "name",
         ("go", "function_declaration") => "name",
         ("go", "method_declaration") => "name",
         ("java", "class_declaration") => "name",
@@ -194,19 +259,18 @@ fn kotlin_scope_name(node: &tree_sitter::Node<'_>, src: &[u8], child_kind: &str)
 /// Emit edges (if any) produced by `node`, deduplicating via `seen`.
 fn collect(
     node: &tree_sitter::Node<'_>,
-    src: &[u8],
-    file_path: &str,
-    language: &str,
+    ctx: &Ctx<'_>,
     enclosing: Option<&str>,
     out: &mut Vec<Edge>,
-    seen: &mut HashSet<(Option<String>, String, String)>,
+    seen: &mut HashSet<SeenKey>,
 ) {
     let line = node.start_position().row + 1;
+    let src = ctx.src;
 
-    let candidates: Vec<(String, EdgeKind)> = match language {
+    let candidates: Vec<Candidate<'_>> = match ctx.language {
         "rust" => edges::rust_edges(node, src),
         "python" => edges::python_edges(node, src),
-        "javascript" | "typescript" => edges::js_edges(node, src),
+        "javascript" | "jsx" | "typescript" | "tsx" => edges::js_edges(node, src),
         "go" => edges::go_edges(node, src),
         "java" => edges::java_edges(node, src),
         "c" | "cpp" => edges::c_edges(node, src),
@@ -220,19 +284,37 @@ fn collect(
         _ => vec![],
     };
 
-    for (target, kind) in candidates {
+    for candidate in candidates {
+        let Candidate {
+            mut target,
+            kind,
+            bare_callee,
+        } = candidate;
+        let mut target_file = None;
+        if kind == EdgeKind::Calls
+            && let Some(scopes) = ctx.scopes
+        {
+            match scopes.resolve(bare_callee, &target) {
+                locals::Resolution::SameFile => target_file = Some(ctx.file_path.to_owned()),
+                locals::Resolution::Suppress => continue,
+                locals::Resolution::Alias(original) => target = original,
+                locals::Resolution::Unresolved => {}
+            }
+        }
         let key = (
             enclosing.map(str::to_owned),
             target.clone(),
             kind.to_string(),
+            target_file.clone(),
         );
         if seen.insert(key) {
             out.push(Edge {
-                source_file: file_path.to_owned(),
+                source_file: ctx.file_path.to_owned(),
                 source_name: enclosing.map(str::to_owned),
                 target_name: target,
                 kind,
                 line,
+                target_file,
             });
         }
     }
