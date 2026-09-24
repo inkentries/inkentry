@@ -20,11 +20,10 @@ pub(super) enum IndexMigrationKind {
 
 // Append only: number each step for the version it produces, and never
 // renumber or reorder an existing one.
-pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] =
-    &[
-        (18, IndexMigrationKind::Migrate(add_target_file)),
-        (19, IndexMigrationKind::Migrate(rebuild_code_fts)),
-    ];
+pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] = &[
+    (18, IndexMigrationKind::Migrate(add_target_file)),
+    (19, IndexMigrationKind::Migrate(rebuild_code_fts)),
+];
 
 // Existing edges read as unresolved until a graph-only re-extraction fills
 // `target_file`. That pass is owed only when the store holds edges, so a fresh
