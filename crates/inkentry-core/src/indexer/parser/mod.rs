@@ -220,7 +220,61 @@ impl SourceParser {
             ));
         }
 
+        fill_gaps(source, file_path, language, &mut chunks);
         Ok(chunks)
+    }
+}
+
+/// A gap with fewer letters and digits than this is left out: a closing `}`
+/// or `end`, a lone `private`. Measured over the whole gap, so a run of short
+/// lines (`has_many :fees`, one per line) still qualifies.
+const MIN_GAP_WORD_CHARS: usize = 16;
+
+/// Window every stretch of `source` no chunk covers, so code outside a matched
+/// node is still indexed: module-level statements and constants, and the body
+/// of a container too large to keep whole (whose own chunk is suppressed in
+/// favour of its members), such as a Rails model's associations and
+/// validations. A chunk's docstring counts as covering the lines above it.
+fn fill_gaps(source: &str, file_path: &str, language: &str, chunks: &mut Vec<Chunk>) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut covered = vec![false; lines.len() + 1];
+    for chunk in chunks.iter() {
+        let doc_lines = chunk.docstring.as_deref().map_or(0, |d| d.lines().count());
+        let from = chunk.start_line.saturating_sub(doc_lines).max(1);
+        let to = chunk.end_line.min(lines.len());
+        if from <= to {
+            covered[from..=to].fill(true);
+        }
+    }
+
+    let mut gaps: Vec<Chunk> = Vec::new();
+    let mut line = 1;
+    while line <= lines.len() {
+        if covered[line] || lines[line - 1].trim().is_empty() {
+            line += 1;
+            continue;
+        }
+        let start = line;
+        while line <= lines.len() && !covered[line] {
+            line += 1;
+        }
+        let mut end = line - 1;
+        while lines[end - 1].trim().is_empty() {
+            end -= 1;
+        }
+        let text = lines[start - 1..end].join("\n");
+        if text.chars().filter(|c| c.is_alphanumeric()).count() < MIN_GAP_WORD_CHARS {
+            continue;
+        }
+        for mut window in sliding_window(&text, file_path, language, None, None, None) {
+            window.start_line += start - 1;
+            window.end_line += start - 1;
+            gaps.push(window);
+        }
+    }
+    if !gaps.is_empty() {
+        chunks.extend(gaps);
+        chunks.sort_by_key(|c| c.start_line);
     }
 }
 

@@ -512,7 +512,14 @@ overlap between windows, and the source node's `name`/`docstring`/
 `parent_scope` are copied onto every window it produces (so a re-windowed
 function still embeds with its symbol name instead of `title: none`). Markdown
 uses ATX heading-based chunking (each `# Heading` + body = one
-`ChunkKind::Section`).
+`ChunkKind::Section`). In JS/TS a module-level `const`/`let`/`var` bound to a
+function (`export const Picker = (props) => …`, `memo(…)`, `forwardRef(…)`) is
+a named function chunk. Code outside every matched node (module-level
+statements, the body of a container too large to keep whole) is windowed as
+unnamed `verbatim` chunks rather than dropped (`fill_gaps` in
+`indexer/parser/mod.rs`); a chunk's docstring counts as covering the lines
+above it. Changing which nodes become chunks bumps `rules` in
+`chunker_config_id`, which is what tells an existing index to re-chunk.
 
 ### Embedding input format
 F2LLM-v2-330M (Qwen3 decoder, 896-dim) uses:

@@ -64,6 +64,18 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **No source code is silently left out of the index any more.** When a file
+  had at least one function, class or type the chunker recognised, everything
+  outside those was dropped: module-level statements, and the body of a class
+  too large to keep whole. On Lago that was 44% of TSX lines, 27% of
+  TypeScript and 13% of Ruby (a Rails model's associations, validations and
+  scopes). That code is now indexed as unnamed windows. JavaScript and
+  TypeScript functions written as `const name = (…) => …`, including
+  `memo(…)`/`forwardRef(…)` components, are now named function chunks, and a
+  doc comment above an `export`ed declaration is kept as its docstring. On
+  queries aimed at React components, full-text Recall@10 on Lago rose from
+  0.12 to 0.38. An existing index warns that it was chunked under older rules;
+  run `inkentry index --force` to re-chunk (this re-embeds).
 - **Unified `search` no longer hands memory half of every result page.** A
   memory entry now competes for a slot only if its distance to the query
   clears a calibrated relevance floor (`MEMORY_MAX_QA_DISTANCE`); an unrelated
