@@ -21,7 +21,7 @@ mod stats;
 
 pub use backend::{EntityIdLookup, LocalMemoryBackend, MemoryBackend, NoteInput};
 pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
-pub use db::Database;
+pub use db::{Database, GRAPH_EDGES_REEXTRACT};
 pub use entity_id::{
     ENTITY_ID_HANDLE_LEN, ENTITY_ID_MIN_PREFIX_LEN, entity_id, entity_id_handle,
     is_entity_id_lookup, note_entity_id,

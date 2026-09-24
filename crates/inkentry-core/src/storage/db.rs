@@ -29,7 +29,7 @@ pub struct Database {
 ///
 /// It continues the old ladder's numbering rather than restarting at 1, for the
 /// reason [`LAST_LEGACY_SCHEMA_VERSION`] records.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 17;
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 18;
 
 /// The highest `user_version` the old migration ladder ever stamped.
 ///
@@ -62,6 +62,12 @@ const _: () = assert!(
 /// [`Database::mark_reindexed`] removes it, so the marker means "not
 /// repopulated since", not "was rebuilt once".
 const REBUILT_FROM_KEY: &str = "rebuilt_from_version";
+
+/// [`Database::pass_owed`] key for "every file's graph edges must be
+/// re-extracted", set by a migration step that changes what edge extraction
+/// stores. Re-extraction touches `graph_edges` only: no chunking, no
+/// embedding.
+pub const GRAPH_EDGES_REEXTRACT: &str = "graph_edges_reextract";
 
 impl Database {
     /// Open (or create) the database at `path` and run all migrations.
@@ -881,26 +887,73 @@ mod tests {
         .expect("collecting sqlite_master rows")
     }
 
+    // An index as 1.1 left it: created from the frozen `index_001_initial.sql`
+    // and stamped 17, holding one indexed file with a chunk, its embedding and
+    // a call edge.
+    fn schema_17_store_at(path: &std::path::Path) {
+        let conn = Connection::open(path).unwrap();
+        let zero_vector = format!("[{}]", vec!["0"; 896].join(","));
+        conn.execute_batch(&format!(
+            "BEGIN;\n{}\n\
+             INSERT INTO files (path, language, hash, indexed_at) VALUES ('src/a.rs', 'rust', 'h', 1);\n\
+             INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content) \
+                 VALUES (1, 'function', 'go', 1, 3, 'fn go() {{ helper(); }}');\n\
+             INSERT INTO embeddings (chunk_id, embedding) VALUES (1, vec_int8('{zero_vector}'));\n\
+             INSERT INTO graph_edges (source_file, source_name, target_name, kind, line) \
+                 VALUES ('src/a.rs', 'go', 'helper', 'calls', 1);\n\
+             PRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
+            include_str!("../../migrations/index_001_initial.sql")
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn a_schema_17_store_migrates_in_place_keeping_its_chunks_and_embeddings() {
+        register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        schema_17_store_at(&path);
+
+        let db = Database::open(&path).expect("a schema 17 store must open");
+
+        assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
+        assert_eq!(db.rebuilt_from(), None, "migrating must not rebuild");
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.chunk_count, 1, "the chunk row must survive");
+        assert_eq!(stats.embedding_count, 1, "the embedding must survive");
+        let target_file: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT target_file FROM graph_edges WHERE target_name = 'helper'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the existing edge gains a target_file column");
+        assert_eq!(target_file, None, "an existing edge starts unresolved");
+        assert!(
+            db.pass_owed(super::GRAPH_EDGES_REEXTRACT).unwrap(),
+            "the step must leave the edge re-extraction owed"
+        );
+    }
+
+    #[test]
+    fn a_fresh_store_owes_no_edge_re_extraction() {
+        register_sqlite_vec();
+        let db = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
+        assert!(!db.pass_owed(super::GRAPH_EDGES_REEXTRACT).unwrap());
+    }
+
     // A store migrated forward from version 17 must end up indistinguishable
-    // from one created fresh, so the first real step (currently none —
-    // `index_migrate::INDEX_MIGRATIONS` is empty) is held to this from day one
-    // rather than only once it exists. `index_001_initial.sql` is frozen at
-    // version 17, and a fresh index climbs the same ladder a 1.1 index does, so
-    // this holds by construction; it is what fails first if creation ever
-    // stops climbing.
+    // from one created fresh. `index_001_initial.sql` is frozen at version 17,
+    // and a fresh index climbs the same ladder a 1.1 index does, so this holds
+    // by construction; it is what fails first if creation ever stops
+    // climbing, or a step's effect depends on the rows it finds.
     #[test]
     fn a_store_migrated_from_schema_version_17_matches_a_fresh_store() {
         register_sqlite_vec();
         let legacy_dir = tempfile::tempdir().unwrap();
         let legacy_path = legacy_dir.path().join("index.db");
-        {
-            let conn = Connection::open(&legacy_path).unwrap();
-            conn.execute_batch(&format!(
-                "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
-                include_str!("../../migrations/index_001_initial.sql")
-            ))
-            .unwrap();
-        }
+        schema_17_store_at(&legacy_path);
 
         let migrated = Database::open(&legacy_path).expect("open must migrate, not rebuild");
         assert_eq!(user_version(&migrated.conn), CURRENT_SCHEMA_VERSION);

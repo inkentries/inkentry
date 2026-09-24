@@ -103,9 +103,16 @@ export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
 # files move out of comma-joined columns into rows) is applied to that store in
 # place. The wing is a store the real 1.1.0 binary wrote, holding the awkward
 # tag and path spellings that step has to carry across.
+#
+# index-v1.1.0-schema-17 answers it with a yes for index.db. 1.0 and 1.1
+# shipped writing index.db at schema version 17, and step 18 (graph_edges gains
+# target_file) is applied to that store in place, keeping its chunks and
+# embeddings rather than rebuilding it. The wing is an index the real 1.1.0
+# binary wrote of the sample repository.
 WINGS=(
   "git-notes-eras|v0.9.5|git-notes"
   "memory-v1.1.0-schema-11|v1.1.0|memory"
+  "index-v1.1.0-schema-17|v1.1.0|index"
 )
 
 # Releases from 1.0 on were published under the current name, from the current
@@ -305,8 +312,43 @@ stage_db() {
 
 # ── wing builders ───────────────────────────────────────────────────────────
 
+# A schema-17 index as 1.0/1.1 wrote it. With no embedder (see
+# sandbox_env_current) the index holds files, chunks, graph edges and FTS, and
+# no vectors. The run hands title-less refinement and convention extraction to
+# a detached child that writes into the same file, so the store is staged only
+# once that child has logged its end.
+build_index_wing_current() {
+  local wing_id="$1" tag="$2" work="$3" out="$4"
+  local bin
+  bin="$(fetch_release "$tag")"
+
+  local home="$work/home" repo="$work/repo"
+  mkdir -p "$home"
+  make_sample_repo "$repo"
+  (
+    sandbox_env_current "$home"
+    cd "$repo"
+    "$bin" index . --force --no-summaries >/dev/null
+  )
+
+  local db="$repo/.inkentry/index.db" log="$repo/.inkentry/index-background.log"
+  [[ -f "$db" ]] || die "$tag produced no index.db"
+  local waited=0
+  if [[ -f "$log" ]]; then
+    until grep -qE 'background refinement (finished|failed)' "$log"; do
+      (( waited++ < 120 )) || die "$tag's background refinement never logged its end"
+      sleep 1
+    done
+  fi
+  stage_db "$db" "$out/index.db.gz"
+}
+
 build_index_wing() {
   local wing_id="$1" tag="$2" work="$3" out="$4"
+  if is_current_name_release "$tag"; then
+    build_index_wing_current "$@"
+    return
+  fi
   local bin dim wire
   bin="$(fetch_release "$tag")"
   read -r dim wire <<<"$(stub_profile "$tag")"

@@ -10,6 +10,9 @@ pub struct GraphEdge {
     pub target_name: String,
     pub kind: String,
     pub line: usize,
+    /// The file defining the callee, when the edge resolved to one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_file: Option<String>,
 }
 
 fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphEdge> {
@@ -23,6 +26,7 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphEdge> {
         target_name: row.get(2)?,
         kind: crate::indexer::graph::EdgeKind::parse(&kind).to_string(),
         line: row.get::<_, i64>(4)? as usize,
+        target_file: row.get(5)?,
     })
 }
 
@@ -38,18 +42,19 @@ impl Database {
             "DELETE FROM graph_edges WHERE source_file = ?1",
             rusqlite::params![file_path],
         )?;
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO graph_edges (source_file, source_name, target_name, kind, line, target_file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
         for e in edges {
-            self.conn.execute(
-                "INSERT INTO graph_edges (source_file, source_name, target_name, kind, line)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![
-                    e.source_file,
-                    e.source_name,
-                    e.target_name,
-                    e.kind.to_string(),
-                    e.line as i64
-                ],
-            )?;
+            stmt.execute(rusqlite::params![
+                e.source_file,
+                e.source_name,
+                e.target_name,
+                e.kind.to_string(),
+                e.line as i64,
+                e.target_file,
+            ])?;
         }
         Ok(())
     }
@@ -57,10 +62,10 @@ impl Database {
     /// All edges where `name` appears as source_name OR target_name.
     pub fn edges_for_symbol(&self, name: &str) -> Result<Vec<GraphEdge>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT source_file, source_name, target_name, kind, line
+            "SELECT source_file, source_name, target_name, kind, line, target_file
              FROM graph_edges
              WHERE source_name = ?1 OR target_name = ?1
-             ORDER BY kind, target_name",
+             ORDER BY kind, target_name, target_file",
         )?;
         let rows = stmt.query_map(rusqlite::params![name], row_to_edge)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -80,10 +85,10 @@ impl Database {
     /// All edges originating from `file_path`.
     pub fn edges_for_file(&self, file_path: &str) -> Result<Vec<GraphEdge>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT source_file, source_name, target_name, kind, line
+            "SELECT source_file, source_name, target_name, kind, line, target_file
              FROM graph_edges
              WHERE source_file = ?1
-             ORDER BY kind, target_name",
+             ORDER BY kind, target_name, target_file",
         )?;
         let rows = stmt.query_map(rusqlite::params![file_path], row_to_edge)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -138,10 +143,13 @@ impl Database {
     /// source_name is non-NULL. Used by PageRank computation after indexing.
     /// Excludes the `mentions` rows an index built before they were retired
     /// may still hold: they were never structural, and would skew PageRank.
+    /// One call site can resolve to several `target_file` rows; it still
+    /// counts once.
     pub fn graph_edges_all(&self) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT source_name, target_name FROM graph_edges \
-             WHERE source_name IS NOT NULL AND kind != 'mentions'",
+             WHERE source_name IS NOT NULL AND kind != 'mentions' \
+             GROUP BY source_file, source_name, target_name, kind",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -152,6 +160,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::super::Database;
+    use crate::indexer::graph::{Edge, EdgeKind};
     use std::sync::OnceLock;
 
     /// Register the sqlite-vec extension exactly once per test process.
@@ -205,6 +214,7 @@ mod tests {
                 target_name: "callee".to_string(),
                 kind: crate::indexer::graph::EdgeKind::Calls,
                 line: 2,
+                target_file: None,
             }],
         )
         .expect("replace edges");
@@ -295,5 +305,106 @@ mod tests {
             db.graph_neighbor_chunks(&[]).expect("empty ok").is_empty(),
             "graph_neighbor_chunks must early-return [] on empty input"
         );
+    }
+
+    // ── target_file ─────────────────────────────────────────────────────────
+
+    fn call(source_file: &str, source: &str, target: &str, target_file: Option<&str>) -> Edge {
+        Edge {
+            source_file: source_file.to_owned(),
+            source_name: Some(source.to_owned()),
+            target_name: target.to_owned(),
+            kind: EdgeKind::Calls,
+            line: 1,
+            target_file: target_file.map(str::to_owned),
+        }
+    }
+
+    fn define(db: &Database, path: &str, name: &str) {
+        let file_id = match db.file_id_for_path(path).unwrap() {
+            Some(id) => id,
+            None => db.upsert_file(path, Some("rust"), "h", 0).unwrap(),
+        };
+        insert_named_chunk(db, file_id, name);
+    }
+
+    #[test]
+    fn edges_differing_only_in_target_file_are_stored_as_distinct_rows() {
+        let db = open_db();
+        db.replace_edges(
+            "src/a.rs",
+            &[
+                call("src/a.rs", "go", "helper", Some("src/b.rs")),
+                call("src/a.rs", "go", "helper", Some("src/c.rs")),
+            ],
+        )
+        .unwrap();
+        let mut targets: Vec<_> = db
+            .edges_for_file("src/a.rs")
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.target_name, e.target_file))
+            .collect();
+        targets.sort();
+        assert_eq!(
+            targets,
+            vec![
+                ("helper".to_owned(), Some("src/b.rs".to_owned())),
+                ("helper".to_owned(), Some("src/c.rs".to_owned())),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unresolved_edge_still_joins_every_same_named_definition() {
+        let db = open_db();
+        define(&db, "src/a.rs", "go");
+        define(&db, "src/b.rs", "helper");
+        define(&db, "src/c.rs", "helper");
+        db.replace_edges("src/a.rs", &[call("src/a.rs", "go", "helper", None)])
+            .unwrap();
+
+        let neighbours = db.graph_neighbor_chunks(&["go"]).unwrap();
+        assert_eq!(
+            neighbours.len(),
+            2,
+            "a NULL target_file edge reaches both `helper` chunks, as before"
+        );
+    }
+
+    #[test]
+    fn a_pair_counts_once_for_pagerank_however_many_target_files_it_has() {
+        let db = open_db();
+        db.replace_edges(
+            "src/a.ts",
+            &[
+                call("src/a.ts", "run", "helper", None),
+                call("src/a.ts", "run", "helper", Some("src/a.ts")),
+            ],
+        )
+        .unwrap();
+        // A same-named caller in another file is its own edge, as it always was.
+        db.replace_edges("src/b.ts", &[call("src/b.ts", "run", "helper", None)])
+            .unwrap();
+
+        let mut pairs = db.graph_edges_all().unwrap();
+        pairs.sort();
+        let pair = ("run".to_owned(), "helper".to_owned());
+        assert_eq!(pairs, vec![pair.clone(), pair]);
+    }
+
+    #[test]
+    fn a_callee_is_listed_once_for_its_caller_however_many_target_files_it_has() {
+        let db = open_db();
+        db.replace_edges(
+            "src/a.ts",
+            &[
+                call("src/a.ts", "run", "helper", None),
+                call("src/a.ts", "run", "helper", Some("src/a.ts")),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(db.callees_for_symbol("run").unwrap(), vec!["helper"]);
     }
 }

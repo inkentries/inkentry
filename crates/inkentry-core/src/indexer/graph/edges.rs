@@ -1,7 +1,7 @@
-use super::EdgeKind;
 use super::builtins::*;
+use super::{Candidate, EdgeKind};
 
-pub(super) fn rust_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn rust_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         "use_declaration" => {
@@ -12,7 +12,7 @@ pub(super) fn rust_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                     .trim()
                     .to_owned();
                 if !path.is_empty() {
-                    out.push((path, EdgeKind::Imports));
+                    out.push(Candidate::edge(path, EdgeKind::Imports));
                 }
             }
         }
@@ -23,7 +23,7 @@ pub(super) fn rust_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                         if let Ok(name) = func.utf8_text(src)
                             && !is_rust_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::bare_call(name.to_owned(), func));
                         }
                     }
                     // Type::method(…) — index the full form, the type, and the method.
@@ -31,21 +31,21 @@ pub(super) fn rust_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                         if let Ok(full) = func.utf8_text(src)
                             && !is_rust_builtin(full)
                         {
-                            out.push((full.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(full.to_owned(), EdgeKind::Calls));
                         }
                         // Emit the method name: `EdgeExtractor::extract` → `extract`
                         if let Some(name_node) = func.child_by_field_name("name")
                             && let Ok(name) = name_node.utf8_text(src)
                             && !is_rust_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
                         }
                         // Emit the type/path: `EdgeExtractor::extract` → `EdgeExtractor`
                         if let Some(path_node) = func.child_by_field_name("path")
                             && let Ok(path) = path_node.utf8_text(src)
                             && !is_rust_builtin(path)
                         {
-                            out.push((path.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(path.to_owned(), EdgeKind::Calls));
                         }
                     }
                     // obj.method(…) — index the method name.
@@ -54,7 +54,7 @@ pub(super) fn rust_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                             && let Ok(name) = field.utf8_text(src)
                             && !is_rust_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
                         }
                     }
                     _ => {}
@@ -66,7 +66,7 @@ pub(super) fn rust_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
     out
 }
 
-pub(super) fn python_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn python_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         "import_statement" => {
@@ -82,7 +82,7 @@ pub(super) fn python_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                     if let Some(n) = name_node
                         && let Ok(text) = n.utf8_text(src)
                     {
-                        out.push((text.to_owned(), EdgeKind::Imports));
+                        out.push(Candidate::edge(text.to_owned(), EdgeKind::Imports));
                     }
                 }
             }
@@ -90,10 +90,10 @@ pub(super) fn python_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
         "import_from_statement" => {
             if let Some(module) = node.child_by_field_name("module_name") {
                 if let Ok(text) = module.utf8_text(src) {
-                    out.push((text.to_owned(), EdgeKind::Imports));
+                    out.push(Candidate::edge(text.to_owned(), EdgeKind::Imports));
                 }
             } else {
-                out.push((".".to_owned(), EdgeKind::Imports));
+                out.push(Candidate::edge(".".to_owned(), EdgeKind::Imports));
             }
         }
         "call" => {
@@ -103,7 +103,7 @@ pub(super) fn python_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                         if let Ok(name) = func.utf8_text(src)
                             && !is_python_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::bare_call(name.to_owned(), func));
                         }
                     }
                     // obj.method(…)
@@ -112,7 +112,7 @@ pub(super) fn python_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                             && let Ok(name) = attr.utf8_text(src)
                             && !is_python_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
                         }
                     }
                     _ => {}
@@ -124,7 +124,7 @@ pub(super) fn python_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
     out
 }
 
-pub(super) fn js_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn js_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         "import_statement" => {
@@ -132,7 +132,7 @@ pub(super) fn js_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String,
                 && let Ok(text) = source.utf8_text(src)
             {
                 let module = text.trim_matches('"').trim_matches('\'').to_owned();
-                out.push((module, EdgeKind::Imports));
+                out.push(Candidate::edge(module, EdgeKind::Imports));
             }
         }
         "call_expression" => {
@@ -142,7 +142,7 @@ pub(super) fn js_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String,
                         if let Ok(name) = func.utf8_text(src)
                             && !is_js_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::bare_call(name.to_owned(), func));
                         }
                     }
                     // obj.method(…)
@@ -151,7 +151,7 @@ pub(super) fn js_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String,
                             && let Ok(name) = prop.utf8_text(src)
                             && !is_js_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
                         }
                     }
                     _ => {}
@@ -163,7 +163,7 @@ pub(super) fn js_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String,
     out
 }
 
-pub(super) fn go_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn go_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         "import_spec" => {
@@ -171,7 +171,7 @@ pub(super) fn go_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String,
                 && let Ok(text) = path.utf8_text(src)
             {
                 let module = text.trim_matches('"').to_owned();
-                out.push((module, EdgeKind::Imports));
+                out.push(Candidate::edge(module, EdgeKind::Imports));
             }
         }
         "call_expression" => {
@@ -181,12 +181,12 @@ pub(super) fn go_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String,
                         if let Ok(name) = func.utf8_text(src)
                             && !is_go_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::bare_call(name.to_owned(), func));
                         }
                     }
                     "selector_expression" => {
                         if let Ok(text) = func.utf8_text(src) {
-                            out.push((text.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(text.to_owned(), EdgeKind::Calls));
                         }
                     }
                     _ => {}
@@ -198,7 +198,7 @@ pub(super) fn go_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String,
     out
 }
 
-pub(super) fn java_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn java_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         "import_declaration" => {
@@ -207,7 +207,7 @@ pub(super) fn java_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                     && matches!(child.kind(), "scoped_identifier" | "identifier")
                 {
                     if let Ok(text) = child.utf8_text(src) {
-                        out.push((text.to_owned(), EdgeKind::Imports));
+                        out.push(Candidate::edge(text.to_owned(), EdgeKind::Imports));
                     }
                     break;
                 }
@@ -219,7 +219,7 @@ pub(super) fn java_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
             {
                 let name = text.trim_start_matches("extends").trim().to_owned();
                 if !name.is_empty() {
-                    out.push((name, EdgeKind::Extends));
+                    out.push(Candidate::edge(name, EdgeKind::Extends));
                 }
             }
             if let Some(interfaces) = node.child_by_field_name("interfaces")
@@ -228,7 +228,7 @@ pub(super) fn java_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                 for name in text.trim_start_matches("implements").trim().split(',') {
                     let n = name.trim().to_owned();
                     if !n.is_empty() {
-                        out.push((n, EdgeKind::Implements));
+                        out.push(Candidate::edge(n, EdgeKind::Implements));
                     }
                 }
             }
@@ -237,7 +237,11 @@ pub(super) fn java_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
             if let Some(name) = node.child_by_field_name("name")
                 && let Ok(text) = name.utf8_text(src)
             {
-                out.push((text.to_owned(), EdgeKind::Calls));
+                out.push(if node.child_by_field_name("object").is_some() {
+                    Candidate::edge(text.to_owned(), EdgeKind::Calls)
+                } else {
+                    Candidate::bare_call(text.to_owned(), name)
+                });
             }
         }
         _ => {}
@@ -245,7 +249,7 @@ pub(super) fn java_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
     out
 }
 
-pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn php_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         // require/require_once/include "file.php" — the path is a `string` child
@@ -258,7 +262,7 @@ pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
                 {
                     let path = text.trim_matches('"').trim_matches('\'').to_owned();
                     if !path.is_empty() {
-                        out.push((path, EdgeKind::Imports));
+                        out.push(Candidate::edge(path, EdgeKind::Imports));
                     }
                     break;
                 }
@@ -273,7 +277,7 @@ pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
                     .trim()
                     .to_owned();
                 if !path.is_empty() {
-                    out.push((path, EdgeKind::Imports));
+                    out.push(Candidate::edge(path, EdgeKind::Imports));
                 }
             }
         }
@@ -284,7 +288,7 @@ pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
                 && let Ok(name) = func.utf8_text(src)
                 && !is_php_builtin(name)
             {
-                out.push((name.to_owned(), EdgeKind::Calls));
+                out.push(Candidate::bare_call(name.to_owned(), func));
             }
         }
         // $obj->method() / self::method() — the method name is in the `name` field.
@@ -293,7 +297,7 @@ pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
                 && let Ok(name) = name_node.utf8_text(src)
                 && !is_php_builtin(name)
             {
-                out.push((name.to_owned(), EdgeKind::Calls));
+                out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
             }
         }
         // class C extends Base implements I, J { … }
@@ -307,7 +311,7 @@ pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
                                     && base.kind() == "name"
                                     && let Ok(text) = base.utf8_text(src)
                                 {
-                                    out.push((text.to_owned(), EdgeKind::Extends));
+                                    out.push(Candidate::edge(text.to_owned(), EdgeKind::Extends));
                                 }
                             }
                         }
@@ -317,7 +321,10 @@ pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
                                     && iface.kind() == "name"
                                     && let Ok(text) = iface.utf8_text(src)
                                 {
-                                    out.push((text.to_owned(), EdgeKind::Implements));
+                                    out.push(Candidate::edge(
+                                        text.to_owned(),
+                                        EdgeKind::Implements,
+                                    ));
                                 }
                             }
                         }
@@ -331,7 +338,7 @@ pub(super) fn php_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
     out
 }
 
-pub(super) fn ruby_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn ruby_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         // Ruby has no dedicated import/mixin syntax — require, require_relative,
@@ -352,7 +359,7 @@ pub(super) fn ruby_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                                 {
                                     let path = text.trim_matches('"').trim_matches('\'').to_owned();
                                     if !path.is_empty() {
-                                        out.push((path, EdgeKind::Imports));
+                                        out.push(Candidate::edge(path, EdgeKind::Imports));
                                     }
                                     break;
                                 }
@@ -367,13 +374,20 @@ pub(super) fn ruby_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                                     && arg.kind() == "constant"
                                     && let Ok(text) = arg.utf8_text(src)
                                 {
-                                    out.push((text.to_owned(), EdgeKind::Implements));
+                                    out.push(Candidate::edge(
+                                        text.to_owned(),
+                                        EdgeKind::Implements,
+                                    ));
                                 }
                             }
                         }
                     }
                     other if !is_ruby_builtin(other) => {
-                        out.push((other.to_owned(), EdgeKind::Calls));
+                        out.push(if node.child_by_field_name("receiver").is_some() {
+                            Candidate::edge(other.to_owned(), EdgeKind::Calls)
+                        } else {
+                            Candidate::bare_call(other.to_owned(), method)
+                        });
                     }
                     _ => {}
                 }
@@ -388,7 +402,7 @@ pub(super) fn ruby_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
                         && child.kind() == "constant"
                         && let Ok(text) = child.utf8_text(src)
                     {
-                        out.push((text.to_owned(), EdgeKind::Extends));
+                        out.push(Candidate::edge(text.to_owned(), EdgeKind::Extends));
                     }
                 }
             }
@@ -398,7 +412,7 @@ pub(super) fn ruby_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
     out
 }
 
-pub(super) fn csharp_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn csharp_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         // using System; / using System.Collections.Generic;
@@ -408,7 +422,7 @@ pub(super) fn csharp_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                     && matches!(child.kind(), "identifier" | "qualified_name")
                     && let Ok(text) = child.utf8_text(src)
                 {
-                    out.push((text.to_owned(), EdgeKind::Imports));
+                    out.push(Candidate::edge(text.to_owned(), EdgeKind::Imports));
                     break;
                 }
             }
@@ -421,7 +435,7 @@ pub(super) fn csharp_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                         if let Ok(name) = func.utf8_text(src)
                             && !is_csharp_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::bare_call(name.to_owned(), func));
                         }
                     }
                     // obj.Method() / Type.Method() — method name is the `name` field.
@@ -430,7 +444,7 @@ pub(super) fn csharp_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                             && let Ok(name) = name_node.utf8_text(src)
                             && !is_csharp_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::edge(name.to_owned(), EdgeKind::Calls));
                         }
                     }
                     _ => {}
@@ -456,7 +470,7 @@ pub(super) fn csharp_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                             )
                             && let Ok(text) = base.utf8_text(src)
                         {
-                            out.push((text.to_owned(), EdgeKind::Extends));
+                            out.push(Candidate::edge(text.to_owned(), EdgeKind::Extends));
                         }
                     }
                 }
@@ -467,7 +481,7 @@ pub(super) fn csharp_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
     out
 }
 
-pub(super) fn kotlin_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn kotlin_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         // import com.demo.util.Helper
@@ -477,7 +491,7 @@ pub(super) fn kotlin_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                     && child.kind() == "identifier"
                     && let Ok(text) = child.utf8_text(src)
                 {
-                    out.push((text.to_owned(), EdgeKind::Imports));
+                    out.push(Candidate::edge(text.to_owned(), EdgeKind::Imports));
                     break;
                 }
             }
@@ -491,7 +505,7 @@ pub(super) fn kotlin_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                 && let Ok(name) = callee.utf8_text(src)
                 && !is_kotlin_builtin(name)
             {
-                out.push((name.to_owned(), EdgeKind::Calls));
+                out.push(Candidate::bare_call(name.to_owned(), callee));
             }
         }
         // class Service(…) : Base(), Greeter — supertypes are `delegation_specifier`
@@ -503,7 +517,7 @@ pub(super) fn kotlin_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
                     && child.kind() == "delegation_specifier"
                     && let Some(name) = user_type_name(&child, src)
                 {
-                    out.push((name, EdgeKind::Extends));
+                    out.push(Candidate::edge(name, EdgeKind::Extends));
                 }
             }
         }
@@ -512,7 +526,7 @@ pub(super) fn kotlin_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Str
     out
 }
 
-pub(super) fn swift_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn swift_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         // import Foundation
@@ -522,7 +536,7 @@ pub(super) fn swift_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Stri
                     && child.kind() == "identifier"
                     && let Ok(text) = child.utf8_text(src)
                 {
-                    out.push((text.to_owned(), EdgeKind::Imports));
+                    out.push(Candidate::edge(text.to_owned(), EdgeKind::Imports));
                     break;
                 }
             }
@@ -536,7 +550,7 @@ pub(super) fn swift_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Stri
                         if let Ok(name) = callee.utf8_text(src)
                             && !is_swift_builtin(name)
                         {
-                            out.push((name.to_owned(), EdgeKind::Calls));
+                            out.push(Candidate::bare_call(name.to_owned(), callee));
                         }
                     }
                     // self.run() / obj.method() — method name is the
@@ -545,7 +559,7 @@ pub(super) fn swift_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Stri
                         if let Some(name) = navigation_suffix_name(&callee, src)
                             && !is_swift_builtin(&name)
                         {
-                            out.push((name, EdgeKind::Calls));
+                            out.push(Candidate::edge(name, EdgeKind::Calls));
                         }
                     }
                     _ => {}
@@ -561,7 +575,7 @@ pub(super) fn swift_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Stri
                     && child.kind() == "inheritance_specifier"
                     && let Some(name) = user_type_name(&child, src)
                 {
-                    out.push((name, EdgeKind::Extends));
+                    out.push(Candidate::edge(name, EdgeKind::Extends));
                 }
             }
         }
@@ -625,7 +639,7 @@ fn navigation_suffix_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<St
     None
 }
 
-pub(super) fn c_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn c_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     match node.kind() {
         "preproc_include" => {
@@ -637,7 +651,7 @@ pub(super) fn c_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, 
                     .trim_start_matches('<')
                     .trim_end_matches('>')
                     .to_owned();
-                out.push((module, EdgeKind::Imports));
+                out.push(Candidate::edge(module, EdgeKind::Imports));
             }
         }
         "call_expression" => {
@@ -646,7 +660,7 @@ pub(super) fn c_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, 
                 && let Ok(name) = func.utf8_text(src)
                 && !is_c_builtin(name)
             {
-                out.push((name.to_owned(), EdgeKind::Calls));
+                out.push(Candidate::bare_call(name.to_owned(), func));
             }
         }
         _ => {}
@@ -654,7 +668,7 @@ pub(super) fn c_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, 
     out
 }
 
-pub(super) fn html_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn html_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     // tree-sitter-html uses child kinds `attribute_name` / `attribute_value`,
     // not named fields.  Walk the `attribute` node's children directly.
@@ -679,14 +693,14 @@ pub(super) fn html_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(Strin
         if matches!(attr_name, "src" | "href") {
             let path = attr_value.trim_matches('"').trim_matches('\'').to_owned();
             if !path.is_empty() && !path.starts_with('#') && !path.starts_with("data:") {
-                out.push((path, EdgeKind::Imports));
+                out.push(Candidate::edge(path, EdgeKind::Imports));
             }
         }
     }
     out
 }
 
-pub(super) fn css_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String, EdgeKind)> {
+pub(super) fn css_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<Candidate<'t>> {
     let mut out = Vec::new();
     // @import "file.css" or @import url("file.css")
     if node.kind() == "import_statement" {
@@ -702,7 +716,7 @@ pub(super) fn css_edges(node: &tree_sitter::Node<'_>, src: &[u8]) -> Vec<(String
                         .trim_matches('\'')
                         .to_owned();
                     if !path.is_empty() {
-                        out.push((path, EdgeKind::Imports));
+                        out.push(Candidate::edge(path, EdgeKind::Imports));
                     }
                 }
                 break;

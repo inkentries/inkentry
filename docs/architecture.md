@@ -178,7 +178,7 @@ files on disk
   → SecretScanner (drop credential chunks)
   → EmbeddingBackend.embed(batch of chunk texts)
   → Database.store(chunks + embeddings)
-  → EdgeExtractor (AST → graph_edges)
+  → EdgeExtractor (AST → graph_edges; callees bound in-file via locals.scm → target_file)
   → Database.store(edges)
 ```
 

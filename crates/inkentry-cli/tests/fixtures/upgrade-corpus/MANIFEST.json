@@ -38,6 +38,23 @@
       "sha256": "a47c7995a0963b860c745d84de506c8242719c1596ded382cbaeed9388ba7e3a"
     },
     {
+      "artifact": "index.db.gz",
+      "expect": {
+        "chunk_count": 3,
+        "embedding_count": 0,
+        "file_count": 2,
+        "fts_expect_path": "README.md",
+        "fts_query": "corpus",
+        "graph_edge_count": 22,
+        "schema_version": 17,
+        "vector_storage": "int8"
+      },
+      "id": "index-v1.1.0-schema-17",
+      "kind": "index",
+      "producer": "1.1.0",
+      "sha256": "13bfa983f44d136fde21b2ae5d4b83f8520c12e26337baa59ebc6a110de3a9ec"
+    },
+    {
       "artifact": "memory.db.gz",
       "expect": {
         "active_note_count": 3,

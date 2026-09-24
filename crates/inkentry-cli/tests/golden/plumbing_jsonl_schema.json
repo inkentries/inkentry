@@ -86,12 +86,16 @@
       }
     },
     "graph-edges": {
+      "$comment": "inkentry_core::storage::GraphEdge. target_file is present only when the edge resolved to a defining file.",
       "required": {
         "source_file": "string",
         "source_name": "string|null",
         "target_name": "string",
         "kind": "string",
         "line": "integer"
+      },
+      "optional": {
+        "target_file": "string"
       }
     },
     "read-memory": {

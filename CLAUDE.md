@@ -144,9 +144,20 @@ indexer/
   secrets.rs     — contains_secret(): regex scanner, drops credential chunks
   summariser.rs  — deterministic structural chunk summaries (no model, no key, no network)
   graph/
-    mod.rs       — re-exports EdgeExtractor
-    edges.rs     — EdgeExtractor: import/call/extends edges via tree-sitter
+    mod.rs       — EdgeExtractor: walks the tree, resolves and dedups edges
+    edges.rs     — per-language import/call/extends edge helpers
     builtins.rs  — built-in symbol skip-list
+    locals.rs    — intra-file binding of a call's callee (same-file definition,
+                   shadowing parameter/local, import alias) → target_file
+    aliases.rs   — the imported name behind a renaming import, per grammar
+    initialisers.rs — whether a binding's initialiser is a function, lambda
+                   or class expression (what lets a file-level binding claim
+                   its file)
+    visibility.rs — where a callable is reachable by its bare name (file,
+                   enclosing function, or same type body with an implicit
+                   receiver)
+    queries.rs   — compiles the vendored locals queries once per language
+    queries/     — vendored upstream locals.scm files (provenance in README.md)
   parser/
     mod.rs       — SourceParser; detect_language; SUPPORTED_LANGUAGES
     text.rs      — plain-text / sliding-window parser
@@ -205,6 +216,7 @@ migrations/  (crates/inkentry-core/migrations/)
   index_001_initial.sql  — index.db at schema version 17, frozen; a fresh index
                            is created from it and climbs the registry in
                            storage/index_migrate.rs (see storage/db.rs)
+  index_018.sql          — step 18 (ADR-097): graph_edges.target_file
   memory_001_initial.sql — memory.db at schema version 11, frozen; a fresh
                            store is created from it and climbs the ladder
   memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):
@@ -287,6 +299,9 @@ cli/
                         child really became the run lock's new holder
       embed_phase.rs — embedding phase of indexing
       parse_phase.rs — parse/chunk phase of indexing
+      graph_pass.rs  — graph edges during the parse phase: per-file extraction,
+                        and the re-extraction a migrated index owes for
+                        unchanged files
       phases.rs      — pre-embed (PageRank, summaries) and post-embed (tier-3 MMR,
                         conventions) phase runners, shared by the foreground path and
                         both continuation children, plus the embedder-readiness wait

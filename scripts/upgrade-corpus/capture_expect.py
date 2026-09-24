@@ -100,6 +100,7 @@ def index_expect(path):
         # about: a migration can leave files and chunks untouched and still
         # empty graph_edges.
         "graph_edge_count": scalar(conn, "SELECT count(*) FROM graph_edges"),
+        "schema_version": scalar(conn, "PRAGMA user_version"),
         "vector_storage": storage,
         "fts_query": fts_query,
         "fts_expect_path": fts_path,

@@ -105,6 +105,16 @@ pub fn chunker_config_id() -> String {
     format!("max_chunk_tokens={}", chunk_token_cap())
 }
 
+/// Whether `chunks` came from the file's syntax tree, as opposed to one
+/// whole-file sliding window: the chunker's fallback for a file too large or
+/// too slow to parse, or with no semantic node to cut on. A re-windowed
+/// oversized node keeps its name, so it still counts as the tree's.
+pub fn chunked_by_tree<'a>(chunks: impl IntoIterator<Item = &'a Chunk>) -> bool {
+    chunks
+        .into_iter()
+        .any(|c| !matches!(c.kind, ChunkKind::Verbatim) || c.name.is_some())
+}
+
 /// Split `source` into token-aware sliding-window chunks (fallback for
 /// languages without a tree-sitter grammar, for files that failed parsing, and
 /// for re-windowing oversized semantic nodes).
