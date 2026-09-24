@@ -156,6 +156,10 @@ indexer/
     visibility.rs — where a callable is reachable by its bare name (file,
                    enclosing function, or same type body with an implicit
                    receiver)
+    receivers.rs — which receivers a file can place: its type's own,
+                   unrebound self-reference, or a qualifier naming one of its
+                   file-scope types or its own module; and the type a call or
+                   method is in
     queries.rs   — compiles the vendored locals queries once per language
     queries/     — vendored upstream locals.scm files (provenance in README.md)
   parser/

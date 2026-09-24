@@ -24,7 +24,7 @@ const FUNCTION_KINDS: &[&str] = &[
 ];
 
 /// Declarations whose body holds members rather than statements.
-const TYPE_KINDS: &[&str] = &[
+pub(super) const TYPE_KINDS: &[&str] = &[
     "class_definition",
     "class_declaration",
     "class",
