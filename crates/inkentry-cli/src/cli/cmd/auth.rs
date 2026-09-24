@@ -1,21 +1,3 @@
-//! `inkentry auth set-key` / `remove-key` / `list-servers`: manage the
-//! per-server bearer credentials a self-hosted `server_url` resolves through
-//! (ADR-071 D1/D3), plus the credential for a configured LLM endpoint.
-//!
-//! These are the credential's front door: the key is read from stdin or an
-//! interactive prompt, never from argv (a positional or flag-valued secret
-//! lands in shell history and `ps` output). `set-key --server` stores it in
-//! the per-origin map (`inkentry_core::config::server_keys`); `set-key --llm`
-//! stores the single LLM credential (`inkentry_core::config::llm_key`);
-//! `list-servers` prints only origins, never key material.
-//!
-//! `remove-key` is the same surface run backwards, mirroring `set-key` flag
-//! for flag so the undo is derivable from the install without reading
-//! anything (ADR-090). It reports whether it found a credential rather than
-//! printing the same sentence for a revocation and a typo, and it normalizes
-//! nothing itself: the origin a URL means is decided by the one function
-//! `set-key` already stores under.
-
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, Subcommand};
 use std::io::{IsTerminal, Write};
@@ -161,8 +143,7 @@ fn list_servers() -> Result<()> {
     Ok(())
 }
 
-/// Read a secret from stdin: piped input if present, else an interactive
-/// prompt labelled `label`. Never accepted via a CLI flag/argv (D3).
+// Never argv: a secret there lands in shell history and `ps` output.
 fn read_secret_from_stdin_or_prompt(label: &str) -> Result<String> {
     if std::io::stdin().is_terminal() {
         eprint!("{label}: ");
