@@ -116,10 +116,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   being better, as for vector results. See
   [ADR-103](docs/adr/103-code-full-text-index-for-retrieval.md).
 - **Indexing embeds about a third of what it did on a typical app, and
-  search gets better for it.** Test files, changelogs, JSON and unnamed
+  search gets better for it.** Test files, Rust test code inside source files
+  (`#[cfg(test)]` modules, `#[test]` functions), changelogs, JSON and unnamed
   windows of code are no longer embedded. They stay in the full-text index,
   where search still finds them. On Lago that leaves 34% of the tokens to
-  embed, and on this repository 54%. Removing test code from the vector
+  embed, and on this repository 39%. Removing test code from the vector
   side also stopped it crowding out the code it tests: on the same
   evaluation, simulated default-search Recall@10 rose from 0.82 to 0.86 on
   Lago and held on this repository. `inkentry status` reports the count as

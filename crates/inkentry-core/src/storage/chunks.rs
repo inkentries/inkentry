@@ -44,11 +44,12 @@ impl Database {
             .conn
             .prepare_cached("SELECT path, language FROM files WHERE id = ?1")?
             .query_row([file_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        let text_only = crate::indexer::embed_scope::is_text_only(
+        let text_only = crate::indexer::embed_scope::is_text_only_row(
             &path,
             language.as_deref().unwrap_or(""),
             node_type,
             name,
+            metadata,
         );
         self.conn.execute(
             "INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content, metadata,

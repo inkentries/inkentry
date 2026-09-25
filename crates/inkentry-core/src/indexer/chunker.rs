@@ -56,6 +56,11 @@ pub struct Chunk {
     ///
     /// [`summariser`]: crate::indexer::summariser
     pub summary: Option<String>,
+    /// Inside test code the file's own syntax marks as such (a Rust
+    /// `#[cfg(test)]` module or `#[test]` function), which a path alone cannot
+    /// tell apart from the code around it. Such a chunk is not embedded
+    /// (`embed_scope`).
+    pub in_test_code: bool,
 }
 
 impl Chunk {
@@ -105,8 +110,9 @@ pub fn set_chunk_token_cap(tokens: usize) {
 /// bindings are chunks, and code outside every chunk is windowed rather than
 /// dropped. 3: the window holding the declaration of a container too large to
 /// keep whole is named after it, and windows are cut at container boundaries.
+/// 4: chunks inside Rust test code are marked `in_test_code`.
 pub fn chunker_config_id() -> String {
-    format!("max_chunk_tokens={};rules=3", chunk_token_cap())
+    format!("max_chunk_tokens={};rules=4", chunk_token_cap())
 }
 
 /// Whether `chunks` came from the file's syntax tree, as opposed to one
@@ -193,6 +199,7 @@ pub fn sliding_window(
             docstring: docstring.map(str::to_string),
             parent_scope: parent_scope.map(str::to_string),
             summary: None,
+            in_test_code: false,
         });
 
         if end >= lines.len() {

@@ -267,6 +267,9 @@ pub(super) struct Walked {
     pub chunks: Vec<Chunk>,
     /// In walk order, so a container precedes every container nested in it.
     pub scopes: Vec<SuppressedScope>,
+    /// 1-based inclusive line spans of test code the syntax marks as such,
+    /// from the marking attribute to the end of the item it applies to.
+    pub test_spans: Vec<(usize, usize)>,
 }
 
 pub(super) fn walk_node(
@@ -288,6 +291,11 @@ fn walk_node_inner(
 ) {
     if depth >= MAX_WALK_DEPTH || out.chunks.len() >= MAX_CHUNKS {
         return;
+    }
+    if ctx.language == "rust"
+        && let Some(span) = rust_test_span(&node, ctx.src)
+    {
+        out.test_spans.push(span);
     }
     if let Some(spec) = ctx
         .specs
@@ -394,6 +402,7 @@ fn walk_node_inner(
             docstring,
             parent_scope: parent_scope.map(str::to_owned),
             summary: None,
+            in_test_code: false,
         });
 
         // Recurse into children with the updated scope
@@ -410,6 +419,56 @@ fn walk_node_inner(
             }
         }
     }
+}
+
+/// The span a Rust test attribute marks: `#[cfg(test)]`, `#[test]` or a
+/// runner's `#[tokio::test]` on the item after it, or `#![cfg(test)]` on the
+/// module or file that holds it.
+fn rust_test_span(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<(usize, usize)> {
+    let inner = match node.kind() {
+        "attribute_item" => false,
+        "inner_attribute_item" => true,
+        _ => return None,
+    };
+    let text: String = node
+        .utf8_text(src)
+        .ok()?
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let attr = text
+        .trim_start_matches(if inner { "#![" } else { "#[" })
+        .trim_end_matches(']');
+    let path = attr.split('(').next().unwrap_or(attr);
+    let marks_test = attr.starts_with("cfg(test)")
+        || attr.starts_with("cfg(all(test")
+        || path == "test"
+        || path.ends_with("::test")
+        || path == "rstest";
+    if !marks_test {
+        return None;
+    }
+    let item = if inner {
+        // `mod tests { #![cfg(test)] … }` puts it in the body; at the top of a
+        // file its parent is the file itself.
+        let parent = node.parent()?;
+        if parent.kind() == "declaration_list" {
+            parent.parent()?
+        } else {
+            parent
+        }
+    } else {
+        let mut next = node.next_named_sibling()?;
+        while matches!(
+            next.kind(),
+            "attribute_item" | "line_comment" | "block_comment"
+        ) {
+            next = next.next_named_sibling()?;
+        }
+        next
+    };
+    let start = if inner { item } else { *node };
+    Some((start.start_position().row + 1, item.end_position().row + 1))
 }
 
 /// Re-window an oversized node's text into sliding-window sub-chunks, offsetting

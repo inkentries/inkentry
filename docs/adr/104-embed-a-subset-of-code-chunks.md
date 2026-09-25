@@ -96,3 +96,26 @@ components.
   embedded chunk's two. The simulation above includes that effect.
 - **Not configurable.** A setting to embed everything is easy to add if a
   repository turns out to need it. Nothing measured so far asks for one.
+
+## Amendment (2026-09-25): test code inside source files
+
+A path cannot tell Rust unit tests apart from the code they test, because
+they live in the same file. On inkentry, `#[cfg(test)]` modules held 30% of
+the tokens still being embedded. The syntax does mark them, so:
+
+- The walker records the span of every item that a Rust test attribute
+  marks: `#[cfg(test)]`, `#[cfg(all(test, …))]`, `#[test]`, a runner's
+  `#[…::test]`, `#[rstest]`, or `#![cfg(test)]` on the enclosing module or
+  file. A chunk inside such a span is `Chunk::in_test_code`, and its stored
+  metadata carries `"in_test_code": true`.
+- The rule over stored columns becomes `is_text_only_row`, which also reads
+  `chunks.metadata`. The schema step and the upgrade-corpus test use it, so a
+  stored flag is still exactly what a fresh index would compute.
+- `chunker_config_id` moves to `rules=4`. An index chunked earlier has no mark
+  until it is re-chunked, and until then it simply keeps embedding those
+  chunks.
+
+On inkentry this lowers the embedded share from 54% to 39% of tokens (4.6k of
+13.6k chunks). Lago has no Rust, so nothing changes there. Other languages
+keep their in-file tests rare enough (Go's live in `_test.go`, Python's in
+`test_*.py`) that the path rule already covers them.

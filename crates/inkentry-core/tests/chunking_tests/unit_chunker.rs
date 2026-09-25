@@ -192,6 +192,7 @@ fn make_chunk(name: Option<&str>, docstring: Option<&str>, content: &str) -> Chu
         docstring: docstring.map(str::to_string),
         parent_scope: None,
         summary: None,
+        in_test_code: false,
     }
 }
 
