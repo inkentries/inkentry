@@ -530,9 +530,19 @@ uses ATX heading-based chunking (each `# Heading` + body = one
 function (`export const Picker = (props) => …`, `memo(…)`, `forwardRef(…)`) is
 a named function chunk. Code outside every matched node (module-level
 statements, the body of a container too large to keep whole) is windowed as
-unnamed `verbatim` chunks rather than dropped (`fill_gaps` in
+`verbatim` chunks rather than dropped (`fill_gaps` in
 `indexer/parser/mod.rs`); a chunk's docstring counts as covering the lines
-above it. Changing which nodes become chunks bumps `rules` in
+above it. The walker records each suppressed container's span
+(`SuppressedScope` in `ts_walker.rs`); a stretch is cut where it crosses a
+container boundary, except that a bare header (`module Billing` above `class
+Invoice`) stays with the container it opens. The window holding a container's
+declaration (a Rails model's associations and validations, a Python model's
+fields) takes the innermost container's `name` and its own `parent_scope`,
+exactly as the container's re-windowed chunk would. Windows between its
+members and module-level windows stay unnamed: naming every `private` /
+`delegate` window after its class crowded the class's methods out of queries
+naming it. Changing which nodes become chunks, or what they are named, bumps
+`rules` in
 `chunker_config_id`, which is what tells an existing index to re-chunk.
 
 ### Embedding input format

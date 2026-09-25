@@ -242,11 +242,38 @@ pub(super) struct WalkCtx<'a> {
     pub specs: &'a [NodeSpec],
 }
 
+/// A named container whose own chunk was suppressed for being oversized, so
+/// the lines of its body that no member chunk covers are left to `fill_gaps`.
+/// Carries the identity the container's chunk would have had.
+pub(super) struct SuppressedScope {
+    pub name: String,
+    pub parent_scope: Option<String>,
+    /// 1-based and inclusive; starts at the container's doc comment or
+    /// decorators, if any.
+    pub start_line: usize,
+    pub end_line: usize,
+    /// The line of its own declaration (`class Invoice < …`).
+    pub decl_line: usize,
+}
+
+impl SuppressedScope {
+    pub fn contains(&self, other: &SuppressedScope) -> bool {
+        self.start_line <= other.start_line && other.end_line <= self.end_line
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Walked {
+    pub chunks: Vec<Chunk>,
+    /// In walk order, so a container precedes every container nested in it.
+    pub scopes: Vec<SuppressedScope>,
+}
+
 pub(super) fn walk_node(
     node: tree_sitter::Node<'_>,
     ctx: &WalkCtx<'_>,
     parent_scope: Option<&str>,
-    out: &mut Vec<Chunk>,
+    out: &mut Walked,
     depth: usize,
 ) {
     walk_node_inner(node, ctx, parent_scope, out, depth);
@@ -256,10 +283,10 @@ fn walk_node_inner(
     node: tree_sitter::Node<'_>,
     ctx: &WalkCtx<'_>,
     parent_scope: Option<&str>,
-    out: &mut Vec<Chunk>,
+    out: &mut Walked,
     depth: usize,
 ) {
-    if depth >= MAX_WALK_DEPTH || out.len() >= MAX_CHUNKS {
+    if depth >= MAX_WALK_DEPTH || out.chunks.len() >= MAX_CHUNKS {
         return;
     }
     if let Some(spec) = ctx
@@ -284,7 +311,8 @@ fn walk_node_inner(
         let content = node.utf8_text(ctx.src).unwrap_or("").to_owned();
 
         // Look for a doc comment immediately before this node
-        let docstring = preceding_comment(&node, ctx.src);
+        let doc_node = preceding_comment(&node);
+        let docstring = doc_node.map(|c| c.utf8_text(ctx.src).unwrap_or("").to_owned());
 
         // Build scope label for impl/class containers
         let scope_label: Option<String> = match spec.chunk_kind {
@@ -309,13 +337,23 @@ fn walk_node_inner(
                 // Suppress the container's own chunk; its children already carry
                 // fine-grained chunks framed by parent_scope. Re-window only if the
                 // container matched no children.
-                let before = out.len();
+                if let Some(name) = &name {
+                    let header = doc_node.map_or_else(|| doc_anchor(&node), comment_block_start);
+                    out.scopes.push(SuppressedScope {
+                        name: name.clone(),
+                        parent_scope: parent_scope.map(str::to_owned),
+                        start_line: header.start_position().row + 1,
+                        end_line: node.end_position().row + 1,
+                        decl_line: start_row + 1,
+                    });
+                }
+                let before = out.chunks.len();
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i as u32) {
                         walk_node_inner(child, ctx, scope_label.as_deref(), out, depth + 1);
                     }
                 }
-                if out.len() == before {
+                if out.chunks.len() == before {
                     push_windowed(
                         &content,
                         ctx,
@@ -345,7 +383,7 @@ fn walk_node_inner(
             return;
         }
 
-        out.push(Chunk {
+        out.chunks.push(Chunk {
             file_path: ctx.file_path.to_owned(),
             language: ctx.language.to_owned(),
             kind: spec.chunk_kind.clone(),
@@ -387,7 +425,7 @@ fn push_windowed(
     name: Option<&str>,
     docstring: Option<&str>,
     parent_scope: Option<&str>,
-    out: &mut Vec<Chunk>,
+    out: &mut Walked,
 ) {
     for mut sub in sliding_window(
         content,
@@ -399,7 +437,7 @@ fn push_windowed(
     ) {
         sub.start_line += start_row;
         sub.end_line += start_row;
-        out.push(sub);
+        out.chunks.push(sub);
     }
 }
 
@@ -668,14 +706,14 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     None
 }
 
-/// Return the text of the comment node that immediately precedes `node`
-/// (skipping whitespace), if any.
+/// Return the comment node that immediately precedes `node` (skipping
+/// whitespace), if any.
 ///
 /// Rust attributes (`#[derive(...)]`) are real siblings, skipped in the loop
 /// below. Python wraps decorator+def in one `decorated_definition` node, and
 /// JS/TS wraps an exported declaration in an `export_statement` whose first
 /// child is the `export` keyword, so in both the walk must start from that
-/// parent instead of `node`. TS/Java attach
+/// parent instead of `node` (`doc_anchor`). TS/Java attach
 /// decorators as a child, so neither case applies there. Ruby's
 /// `private def foo; end` visibility idiom (and lookalikes like `memoize def
 /// foo; end`) parses the def as a `method` node nested two levels inside a
@@ -691,8 +729,18 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 /// the first child inside the block. That bites only the first documented
 /// member of a body: when `start` has no sibling of its own (nothing else in
 /// its block precedes it), check one level up for that comment-as-child case.
-pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
-    let start = match node.parent() {
+pub(super) fn preceding_comment<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    let start = doc_anchor(node);
+    match start.prev_sibling() {
+        Some(prev) => scan_backward_for_comment(prev),
+        None => scan_backward_for_comment(start.parent()?.prev_sibling()?),
+    }
+}
+
+/// The node a doc comment sits directly above: `node` itself, or the wrapper
+/// that carries its decorators, `export` keyword or Ruby visibility call.
+fn doc_anchor<'a>(node: &tree_sitter::Node<'a>) -> tree_sitter::Node<'a> {
+    match node.parent() {
         Some(parent) if matches!(parent.kind(), "decorated_definition" | "export_statement") => {
             parent
         }
@@ -703,14 +751,26 @@ pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Opt
             }
         }
         _ => *node,
-    };
-    match start.prev_sibling() {
-        Some(prev) => scan_backward_for_comment(prev, src),
-        None => scan_backward_for_comment(start.parent()?.prev_sibling()?, src),
     }
 }
 
-fn scan_backward_for_comment(mut prev: tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+/// The first line comment of the unbroken run ending at `comment`: Ruby and
+/// Python give each `#` line a node of its own.
+fn comment_block_start(comment: tree_sitter::Node<'_>) -> tree_sitter::Node<'_> {
+    let mut first = comment;
+    while let Some(prev) = first.prev_sibling() {
+        // Start rows, not end: a line comment's node may end on the next row.
+        if prev.kind() != first.kind()
+            || prev.start_position().row + 1 != first.start_position().row
+        {
+            break;
+        }
+        first = prev;
+    }
+    first
+}
+
+fn scan_backward_for_comment(mut prev: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
     loop {
         let skip = prev.kind() == "\n"
             || prev.kind() == "newline"
@@ -729,7 +789,7 @@ fn scan_backward_for_comment(mut prev: tree_sitter::Node<'_>, src: &[u8]) -> Opt
         prev.kind(),
         "comment" | "line_comment" | "block_comment" | "doc_comment"
     ) {
-        Some(prev.utf8_text(src).unwrap_or("").to_owned())
+        Some(prev)
     } else {
         None
     }

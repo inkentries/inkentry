@@ -76,6 +76,17 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   queries aimed at React components, full-text Recall@10 on Lago rose from
   0.12 to 0.38. An existing index warns that it was chunked under older rules;
   run `inkentry index --force` to re-chunk (this re-embeds).
+- **A large class's own lines are findable by its name.** When a class,
+  module or impl is too large to keep whole, its methods are chunked and the
+  rest of its body is windowed. The window holding its declaration (a Rails
+  model's associations, validations and scopes, a Python model's fields) is
+  now named after it, so a full-text search for the class name finds it.
+  Windows are cut where they cross a class or module boundary; the windows
+  between a class's methods and module-level code stay unnamed. On Lago,
+  full-text Recall@10 on Rails class-body queries rose from 0.30 to 0.43 and
+  Recall@1 from 0.07 to 0.20; the other query sets on Lago and on this
+  repository are unchanged. An existing index warns that it was chunked under
+  older rules; run `inkentry index --force` to re-chunk (this re-embeds).
 - **Unified `search` no longer hands memory half of every result page.** A
   memory entry now competes for a slot only if its distance to the query
   clears a calibrated relevance floor (`MEMORY_MAX_QA_DISTANCE`); an unrelated
