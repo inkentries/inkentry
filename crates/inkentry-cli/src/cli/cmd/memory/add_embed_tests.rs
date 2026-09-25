@@ -1,11 +1,3 @@
-// `memory add`'s embed step: the entry must be durable before the embed is
-// attempted, and the wait for the vector must be bounded.
-//
-// The embedder these tests point auto-discovery at is a mock, so a "stalled"
-// embedder is a mounted response delay rather than a real bulk index batch.
-// That is the same shape the real stall has from the CLI's side: a request
-// that has been accepted and is not coming back soon.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -49,12 +41,7 @@ fn add_args(title: &str, body: &str) -> MemoryAddArgs {
     }
 }
 
-// A temp project with an initialised `memory.db`, returning the tempdir (kept
-// alive by the caller) and the store path `memory add` writes to.
-//
-// It is a real git repository with a commit, because the write-through carrier
-// needs a HEAD to attach its record to. Without one the carrier write fails and
-// the ordering test can only speak for SQLite.
+// A real git repository with a commit: the carrier needs a HEAD to attach to.
 fn fresh_project() -> (tempfile::TempDir, PathBuf) {
     register_sqlite_vec();
     let tmp = tempfile::TempDir::new().unwrap();
@@ -66,8 +53,6 @@ fn fresh_project() -> (tempfile::TempDir, PathBuf) {
         &["commit", "--quiet", "--allow-empty", "-m", "root"],
     );
     let mem_path = tmp.path().join("memory.db");
-    // Created and closed here so the file exists with its schema before the
-    // command under test opens it.
     drop(MemoryStore::open(&mem_path).unwrap());
     (tmp, mem_path)
 }
@@ -84,7 +69,6 @@ fn git(root: &std::path::Path, args: &[&str]) {
     );
 }
 
-// The write-through carrier's record for `title`, as git notes holds it.
 fn carrier_holds(root: &std::path::Path, title: &str) -> bool {
     inkentry_core::test_support::git_command(root)
         .args(["notes", "--ref=inkentry", "show", "HEAD"])
@@ -112,11 +96,7 @@ fn embedding_for(mem_path: &std::path::Path, title: &str) -> Option<Vec<u8>> {
     store.get_embedding(&row.id).unwrap()
 }
 
-// ── 1. Durable before the embed request goes out ────────────────────────────
-
-// Answers the embed, but first records whether the entry was already readable
-// from `memory.db` at the moment the request arrived. This is the ordering
-// assertion: a store-after-embed implementation cannot make this true.
+// Records whether the entry was already stored when the embed request arrived.
 struct RecordStoreStateOnArrival {
     project_root: PathBuf,
     mem_path: PathBuf,
@@ -199,16 +179,12 @@ async fn the_entry_is_stored_before_the_embed_request_is_sent() {
     );
 }
 
-// ── 2. A stalled embedder is bounded, not fatal ─────────────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn a_stalled_embedder_defers_the_vector_within_the_budget() {
     let (tmp, mem_path) = fresh_project();
     let title = "Stored while the embedder is busy";
 
-    // Far longer than the interactive budget: this stands in for the embedder
-    // being held by a bulk index batch, where the measured wait ran to minutes.
     let stall = super::add::INTERACTIVE_EMBED_BUDGET * 20;
     let server = MockServer::start().await;
     mount_health(&server).await;
@@ -235,11 +211,8 @@ async fn a_stalled_embedder_defers_the_vector_within_the_budget() {
     .expect("a stalled embedder must not fail the command");
     let elapsed = started.elapsed();
 
-    // Against the budget, not against `stall`: the criterion is that the command
-    // returns within the interactive budget, and a bound of "less than the whole
-    // 100s stall" would stay green with the budget raised to a minute, which is
-    // the wait this change exists to remove. Doubling it absorbs process and
-    // probe overhead without loosening what is being claimed.
+    // Bounded against the budget, not `stall`, which would stay green with the
+    // budget raised to a minute; doubling absorbs process and probe overhead.
     let bound = super::add::INTERACTIVE_EMBED_BUDGET * 2;
     assert!(
         elapsed < bound,
@@ -258,10 +231,8 @@ async fn a_stalled_embedder_defers_the_vector_within_the_budget() {
     );
 }
 
-// The budget's magnitude is behaviour, not a tuning detail: it is the whole
-// claim that `memory add` stays interactive. A timing assertion derived from the
-// constant scales with it and stays green at any value, so this is the one thing
-// that has to be pinned in absolute terms.
+// Pinned in absolute terms: timing assertions derived from the constant stay
+// green at any value.
 #[test]
 fn the_interactive_embed_budget_stays_interactive() {
     let budget = super::add::INTERACTIVE_EMBED_BUDGET;
@@ -278,9 +249,7 @@ fn the_interactive_embed_budget_stays_interactive() {
     );
 }
 
-// The wording the deferral prints has one job: name the command that finishes
-// the work. Asserted on the message itself because the command writes it to
-// stderr, which an in-process test cannot capture.
+// Asserted on the message itself: stderr is not capturable in-process.
 #[test]
 fn the_deferral_warning_names_the_command_that_embeds_the_entry() {
     let warning = super::add::pending_embedding_warning("embedding it timed out");
@@ -294,8 +263,6 @@ fn the_deferral_warning_names_the_command_that_embeds_the_entry() {
     );
 }
 
-// ── 3. The catch-up paths pick the entry up ─────────────────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn memory_reindex_attaches_the_vector_a_deferred_add_left_missing() {
@@ -303,7 +270,6 @@ async fn memory_reindex_attaches_the_vector_a_deferred_add_left_missing() {
     let title = "Deferred then reindexed";
     let body = "the catch-up path must mint the vector the add did not";
 
-    // Add with the embedder stalled: the entry lands vectorless.
     let stalled = MockServer::start().await;
     mount_health(&stalled).await;
     Mock::given(method("POST"))
@@ -331,7 +297,6 @@ async fn memory_reindex_attaches_the_vector_a_deferred_add_left_missing() {
         "precondition: the add left the entry vectorless"
     );
 
-    // A responsive embedder, and the ordinary backfill command.
     let healthy = MockServer::start().await;
     mount_health(&healthy).await;
     Mock::given(method("POST"))
@@ -367,8 +332,6 @@ async fn memory_reindex_attaches_the_vector_a_deferred_add_left_missing() {
     );
 }
 
-// An add-time vector and a reindex-time one must be the same bytes for the same
-// entry, or the two paths rank the same entry against different spaces.
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn an_add_time_vector_and_a_reindexed_one_are_identical() {
@@ -390,8 +353,7 @@ async fn an_add_time_vector_and_a_reindexed_one_are_identical() {
     .expect("memory add should succeed");
     let add_time = embedding_for(&mem_path, title).expect("the fast path attaches a vector");
 
-    // The document string both paths embed, derived here rather than read back
-    // from either implementation.
+    // Derived here rather than read back from either implementation.
     let expected = inkentry_core::embeddings::vec_to_blob(&content_vector(&format!(
         "title: {title} | text: {body}"
     )));
@@ -421,8 +383,6 @@ async fn an_add_time_vector_and_a_reindexed_one_are_identical() {
         "re-embedding the same entry must reproduce the add-time vector exactly"
     );
 }
-
-// ── 4. The fast path is unchanged ───────────────────────────────────────────
 
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
@@ -461,8 +421,6 @@ async fn a_prompt_embed_leaves_the_entry_embedded() {
         "nothing should be left for the catch-up paths on the fast path"
     );
 }
-
-// ── 5. A deferral is not a retry storm ──────────────────────────────────────
 
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]

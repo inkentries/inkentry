@@ -1,15 +1,5 @@
-//! `inkentry memory dedupe`: collapse duplicate-`entity_id` groups already
-//! resident in the local `memory.db`.
-//!
-//! Existing duplicate rows under the ADR-068 canonical `entity_id` (rows with
-//! byte-identical `{kind, title, body}` but differing `created_at`, `tags`,
-//! `linked_files`, or `status`) are never collapsed automatically: opening
-//! the store only backfills `entity_id` and, once zero duplicate groups
-//! remain, promotes `idx_notes_entity_id` to UNIQUE (see
-//! `inkentry_core::storage::memory::entity_id_migration`). This command is the
-//! first place in the codebase that deletes existing local memory rows, so
-//! it is explicit and dry-run-able rather than riding along on that
-//! migration. See ADR-068's third amendment for the merge rule.
+// Never runs automatically: it deletes existing local rows, so it is explicit
+// and dry-run-able rather than part of the store-open migration.
 
 use anyhow::{Context, Result};
 
