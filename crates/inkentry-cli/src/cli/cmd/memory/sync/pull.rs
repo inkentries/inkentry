@@ -1,38 +1,18 @@
-//! Pull remote memory entries into the local store, paginating past the
-//! server's per-page entry limit ([`CloudSyncClient::MEMORY_SINCE_PULL_LIMIT`]).
-
 use anyhow::Result;
 
 use super::local_embed::{LocalEmbedPolicy, RepairCounts, repair_local_embeddings};
 use crate::storage::{CloudSyncClient, MemoryStore, SyncRow};
 
-/// Outcome of a pull pass.
-///
-/// `applied` is the count `plumbing pull` and the `sync` summary have always
-/// reported. The two embed counts are the pull's half of the local-embedding
-/// repair, reported the same way [`PushSummary`](super::push::PushSummary)
-/// reports the push's half.
 #[derive(Debug, Default)]
 pub(in crate::cli::cmd) struct PullSummary {
-    /// Newly-inserted local rows.
     pub applied: usize,
-    /// Synced rows whose missing local vector this pull minted and committed.
     pub embedded_locally: usize,
-    /// Synced rows that still have no usable local vector afterwards: no local
-    /// embedder was reachable, or that row's embed call failed. They are pulled
-    /// text-only and picked up by the next pull, never left silently
-    /// unsearchable without a count.
     pub without_local_vector: usize,
 }
 
 impl PullSummary {
-    /// Fold a second pass's counts in, for `sync_round`'s two pulls.
-    ///
-    /// `applied` and `embedded_locally` are work each pass did, so they add.
-    /// `without_local_vector` is a standing state, not work: the second pass
-    /// re-scans the same rows, so its own count is what is still pending when
-    /// the round ends and summing would double-report a row neither pass could
-    /// embed.
+    // `applied` and `embedded_locally` are work, so they add. `without_local_vector`
+    // is standing state the second pass re-scans; summing would double-count.
     pub(super) fn merge(self, other: Self) -> Self {
         Self {
             applied: self.applied + other.applied,
@@ -42,15 +22,6 @@ impl PullSummary {
     }
 }
 
-/// Pull remote entries after the UUID cursor and apply them idempotently.
-///
-/// The cursor is derived from the store itself — `MAX(remote_id)` over local
-/// notes (decision #183) — so there is no persisted watermark to advance: the
-/// next run re-derives the cursor from the rows just applied. This is what makes
-/// the pull immune to clock drift and trivially resumable. Used as-is by the
-/// one-way `plumbing pull`; `sync_round` below instead calls
-/// [`pull_and_apply_since`] directly so it can pin an explicit cursor across
-/// its two pull passes.
 pub(in crate::cli::cmd) async fn pull_and_apply(
     local: &MemoryStore,
     client: &CloudSyncClient,
@@ -60,37 +31,6 @@ pub(in crate::cli::cmd) async fn pull_and_apply(
     pull_and_apply_since(local, client, cursor.as_deref(), local_embed).await
 }
 
-/// Pull remote entries after an explicit `since_id` cursor and apply them
-/// idempotently.
-///
-/// `pull_since` returns at most `CloudSyncClient::MEMORY_SINCE_PULL_LIMIT`
-/// entries per call, so a backlog larger than one page requires more than
-/// one request: this loops, applying each page as it arrives and advancing
-/// the cursor to the last entry's `id`, until a page comes back shorter
-/// than the requested limit (the definitive "nothing left" signal —
-/// including the empty-page case for an already-fully-synced project).
-/// Without this loop, a first sync into an established project would
-/// silently apply only the first page and report success.
-///
-/// Applying an entry is idempotent regardless of how many times this is
-/// called with overlapping ranges, or how many pages one call fetches:
-/// [`MemoryStore::apply_remote_note`] dedupes on `remote_id` (or reuses a
-/// matching row by `entity_id`), so re-fetching a row already known locally
-/// is a harmless no-op, not a duplicate insert or a double count.
-///
-/// The local-embedding pass runs once, after the last page has landed, so a
-/// multi-page pull pays for one embedder probe rather than one per page and a
-/// single failing embed can never unwind a page that was already applied.
-///
-/// Total-based divergence recovery (ADR-092): the `since_id` response now
-/// carries the server's active-note `total`. A forward `id > since_id` scan can
-/// never reach a row whose id sorts *behind* the cursor — exactly what a
-/// `plumbing push --force` restore produces, since it puts rows back under their
-/// original (older) ids. After draining the feed, this compares the local active
-/// total to the server's; when the server holds more, the cursor cannot be
-/// trusted, so it re-pulls the whole dataset once from the beginning to pick up
-/// the rows behind the cursor. This is what carries a `--force` restoration to
-/// the rest of the fleet.
 pub(super) async fn pull_and_apply_since(
     local: &MemoryStore,
     client: &CloudSyncClient,
@@ -99,11 +39,10 @@ pub(super) async fn pull_and_apply_since(
 ) -> Result<PullSummary> {
     let (mut applied, server_total) = drain_pages_since(local, client, cursor).await?;
 
-    // `apply_remote_note` dedupes on `remote_id`, so a full re-pull re-applies
-    // rows we already have as no-ops and only the rows behind the cursor are
-    // newly applied. The re-pull's own `total` is ignored: it starts from nil
-    // and therefore reaches every row in one pass, so a single re-pull always
-    // suffices and a persistent count skew can never spin this into a loop.
+    // A forward scan cannot reach rows whose ids sort behind the cursor (what a
+    // `plumbing push --force` restore produces), so when the server holds more
+    // active notes, re-pull from the start. The re-pull's own total is ignored so
+    // a persistent skew cannot loop.
     if let Some(total) = server_total
         && total > local.count()?
     {
@@ -111,6 +50,8 @@ pub(super) async fn pull_and_apply_since(
         applied += re_applied;
     }
 
+    // Once, after the last page: one embedder probe, and a failing embed cannot
+    // unwind pages already applied.
     let repair = embed_synced_rows(local, local_embed).await?;
     Ok(PullSummary {
         applied,
@@ -119,17 +60,6 @@ pub(super) async fn pull_and_apply_since(
     })
 }
 
-/// Drain every page of the `since_id` feed starting from `cursor`, applying each
-/// entry idempotently, and return the count of newly-applied rows together with
-/// the server's active-note `total`.
-///
-/// `total` is the most recent value any page carried, or `None` when the server
-/// predates the field or the project does not exist yet (a 404, which
-/// [`CloudSyncClient::pull_since`] reports as an empty page with no total). The
-/// loop terminates on the first page shorter than
-/// [`CloudSyncClient::MEMORY_SINCE_PULL_LIMIT`] — the definitive "nothing left"
-/// signal — driven by the actual number of entries returned, never the wire
-/// `count`.
 async fn drain_pages_since(
     local: &MemoryStore,
     client: &CloudSyncClient,
@@ -140,8 +70,7 @@ async fn drain_pages_since(
     let mut total = None;
     loop {
         let page = client.pull_since(cursor.as_deref()).await?;
-        // `total` is a project-wide snapshot repeated on each page; keep the
-        // most recent one that carried it (an older server sends none).
+        // Project-wide snapshot repeated on each page; an older server sends none.
         if page.total.is_some() {
             total = page.total;
         }
@@ -163,34 +92,22 @@ async fn drain_pages_since(
             }
         }
 
+        // Terminate on the real entry count, never the wire `count`.
         if (page_len as i64) < CloudSyncClient::MEMORY_SINCE_PULL_LIMIT {
             break;
         }
-        // A full page never proves it's the last one (the server never
-        // returns more than the limit even when more remain), so always
-        // follow up: entries is non-empty here (page_len == the limit, which
-        // is > 0), so `last()` is always `Some`.
+        // A full page never proves it is the last (the server caps at the limit),
+        // so follow up; `entries` is non-empty here, so `last()` is `Some`.
         cursor = page.entries.last().map(|e| e.id.clone());
     }
 
     Ok((applied, total))
 }
 
-/// Mint the missing local vectors for every synced row.
-///
-/// The scope is `remote_id IS NOT NULL`, the complement of the push's
-/// `remote_id IS NULL`, so no row is claimed by both. It is not a partition of
-/// the whole store: both scopes are also status-gated, so an **archived** row
-/// that was never synced is in neither, and `memory reindex --include-archived`
-/// remains its only repair. That gap predates this pass and only shows up under
-/// `--as-of`, which is the one query that reads archived rows.
-///
-/// Keying off "still has no usable vector" rather than "this pull returned it"
-/// is what makes the pass idempotent across `sync_round`'s two pulls, and what
-/// makes it the catch-up for a row an earlier pull had to leave text-only
-/// because no embedder was reachable then. It also means the second pull sees
-/// rows the push stamped moments earlier, which is why the command layer emits
-/// one pending-embedding warning rather than one per half.
+// Scope is `remote_id IS NOT NULL`, the complement of push's `remote_id IS NULL`;
+// an archived never-synced row is in neither. Keyed on "no usable vector", not
+// "returned by this pull", so it also catches up rows an earlier pull left
+// text-only, and the second pull of a sync sees rows the push just stamped.
 async fn embed_synced_rows(
     local: &MemoryStore,
     local_embed: &LocalEmbedPolicy<'_>,
@@ -200,10 +117,7 @@ async fn embed_synced_rows(
     repair_local_embeddings(local, &synced, local_embed).await
 }
 
-/// Parse an ISO 8601 / RFC 3339 timestamp to Unix epoch seconds.
-///
-/// Falls back to "now" if the server sends a value we cannot parse, so a single
-/// odd row never aborts the whole sync.
+// Falls back to "now" so one odd row never aborts the whole sync.
 pub(in crate::cli::cmd::memory) fn parse_iso_to_secs(s: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.timestamp())
@@ -235,37 +149,17 @@ mod tests {
 
     #[test]
     fn parse_iso_to_secs_falls_back_on_garbage() {
-        // Must not panic; returns some positive epoch (now).
         assert!(parse_iso_to_secs("not-a-timestamp") > 0);
     }
 
-    // ── real-server regression: an established client must keep pulling ────
-    // A wiremock stand-in can't catch this class of bug: it lives in the real
-    // server's own handler/db pairing (a batch-push ack echoing the raw row
-    // id instead of the `sync_id` `/memory/since` cursors on), not in the wire
-    // shape a hand-typed mock response can get right by construction. Spins
-    // up the actual `inkentry-server` axum router, matching the pattern in
-    // `outbox.rs`'s `spawn_inkentry_server`.
-
-    // Reproduces the walk-the-store bug: a client that has already pushed
-    // and synced once (an "established" client) never sees a teammate's
-    // later entries on a subsequent sync, even though a fresh client would
-    // pull the full set. Before the fix, client A's first push stamps its
-    // own row's `remote_id` from the batch ack's `id` field, which the real
-    // server (bug) fills with the raw autoincrement row id ("1", "2", ...)
-    // instead of `sync_id`. That digit-string sorts lexically AFTER every
-    // real UUIDv7 `sync_id` (which starts with a much smaller hex nibble for
-    // any current timestamp), so `max_remote_id()`'s cursor becomes that row
-    // id and `since_id=<cursor>` on the second pull matches nothing, even
-    // though the server holds teammate B's newer entry.
+    // Real inkentry-server router: a wiremock cannot reproduce a batch ack whose id
+    // disagrees with the `sync_id` the `/memory/since` cursor keys on.
     #[tokio::test]
     async fn established_client_pulls_teammates_entries_added_after_its_first_sync() {
         register_sqlite_vec();
         let addr = spawn_inkentry_server().await;
         let base_url = format!("http://{addr}");
 
-        // Client A: first sync. Pushes its own entry, then pulls (nothing new
-        // yet): this is what "establishes" the client and stamps its remote_id.
         let tmp_a = tempfile::TempDir::new().unwrap();
         let store_a = MemoryStore::open(&tmp_a.path().join("memory.db")).unwrap();
         store_a
@@ -294,8 +188,6 @@ mod tests {
             .applied;
         assert_eq!(pull1, 0, "nothing new on the server yet for the first pull");
 
-        // Teammate B: a second, independent client pushes a new entry to the
-        // same server/project.
         let tmp_b = tempfile::TempDir::new().unwrap();
         let store_b = MemoryStore::open(&tmp_b.path().join("memory.db")).unwrap();
         store_b
@@ -310,9 +202,6 @@ mod tests {
             "teammate B's entry must land on the server"
         );
 
-        // Client A syncs again: it is now an established client (already has a
-        // remote_id-stamped row), exactly the steady-state "sync to get
-        // teammates' latest" case the bug report describes.
         let pull2 = pull_and_apply(&store_a, &client_a, &LocalEmbedPolicy::Skip)
             .await
             .unwrap()
@@ -333,28 +222,12 @@ mod tests {
         );
     }
 
-    // Three-way steady state, each established client syncing across
-    // multiple rounds: rules out an off-by-one in cursor advancement that a
-    // two-client, single-extra-round test (see above) could miss (e.g. a
-    // cursor that only "catches up" once and then drifts on a later round).
-    //
-    // Client C joins second, via a pull-only first sync (see the doc
-    // comment on `store_c`'s setup below for why: joining via push+pull in
-    // one round is a separate, real ordering issue, not this story's bug).
-    // After that, both A and C are established clients holding a cursor
-    // derived purely from pulls/pushes of their own already-caught-up
-    // state, and teammate B pushes twice, in two separate rounds. Each of A
-    // and C must pick up exactly the right delta on each of their own
-    // subsequent pulls: never 0 (the bug this story fixes), never a
-    // duplicate re-application, and never the other established client's
-    // own entries re-surfacing.
     #[tokio::test]
     async fn two_established_clients_each_pull_correctly_across_multiple_rounds() {
         register_sqlite_vec();
         let addr = spawn_inkentry_server().await;
         let base_url = format!("http://{addr}");
 
-        // Client A establishes: push A1, pull (nothing yet).
         let tmp_a = tempfile::TempDir::new().unwrap();
         let store_a = MemoryStore::open(&tmp_a.path().join("memory.db")).unwrap();
         store_a
@@ -376,16 +249,8 @@ mod tests {
             0
         );
 
-        // Client C joins with no local content yet, so its first sync is a
-        // pull only (matching the walk-the-store "fresh client" case, which
-        // is known-good). This deliberately avoids a SEPARATE, real ordering
-        // issue that is out of scope for this story: `memory_sync` pushes
-        // before it pulls, so a client that pushes brand-new local content
-        // in the same round as older, not-yet-pulled remote content stamps
-        // its own freshly-minted (and therefore chronologically newest)
-        // sync_id as its cursor, permanently shadowing that older remote
-        // content from every future pull. Filed separately; see this task's
-        // board comment.
+        // C joins pull-only: pushing new content in the same round as older unpulled
+        // remote content makes its fresh sync_id the cursor and shadows that content.
         let tmp_c = tempfile::TempDir::new().unwrap();
         let store_c = MemoryStore::open(&tmp_c.path().join("memory.db")).unwrap();
         let client_c = CloudSyncClient::new(&base_url, "proj3", None, None).unwrap();
@@ -395,8 +260,6 @@ mod tests {
             .applied;
         assert_eq!(pull_c1, 1, "client C must pull client A's A1 on establish");
 
-        // Now that C is caught up (nothing outstanding to miss), it can
-        // safely push its own new entry in the same round it pulls.
         store_c
             .add_note("decision", "C1", "client C's entry", &[], &[], None, None)
             .unwrap();
@@ -416,7 +279,6 @@ mod tests {
             "nothing further for C to pull immediately after its own push"
         );
 
-        // Teammate B pushes its first entry.
         let tmp_b = tempfile::TempDir::new().unwrap();
         let store_b = MemoryStore::open(&tmp_b.path().join("memory.db")).unwrap();
         store_b
@@ -439,8 +301,6 @@ mod tests {
             1
         );
 
-        // Round 2: both established clients must pick up exactly the new
-        // delta each is missing (A is missing C1 and B1; C is missing B1).
         let pull_a_round2 = pull_and_apply(&store_a, &client_a, &LocalEmbedPolicy::Skip)
             .await
             .unwrap()
@@ -458,10 +318,6 @@ mod tests {
             "client C must pull only B1 (it already has A1 and its own C1)"
         );
 
-        // Teammate B pushes a second entry. This is the off-by-one probe:
-        // a cursor that only advances correctly ONCE (round 2) but then
-        // sticks or drifts would surface here as 0 or a re-applied dup on
-        // this THIRD round for either established client.
         store_b
             .add_note(
                 "decision",
@@ -524,18 +380,7 @@ mod tests {
         );
     }
 
-    // ── pull pagination: exhaust every page, not just the first ─────────────
-    // Before this fix, `pull_and_apply_since` made exactly one request to
-    // `pull_since` and treated whatever it returned as the whole backlog. This
-    // client requests `CloudSyncClient::MEMORY_SINCE_PULL_LIMIT` entries per
-    // page, so a first sync into an established project silently applied
-    // only the first page and reported success. These tests drive the fix
-    // directly against a mock `/memory/since`, controlling exact page sizes
-    // (including a full page at that request limit) without needing that
-    // many real rows in a live server.
-
-    // Deterministic, lexically-increasing ids so `since_id` cursors compare
-    // the same way real UUIDv7 cloud ids do.
+    // Lexically increasing ids, so `since_id` cursors compare like real UUIDv7s.
     fn page_ids(start: usize, count: usize) -> Vec<String> {
         (start..start + count)
             .map(|i| format!("01890000-0000-7000-8000-{i:012x}"))
@@ -560,10 +405,8 @@ mod tests {
 
     const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
 
-    // Mounts one `/memory/since` mock per page, matched by the exact
-    // `since_id` it must be requested with (the prior page's last id, or the
-    // nil UUID for the very first request). Each mock must be hit exactly
-    // `times` times.
+    // One mock per page, matched on the `since_id` it must be requested with;
+    // each is hit exactly `times`.
     async fn mount_pages_times(server: &wiremock::MockServer, pages: &[Vec<String>], times: u64) {
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, ResponseTemplate};
@@ -587,8 +430,6 @@ mod tests {
         mount_pages_times(server, pages, 1).await;
     }
 
-    // Item 1: a backlog smaller than one page is a single request, and every
-    // entry lands.
     #[tokio::test]
     async fn pull_and_apply_since_single_page_matches_prior_behavior() {
         let server = wiremock::MockServer::start().await;
@@ -606,9 +447,6 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
-    // Item 2: a backlog spanning exactly two pages (100 then 40, the
-    // requested page limit) is fetched in two requests, the second cursor is
-    // the first page's last id, and every entry is applied exactly once.
     #[tokio::test]
     async fn pull_and_apply_since_two_pages_advances_cursor_to_last_id_of_prior_page() {
         let server = wiremock::MockServer::start().await;
@@ -628,8 +466,6 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
-    // Item 3: three-plus pages (100 + 100 + 45) keep looping past two
-    // iterations, not just handling the two-page case.
     #[tokio::test]
     async fn pull_and_apply_since_three_pages_loops_past_two_iterations() {
         let server = wiremock::MockServer::start().await;
@@ -649,10 +485,6 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
     }
 
-    // Item 4: a page landing exactly on the limit is always followed by
-    // exactly one more request (never assumed to be the last page), and
-    // that follow-up returning short ends the loop immediately (never a
-    // third, unnecessary request).
     #[tokio::test]
     async fn pull_and_apply_since_full_page_triggers_exactly_one_more_request() {
         let server = wiremock::MockServer::start().await;
@@ -671,8 +503,6 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
-    // Item 5: an already fully-synced project (empty first page) terminates
-    // after that one request instead of looping forever.
     #[tokio::test]
     async fn pull_and_apply_since_empty_first_page_terminates_after_one_request() {
         let server = wiremock::MockServer::start().await;
@@ -689,27 +519,18 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
-    // Item 6: `sync_round`'s reported `pulled` count (what `inkentry sync`'s
-    // completion message prints) is the TRUE total across every page, not
-    // just the first. `memory_sync` itself can't be driven directly in this
-    // binary (see `sync_round`'s own doc comment on the per-process tier
-    // cache), so this asserts on the exact value the message interpolates.
+    // `memory_sync` cannot be driven in this binary, so assert on the value its
+    // message interpolates.
     #[tokio::test]
     async fn sync_round_pulled_count_reflects_every_page_not_just_the_first() {
         let server = wiremock::MockServer::start().await;
-        // sync_round's own first pull pass sees the whole multi-page backlog
-        // (nothing local to push, so the push call is empty and the second
-        // pull pass, reusing the same pre-round cursor, will be a no-op
-        // repeat of the same now-caught-up query).
         let page1 = page_ids(0, 100);
         let page2 = page_ids(100, 60);
         {
             use wiremock::matchers::{method, path, query_param};
             use wiremock::{Mock, ResponseTemplate};
-            // No `expect(1)`: the confirmation pull re-derives from the SAME
-            // pre-round cursor (nil UUID, since nothing local existed before
-            // this round), so it legitimately repeats this identical
-            // two-page sequence a second time.
+            // No `expect`: the confirmation pull re-derives the same nil cursor and
+            // legitimately repeats these requests.
             Mock::given(method("GET"))
                 .and(path("/v1/projects/proj/memory/since"))
                 .and(query_param("since_id", NIL_UUID))
@@ -740,11 +561,6 @@ mod tests {
         assert_eq!(store.count().unwrap(), 160);
     }
 
-    // Item 7: the one-way `inkentry plumbing pull` entry point (`pull_and_apply`,
-    // which derives its own cursor from the store rather than being handed
-    // one) also paginates fully, proven through `pull_and_apply` directly,
-    // not just through `sync_round`, since both merely wrap the same shared
-    // `pull_and_apply_since`.
     #[tokio::test]
     async fn pull_and_apply_one_way_also_paginates_fully() {
         let server = wiremock::MockServer::start().await;
@@ -763,19 +579,12 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
-    // Item 8: on a first sync (nothing local has ever pushed or pulled
-    // before, so `sync_round` pushes first and runs a single post-push
-    // pull), that post-push pull paginates fully on its own when it turns
-    // up more than one page of results (e.g. a teammate already has a
-    // 130-entry backlog on the project by the time this round's push
-    // provisions it and the pull runs).
     #[tokio::test]
     async fn sync_round_first_sync_post_push_pull_paginates_fully_on_its_own() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, ResponseTemplate};
 
         let server = wiremock::MockServer::start().await;
-        // This round's own push (empty local store: nothing to push).
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/memory/batch"))
             .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
@@ -783,8 +592,6 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        // The single post-push pull starts from the nil UUID (no prior sync
-        // history) and must exhaust both pages.
         let page1 = page_ids(0, 100);
         let page2 = page_ids(100, 30);
         mount_pages(&server, &[page1, page2]).await;
@@ -803,12 +610,6 @@ mod tests {
         assert_eq!(store.count().unwrap(), 130);
     }
 
-    // Item 9: re-running a pull after an interrupted/partial prior run
-    // (some entries already applied locally from an earlier page) must not
-    // double-count `applied` for entries seen again: regression-guards the
-    // existing dedupe-by-`remote_id` specifically under the new loop, since
-    // a naive re-implementation could re-tally a page it had already
-    // applied once before.
     #[tokio::test]
     async fn pull_and_apply_since_rerun_after_partial_prior_run_does_not_double_count() {
         let server = wiremock::MockServer::start().await;
@@ -825,9 +626,6 @@ mod tests {
             .applied;
         assert_eq!(first_run, 140);
 
-        // Re-running from the same (still `None`, un-advanced) cursor
-        // re-fetches the identical two pages; every entry is already known
-        // by `remote_id`, so nothing should be counted or inserted twice.
         let rerun = pull_and_apply_since(&store, &client, None, &LocalEmbedPolicy::Skip)
             .await
             .unwrap()
@@ -836,9 +634,6 @@ mod tests {
         assert_eq!(store.count().unwrap(), 140, "and never re-inserted");
     }
 
-    // Item 10a: a project not yet created on the server (404 on the very
-    // first page request) still applies 0 and returns success, not an
-    // error, unchanged by the new loop.
     #[tokio::test]
     async fn pull_and_apply_since_404_on_first_page_is_still_zero_not_an_error() {
         use wiremock::matchers::{method, path};
@@ -861,9 +656,6 @@ mod tests {
         assert_eq!(applied, 0);
     }
 
-    // Item 10b: a `None` cursor still starts the loop's first request from
-    // the nil UUID (full catch-up), unchanged by the new loop wrapping the
-    // cursor for its own subsequent iterations.
     #[tokio::test]
     async fn pull_and_apply_since_none_cursor_still_starts_at_nil_uuid() {
         let server = wiremock::MockServer::start().await;
@@ -879,18 +671,8 @@ mod tests {
         assert_eq!(applied, 5);
     }
 
-    // If the post-push pull on a first sync (nothing local has ever pushed
-    // or pulled before, so `sync_round` pushes first and runs a single pull
-    // afterward) fails, `sync_round` must not silently swallow that error,
-    // but it also must not lose or misrepresent the push that already
-    // succeeded. The push already durably landed server-side and already
-    // stamped this round's row with its `remote_id` (inside `push_local`,
-    // which returns before the pull ever runs), so: (1) the error surfaces
-    // instead of being dropped, (2) its message says the push already
-    // reached the server rather than reading as "nothing happened", and
-    // (3) local state is left exactly as `push_local` left it: no
-    // corruption, no re-attempt needed, just a retryable pull on the next
-    // sync.
+    // The push already landed and stamped its row before the pull failed: the
+    // error must surface and say so, leaving local state as `push_local` left it.
     #[tokio::test]
     async fn sync_round_first_sync_post_push_pull_failure_surfaces_the_error_without_losing_the_push()
      {
@@ -905,8 +687,6 @@ mod tests {
         let cloud_id = "01890000-0000-7000-8000-0000000000b1";
 
         let server = MockServer::start().await;
-        // The push itself succeeds and durably lands, provisioning the
-        // project.
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/memory/batch"))
             .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
@@ -915,7 +695,6 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        // The single post-push pull hits a transient server error.
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
             .respond_with(ResponseTemplate::new(500))
@@ -934,8 +713,6 @@ mod tests {
              failure: {msg}"
         );
 
-        // The push's own effect is untouched by the later pull error: the row
-        // is stamped with its cloud id, exactly as `push_local` left it.
         assert!(
             store.note_id_for_remote_id(cloud_id).unwrap().is_some(),
             "the already-succeeded push must not be undone or left unstamped \
@@ -948,26 +725,18 @@ mod tests {
         );
     }
 
-    // A network/server failure on a LATER page (not the first) must not
-    // corrupt or silently drop the pages that already succeeded: the loop
-    // applies each page as it arrives, so a first-page success is durably
-    // in the local store even though the overall call returns `Err`. A
-    // naive rewrite (e.g. buffering all pages before applying any) would
-    // instead lose the first page's entries when a later page fails.
+    // Pages apply as they arrive, so earlier pages survive a later-page failure
+    // (buffering all pages first would lose them).
     #[tokio::test]
     async fn pull_and_apply_since_error_on_a_later_page_keeps_earlier_pages_applied_and_is_retryable()
      {
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        // Page 1 must be a FULL page (== MEMORY_SINCE_PULL_LIMIT): a short
-        // page 1 would already be the natural last page and the loop would
-        // never even attempt a second request, defeating the point of this
-        // test.
+        // Page 1 must be full, or the loop never requests a second page.
         let page1 = page_ids(0, 100);
         let page2 = page_ids(100, 5);
 
-        // ── Run 1: page 1 succeeds and applies, page 2 fails (500). ──
         let server1 = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
@@ -1003,8 +772,6 @@ mod tests {
              so a retry resumes from the right place"
         );
 
-        // ── Run 2: a healthy server serves the remainder from the re-derived
-        // cursor; nothing from page 1 is re-applied or duplicated. ──
         let server2 = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
@@ -1029,14 +796,8 @@ mod tests {
         );
     }
 
-    // A page whose entries fail to deserialize (here: an entry missing the
-    // required `id` field, the value pagination advances the cursor from)
-    // must fail the WHOLE page atomically rather than partially applying
-    // the entries that happened to parse fine. `SinceBody`/`RemoteEntry`
-    // deserialize the full response body before `pull_and_apply_since` ever
-    // sees a single entry, so this is really a regression guard: a future
-    // change that streamed/parsed entries one at a time could silently
-    // apply a prefix before hitting the bad entry.
+    // The whole body deserializes before any entry applies; guards against a
+    // streaming parse applying a prefix before hitting the bad entry.
     #[tokio::test]
     async fn pull_and_apply_since_malformed_entry_missing_id_fails_the_page_atomically() {
         use wiremock::matchers::{method, path};
@@ -1074,12 +835,7 @@ mod tests {
         );
     }
 
-    // The server's `count` field is documented (see `pull_since`'s wire
-    // comment) as redundant with `entries.len()`, never a "more remain"
-    // signal, so the loop's termination must be driven by the actual
-    // number of entries returned, not by trusting `count`. A server (or a
-    // test double) that reports an inflated `count` alongside a genuinely
-    // short `entries` array must still be treated as the last page.
+    // Termination keys off `entries.len()`, not the redundant wire `count`.
     #[tokio::test]
     async fn pull_and_apply_since_terminates_on_actual_entries_len_not_a_lying_count_field() {
         use wiremock::matchers::{method, path};
@@ -1088,10 +844,7 @@ mod tests {
         let server = MockServer::start().await;
         let ids = page_ids(0, 50);
         let mut body = entries_json(&ids);
-        // `entries.len() == 50` (well short of MEMORY_SINCE_PULL_LIMIT), but `count`
-        // falsely claims far more remain. If the loop ever keyed off `count`
-        // instead of the real page length, this would spin into a second,
-        // unexpected request against a server with nothing left to mount.
+        // `count` falsely claims more remain; keying off it would send a second request.
         body["count"] = serde_json::json!(9999);
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
@@ -1116,13 +869,6 @@ mod tests {
         );
     }
 
-    // ── total-based divergence recovery (ADR-092) ──────────────────────────
-    // The `since_id` response carries the server's active-note `total`. A
-    // forward `id > since_id` scan can never reach a row whose id sorts BEHIND
-    // the cursor — exactly what a `--force` restore produces. When the server's
-    // `total` exceeds the local active count, the cursor is untrustworthy and
-    // the whole dataset is re-pulled from the beginning to pick those rows up.
-
     fn entries_json_with_total(ids: &[String], total: i64) -> serde_json::Value {
         let mut v = entries_json(ids);
         v["total"] = serde_json::json!(total);
@@ -1133,11 +879,6 @@ mod tests {
         serde_json::json!({ "entries": [], "count": 0, "total": total })
     }
 
-    // A client whose cursor sits ahead of `--force`-restored rows: the forward
-    // pull from its cursor returns nothing, but the server's `total` (3) exceeds
-    // the local active count (1), so a full re-pull from nil recovers the two
-    // rows sitting behind the cursor. `apply_remote_note` dedupes the one already
-    // held, so only the two behind-cursor rows are newly applied.
     #[tokio::test]
     async fn higher_server_total_triggers_a_full_re_pull_of_rows_behind_the_cursor() {
         use wiremock::matchers::{method, path, query_param};
@@ -1147,7 +888,6 @@ mod tests {
         let (low1, low2, high) = (ids[0].clone(), ids[1].clone(), ids[8].clone());
 
         let (_tmp, store) = fresh_store();
-        // The client already holds the newest row and its cursor is that id.
         store
             .apply_remote_note(
                 &high,
@@ -1162,7 +902,6 @@ mod tests {
         assert_eq!(store.count().unwrap(), 1);
 
         let server = wiremock::MockServer::start().await;
-        // Forward pull from the client's cursor: nothing after it, but total=3.
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
             .and(query_param("since_id", high.clone()))
@@ -1170,8 +909,6 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        // The full re-pull from nil returns all three (the two behind the cursor
-        // plus the one already held).
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
             .and(query_param("since_id", NIL_UUID))
@@ -1198,8 +935,6 @@ mod tests {
         );
     }
 
-    // When the server's `total` matches the local active count, the cursor is
-    // trusted and no re-pull happens: exactly one forward request is made.
     #[tokio::test]
     async fn matching_total_does_not_trigger_a_re_pull() {
         use wiremock::matchers::{method, path, query_param};
@@ -1244,8 +979,6 @@ mod tests {
         );
     }
 
-    // An older server omits `total` entirely: the client must never re-pull off
-    // a missing signal, staying backward-compatible (a single forward request).
     #[tokio::test]
     async fn absent_total_never_triggers_a_re_pull() {
         use wiremock::matchers::{method, path, query_param};
@@ -1268,7 +1001,6 @@ mod tests {
             .unwrap();
 
         let server = wiremock::MockServer::start().await;
-        // No `total` field, as an older server would send.
         Mock::given(method("GET"))
             .and(path("/v1/projects/proj/memory/since"))
             .and(query_param("since_id", high))

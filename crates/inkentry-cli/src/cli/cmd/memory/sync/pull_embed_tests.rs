@@ -1,15 +1,5 @@
-// The pull half of the local-embedding repair.
-//
-// A pull used to write every entry through `apply_remote_note`, whose INSERT
-// has no vector column, so a pulled entry landed with no local vector and was
-// invisible to semantic `memory search` with nothing telling the user. The push
-// half already solved this for the rows it owns and deliberately excluded the
-// synced ones (`already_synced_rows_are_left_unembedded`), which is why no
-// later sync repaired them.
-//
-// These tests assert on identity (titles, retrieved content, the vector bytes
-// on disk) and never on how many rows moved: a count can pass while the write went
-// to a different store.
+// Assert on identity (titles, retrieved content, vector bytes), never on row
+// counts: a count can pass while the write went to a different store.
 
 use super::local_embed::{LocalEmbedPolicy, pending_embedding_warning, pull_embed_summary};
 use super::pull::{PullSummary, pull_and_apply, pull_and_apply_since};
@@ -24,13 +14,11 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
 
-// Deterministic, lexically-increasing ids so `since_id` cursors compare the way
-// real UUIDv7 cloud ids do.
+// Lexically increasing ids, so `since_id` cursors compare like real UUIDv7s.
 fn remote_id(i: usize) -> String {
     format!("01890000-0000-7000-8000-{i:012x}")
 }
 
-// One remote entry: (cloud id, title, body).
 type Remote = (String, String, String);
 
 fn entry(i: usize, title: &str, body: &str) -> Remote {
@@ -53,8 +41,6 @@ fn entries_json(entries: &[Remote]) -> serde_json::Value {
     serde_json::json!({ "entries": entries, "count": entries.len() })
 }
 
-// Mount one `/memory/since` page per slice, each matched by the exact
-// `since_id` it must be requested with, and answerable `times` times.
 async fn mount_pages_times(server: &MockServer, pages: &[Vec<Remote>], times: Option<u64>) {
     let mut cursor = NIL_UUID.to_string();
     for page in pages {
@@ -76,8 +62,8 @@ async fn mount_pages(server: &MockServer, pages: &[Vec<Remote>]) {
     mount_pages_times(server, pages, None).await;
 }
 
-// A config whose local embedder is whatever auto-discovery finds, i.e. the
-// mock the caller spawned. `project_id` must match the embedder's mounted path.
+// Local embedder is whatever auto-discovery finds; `project_id` must match the
+// mock embedder's mounted path.
 fn discovering_cfg() -> Config {
     Config {
         project_id: Some("proj".to_string()),
@@ -86,10 +72,8 @@ fn discovering_cfg() -> Config {
     }
 }
 
-// `mode = "offline"` is the deterministic form of "no local embedder is
-// reachable": `get_inference_tier` short-circuits before any probe, so the pass
-// resolves no client at all, exactly as on a machine with no server running.
-// Same fixture the push side uses for its degrade-gracefully tests.
+// Offline makes `get_inference_tier` short-circuit before any probe: no
+// reachable local embedder.
 fn no_embedder_cfg() -> Config {
     Config {
         project_id: Some("proj".to_string()),
@@ -120,9 +104,8 @@ fn vector_of(store: &MemoryStore, title: &str) -> Option<Vec<f32>> {
         .filter(|v| v.len() == inkentry_core::embeddings::EMBEDDING_DIM)
 }
 
-// The nearest entry to `query`, by the store's own KNN over what is actually on
-// disk. `query` is embedded through the same function the mock embedder uses,
-// so this is a genuine round trip and not a re-assertion of the write.
+// KNN over what is on disk, with the query embedded by the mock embedder's own
+// function: a genuine round trip, not a re-assertion of the write.
 fn nearest_title(store: &MemoryStore, query: &str) -> Option<String> {
     let blob = inkentry_core::embeddings::vec_to_blob(&content_vector(query));
     store
@@ -138,8 +121,6 @@ fn embed_bodies(reqs: &[wiremock::Request]) -> Vec<String> {
         .map(|r| String::from_utf8_lossy(&r.body).to_string())
         .collect()
 }
-
-// ── 1. every pulled entry lands with a usable local vector ──────────────────
 
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
@@ -181,8 +162,6 @@ async fn a_pull_leaves_every_entry_it_inserted_with_a_usable_local_vector() {
     drop(loopback);
 }
 
-// ── 2. and is retrievable by a real local semantic search ───────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn pulled_entries_come_back_from_a_local_knn_search_on_their_own_words() {
@@ -209,8 +188,8 @@ async fn pulled_entries_come_back_from_a_local_knn_search_on_their_own_words() {
         .await
         .unwrap();
 
-    // Each entry must win the search drawn from its own title AND body, and
-    // lose the other two: a placeholder vector shared by every row would tie.
+    // Each entry must win on its own title and body: a shared placeholder vector
+    // would tie.
     for (query, expected) in [
         (
             "Postgres partitioning range ingest date",
@@ -228,12 +207,8 @@ async fn pulled_entries_come_back_from_a_local_knn_search_on_their_own_words() {
     drop(loopback);
 }
 
-// ── 3. no embedder now: text-only, then caught up by the next pull ──────────
-
-// "Later" is the next pull of any kind (`inkentry sync`'s pull passes or
-// `inkentry plumbing pull`) and it does not depend on that pull returning the
-// entry again, or returning anything at all. The second pull below answers with
-// an EMPTY page and still embeds the row the first pull had to leave behind.
+// The catch-up must not depend on the next pull returning the entry: the second
+// pull answers with an empty page.
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn an_entry_pulled_with_no_embedder_is_embedded_by_the_next_pull() {
@@ -259,8 +234,6 @@ async fn an_entry_pulled_with_no_embedder_is_embedded_by_the_next_pull() {
     assert_eq!((first.embedded_locally, first.without_local_vector), (0, 1));
     assert!(vector_of(&store, "Cold start").is_none());
 
-    // The next pull, now with an embedder up. Its own page is empty: nothing
-    // new comes back, and the catch-up must happen anyway.
     let loopback = spawn_content_embedder("proj", None).await;
     let empty = MockServer::start().await;
     mount_pages(&empty, &[vec![]]).await;
@@ -282,8 +255,6 @@ async fn an_entry_pulled_with_no_embedder_is_embedded_by_the_next_pull() {
     );
     drop(loopback);
 }
-
-// ── 4. a re-run does not re-embed an already-embedded row ───────────────────
 
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
@@ -330,15 +301,11 @@ async fn re_pulling_applied_rows_does_not_re_embed_the_ones_that_have_a_vector()
     drop(loopback);
 }
 
-// ── 5. every page, not only the first ───────────────────────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn a_multi_page_pull_embeds_the_later_pages_too() {
     let loopback = spawn_content_embedder("proj", None).await;
     let server = MockServer::start().await;
-    // A first page at the request limit forces a follow-up request; the entries
-    // worth naming live on the second page.
     let limit = CloudSyncClient::MEMORY_SINCE_PULL_LIMIT as usize;
     let page1: Vec<Remote> = (0..limit)
         .map(|i| entry(i, &format!("Filler {i}"), "page one padding"))
@@ -367,19 +334,15 @@ async fn a_multi_page_pull_embeds_the_later_pages_too() {
     drop(loopback);
 }
 
-// ── 6. sync_round's two pull passes embed a row once ────────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn sync_rounds_second_pull_pass_does_not_re_embed_what_the_first_embedded() {
     let loopback = spawn_content_embedder("proj", None).await;
     let team = MockServer::start().await;
-    // Both passes reuse the same pre-round cursor, so the same page comes back
-    // twice; the entry is applied once and must be embedded once.
+    // Both passes reuse the pre-round cursor, so the same page returns twice.
     let (tmp, store) = fresh_store();
-    // An already-synced, already-embedded local row: it gives the store a
-    // `MAX(remote_id)` cursor, which is what puts `sync_round` on its
-    // established-client path (pull, push, pull) rather than the first-sync one.
+    // A synced row gives the store a `MAX(remote_id)` cursor, putting `sync_round`
+    // on its established path (pull, push, pull).
     store
         .add_note(
             "decision",
@@ -450,14 +413,11 @@ async fn sync_rounds_second_pull_pass_does_not_re_embed_what_the_first_embedded(
     drop(loopback);
 }
 
-// ── 7. an empty body embeds the same way it does on push ────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn an_empty_body_entry_embeds_on_pull_exactly_as_it_does_on_push() {
     let loopback = spawn_content_embedder("proj", None).await;
 
-    // Pull side: a remote entry with an empty body.
     let remote = MockServer::start().await;
     mount_pages(&remote, &[vec![entry(0, "Bodyless", "")]]).await;
     let (pull_tmp, pulled_store) = fresh_store();
@@ -468,7 +428,6 @@ async fn an_empty_body_entry_embeds_on_pull_exactly_as_it_does_on_push() {
             .await
             .unwrap();
 
-    // Push side: the same entry authored locally, in its own store.
     let team = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/projects/proj/memory/batch"))
@@ -510,8 +469,6 @@ async fn an_empty_body_entry_embeds_on_pull_exactly_as_it_does_on_push() {
     );
     drop(loopback);
 }
-
-// ── 8. one row's embed failure neither aborts nor unwinds ───────────────────
 
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
@@ -558,8 +515,6 @@ async fn one_rows_embed_failure_leaves_the_applied_page_intact() {
     drop(loopback);
 }
 
-// ── 9. the one-way `plumbing pull` entry point, directly ────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn the_one_way_pull_entry_point_embeds_what_it_applies() {
@@ -578,8 +533,6 @@ async fn the_one_way_pull_entry_point_embeds_what_it_applies() {
     let (tmp, store) = fresh_store();
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
     let cfg = discovering_cfg();
-    // `pull_and_apply`, not `pull_and_apply_since`: this is the function
-    // `inkentry plumbing pull` calls, deriving its own cursor.
     let summary = pull_and_apply(&store, &client, &policy(&cfg, &tmp))
         .await
         .unwrap();
@@ -595,8 +548,6 @@ async fn the_one_way_pull_entry_point_embeds_what_it_applies() {
     );
     drop(loopback);
 }
-
-// ── 10. no embedder at all: succeed, and say how many are pending ───────────
 
 #[tokio::test]
 async fn with_no_embedder_the_pull_succeeds_text_only_and_counts_what_is_pending() {
@@ -622,7 +573,6 @@ async fn with_no_embedder_the_pull_succeeds_text_only_and_counts_what_is_pending
         (summary.embedded_locally, summary.without_local_vector),
         (0, 2)
     );
-    // The content is there; only the vector is missing.
     assert_eq!(
         store
             .rows_for_sync(true)
@@ -634,7 +584,6 @@ async fn with_no_embedder_the_pull_succeeds_text_only_and_counts_what_is_pending
     );
     assert!(vector_of(&store, "Pending one").is_none());
 
-    // Both user-facing surfaces must name the count rather than say nothing.
     let clause = pull_embed_summary(&summary);
     assert!(
         clause.contains("2 synced entries pending embedding"),
@@ -648,12 +597,7 @@ async fn with_no_embedder_the_pull_succeeds_text_only_and_counts_what_is_pending
     );
 }
 
-// ── the cloud_first carve-out, matched to the other call sites ──────────────
-
-// `cloud_first` with a team `server_url` relocates the store of record off
-// `memory.db`, so there is nothing local to repair. `memory reindex` refuses
-// under exactly this condition and `open_memory_backend` routes on it; the pull
-// must not disagree with either.
+// Same condition `memory reindex` refuses under and `open_memory_backend` routes on.
 #[tokio::test]
 async fn cloud_first_with_a_server_url_leaves_pulled_rows_alone() {
     let server = MockServer::start().await;

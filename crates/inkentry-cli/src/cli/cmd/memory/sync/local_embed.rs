@@ -1,15 +1,5 @@
-//! The local-embedding repair shared by `inkentry sync`,
-//! `inkentry plumbing push` and `inkentry plumbing pull`.
-//!
-//! A transfer used to leave `memory.db`'s vectors exactly as it found them, so
-//! an entry that had never been embedded stayed invisible to semantic
-//! `memory search` after a successful run, with nothing telling the user. This
-//! module embeds a caller-chosen set of rows and commits each vector as it
-//! completes.
-//!
-//! The two callers partition the store between them and never overlap: the push
-//! repairs its push set (`remote_id IS NULL`), the pull repairs the rows that
-//! carry a `remote_id`.
+// Push repairs rows with `remote_id IS NULL`, pull the rows that carry one;
+// the two scopes never overlap.
 
 use anyhow::Result;
 
@@ -23,30 +13,17 @@ use crate::{
     storage::{MemoryStore, SyncRow},
 };
 
-/// Whether a transfer repairs the local store's missing embeddings, and the
-/// config the local embedder is resolved from.
-///
-/// Constructed by the command layer via [`LocalEmbedPolicy::resolve`] so
-/// `inkentry sync`, `inkentry plumbing push` and `inkentry plumbing pull`
-/// decide it identically.
 pub(in crate::cli::cmd) enum LocalEmbedPolicy<'a> {
-    /// Embed every row in the pass's scope that lacks a usable local vector,
-    /// through the loopback embedder, and commit the result to `memory.db`.
     Repair {
         cfg: &'a Config,
         project_root: std::path::PathBuf,
     },
-    /// Leave local embeddings alone.
     Skip,
 }
 
 impl<'a> LocalEmbedPolicy<'a> {
-    /// Decide the policy for a transfer against `mem_path`.
-    ///
-    /// `cloud_first` with a team `server_url` relocates the store of record off
-    /// `memory.db`, so there is nothing local to repair. This is the exact
-    /// condition `memory reindex` refuses under, and the commands must not
-    /// disagree about when local embeddings are meaningful.
+    // `cloud_first` with a `server_url` moves the store off `memory.db`; the
+    // same condition `memory reindex` refuses under.
     pub(in crate::cli::cmd) fn resolve(cfg: &'a Config, mem_path: &std::path::Path) -> Self {
         if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
             return Self::Skip;
@@ -58,20 +35,11 @@ impl<'a> LocalEmbedPolicy<'a> {
     }
 }
 
-/// Counted outcome of a local-embedding repair pass.
 pub(super) struct RepairCounts {
     pub(super) embedded: usize,
     pub(super) without_vector: usize,
 }
 
-/// The one user-facing warning for synced entries that are still waiting on a
-/// local embedding. Emitted once per run by the command layer, which owns all
-/// user-facing output; the shared pull pass only counts.
-///
-/// Unlike the push's warning this does not send the user to `memory reindex` as
-/// the only way out: the pull pass re-scans every synced row still missing a
-/// vector, so the next `inkentry sync` or `inkentry plumbing pull` picks these
-/// up on its own once an embedder is reachable again.
 pub(in crate::cli::cmd::memory) fn pending_embedding_warning(count: usize) -> String {
     let entries = if count == 1 { "entry" } else { "entries" };
     format!(
@@ -82,9 +50,6 @@ pub(in crate::cli::cmd::memory) fn pending_embedding_warning(count: usize) -> St
     )
 }
 
-/// Local-embedding clause for the pull half of a sync summary line. Empty when
-/// the pull pass neither minted nor missed a vector, so an unaffected sync
-/// reads exactly as it did before.
 pub(in crate::cli::cmd::memory) fn pull_embed_summary(summary: &PullSummary) -> String {
     match (summary.embedded_locally, summary.without_local_vector) {
         (0, 0) => String::new(),
@@ -96,9 +61,6 @@ pub(in crate::cli::cmd::memory) fn pull_embed_summary(summary: &PullSummary) -> 
     }
 }
 
-/// Local-embedding clause for a push/sync summary line. Empty when the repair
-/// neither minted nor missed a vector, so an unaffected push reads exactly as
-/// it did before.
 pub(in crate::cli::cmd::memory) fn local_embed_summary(summary: &PushSummary) -> String {
     match (summary.embedded_locally, summary.without_local_vector) {
         (0, 0) => String::new(),
@@ -109,40 +71,27 @@ pub(in crate::cli::cmd::memory) fn local_embed_summary(summary: &PushSummary) ->
     }
 }
 
-/// Decode a stored embedding blob into a vector usable for this push: `None`
-/// when the row has no embedding at all, or when the blob does not decode to
-/// exactly `EMBEDDING_DIM` floats (a torn write). A row with no usable vector
-/// is treated as unembedded by both the repair pass and the batch build.
+// A blob that does not decode to exactly `EMBEDDING_DIM` floats (torn write)
+// counts as no vector.
 pub(super) fn usable_vector(blob: Option<Vec<u8>>) -> Option<Vec<f32>> {
     blob.map(|b| inkentry_core::embeddings::blob_to_vec(&b))
         .filter(|v| v.len() == inkentry_core::embeddings::EMBEDDING_DIM)
 }
 
-/// Resolve the embedder the repair pass runs through.
-///
-/// `get_inference_tier` (not `get_tier`) is what keeps this on the loopback
-/// embedder: outside `cloud_first` it probes loopback only, so the embed can
-/// never be routed to a configured team `server_url`. Routing it there would
-/// re-create the exact server-side re-embedding this repair exists to stop.
+// `get_inference_tier` (not `get_tier`) probes loopback only outside
+// `cloud_first`, so the embed never reaches a team `server_url`, which would
+// re-embed server-side.
 async fn resolve_local_embedder(
     cfg: &Config,
     project_root: &std::path::Path,
 ) -> Option<ServerInferenceClient> {
     let tier = capability::get_inference_tier(cfg).await;
-    // An auto-discovered loopback server sets the tier without populating
-    // `server_url`, so bridge it into an effective config first (ADR-004),
-    // exactly as `memory reindex` does.
+    // An auto-discovered loopback server leaves `server_url` unset; bridge it
+    // into an effective config, as `memory reindex` does.
     let eff_cfg = tier.effective_config(cfg, project_root);
     ServerInferenceClient::from_config(&eff_cfg)
 }
 
-/// Embed every push-set row that lacks a usable local vector and commit it to
-/// `memory.db`, so a pushed row is searchable locally afterwards rather than
-/// silently invisible to semantic `memory search`.
-///
-/// Never fails the push: with no embedder reachable, or on a single row's embed
-/// error, the affected rows go out text-only and are counted for the caller's
-/// warning.
 pub(super) async fn repair_local_embeddings(
     local: &MemoryStore,
     live: &[&SyncRow],
@@ -164,9 +113,8 @@ pub(super) async fn repair_local_embeddings(
             missing.push(r);
         }
     }
-    // Resolve the embedder only once a row actually needs one: an empty or
-    // fully-embedded push set must not pay for a discovery probe, and must not
-    // warn about an embedder it never needed.
+    // Resolve the embedder only once a row needs one: no discovery probe or
+    // warning for an empty or fully-embedded set.
     if missing.is_empty() {
         return Ok(RepairCounts {
             embedded: 0,
@@ -175,8 +123,7 @@ pub(super) async fn repair_local_embeddings(
     }
 
     let Some(client) = resolve_local_embedder(cfg, project_root).await else {
-        // Text-only rather than a refusal: failing here would break scripted and
-        // CI pushes that work today and never needed a local embedder.
+        // Text-only, not a refusal: scripted and CI pushes never needed an embedder.
         return Ok(RepairCounts {
             embedded: 0,
             without_vector: missing.len(),
@@ -186,22 +133,18 @@ pub(super) async fn repair_local_embeddings(
     let mut embedded = 0usize;
     let mut without_vector = 0usize;
     for r in missing {
-        // Byte-identical to `memory reindex` / `memory add`'s document string,
-        // embedded document-side (`embed_text`, never `embed_query`, which
-        // prepends the F2LLM `Instruct:/Query:` prefix): a vector minted here
-        // must be interchangeable with theirs or the repaired row is ranked
-        // against a different space.
+        // Must match `memory reindex` / `memory add`'s document string and use
+        // `embed_text` (`embed_query` prepends the `Instruct:` prefix), or the
+        // vector lands in a different space.
         let doc = format!("title: {} | text: {}", r.title, r.body);
         match client.embed_text(&doc).await {
             Ok(vec) => {
-                // Committed per row, so an interrupted push keeps every vector
-                // it minted and a re-run embeds only the remainder.
+                // Per-row commit: an interrupted push keeps its vectors.
                 local.insert_embedding(&r.id, &vec_to_blob(&vec))?;
                 embedded += 1;
             }
             Err(e) => {
-                // One row's embed failure must not abort a push that is
-                // otherwise fine; it ships text-only and is counted instead.
+                // One row's failure must not abort the push; it ships text-only.
                 tracing::warn!("embedding note {} before push failed: {e:#}", r.id);
                 without_vector += 1;
             }

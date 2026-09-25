@@ -1,7 +1,3 @@
-// `push_local` must propagate local `relates_to` edges to the cloud once both
-// endpoints have synced, via an edge-only `POST /memory/batch`, and must not
-// re-post them on a later no-op sync.
-
 use super::super::test_support::register_sqlite_vec;
 use super::*;
 
@@ -9,9 +5,8 @@ use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-// Stand-in for the cloud batch route: echoes each pushed entry back as
-// `created` (with a cloud id, so the row is stamped and enters `just_synced`),
-// and acknowledges an edge-only batch as one `created` edge per element.
+// Echoing `created` with a cloud id stamps the row so it enters `just_synced`;
+// an edge-only batch is acked as one `created` per edge.
 struct BatchEcho;
 
 impl Respond for BatchEcho {
@@ -36,8 +31,6 @@ impl Respond for BatchEcho {
     }
 }
 
-// Every edge-only `/memory/batch` body the server received (entries empty, at
-// least one edge).
 fn edge_batch_bodies(reqs: &[Request]) -> Vec<Value> {
     reqs.iter()
         .filter_map(|r| {
@@ -55,8 +48,6 @@ async fn push_local_propagates_a_relates_to_edge_keyed_by_external_id() {
     register_sqlite_vec();
     let tmp = TempDir::new().unwrap();
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
-    // `memory add --relates-to <target>` records a directed edge linker ->
-    // target; mirror that shape here.
     let (target, _) = store
         .add_note("note", "Target", "target body", &[], &[], None, None)
         .unwrap();
@@ -82,7 +73,6 @@ async fn push_local_propagates_a_relates_to_edge_keyed_by_external_id() {
         "the relates_to edge must land once both endpoints synced in the same round"
     );
 
-    // An entry's own id is the cloud external_id.
     let from_ext = linker.to_string();
     let to_ext = target.to_string();
 
@@ -132,7 +122,6 @@ async fn a_second_push_with_nothing_new_does_not_repost_the_edge() {
         .unwrap();
     assert_eq!(first.edges_pushed, 1);
 
-    // Nothing new to push: no entry landed this round, so no edge is (re-)posted.
     let second = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
         .await
         .unwrap();
