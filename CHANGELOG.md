@@ -9,6 +9,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+**Upgrading: run `inkentry index --force` once in each indexed project.** Code
+is now chunked differently (see Changed), and an index built by an earlier
+release warns until it is re-chunked. `--force` re-embeds, but embedding now
+covers roughly a third to a half of what it did, so it takes a fraction of
+the time the first index took. Until then the old index keeps working: it
+migrates in place on first open, the full-text search improvements apply at
+once, and no vector is discarded.
+
 ### Added
 
 - **Tags and linked files are rows, with a vocabulary and exact filters.**
@@ -74,8 +82,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `memo(…)`/`forwardRef(…)` components, are now named function chunks, and a
   doc comment above an `export`ed declaration is kept as its docstring. On
   queries aimed at React components, full-text Recall@10 on Lago rose from
-  0.12 to 0.38. An existing index warns that it was chunked under older rules;
-  run `inkentry index --force` to re-chunk (this re-embeds).
+  0.12 to 0.38.
 - **A large class's own lines are findable by its name.** When a class,
   module or impl is too large to keep whole, its methods are chunked and the
   rest of its body is windowed. The window holding its declaration (a Rails
@@ -85,8 +92,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   between a class's methods and module-level code stay unnamed. On Lago,
   full-text Recall@10 on Rails class-body queries rose from 0.30 to 0.43 and
   Recall@1 from 0.07 to 0.20; the other query sets on Lago and on this
-  repository are unchanged. An existing index warns that it was chunked under
-  older rules; run `inkentry index --force` to re-chunk (this re-embeds).
+  repository are unchanged.
 - **Unified `search` no longer hands memory half of every result page.** A
   memory entry now competes for a slot only if its distance to the query
   clears a calibrated relevance floor (`MEMORY_MAX_QA_DISTANCE`); an unrelated
@@ -100,8 +106,10 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   On a known-item evaluation over this repository and over Lago, removing it
   raised Recall@10 from 0.57 to 0.75 and Recall@1 from 0.01-0.09 to 0.33,
   and searches got faster. Indexing no longer writes `mentions` graph edges,
-  which only the re-rank read; an existing index keeps them, unused, until its
-  files are re-indexed. See
+  which only the re-rank read, and gets faster and smaller for it: on this
+  repository, parse-only indexing went from 28 s to 10 s and `index.db` from
+  95 MB to 42 MB. An existing index keeps its mention edges, unused, until
+  its files are re-indexed. See
   [ADR-102](docs/adr/102-remove-linearrag-from-code-search.md).
 - **Full-text code search finds far more.** The code index now also holds
   each chunk's file path, docstring and structural summary, stems words
