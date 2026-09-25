@@ -213,8 +213,12 @@ async fn memory_add_refreshes_an_expired_cloud_session_before_its_first_request(
     );
     let secrets = std::fs::read_to_string(secrets_path(home.path())).unwrap();
     assert!(
-        secrets.contains(ROTATED_REFRESH) && !secrets.contains(STALE_REFRESH),
-        "the rotated session must be persisted:\n{secrets}"
+        secrets.contains(ROTATED_REFRESH),
+        "the rotated refresh token must be persisted"
+    );
+    assert!(
+        !secrets.contains(STALE_REFRESH),
+        "the spent refresh token must be replaced"
     );
 }
 
