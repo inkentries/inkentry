@@ -258,6 +258,8 @@ pub(super) async fn memory_add(
                 .map(|to| CarriedEdge::new("relates_to", to.clone()))
                 .collect(),
             origin: crate::storage::Origin::from_caller(&cfg.caller),
+            op: None,
+            patch_id: None,
         };
         match append_to_git_notes(Some(project_root), &record).await {
             Ok(outcome) => {
@@ -330,6 +332,17 @@ pub(super) async fn memory_add(
         drop(primary_backend);
         let doc = format!("title: {title} | text: {body}");
         pending_embedding = embed_and_attach(cfg, mem_path, &id, &doc).await;
+
+        // ADR-099 D1/D4: record where this write happened, or anchor it to a
+        // known commit immediately. Best-effort — an entry is already durably
+        // stored by this point, so a failure here only costs its anchor.
+        if let Some(commit) = args.commit.as_deref() {
+            if let Err(e) = super::anchor::anchor_now(mem_path, commit, &id).await {
+                eprintln!("warning: entry stored, but anchoring it to {commit} failed: {e:#}");
+            }
+        } else if let Err(e) = super::anchor::record_pending(mem_path, &entity_id).await {
+            tracing::debug!("recording a pending anchor for {entity_id} failed: {e:#}");
+        }
     }
 
     let format = crate::utils::effective_format(&args.format);

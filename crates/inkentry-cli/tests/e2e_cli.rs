@@ -936,6 +936,9 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "usage_7d",
         // ADR-098: the cheap state-metrics subset, null with no memory store.
         "metrics",
+        // ADR-099 D4: pending anchors older than 14 days, or whose worktree
+        // is gone — never assigned, reported so they are not silently lost.
+        "memory_unanchored",
     ];
     want.sort_unstable();
     assert_eq!(

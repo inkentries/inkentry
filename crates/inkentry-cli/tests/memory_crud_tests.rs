@@ -10,6 +10,10 @@ mod memory_add_dedupe;
 mod memory_add_kind_validation;
 #[path = "memory_crud_tests/memory_add_secret_gate.rs"]
 mod memory_add_secret_gate;
+#[path = "memory_crud_tests/memory_anchor.rs"]
+mod memory_anchor;
+#[path = "memory_crud_tests/memory_anchor_reconcile.rs"]
+mod memory_anchor_reconcile;
 #[path = "memory_crud_tests/memory_dedupe.rs"]
 mod memory_dedupe;
 #[path = "memory_crud_tests/memory_entity_id_handle.rs"]
