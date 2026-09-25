@@ -1,25 +1,12 @@
-// Every caller of `ensure_server_running` must forward a config it was given.
-//
-// Both production callers (`init`, and the outbox nudge after a local_first
-// write) are gated on an interactive stdin, and `assert_cmd` hands its children
-// piped stdin, so no integration test in this crate can reach either one. The
-// gate is deliberate and worth keeping, but it leaves the last hop of the
-// endpoint's journey with no runtime proof available to it: swapping both
-// arguments for a freshly defaulted `Config` leaves the whole crate green while
-// disconnecting the personal config from every auto-started daemon.
-//
-// The hop below it is covered at runtime (`ensure_server_running` itself is
-// driven against a recording stand-in, and `server start` end to end in
-// `llm_daemon_spawn_e2e`). This is the one link that has to be pinned
-// lexically instead: constructing a config at the call site, rather than
-// forwarding one, is the whole failure mode.
+// The interactive-stdin gate keeps every integration test from reaching these callers, so
+// the last hop is pinned lexically: constructing a config at the call site instead of
+// forwarding the loaded one would disconnect the personal config from every auto-started
+// daemon while the crate stays green.
 
 use std::path::{Path, PathBuf};
 
 const CALL: &str = "ensure_server_running(";
 
-// A config argument that came from somewhere else. Anything constructed in
-// place is what this guard exists to catch.
 const FORWARDED: [&str; 2] = ["&cfg", "cfg"];
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -33,7 +20,6 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-// The config argument as written, for a line that calls the function.
 fn config_argument(line: &str) -> Option<String> {
     let after = line.split_once(CALL)?.1;
     let inside = after.split_once(')')?.0;

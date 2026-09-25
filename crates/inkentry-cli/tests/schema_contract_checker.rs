@@ -1,9 +1,5 @@
-// Tests for the golden-schema checker itself.
-//
-// Without these, the per-command conformance tests could pass vacuously: a
-// checker that never rejects anything makes every golden file green. These pin
-// the two halves of the additive-only rule directly on the checker, using
-// synthetic rows rather than real command output.
+// Without these the conformance tests could pass vacuously: a checker that never rejects
+// anything makes every golden file green.
 
 mod schema_contract;
 use schema_contract::{
@@ -60,8 +56,6 @@ fn removing_a_required_field_is_rejected() {
 
 #[test]
 fn renaming_a_required_field_is_rejected() {
-    // A rename is indistinguishable from a removal plus an addition, and the
-    // removal half is what breaks every existing consumer.
     let violations = check_rows(
         &simple_schema(),
         &row(r#"{"path": "src/lib.rs", "chunk_count": 3}"#),
@@ -182,12 +176,8 @@ fn a_non_object_line_is_rejected() {
     assert_eq!(violations, vec![Violation::NotAnObject { line: 1 }]);
 }
 
-// ── the reporting wrapper, not just the pure checker ─────────────────────────
-//
-// `check_rows` returns violations; `assert_conforms` is what every per-command
-// test actually calls. Testing only the former leaves the wrapper free to
-// collect violations and then ignore them, or to accept a command that emitted
-// nothing at all, with the whole suite still green.
+// Per-command tests call `assert_conforms`; testing only `check_rows` would leave it free to
+// ignore collected violations or accept a command that emitted nothing.
 
 #[test]
 fn assert_conforms_accepts_a_conforming_row() {
@@ -207,13 +197,9 @@ fn assert_conforms_panics_on_a_violation_rather_than_collecting_it_silently() {
 #[test]
 #[should_panic(expected = "emitted no JSONL rows")]
 fn assert_conforms_rejects_a_command_that_emitted_nothing() {
-    // Zero rows vacuously satisfy every required field, so without this guard a
-    // command that stopped emitting anything would still pass its conformance
-    // test. That is the failure mode this whole suite exists to prevent.
+    // Zero rows vacuously satisfy every required field.
     assert_conforms("probe", &simple_schema(), &[]);
 }
-
-// ── the golden file's own well-formedness ────────────────────────────────────
 
 #[test]
 #[should_panic(expected = "guarantees nothing")]
@@ -233,16 +219,13 @@ fn a_field_declared_both_required_and_optional_is_rejected() {
 #[test]
 #[should_panic(expected = "unknown type name")]
 fn a_misspelled_type_name_is_rejected_rather_than_treated_as_permissive() {
-    // A typo that silently degraded to "accept anything" would disable checking
-    // for that field while leaving the file looking complete.
+    // A typo degrading to "accept anything" would silently disable checking for that field.
     parse_golden(r#"{"commands": {"probe": {"required": {"id": "intger"}}}}"#);
 }
 
 #[test]
 fn the_shipped_golden_declares_no_field_that_accepts_every_value() {
-    // `any` matches anything, so a field declared with it is listed but
-    // unguarded. Catching that here keeps the contract from acquiring
-    // decorative entries that check nothing.
+    // `any` matches anything, so a field declared with it is listed but unguarded.
     for (command, schema) in load_golden() {
         for (field, ty) in schema.required.iter().chain(schema.optional.iter()) {
             assert!(
@@ -254,13 +237,8 @@ fn the_shipped_golden_declares_no_field_that_accepts_every_value() {
     }
 }
 
-// ── the same three mutations, applied to every declared surface ──────────────
-//
-// The per-command conformance tests prove the checker accepts real output. They
-// cannot prove it would reject a break, and verifying that by hand on one field
-// of one command (as was done for `FileEntry::chunk_count`) says nothing about
-// the other eight. These drive removal, rename, and retype across every field
-// of every command the golden declares.
+// Per-command tests prove the checker accepts real output, not that it rejects a break;
+// these drive removal, rename and retype across every field of every declared command.
 
 #[test]
 fn a_row_built_from_the_contract_conforms_for_every_declared_command() {
@@ -318,8 +296,7 @@ fn renaming_any_required_field_is_rejected_for_every_declared_command() {
 fn retyping_any_declared_field_is_rejected_for_every_declared_command() {
     for (command, schema) in load_golden() {
         let row = conforming_row(&schema);
-        // Optional fields are included: they are exempt from presence, never
-        // from type.
+        // Optional fields are exempt from presence, never from type.
         for (field, ty) in schema.required.iter().chain(schema.optional.iter()) {
             let wrong = ty
                 .counterexample()
@@ -345,9 +322,6 @@ fn retyping_any_declared_field_is_rejected_for_every_declared_command() {
 
 #[test]
 fn adding_a_field_is_accepted_for_every_declared_command() {
-    // The other half of the additive-only rule. Asserted across every surface
-    // so no single command can quietly acquire a stricter check than the
-    // contract promises.
     for (command, schema) in load_golden() {
         let mut row = conforming_row(&schema);
         row.as_object_mut()

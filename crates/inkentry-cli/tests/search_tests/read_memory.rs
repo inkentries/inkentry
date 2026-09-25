@@ -1,15 +1,9 @@
-//! Component tests for `inkentry plumbing read-memory`.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin, inkentry_cmd, parse_jsonl, write_config};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Index the fixture project and add a single memory note, both backed by the
-/// same mock embedding server.  Returns `(TempDir, db_path, config_path)`.
 fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)
 {
     use std::path::Path;
@@ -40,10 +34,8 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project");
 
-    // Index the fixture project. INKENTRY_NO_SERVER=1 forces offline so the embed
-    // phase is skipped — these plumbing tests only need parsed chunks + a memory
-    // note, not embeddings, and without it the index would auto-discover a
-    // loopback inkentry-server on 127.0.0.1:4655 and fail on a dim mismatch.
+    // INKENTRY_NO_SERVER=1 skips the embed phase: otherwise the index auto-discovers a
+    // loopback inkentry-server on 127.0.0.1:4655 and fails on a dim mismatch.
     inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -55,16 +47,13 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
         .assert()
         .success();
 
-    // The memory DB lives next to the main DB (db_path.with_file_name("memory.db")).
-    // We must pass it explicitly to `memory add --db` so both commands use the
-    // same file (otherwise `memory add` would resolve from CWD and find the
-    // workspace's .inkentry/memory.db instead).
+    // Passed explicitly to `memory add --db`; otherwise it resolves from CWD and finds the
+    // workspace's own memory.db.
     let mem_path = db_path.with_file_name("memory.db");
 
     inkentry_bin()
-        // The git-notes carrier follows the process CWD and ignores `--db`, so
-        // seeding from the repo under test would write the fixture into its
-        // real notes ref.
+        // The git-notes carrier follows CWD and ignores `--db`, so seeding from the repo
+        // under test would write into its real notes ref.
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
@@ -83,8 +72,6 @@ fn indexed_project_with_memory_note() -> (tempfile::TempDir, std::path::PathBuf,
 
     (tmp, db_path, config_path)
 }
-
-// ── happy path: list all ──────────────────────────────────────────────────────
 
 #[test]
 fn read_memory_emits_jsonl_when_notes_exist() {
@@ -108,8 +95,6 @@ fn read_memory_emits_jsonl_when_notes_exist() {
         assert!(row.get("body").is_some(), "missing 'body': {row}");
     }
 }
-
-// ── happy path: filter by kind ────────────────────────────────────────────────
 
 #[test]
 fn read_memory_kind_filter_returns_matching_notes() {
@@ -136,13 +121,10 @@ fn read_memory_kind_filter_returns_matching_notes() {
     }
 }
 
-// ── happy path: fetch by id ───────────────────────────────────────────────────
-
 #[test]
 fn read_memory_by_id_returns_single_note() {
     let (_tmp, db_path, config_path) = indexed_project_with_memory_note();
 
-    // List all to find an id.
     let list_output = inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .assert()
@@ -173,13 +155,10 @@ fn read_memory_by_id_returns_single_note() {
     assert_eq!(detail_rows[0]["id"].as_str(), Some(first_id));
 }
 
-// ── no results (exit 1) ───────────────────────────────────────────────────────
-
 #[test]
 fn read_memory_exits_1_when_no_notes_of_kind() {
     let (_tmp, db_path, config_path) = indexed_project_with_memory_note();
 
-    // 'handoff' kind was not added in the setup above.
     inkentry_cmd(&db_path, &config_path)
         .arg("read-memory")
         .arg("--kind")
@@ -200,12 +179,7 @@ fn read_memory_exits_1_for_nonexistent_id() {
         .code(1);
 }
 
-// ── error path: missing store ─────────────────────────────────────────────────
-
-// An absent store is not an empty one, so this is exit 2 and not the exit 1
-// that means "no entries". The diagnostic names the memory store rather than
-// the index: `read-memory` never reads a chunk and no longer takes the
-// project's identity from `index.db`.
+// An absent store is not an empty one: exit 2, not the exit 1 that means "no entries".
 #[test]
 fn read_memory_exits_nonzero_when_the_memory_store_is_missing() {
     let tmp = TempDir::new().unwrap();
