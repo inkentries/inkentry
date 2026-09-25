@@ -1,8 +1,3 @@
-//! Integration tests for ADR-098 D5's event recording: the caller
-//! declaration (`INKENTRY_TRIGGER`/`INKENTRY_ACTOR`/`INKENTRY_SESSION_REF`)
-//! reaching the `events` table, the undeclared-reads-`unknown` rule, and the
-//! no-local-store guard.
-
 mod plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
@@ -115,8 +110,6 @@ fn an_undeclared_caller_records_unknown_trigger_and_actor_with_no_session_ref() 
     assert_eq!(row.actor_kind, "unknown");
     assert_eq!(row.session_ref, None);
 }
-
-// ── ADR-098 D6: origin exposed by `memory list --format json` ──────────────
 
 #[test]
 fn memory_list_json_exposes_the_declared_origin_and_omits_it_when_undeclared() {

@@ -1,28 +1,12 @@
-//! Integration tests proving that porcelain commands and their plumbing
-//! equivalents produce consistent results (issue #130 — Unix architecture
-//! validation).
-//!
-//! All tests use `index_fixture_project()` which spins up a wiremock mock
-//! embedding server returning identical 768-dim vectors for every request.
-//! Because all vectors are equidistant, ordering of KNN results is
-//! non-deterministic; tests assert structure and non-emptiness only.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{index_fixture_project, inkentry_bin, inkentry_cmd, parse_jsonl};
 
 use std::path::Path;
 
-// ── Test 1: search --format jsonl vs embed | knn ────────────────────────────
-//
-// Both pipelines should return valid JSONL with `chunk_id` fields.
-// Ordering is non-deterministic (all mock embeddings are identical), so we
-// only assert structural validity and non-emptiness.
-
 #[test]
 fn porcelain_search_jsonl_returns_valid_chunk_ids() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // `inkentry search "test" --db <db> --format jsonl --no-stale-check`
     let output = inkentry_bin()
         .arg("--config")
         .arg(&config_path)
@@ -33,7 +17,6 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
         .arg("--format")
         .arg("jsonl")
         .arg("--no-stale-check")
-        // Code corpus, full-text only: no embedding call needed.
         .arg("--only-code")
         .arg("--only-text")
         .assert()
@@ -48,8 +31,6 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
         "inkentry search --format jsonl should return at least one result"
     );
     for row in &rows {
-        // The unified envelope nests the SearchResult under `code` with a type
-        // discriminator; the chunk fields live there, not at the top level.
         assert_eq!(
             row.get("type").and_then(|v| v.as_str()),
             Some("code"),
@@ -75,16 +56,10 @@ fn porcelain_search_jsonl_returns_valid_chunk_ids() {
 fn plumbing_knn_returns_valid_chunk_ids() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // Step 1: embed a query string via `inkentry plumbing embed --query`
-    // The mock server returns [0.1f32; 768] for every request.
-    // `index_fixture_project` writes `server_url` to `<_tmp>/.inkentry/config.toml`
-    // (project-level, since `Config::load` never honors it from `--config`);
-    // `.current_dir` must match for this second, separate invocation to see it.
-    //
-    // `INKENTRY_MODE=cloud_first`: `plumbing embed` has no loopback
-    // auto-discovery bridging (2026-07-23 ADR-004 revision), so with the
-    // default `local_first` mode a bare `server_url` no longer resolves to
-    // any inference target.
+    // `server_url` lives in the project config (`Config::load` ignores it from
+    // `--config`), so cwd must be the project dir.
+    // `plumbing embed` has no loopback auto-discovery: under `local_first` a
+    // bare `server_url` resolves to no inference target, hence `cloud_first`.
     let embed_output = inkentry_bin()
         .current_dir(_tmp.path())
         .env("INKENTRY_MODE", "cloud_first")
@@ -100,7 +75,6 @@ fn plumbing_knn_returns_valid_chunk_ids() {
         .stdout
         .clone();
 
-    // Step 2: feed the embedding JSON into `inkentry plumbing knn`
     let knn_output = inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin(embed_output.as_slice())
@@ -135,16 +109,12 @@ fn plumbing_knn_returns_valid_chunk_ids() {
     }
 }
 
-// ── Test 2: status --format json file_count matches ls-files line count ───────
-
 #[test]
 fn status_json_file_count_matches_ls_files_count() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // `inkentry status --format json` — uses db_path from config.
-    //
-    // Run from the temp dir so the registry won't match any registered project
-    // via CWD, forcing resolve_project_and_deps to fall back to cfg.db_path.
+    // Run from the temp dir so the registry cannot match a project via cwd
+    // and status falls back to `cfg.db_path`.
     let status_output = inkentry_bin()
         .current_dir(_tmp.path())
         .arg("--config")
@@ -166,7 +136,6 @@ fn status_json_file_count_matches_ls_files_count() {
         .as_u64()
         .expect("status JSON must have 'file_count'");
 
-    // `inkentry plumbing ls-files` — counts JSONL lines.
     let ls_output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .assert()
@@ -184,13 +153,6 @@ fn status_json_file_count_matches_ls_files_count() {
     );
 }
 
-// ── Test 3: parse-file and cat-chunks content overlap ────────────────────────
-//
-// `parse-file` parses a source file without touching the DB (live AST walk).
-// `cat-chunks` fetches the same file's chunks from the index.
-// Since indexing uses the same parse-file logic, at least one chunk content
-// from parse-file must appear in cat-chunks output.
-
 #[test]
 fn parse_file_content_appears_in_cat_chunks() {
     let (_tmp, db_path, config_path) = index_fixture_project();
@@ -198,7 +160,6 @@ fn parse_file_content_appears_in_cat_chunks() {
     let fixture_lib =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project/src/lib.rs");
 
-    // parse-file: parse lib.rs without DB.
     let parse_output = inkentry_bin()
         .arg("--config")
         .arg(&config_path)
@@ -217,7 +178,6 @@ fn parse_file_content_appears_in_cat_chunks() {
         "parse-file should produce at least one chunk for lib.rs"
     );
 
-    // cat-chunks: fetch indexed chunks for lib.rs (suffix matching).
     let cat_output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src/lib.rs")
@@ -233,7 +193,6 @@ fn parse_file_content_appears_in_cat_chunks() {
         "cat-chunks should return at least one indexed chunk for lib.rs"
     );
 
-    // Collect all content strings from each command.
     let parse_contents: std::collections::HashSet<String> = parse_rows
         .iter()
         .filter_map(|r| r["content"].as_str().map(|s| s.trim().to_string()))
@@ -246,8 +205,6 @@ fn parse_file_content_appears_in_cat_chunks() {
         .filter(|s| !s.is_empty())
         .collect();
 
-    // At least one chunk content must match exactly between parse-file and
-    // cat-chunks, since both use the same AST chunker.
     let overlap: std::collections::HashSet<&String> =
         parse_contents.intersection(&cat_contents).collect();
 

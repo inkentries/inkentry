@@ -1,20 +1,9 @@
-//! Regression coverage for the "ANSI color leaks onto piped/non-tty stdout,
-//! and NO_COLOR is ignored" bug.
-//!
-//! `inkentry memory list` (default text format) is the lightweight target here
-//! (no index or server needed, see `memory_list_format.rs`), but the fix
-//! lives in a shared helper so this doubles as coverage for every text-mode
-//! command that prints `\x1b[...m` escapes.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin, write_config};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-/// Create a temp project with a single memory note and return
-/// `(TempDir, mem_path, config_path)`. The `TempDir` must be kept alive for
-/// the duration of the test.
 fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
@@ -53,10 +42,6 @@ fn memory_list_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) ->
     cmd
 }
 
-/// `assert_cmd::Command` always captures stdout through a pipe, so the child
-/// process's stdout is never a tty. That's exactly the "piped" case in the
-/// bug report: the raw `\x1b` (0x1b) control byte must never appear in
-/// output that isn't going to a terminal.
 fn assert_no_ansi(stdout: &[u8]) {
     assert!(
         !stdout.contains(&0x1b),
@@ -73,8 +58,6 @@ fn assert_has_ansi(stdout: &[u8]) {
     );
 }
 
-// ── (a) non-tty stdout defaults to no color ─────────────────────────────────
-
 #[test]
 fn memory_list_default_has_no_ansi_on_non_tty_stdout() {
     let (_tmp, mem_path, config_path) = project_with_memory_note();
@@ -86,8 +69,6 @@ fn memory_list_default_has_no_ansi_on_non_tty_stdout() {
         .clone();
     assert_no_ansi(&out);
 }
-
-// ── (b) NO_COLOR forces color off regardless of tty state ──────────────────
 
 #[test]
 fn no_color_env_suppresses_color() {
@@ -101,8 +82,6 @@ fn no_color_env_suppresses_color() {
         .clone();
     assert_no_ansi(&out);
 }
-
-// ── (c) --color=always overrides both the non-tty default and NO_COLOR ─────
 
 #[test]
 fn color_always_flag_overrides_non_tty_default() {
@@ -147,8 +126,6 @@ fn color_always_flag_overrides_no_color_env() {
     assert_has_ansi(&out);
 }
 
-// ── --color=never is an explicit, unconditional off-switch ─────────────────
-
 #[test]
 fn color_never_flag_suppresses_color() {
     let (_tmp, mem_path, config_path) = project_with_memory_note();
@@ -170,19 +147,6 @@ fn color_never_flag_suppresses_color() {
     assert_no_ansi(&out);
 }
 
-// ── spot-checks on other converted call sites ───────────────────────────────
-//
-// `memory list` above exercises `memory/mod.rs::print_note_summary` through
-// the shared `cprintln!` macro. The macro itself is one code path, but each
-// command still has to actually call through it instead of a leftover raw
-// `println!` with a hand-written `\x1b[...m` escape. These spot-check two of
-// the other converted sites named in the bug report (`graph`, `context`) so a
-// regression that reverts one call site back to `println!` fails here even
-// if `memory list` still passes.
-
-// `inkentry search` prints each result line through `cprintln!` (the unified
-// text output's `[code]`/`[memory]` header), independently of `memory list`'s
-// call site. Indexed offline so the full-text path returns a hit with no server.
 fn indexed_search_project() -> TempDir {
     let tmp = TempDir::new().unwrap();
     std::fs::write(
@@ -231,12 +195,6 @@ fn search_color_always_has_ansi() {
     assert_has_ansi(&out);
 }
 
-/// `inkentry context`'s section header (`print_section_header` in
-/// `crates/inkentry-cli/src/cli/cmd/context.rs`) emits a multi-parameter SGR
-/// code (`\x1b[1;34m`), the exact form the original bug report called out as
-/// a risk for a naive strip regex. `--no-conventions --local-only` keeps this
-/// to the plain memory-list path (no index DB, no cross-project lookup, no
-/// embedding call needed).
 fn context_project_with_decision() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
@@ -263,6 +221,8 @@ fn context_project_with_decision() -> (TempDir, std::path::PathBuf, std::path::P
     (tmp, mem_path, config_path)
 }
 
+// Keeps `context` on the plain memory-list path: no index DB, cross-project
+// lookup or embedding call.
 fn context_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) -> Command {
     let mut cmd = inkentry_bin();
     cmd.arg("--config")

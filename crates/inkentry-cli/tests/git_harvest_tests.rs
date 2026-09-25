@@ -1,5 +1,3 @@
-// Consolidated git/harvest test binary: groups the previously separate git-notes, harvest, and links-freshness test files into one integration test crate to cut per-binary link overhead.
-
 mod plumbing_helpers;
 
 #[path = "git_harvest_tests/archive_git_notes_carrier.rs"]

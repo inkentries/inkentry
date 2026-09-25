@@ -1,10 +1,5 @@
-// Coverage for `memory archive`'s git-notes write-through carrier.
-//
-// A single-repo test cannot tell an append from an in-place rewrite: both
-// leave that one repo's `git notes show` looking archived. Only a clone that
-// genuinely had to MERGE (not fast-forward) the incoming notes distinguishes
-// them, so every test here runs across two real clones of a shared origin.
-
+// Runs across two real clones of a shared origin: only a clone that must MERGE (not
+// fast-forward) can tell an append from an in-place rewrite.
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
@@ -42,9 +37,6 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&git_out(dir, args).stdout).into_owned()
 }
 
-// Fetch `refs/notes/inkentry` from `origin` into this repo's tracking ref.
-// Explicit rather than relying on `inkentry init`'s configured refspec, so
-// each test controls exactly when a fetch happens.
 fn fetch_notes(dir: &Path) {
     git(
         dir,
@@ -66,7 +58,6 @@ fn init_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-// A `inkentry` command with an isolated HOME and no server contact.
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
@@ -75,15 +66,12 @@ fn bin(home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
-// Write an empty inkentry config (init needs `--config` but no values here).
 fn empty_config(dir: &Path) -> PathBuf {
     let cfg = dir.join("config.toml");
     std::fs::write(&cfg, "").unwrap();
     cfg
 }
 
-// Run `inkentry init --no-index` in `dir`, using `dir` itself as HOME (so the
-// import writes `dir/.inkentry/memory.db`). Offline, non-TTY.
 fn run_init(dir: &Path) -> String {
     let cfg = empty_config(dir);
     let out = inkentry_bin_in(dir)
@@ -102,7 +90,6 @@ fn run_init(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-// The inkentry records currently in HEAD's `refs/notes/inkentry` note.
 fn inkentry_note_lines(dir: &Path) -> Vec<String> {
     let blob = git_stdout(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     blob.lines()
@@ -121,9 +108,7 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-// The `id` inkentry assigned locally (in `dir`'s own `memory.db`) to the entry
-// titled `title`. Distinct from the `id` on a git-notes record: two clones
-// mint their own ids for the same entity independently.
+// Differs from the `id` on a git-notes record: each clone mints its own id for the same entity.
 fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> String {
     let out = bin(home, dir)
         .args(["memory", "list", "--format", "jsonl", "--limit", "100"])
@@ -146,10 +131,8 @@ fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> String {
         .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
 }
 
-// A bare origin plus two clones ("a" and "b") that both hold the same
-// single-commit history. Both get a `.inkentry/` dir so a plain `memory add`
-// resolves to the SQLite-primary-plus-carrier path (not the pre-init
-// fallback). Returns (origin, a, b).
+// `.inkentry/` in both clones makes `memory add` take the SQLite-primary-plus-carrier
+// path, not the pre-init fallback.
 fn setup_origin_with_two_clones(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let origin = tmp.join("origin.git");
     git(
@@ -183,13 +166,8 @@ fn setup_origin_with_two_clones(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (origin, a, b)
 }
 
-/// Clone A archives entry X and pushes; clone B fetches and merges. B holds a
-/// divergent local note of its own (added after adopting X but before A's
-/// archive lands), so the merge genuinely unions two histories rather than
-/// fast-forwarding. Without that divergence, B's working ref would just be an
-/// ancestor of the incoming tracking ref, and a broken in-place rewrite of X's
-/// status would look correct too — this is the trap the two-clone shape
-/// exists to close.
+// B holds a divergent local note, so the merge unions two histories instead of
+// fast-forwarding; otherwise an in-place rewrite of X's status would look correct too.
 #[test]
 fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note() {
     let tmp = TempDir::new().unwrap();
@@ -215,8 +193,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
     let x_id = local_id_for_title(home_a.path(), &a, "clone-a-archives-me");
     git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
-    // B adopts X onto its own working ref before diverging: without a prior
-    // local commit of its own, this merge is a plain fast-forward/create.
+    // B adopts X before diverging, so this merge is a plain fast-forward.
     fetch_notes(&b);
     bin(home_b.path(), &b)
         .args(["memory", "--backend", "git-notes", "list"])
@@ -224,7 +201,6 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
         .success()
         .stdout(predicate::str::contains("clone-a-archives-me"));
 
-    // B's own, unrelated entry: the divergent local note.
     bin(home_b.path(), &b)
         .args([
             "memory",
@@ -263,8 +239,7 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
         "the union must not drop B's own divergent entry, got:\n{default_stdout}"
     );
 
-    // Exactly once: the archived state-update must have FOLDED onto X's
-    // original active copy, not merely sit next to it as a second entry.
+    // Exactly once: the archived update must fold onto X's original, not sit beside it.
     let archived_list = bin(home_b.path(), &b)
         .args(["memory", "--backend", "git-notes", "list", "--archived"])
         .output()
@@ -280,12 +255,9 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
         "X's single folded copy must be marked archived, got:\n{archived_stdout}"
     );
 
-    // Assert on the raw git ref too, not just the CLI's folded view: the
-    // fold could hide either a rewrite (one line, wrongly convincing) or an
-    // over-eager append (three-plus lines). The archive state-update is a new
-    // line alongside X's original, never a replacement of it, so exactly two
-    // raw lines must carry X's entity_id: the untouched original (still
-    // "active") and the appended state-update ("archived").
+    // Also assert on the raw ref: the fold could hide a rewrite (one line) or an
+    // over-eager append (three-plus). Exactly two lines carry X's entity_id: the untouched
+    // active original and the appended archived update.
     let raw_lines = inkentry_note_lines(&b);
     let x_entity_id = record_field(&seeded[0], "entity_id");
     let x_lines: Vec<&String> = raw_lines
@@ -313,10 +285,6 @@ fn two_clone_archive_travels_and_folds_to_archived_once_despite_divergent_note()
     );
 }
 
-/// Two clones each archive the same entity independently, neither aware of
-/// the other, before either fetches the other's update. The read-side fold
-/// (ADR-068 A6) must converge the two archived-state-update copies to one
-/// entry rather than surfacing a duplicate or a conflict.
 #[test]
 fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
     let tmp = TempDir::new().unwrap();
@@ -341,9 +309,8 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
     let a_id = local_id_for_title(home_a.path(), &a, "double-archived-entry");
     git(&a, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
-    // B needs its own local (SQLite) copy of X to archive it through the
-    // normal command, so it imports via a real `inkentry init` rather than the
-    // manual `.inkentry` mkdir the other clones in this file use.
+    // B needs its own SQLite copy of X to archive it through the normal command, hence a
+    // real `init` import rather than the manual `.inkentry` mkdir.
     fetch_notes(&b);
     let init_stdout = run_init(&b);
     assert!(
@@ -352,13 +319,11 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
     );
     let b_id = local_id_for_title(&b, &b, "double-archived-entry");
 
-    // B archives its own copy — unaware A hasn't pushed an archive yet.
     bin(&b, &b)
         .args(["memory", "archive", &b_id])
         .assert()
         .success();
 
-    // A independently archives its own copy and pushes — unaware B already did.
     bin(home_a.path(), &a)
         .args(["memory", "archive", &a_id])
         .assert()
@@ -384,10 +349,8 @@ fn concurrent_archives_from_two_clones_fold_to_one_archived_entry() {
     );
 }
 
-// The carrier write is best-effort (matching `memory add`/`memory
-// supersede`'s contract): if `refs/notes` cannot be written, `memory
-// archive` must still report success and the SQLite primary must still hold
-// the archive. Only the carry is allowed to fail quietly.
+// The carrier write is best-effort: if `refs/notes` is unwritable, archive still
+// succeeds and the SQLite primary still holds it.
 #[cfg(unix)]
 #[test]
 fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
@@ -421,9 +384,8 @@ fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
     read_only.set_mode(0o555);
     std::fs::set_permissions(&refs_notes, read_only).unwrap();
 
-    // Probe with raw git, never the code under test: root (or a mount that
-    // ignores the mode) can still write there, and there would be no failure
-    // to assert against.
+    // Probe with raw git, never the code under test: root (or a mount ignoring the mode)
+    // can still write there, leaving no failure to assert against.
     let enforced = !git_out(
         &dir,
         &["notes", "--ref=inkentry", "add", "-f", "-m", "x", "HEAD"],
@@ -440,8 +402,8 @@ fn carrier_write_failure_does_not_fail_the_sqlite_archive() {
         .output()
         .expect("spawn inkentry memory archive");
 
-    // Restore before asserting: a panic below would otherwise leave a
-    // read-only directory behind that `TempDir` cannot clean up.
+    // Restore before asserting so a panic does not leave a read-only dir that `TempDir`
+    // cannot clean up.
     std::fs::set_permissions(&refs_notes, original).unwrap();
 
     assert!(
