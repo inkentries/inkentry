@@ -138,6 +138,14 @@ once, and no vector is discarded.
   from indexing by default. See
   [ADR-104](docs/adr/104-embed-a-subset-of-code-chunks.md).
 
+### Fixed
+
+- **`cloud = true` no longer switches a project to `cloud_first`.** Like
+  `server_url`, it now defaults to `local_first`: memory stays in the local
+  store and syncs to the cloud, and `inkentry index` embeds with the local
+  server instead of sending chunks to the cloud. To make the cloud the store of
+  record, set `mode = "cloud_first"` (or `INKENTRY_MODE=cloud_first`).
+
 ### Security
 
 - **Dependencies refreshed, including the fix for RUSTSEC-2026-0306.**

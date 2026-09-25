@@ -954,7 +954,7 @@ code, and approve the sign-in in your browser. On success, short-lived tokens
 are stored in your config and refreshed automatically in the background, so you
 do not need to log in again until the refresh token expires.
 
-`login` only authenticates; it does not by itself move a project's memory to
+`login` only authenticates; it does not by itself sync a project's memory to
 the cloud. Set `cloud = true` in the project's `.inkentry/config.toml` for that
 (see [`cloud`](config-reference.md#cloud)).
 

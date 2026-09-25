@@ -238,7 +238,7 @@ is reported separately, as a TLS failure naming the certificate and pointing at
 `server_ca`, because restarting a server cannot fix that.
 
 When unset, the effective mode is derived: no `server_url` means `offline`; a
-configured `server_url` means `local_first`. `INKENTRY_NO_SERVER=1` forces
+configured `server_url` or `cloud = true` means `local_first`. `INKENTRY_NO_SERVER=1` forces
 `offline` regardless of this setting, as a hard kill-switch. See
 [Team server and sync modes](memory.md#team-server-and-sync-modes) for the
 full picture.

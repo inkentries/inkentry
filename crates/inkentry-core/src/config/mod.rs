@@ -596,11 +596,9 @@ impl Config {
                     "`cloud = true` and `server_url` cannot both be set: a project uses either the hosted cloud or a self-hosted team server"
                 );
             }
+            // Mode is left alone: an unset mode derives `local_first` from
+            // this server_url, exactly as for a team server.
             cfg.server_url = Some(server_keys::cloud_url());
-            // Cloud is the memory home unless a mode was chosen explicitly.
-            if cfg.mode.is_none() {
-                cfg.mode = Some(SyncMode::CloudFirst);
-            }
         }
 
         // ADR-098 D5/D6: read once here, never from either config file and
@@ -1896,12 +1894,24 @@ mode = "cloud_first"
 
     #[test]
     #[serial_test::serial]
-    fn cloud_flag_targets_the_fixed_cloud_url_and_defaults_to_cloud_first() {
+    fn cloud_flag_targets_the_fixed_cloud_url_and_defaults_to_local_first() {
         clear_inkentry_env();
         let (_tmp, cfg) = load_layered("", Some("cloud = true\nproject_id = \"team/proj\"\n"));
         let cfg = cfg.expect("`cloud = true` must load");
         let target = server_keys::cloud_url();
         assert_eq!(cfg.server_url.as_deref(), Some(target.as_str()));
+        assert_eq!(cfg.mode, None);
+        assert_eq!(cfg.resolve_mode(), SyncMode::LocalFirst);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cloud_flag_keeps_an_explicit_cloud_first_mode() {
+        clear_inkentry_env();
+        unsafe { std::env::set_var("INKENTRY_MODE", "cloud_first") };
+        let (_tmp, cfg) = load_layered("", Some("cloud = true\nproject_id = \"team/proj\"\n"));
+        unsafe { std::env::remove_var("INKENTRY_MODE") };
+        let cfg = cfg.expect("`cloud = true` must load");
         assert_eq!(cfg.resolve_mode(), SyncMode::CloudFirst);
     }
 
