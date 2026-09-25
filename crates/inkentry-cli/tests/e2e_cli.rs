@@ -921,6 +921,8 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "embedder_state",
         "embedding_count",
         "embedding_pending",
+        // ADR-104: chunks left to full-text search, outside embedding coverage.
+        "text_only_count",
         // Freshness signal (distinct from coverage) + composition-scheme
         // provenance: additive-only status fields.
         "embedding_refresh_pending",

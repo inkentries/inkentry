@@ -23,6 +23,7 @@ pub(super) enum IndexMigrationKind {
 pub(super) const INDEX_MIGRATIONS: &[(i32, IndexMigrationKind)] = &[
     (18, IndexMigrationKind::Migrate(add_target_file)),
     (19, IndexMigrationKind::Migrate(rebuild_code_fts)),
+    (20, IndexMigrationKind::Migrate(mark_text_only_chunks)),
 ];
 
 // Existing edges read as unresolved until a graph-only re-extraction fills
@@ -79,6 +80,43 @@ fn rebuild_code_fts(conn: &Connection) -> Result<()> {
         update
             .execute(params![name_words, body_words, id])
             .with_context(|| format!("indexing chunk {id}"))?;
+    }
+    Ok(())
+}
+
+/// Flags the chunks the embed queue now skips (ADR-104). Nothing is deleted:
+/// a flagged chunk that was embedded before keeps its vector.
+fn mark_text_only_chunks(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../migrations/index_020.sql"))
+        .context("applying index_020.sql")?;
+
+    let flagged: Vec<i64> = conn
+        .prepare(
+            "SELECT c.id, f.path, f.language, c.node_type, c.name
+             FROM chunks c JOIN files f ON f.id = c.file_id",
+        )
+        .context("preparing the chunk read")?
+        .query_map([], |r| {
+            let language: Option<String> = r.get(2)?;
+            let name: Option<String> = r.get(4)?;
+            let text_only = crate::indexer::embed_scope::is_text_only(
+                &r.get::<_, String>(1)?,
+                language.as_deref().unwrap_or(""),
+                &r.get::<_, String>(3)?,
+                name.as_deref(),
+            );
+            Ok(text_only.then_some(r.get::<_, i64>(0)?))
+        })
+        .context("reading chunks")?
+        .filter_map(Result::transpose)
+        .collect::<rusqlite::Result<_>>()
+        .context("collecting chunks")?;
+
+    let mut update = conn.prepare("UPDATE chunks SET text_only = 1 WHERE id = ?1")?;
+    for id in flagged {
+        update
+            .execute(params![id])
+            .with_context(|| format!("flagging chunk {id}"))?;
     }
     Ok(())
 }

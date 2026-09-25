@@ -8,7 +8,22 @@ pub struct IndexStats {
     pub file_count: i64,
     pub chunk_count: i64,
     pub embedding_count: i64,
+    /// Chunks left to full-text search alone (ADR-104) that hold no vector.
+    /// One that kept a vector from before the rule counts as embedded instead.
+    pub text_only_count: i64,
     pub last_indexed: Option<i64>,
+}
+
+impl IndexStats {
+    /// Chunks the embed queue covers: the denominator of embedding coverage.
+    pub fn embeddable_count(&self) -> i64 {
+        self.chunk_count - self.text_only_count
+    }
+
+    /// Chunks still waiting for their first vector.
+    pub fn pending_embed_count(&self) -> i64 {
+        (self.embeddable_count() - self.embedding_count).max(0)
+    }
 }
 
 /// Token-weighted view of the embed queue, for progress reporting. Chunk
@@ -17,9 +32,10 @@ pub struct IndexStats {
 /// never be rendered under one name.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct EmbedTokenStats {
-    /// Sum of `token_count` over all chunks. 0 on an empty or pre-backfill index.
+    /// Sum of `token_count` over the chunks the embed queue covers. 0 on an
+    /// empty or pre-backfill index.
     pub total_tokens: i64,
-    /// Sum of `token_count` over chunks with no embedding row.
+    /// Sum of `token_count` over those of them with no embedding row.
     pub pending_tokens: i64,
 }
 
@@ -69,6 +85,13 @@ impl Database {
         let embedding_count: i64 =
             self.conn
                 .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))?;
+        let text_only_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM chunks c
+             LEFT JOIN embeddings e ON e.chunk_id = c.id
+             WHERE c.text_only = 1 AND e.chunk_id IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
         let last_indexed: Option<i64> = self
             .conn
             .query_row("SELECT MAX(indexed_at) FROM files", [], |r| r.get(0))
@@ -78,6 +101,7 @@ impl Database {
             file_count,
             chunk_count,
             embedding_count,
+            text_only_count,
             last_indexed,
         })
     }
@@ -85,7 +109,10 @@ impl Database {
     /// Token-weighted embed-queue totals (see [`EmbedTokenStats`]).
     pub fn embed_token_stats(&self) -> Result<EmbedTokenStats> {
         let total_tokens: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(token_count), 0) FROM chunks",
+            "SELECT COALESCE(SUM(c.token_count), 0)
+             FROM chunks c
+             LEFT JOIN embeddings e ON e.chunk_id = c.id
+             WHERE c.text_only = 0 OR e.chunk_id IS NOT NULL",
             [],
             |r| r.get(0),
         )?;
@@ -93,7 +120,7 @@ impl Database {
             "SELECT COALESCE(SUM(c.token_count), 0)
              FROM chunks c
              LEFT JOIN embeddings e ON e.chunk_id = c.id
-             WHERE e.chunk_id IS NULL",
+             WHERE e.chunk_id IS NULL AND c.text_only = 0",
             [],
             |r| r.get(0),
         )?;
@@ -113,7 +140,7 @@ impl Database {
     pub fn refresh_pending_count(&self) -> Result<i64> {
         self.conn
             .query_row(
-                "SELECT COUNT(*) FROM chunks WHERE embed_pending = 1",
+                "SELECT COUNT(*) FROM chunks WHERE embed_pending = 1 AND text_only = 0",
                 [],
                 |r| r.get(0),
             )

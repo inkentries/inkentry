@@ -642,7 +642,9 @@ inkentry status [options]
 When embeddings are incomplete, `inkentry status` prints an "Embedding in progress"
 line (when a live background worker is detected) or "Embedding incomplete" (when
 no worker is running but chunks remain unembedded). Coverage is shown as searchable
-chunks and percentage; progress is shown as percentage of work done, measured by
+chunks and percentage, counted over the chunks that get a vector: test files,
+changelogs, JSON and unnamed windows of code are full-text only, and the
+`Embeddings:` line gives their count; progress is shown as percentage of work done, measured by
 token weight. An incomplete status includes the `inkentry index .` resume command
 (or, when the embedder is unavailable, a pointer at the server logs instead).
 

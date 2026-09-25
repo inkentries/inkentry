@@ -205,7 +205,7 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
     if want_code && !args.only_text {
         if let Ok(db) = Database::open(&db_path) {
             if let Ok(s) = db.stats() {
-                code_coverage = Some((s.embedding_count, s.chunk_count));
+                code_coverage = Some((s.embedding_count, s.embeddable_count()));
             }
             code_refresh_pending = db.refresh_pending_count().unwrap_or(0);
         }

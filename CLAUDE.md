@@ -145,6 +145,9 @@ indexer/
   mod.rs         — re-exports Chunk, ChunkKind, SourceParser
   chunker.rs     — Chunk / ChunkKind structs; sliding_window fallback
   docparser.rs   — document-level parsing helpers
+  embed_scope.rs — is_text_only: which chunks skip embedding and stay
+                   full-text only (tests, changelogs, JSON, unnamed code
+                   windows; ADR-104)
   pagerank.rs    — PageRank over the code graph
   pdf.rs         — PDF text extraction
   secrets.rs     — contains_secret(): regex scanner, drops credential chunks
@@ -240,6 +243,8 @@ migrations/  (crates/inkentry-core/migrations/)
   index_019.sql          — step 19 (ADR-103): code full-text index rebuilt for
                            retrieval: stemmed, contentless, over name/path/
                            docstring/summary/content plus identifier sub-words
+  index_020.sql          — step 20 (ADR-104): chunks.text_only, the chunks the
+                           embed queue skips
   memory_001_initial.sql — memory.db at schema version 11, frozen; a fresh
                            store is created from it and climbs the ladder
   memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):
@@ -580,6 +585,14 @@ than as one from the future.
 ### Incremental indexing
 Each file is hashed with blake3. On re-index, unchanged files are skipped.
 Changed files: delete old chunks + embeddings, reparse, re-embed.
+
+### What gets embedded
+Not every chunk gets a vector. `indexer::embed_scope::is_text_only` leaves
+test files, changelogs, JSON and unnamed windows of code to the full-text
+index alone; the flag is stored as `chunks.text_only` when a chunk is written,
+and the embed queue, tier 3 and embedding coverage in `status`/`search` all
+exclude those chunks (ADR-104). On Lago that is two thirds of the tokens, and
+leaving tests out of the vector side improved hybrid recall.
 
 ### Multi-project registry
 `~/.config/inkentry/registry.db` tracks all indexed projects and their

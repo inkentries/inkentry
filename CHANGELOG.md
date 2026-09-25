@@ -104,6 +104,19 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   `--only-text` JSON now reports `distance` as the raw BM25 score, lower
   being better, as for vector results. See
   [ADR-103](docs/adr/103-code-full-text-index-for-retrieval.md).
+- **Indexing embeds about a third of what it did on a typical app, and
+  search gets better for it.** Test files, changelogs, JSON and unnamed
+  windows of code are no longer embedded. They stay in the full-text index,
+  where search still finds them. On Lago that leaves 34% of the tokens to
+  embed, and on this repository 54%. Removing test code from the vector
+  side also stopped it crowding out the code it tests: on the same
+  evaluation, simulated default-search Recall@10 rose from 0.82 to 0.86 on
+  Lago and held on this repository. `inkentry status` reports the count as
+  `N chunks full-text only`, and embedding coverage counts only the chunks
+  that get a vector. An existing index is flagged in place on first open;
+  vectors it already holds are kept. `*-lock.json` files are now excluded
+  from indexing by default. See
+  [ADR-104](docs/adr/104-embed-a-subset-of-code-chunks.md).
 
 ### Security
 
