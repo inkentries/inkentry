@@ -956,6 +956,82 @@
         ]
       }
     },
+    "/v1/projects/{project_id}/memory/{note_id}/anchor": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "ADR-099 D5: set `source_ref` on an already-synced entry once a commit\nclaims it locally. Idempotent and unconditional (unlike `archive`/\n`supersede`, which guard on `status = 'active'`): the client has no local\nrecord of whether a previous push already delivered this, so it resends\non every push/sync, and a repeat must not error.",
+        "operationId": "update_note_anchor",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "Project slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "note_id",
+            "in": "path",
+            "description": "Note identity (UUIDv7)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnchorUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Anchor result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoolResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Note not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{project_id}/memory/{note_id}/archive": {
       "post": {
         "tags": [
@@ -1315,6 +1391,19 @@
           "stored": {
             "type": "boolean",
             "description": "Whether the note was stored (always true for 201/409)."
+          }
+        }
+      },
+      "AnchorUpdateRequest": {
+        "type": "object",
+        "description": "ADR-099 D5: an entry can sync before a commit claims it; this carries the\nanchor once it exists.",
+        "required": [
+          "source_ref"
+        ],
+        "properties": {
+          "source_ref": {
+            "type": "string",
+            "description": "The commit sha the client resolved `source_ref` to."
           }
         }
       },
