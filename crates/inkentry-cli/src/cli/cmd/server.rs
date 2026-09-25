@@ -1,51 +1,5 @@
-//! `inkentry server` subcommand — manage a local inkentry-server daemon.
-//!
-//! ## Subcommands
-//!
-//! - `inkentry server start`  — daemonise inkentry-server; write PID/port/log files.
-//! - `inkentry server stop`   — terminate the running daemon (SIGTERM, then
-//!   SIGKILL if it won't exit) and verify it is gone.
-//! - `inkentry server status` — print PID, port, instance_id, and uptime.
-//! - `inkentry server logs`   — print the last N lines from the server log.
-//!
-//! ## State directory
-//!
-//! All runtime state lives under `~/.local/state/inkentry/` (or
-//! `INKENTRY_STATE_DIR` when set; see `capability::inkentry_state_dir`, the
-//! single resolver every reader and writer of this directory shares):
-//! - `server.pid`  — PID of the running daemon process
-//! - `server.port`: TCP port the daemon is listening on (read by `capability/probe.rs`)
-//! - `server.instance_id`: the daemon's `instance_id`, as its own `/v1/health` reported it
-//! - `server.log`  — stdout + stderr of the daemon process
-//!
-//! The port file is read by `capability/probe.rs` for loopback auto-discovery
-//! (spelunk-cloud/spelunk#316).  The writer here **must** use the same path, enforced by
-//! both going through the shared resolver rather than each defining their own.
-//!
-//! The pid and instance-id files are read there too, and for the same reason:
-//! discovery has to tell the daemon this CLI started from anything else that
-//! got to the port first.
-//!
-//! ## Spawned-binary resolution (PATH vs. sibling/absolute)
-//!
-//! `inkentry-server` is resolved preferring a path next to the running
-//! `inkentry` executable, falling back to a `$PATH` walk only if no sibling
-//! binary is found (see [`which_inkentry_server`]) — this avoids a
-//! PATH/CWD-hijack where a malicious `inkentry-server` earlier on `$PATH`
-//! (or in an untrusted repo's local tooling dir) gets executed instead of
-//! the real one.
-//!
-//! Other external tools spawned elsewhere in the CLI (`git`, `gh`, `bun`,
-//! `$EDITOR`, and `taskkill` on Windows — see `memory/add.rs`,
-//! `memory/harvest.rs`, `memory/mod.rs`, and the `stop` command below) are
-//! **not** given the same treatment: they are resolved via the bare name on
-//! `$PATH` as is conventional for CLI-invoked developer tools (the same way
-//! `git`, shell, and editor integrations normally work), and the user is
-//! trusted to control their own `$PATH`. This is a deliberate scope
-//! decision, not an oversight — `inkentry-server` is different because it is
-//! a first-party binary inkentry itself ships and auto-spawns without the
-//! user typing a command, so a bundled/co-located binary is both available
-//! and the more trustworthy choice by default.
+// State files under `inkentry_state_dir()` are also read by `capability/probe.rs`
+// for loopback discovery, so both sides must go through that one resolver.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -58,8 +12,6 @@ use inkentry_core::config::Config;
 
 use crate::capability::inkentry_state_dir;
 
-// ── State dir helpers ─────────────────────────────────────────────────────────
-
 fn pid_path(state_dir: &Path) -> PathBuf {
     state_dir.join("server.pid")
 }
@@ -69,26 +21,18 @@ fn port_path(state_dir: &Path) -> PathBuf {
 fn log_path(state_dir: &Path) -> PathBuf {
     state_dir.join("server.log")
 }
-/// The `instance_id` the daemon reported once it answered `/v1/health`.
-///
-/// Recorded so loopback auto-discovery has something to compare a later health
-/// body against. The id in that body is self-reported, so on its own it proves
-/// nothing: only a value written down at start, by us, distinguishes our daemon
-/// from a process that read the same field name out of the docs.
+// The health body's id is self-reported and proves nothing alone: only a value
+// we wrote down at start distinguishes our daemon from an impostor.
 fn instance_id_path(state_dir: &Path) -> PathBuf {
     state_dir.join("server.instance_id")
 }
 
-/// Read the recorded `instance_id`. `None` when absent, unreadable or blank.
 pub(crate) fn read_instance_id(state_dir: &Path) -> Option<String> {
     let recorded = std::fs::read_to_string(instance_id_path(state_dir)).ok()?;
     let id = recorded.trim();
     (!id.is_empty()).then(|| id.to_string())
 }
 
-/// Create `dir` (and parents) with `0700` permissions on Unix so only the
-/// owner can read the PID/port/log files inside it. A no-op permission
-/// tightening on platforms without Unix perms.
 pub(super) fn create_state_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating state dir {}", dir.display()))?;
@@ -101,9 +45,6 @@ pub(super) fn create_state_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `contents` to a state file, creating it `0600` and refusing to
-/// follow an existing symlink at `path` (see
-/// [`super::helpers::open_private_file_for_write`]).
 pub(super) fn write_state_file(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
     let mut f = super::helpers::open_private_file_for_write(path)?;
@@ -112,8 +53,6 @@ pub(super) fn write_state_file(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Open a state file for daemon-log append, creating it `0600` and refusing
-/// to follow an existing symlink at `path`.
 fn open_log_file_for_append(path: &Path) -> Result<std::fs::File> {
     #[cfg(unix)]
     {
@@ -136,21 +75,18 @@ fn open_log_file_for_append(path: &Path) -> Result<std::fs::File> {
     }
 }
 
-/// Read PID from the state file. Returns `None` if absent or unparseable.
 pub(crate) fn read_pid(state_dir: &Path) -> Option<u32> {
     std::fs::read_to_string(pid_path(state_dir))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
 }
 
-/// Read port from the state file. Returns `None` if absent or unparseable.
 fn read_port(state_dir: &Path) -> Option<u16> {
     std::fs::read_to_string(port_path(state_dir))
         .ok()
         .and_then(|s| s.trim().parse::<u16>().ok())
 }
 
-/// Return `true` when `pid` names a currently-running process.
 pub(super) fn pid_is_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -163,9 +99,7 @@ pub(super) fn pid_is_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        // OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION is sufficient to
-        // call GetExitCodeProcess.  A NULL handle means the process does not
-        // exist (or we have no access — treated as "not alive").
+        // A NULL handle means no such process, or no access (treated as not alive).
         unsafe extern "system" {
             fn OpenProcess(desired_access: u32, inherit_handle: i32, pid: u32) -> *mut ();
             fn CloseHandle(handle: *mut ()) -> i32;
@@ -184,28 +118,22 @@ pub(super) fn pid_is_alive(pid: u32) -> bool {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        // Unknown platform: conservatively return false so stale PIDs do not
-        // block a fresh server start.
+        // Conservatively false so stale PIDs do not block a fresh start.
         let _ = pid;
         false
     }
 }
 
-// ── Process lifecycle helpers ──────────────────────────────────────────────────
-
-/// Grace period for a `SIGTERM`ed daemon to exit before escalation.
 const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(10);
-/// Extra window for the process to disappear after `SIGKILL` (Unix).
 #[cfg(unix)]
 const FORCE_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// `server.db-path` records the DB the running daemon was started against, so a
-/// second `start` can refuse to point a new server at a different DB.
+// Records the DB the running daemon was started against, so a second `start`
+// can refuse a different one.
 fn db_path_file(state_dir: &Path) -> PathBuf {
     state_dir.join("server.db-path")
 }
 
-/// Read the DB path recorded for the running daemon. `None` if absent/empty.
 fn read_db_path(state_dir: &Path) -> Option<PathBuf> {
     std::fs::read_to_string(db_path_file(state_dir))
         .ok()
@@ -213,24 +141,15 @@ fn read_db_path(state_dir: &Path) -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
-/// Best-effort path equality that tolerates symlinks / `.` / `..` by
-/// canonicalising each side when it exists, falling back to the raw path.
 fn same_path(a: &Path, b: &Path) -> bool {
     let ca = std::fs::canonicalize(a).unwrap_or_else(|_| a.to_path_buf());
     let cb = std::fs::canonicalize(b).unwrap_or_else(|_| b.to_path_buf());
     ca == cb
 }
 
-/// Return `true` when `pid`'s command line looks like a `inkentry-server`.
-///
-/// This is the identity signal used when `/v1/health` does *not* respond: a
-/// wedged/hung daemon still exists as a `inkentry-server` process, so we can
-/// safely terminate it, whereas a PID reused by an unrelated process after a
-/// crash must not be killed. Uses `ps` (Unix) / `tasklist` (Windows).
-///
-/// Loopback auto-discovery (`capability/probe.rs`) reads it for the mirror
-/// question: whether the PID recorded next to the port still belongs to a
-/// server, before handing whoever answers that port the indexed source.
+// Identity signal for when `/v1/health` is silent: a wedged daemon is still an
+// `inkentry-server` process and safe to kill, whereas a PID reused after a crash
+// must not be.
 pub(crate) fn process_matches_server(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -263,16 +182,9 @@ pub(crate) fn process_matches_server(pid: u32) -> bool {
     }
 }
 
-/// The whole of the command-line identity signal: the process listing contains
-/// the literal `inkentry-server`.
-///
-/// Extracted from [`process_matches_server`] so its exact, deliberately weak
-/// semantics can be pinned by a unit test without spawning a process. ADR-085
-/// records that this substring match is wrong in both directions (a pre-rename
-/// `spelunk-server` fails it; any process whose argv contains the string passes
-/// it). Tests pin that, so a later attempt to strengthen it starts from a
-/// known baseline. `tasklist` output is matched case-insensitively,
-/// mirroring how Windows renders the image name; `ps` argv is matched as-is.
+// Deliberately weak: a pre-rename `spelunk-server` fails it and any argv
+// containing the string passes. `tasklist` renders the image name in its own
+// case, hence the Windows case-fold.
 #[cfg(unix)]
 fn listing_names_server(listing: &str) -> bool {
     listing.contains("inkentry-server")
@@ -282,24 +194,15 @@ fn listing_names_server(listing: &str) -> bool {
     listing.to_lowercase().contains("inkentry-server")
 }
 
-/// Classification of a live PID recorded in the state dir.
 enum RunningServer {
-    /// `/v1/health` responded on the recorded port — a healthy daemon.
     Healthy { port: u16 },
-    /// Alive and a `inkentry-server` process, but `/v1/health` is silent — our
-    /// wedged daemon. Safe to terminate/reclaim.
     HungOurs,
-    /// Alive but neither healthy nor a `inkentry-server` — the PID was almost
-    /// certainly reused by an unrelated process after a crash. Do not signal it.
+    // The PID was almost certainly reused after a crash; never signal it.
     Foreign,
 }
 
-/// Classify the live process `pid` recorded in `state_dir`.
-///
-/// Health probe first (definitive "ours + reachable"); on no response, fall
-/// back to a process-command identity check so a *hung* daemon is still
-/// recognised as ours and can be reclaimed — the previous health-only check
-/// refused to stop a wedged server, which is the core bug this fixes.
+// On no health response, falls back to the command-line identity check so a hung
+// daemon is still recognised as ours and can be reclaimed.
 async fn classify_running_server(state_dir: &Path, pid: u32) -> RunningServer {
     if let Some(port) = read_port(state_dir)
         && probe_health(port).await.is_some()
@@ -312,7 +215,7 @@ async fn classify_running_server(state_dir: &Path, pid: u32) -> RunningServer {
     RunningServer::Foreign
 }
 
-/// `SIGKILL` on Unix. Tolerates a process that already exited (`ESRCH`).
+// Tolerates a process that already exited (`ESRCH`).
 #[cfg(unix)]
 fn force_kill(pid: u32) -> Result<()> {
     unsafe extern "C" {
@@ -326,7 +229,6 @@ fn force_kill(pid: u32) -> Result<()> {
     Ok(())
 }
 
-/// Poll until `pid` is gone or `timeout` elapses. Returns `true` if gone.
 async fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
@@ -338,15 +240,8 @@ async fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
     !pid_is_alive(pid)
 }
 
-/// Terminate `pid` and confirm it is gone. Returns `Ok(true)` only when the
-/// process has actually exited.
-///
-/// Unix: `SIGTERM`, wait [`GRACEFUL_STOP_TIMEOUT`], then escalate to `SIGKILL`
-/// and wait [`FORCE_KILL_TIMEOUT`]. Windows: `taskkill /F` (already forceful),
-/// then wait. Never reports success on a still-running process.
 async fn terminate_and_wait(pid: u32) -> Result<bool> {
-    // Graceful signal. If it errored only because the process already exited
-    // (a race between classify and here), treat that as success.
+    // An error because the process already exited (a race with classify) is success.
     if let Err(e) = terminate_process(pid) {
         if !pid_is_alive(pid) {
             return Ok(true);
@@ -366,17 +261,13 @@ async fn terminate_and_wait(pid: u32) -> Result<bool> {
     Ok(!pid_is_alive(pid))
 }
 
-/// Held for the duration of a `start` sequence so two concurrent
-/// `inkentry server start` invocations can't both spawn a daemon against the
-/// same state dir / DB. The lock is advisory (`flock`, Unix) and releases when
-/// the guard drops (the CLI process exits or `start` returns).
+// Advisory `flock` held across a `start` so concurrent starts can't both spawn a
+// daemon against the same state dir / DB.
 #[cfg(unix)]
 struct StartLock {
     _file: std::fs::File,
 }
 
-/// Acquire the single-instance `start` lock. Fails fast if another start is in
-/// progress. No-op guard on non-Unix platforms.
 #[cfg(unix)]
 fn acquire_start_lock(state_dir: &Path) -> Result<StartLock> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -413,8 +304,6 @@ struct StartLock;
 fn acquire_start_lock(_state_dir: &Path) -> Result<StartLock> {
     Ok(StartLock)
 }
-
-// ── CLI types ─────────────────────────────────────────────────────────────────
 
 #[derive(Args, Debug)]
 pub struct ServerArgs {
@@ -467,8 +356,6 @@ pub struct ServerLogsArgs {
     pub lines: usize,
 }
 
-// ── Dispatch ──────────────────────────────────────────────────────────────────
-
 pub async fn server(args: ServerArgs, cfg: Config) -> Result<()> {
     match args.command {
         ServerCommand::Start(a) => cmd_start(a, &cfg).await,
@@ -478,32 +365,16 @@ pub async fn server(args: ServerArgs, cfg: Config) -> Result<()> {
     }
 }
 
-// ── Public bootstrap API ──────────────────────────────────────────────────────
-
-/// Probe for an already-running local inkentry-server daemon (the one
-/// `inkentry server start`/[`ensure_server_running`] manages), without
-/// starting one. Returns its port only when `/v1/health` responds **and** the
-/// responder is the daemon this CLI recorded beside the port.
-///
-/// This is the non-starting half of ADR-037 P2's D6 auto-start gate: a
-/// `local_first` write nudges the reconciler only if this returns `Some`, or
-/// (when interactive) after first calling [`ensure_server_running`] itself.
-/// This function never spawns anything on its own.
-///
-/// A healthy answer on the recorded port is not on its own proof that the
-/// answerer is the daemon we started: any local process can hold the port and
-/// reply. So this applies the same recorded-pid + recorded-`instance_id` check
-/// loopback discovery's step 3a does before routing indexed work to a
-/// responder. ADR-085 left this gate trusting the port alone and tracked the
-/// question as future work; ADR-091 settles it by tightening here too.
+// Never spawns. A healthy answer on the recorded port proves nothing (any local
+// process can hold it), so the responder must also match the recorded pid and
+// `instance_id`, as loopback discovery requires before routing indexed work to it.
 pub(crate) async fn probe_local_relay_port() -> Option<u16> {
     let state_dir = inkentry_state_dir().ok()?;
     let port = read_port(&state_dir)?;
     let health = probe_health(port).await?;
     if let Some(why) = crate::capability::untrusted_responder(health.instance_id.as_deref()) {
-        // Loud on purpose. Something answered and could not be verified, which
-        // is the case worth telling the user about rather than the ordinary
-        // "no daemon" one, which returns above without a word.
+        // Loud on purpose: something answered and could not be verified, unlike the
+        // ordinary no-daemon case.
         eprintln!(
             "warning: the process answering 127.0.0.1:{port} is not the server recorded in \
              {}: {why}. No memory entries or credentials were sent to it. If that is your \
@@ -515,23 +386,15 @@ pub(crate) async fn probe_local_relay_port() -> Option<u16> {
     Some(port)
 }
 
-/// Ensure a local inkentry-server is running.
-///
-/// Returns `(port, freshly_started)`. Idempotent: if the server is already
-/// healthy, returns immediately with `freshly_started = false`.
-///
-/// Called by `inkentry init` to auto-spawn the server when running interactively.
+// Returns `(port, freshly_started)`; already healthy means `freshly_started = false`.
 pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16, bool)> {
     let state_dir = inkentry_state_dir()?;
     create_state_dir(&state_dir)?;
 
-    // Serialise against a concurrent `server start` so we don't race two
-    // daemons onto the same DB.
     let _start_lock = acquire_start_lock(&state_dir)?;
 
-    // Inspect any recorded daemon before spawning. A wedged ("hung") daemon
-    // must be reclaimed, not left running while we bind a *different* port —
-    // that leaves two servers on one DB (the leaked-process + port-drift bug).
+    // A wedged daemon must be reclaimed, not left running while we bind a different
+    // port: that leaves two servers on one DB.
     if let Some(pid) = read_pid(&state_dir)
         && pid_is_alive(pid)
     {
@@ -545,7 +408,6 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
                 cleanup_state_files(&state_dir);
             }
             RunningServer::Foreign => {
-                // PID reused by an unrelated process; recorded state is stale.
                 cleanup_state_files(&state_dir);
             }
         }
@@ -569,16 +431,11 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
         .context("writing server.port")?;
     write_state_file(&db_path_file(&state_dir), &format!("{}\n", db.display()))
         .context("writing server.db-path")?;
-    // The id belongs to the daemon this pid names, so a leftover from the
-    // previous one must not outlive it even for the seconds before this one
-    // answers.
+    // A leftover id from the previous daemon must not outlive it, even briefly.
     let _ = std::fs::remove_file(instance_id_path(&state_dir));
 
-    // Wait for *liveness* (the port binds, /v1/health responds) — not model
-    // readiness. Health now goes live at bind, before the model download, so
-    // 30 s comfortably covers a cold listener bind even on Windows; it only
-    // bounds the give-up time and is free in the happy path (200 ms poll,
-    // returns on first success).
+    // Liveness, not model readiness: health goes live at bind, before the model
+    // download, so 30 s only bounds the give-up time.
     match wait_for_health(port, Duration::from_secs(30), &mut child).await {
         StartOutcome::Ready { instance_id } => record_instance_id(&state_dir, instance_id),
         StartOutcome::Exited(status) => {
@@ -589,9 +446,7 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
             );
         }
         StartOutcome::TimedOut => {
-            // The process is still alive and still silent, which is what a
-            // blocked loopback listener looks like. Don't warn merely because
-            // the model is still loading (health is live before that).
+            // Alive and silent is what a blocked loopback listener looks like.
             tracing::warn!(
                 "inkentry-server started (pid={pid}) but /v1/health did not respond within 30 s. \
                  A firewall may be blocking the local server (allow it, e.g. accept the Windows \
@@ -603,34 +458,25 @@ pub async fn ensure_server_running(start_port: u16, cfg: &Config) -> Result<(u16
     Ok((port, true))
 }
 
-// ── start ─────────────────────────────────────────────────────────────────────
-
 async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
     let state_dir = inkentry_state_dir()?;
     create_state_dir(&state_dir)?;
 
-    // Single-instance guard: block a concurrent `server start` from racing us
-    // into a second daemon on the same DB.
     let _start_lock = acquire_start_lock(&state_dir)?;
 
-    // ── Default DB path ──────────────────────────────────────────────────────
     let db = args
         .db
         .clone()
         .unwrap_or_else(|| state_dir.join("server.db"));
 
-    // ── Reclaim / idempotency ────────────────────────────────────────────────
-    // The previous code fell through to `find_available_port` whenever a
-    // recorded PID was alive-but-unhealthy, silently binding a *new* port and
-    // leaving the wedged daemon holding the old one — two servers on one DB.
-    // Instead: return early if healthy, reclaim if wedged, clear stale state.
+    // Falling through to a new port for an alive-but-unhealthy daemon would leave
+    // it holding the old one: two servers on one DB.
     if let Some(pid) = read_pid(&state_dir) {
         if pid_is_alive(pid) {
             match classify_running_server(&state_dir, pid).await {
                 RunningServer::Healthy { port } => {
-                    // Refuse to start a second server against a *different* DB —
-                    // the single state dir tracks one daemon; clobbering it would
-                    // orphan the running one.
+                    // The state dir tracks one daemon; clobbering it would orphan
+                    // the running one.
                     if let Some(running_db) = read_db_path(&state_dir)
                         && !same_path(&running_db, &db)
                     {
@@ -663,12 +509,10 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
                 }
             }
         } else {
-            // Dead PID — clear stale state before starting fresh.
             cleanup_state_files(&state_dir);
         }
     }
 
-    // ── Find the binary ──────────────────────────────────────────────────────
     let bin = match &args.bin {
         Some(p) => {
             if !p.exists() {
@@ -679,14 +523,11 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
         None => which_inkentry_server()?,
     };
 
-    // ── Port (no silent drift) ───────────────────────────────────────────────
-    // Any wedged daemon of ours was reclaimed above, freeing its port. If the
-    // requested port is still occupied, it belongs to an unrelated process —
-    // fail loudly rather than binding elsewhere.
+    // Any wedged daemon of ours was reclaimed above, so an occupied port belongs to
+    // an unrelated process: fail loudly rather than bind elsewhere.
     let port = args.port;
     ensure_port_available_for_start(port).await?;
 
-    // ── Spawn daemonised process ─────────────────────────────────────────────
     let log_file = open_log_file_for_append(&log_path(&state_dir))?;
     let llm = LlmSpawn::resolve(cfg, args.llm_url.as_deref(), args.llm_model.as_deref())?;
 
@@ -697,7 +538,6 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
 
     let pid = child.id();
 
-    // Write state files.
     write_state_file(&pid_path(&state_dir), &format!("{pid}\n")).context("writing server.pid")?;
     write_state_file(&port_path(&state_dir), &format!("{port}\n"))
         .context("writing server.port")?;
@@ -705,8 +545,6 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
         .context("writing server.db-path")?;
     let _ = std::fs::remove_file(instance_id_path(&state_dir));
 
-    // Wait up to 30 s for the server to become reachable (liveness, not model
-    // readiness — /v1/health is live at bind, before any model download).
     match wait_for_health(port, Duration::from_secs(30), &mut child).await {
         StartOutcome::Ready { instance_id } => {
             record_instance_id(&state_dir, instance_id);
@@ -722,8 +560,7 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
             );
         }
         StartOutcome::TimedOut => {
-            // Still running, still silent: that is what a blocked loopback
-            // listener looks like, and it is the only case a firewall explains.
+            // Alive and silent is the only case a firewall explains.
             eprintln!(
                 "warning: inkentry-server process started (pid={pid}) but /v1/health did not \
                  respond on port {port} within 30 s. A firewall may be blocking the local \
@@ -737,17 +574,16 @@ async fn cmd_start(args: ServerStartArgs, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Locate the `inkentry-server` binary.
-///
-/// Priority: next to the current executable → PATH.
+// The sibling binary wins over `$PATH` so a hostile `inkentry-server` earlier on
+// `$PATH` (or in an untrusted repo's tooling dir) is never run. Other tools (git,
+// gh, editors) use bare names by convention; this one is first-party and
+// auto-spawned without the user typing a command.
 fn which_inkentry_server() -> Result<PathBuf> {
-    // On Windows executables carry a `.exe` suffix; on Unix there is no suffix.
     #[cfg(windows)]
     let bin_name = "inkentry-server.exe";
     #[cfg(not(windows))]
     let bin_name = "inkentry-server";
 
-    // 1. Same directory as the running `inkentry` binary.
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe
             .parent()
@@ -758,7 +594,6 @@ fn which_inkentry_server() -> Result<PathBuf> {
         }
     }
 
-    // 2. PATH lookup.
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join(bin_name))
         .find(|p| p.is_file())
@@ -770,12 +605,8 @@ fn which_inkentry_server() -> Result<PathBuf> {
         })
 }
 
-/// Verify the requested `start` port is bindable, failing loudly if not.
-///
-/// Explicit `server start` never drifts to a different port (a silent drift is
-/// what leaves a stale daemon on the old port and a new one elsewhere). A short
-/// bounded retry absorbs the brief window after reclaiming our own daemon while
-/// the OS releases its listening socket.
+// Never drifts to another port: a silent drift leaves a stale daemon on the old
+// one. The retry absorbs the window while the OS releases a reclaimed daemon's socket.
 async fn ensure_port_available_for_start(port: u16) -> Result<()> {
     for attempt in 0..10 {
         if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
@@ -791,14 +622,8 @@ async fn ensure_port_available_for_start(port: u16) -> Result<()> {
     );
 }
 
-/// Pick the port for an auto-started daemon: `preferred` when it is free,
-/// otherwise whatever the OS hands out from the ephemeral range.
-///
-/// The previous version walked the eleven ports above `preferred`, claiming a
-/// block of the registered range we have no business holding and risking a
-/// neighbouring service's number. Nothing needs the daemon's port to be
-/// predictable: `server.port` records whatever it bound, and loopback
-/// discovery reads that file before it falls back to the default.
+// Nothing needs the daemon's port to be predictable: `server.port` records what
+// was bound and loopback discovery reads it before falling back to the default.
 fn find_available_port(preferred: u16) -> Result<u16> {
     if std::net::TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
         return Ok(preferred);
@@ -808,17 +633,10 @@ fn find_available_port(preferred: u16) -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-/// Build the argument list passed to `inkentry-server` when auto-spawning the daemon.
-///
-/// Extracted from the spawn helpers so that unit tests can verify the args
-/// without actually launching a process.
-///
-/// The returned `Vec` contains every argument **after** the binary path, in
-/// order, as it would be appended to `std::process::Command`.
-///
-/// `llm` contributes only its non-secret values; its credential travels in the
-/// child environment instead (see [`super::daemon_llm`]), so no input can put
-/// a key into a world-readable process table entry.
+// `--host 127.0.0.1` is always explicit: the auto-spawned daemon is
+// unauthenticated, so it must only bind loopback regardless of the server's
+// default. `llm` contributes only non-secret values; its credential travels in
+// the child environment so no key lands in the world-readable process table.
 pub(super) fn build_daemon_args(db: &Path, port: u16, llm: &LlmSpawn) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = vec![
         "--host".into(),
@@ -832,13 +650,9 @@ pub(super) fn build_daemon_args(db: &Path, port: u16, llm: &LlmSpawn) -> Vec<std
     args
 }
 
-/// Pin the child's LLM environment to what the CLI resolved.
-///
-/// Shared by both spawn helpers so neither platform can drift into leaving one
-/// of the three variables to inheritance. Removing a variable is as load-bearing
-/// as setting one: `inkentry-server` reads `INKENTRY_LLM_URL`/`INKENTRY_LLM_MODEL`
-/// through clap `env`, so anything left inherited is a value the daemon acts on
-/// that this process already decided against.
+// Removing a variable is as load-bearing as setting one: `inkentry-server` reads
+// `INKENTRY_LLM_URL`/`INKENTRY_LLM_MODEL` through clap `env`, so anything left
+// inherited is a value this process already decided against.
 fn apply_llm_child_env(cmd: &mut std::process::Command, llm: &LlmSpawn) {
     for (name, value) in llm.child_env() {
         match value {
@@ -848,25 +662,9 @@ fn apply_llm_child_env(cmd: &mut std::process::Command, llm: &LlmSpawn) {
     }
 }
 
-/// Spawn the server on Unix, in a session of its own.
-///
-/// Uses a single `fork`+`exec` via `std::process::Command::spawn()`. Outliving
-/// the CLI takes two things, and reparenting to init/launchd — which happens on
-/// its own when this process exits — is only one of them. The other is
-/// `setsid()`: without it the daemon stays in the spawning shell's session and
-/// process group, so closing that terminal SIGHUPs it and the "background"
-/// server dies with the shell that started it. A short-lived shell (a container
-/// step, a `ssh host 'inkentry server start'`) makes that the common case
-/// rather than the corner.
-///
-/// Leaving the session is also what makes the redirection below complete: with
-/// no controlling terminal the daemon cannot be signalled through one, and its
-/// three descriptors already point at `/dev/null` and the log file rather than
-/// at the terminal's, so it neither holds the terminal open nor writes to it.
-///
-/// `--host 127.0.0.1` is always passed explicitly. The auto-spawned daemon is
-/// unauthenticated, so it must only ever bind loopback; passing the flag keeps
-/// that true regardless of inkentry-server's own default.
+// `setsid()` matters as much as reparenting to init: without it the daemon stays
+// in the spawning shell's session and dies with that terminal's SIGHUP, which is
+// the common case for a short-lived shell (`ssh host 'inkentry server start'`).
 #[cfg(unix)]
 fn spawn_daemon_unix(
     bin: &Path,
@@ -891,11 +689,9 @@ fn spawn_daemon_unix(
             unsafe extern "C" {
                 fn setsid() -> i32;
             }
-            // EPERM is the only documented failure, and it means "already a
-            // process group leader" — which a just-forked child cannot be. A
-            // failure here would leave the daemon attached, so surface it as a
-            // spawn error rather than starting a server that dies with the
-            // terminal.
+            // EPERM (already a group leader) is the only documented failure and a
+            // just-forked child cannot hit it; fail rather than start a daemon that
+            // dies with the terminal.
             if setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -912,25 +708,10 @@ fn spawn_daemon_unix(
     Ok(child)
 }
 
-/// Spawn the server on Windows, detached from the spawning console.
-///
-/// This is the Windows counterpart to `setsid()` in `spawn_daemon_unix`, and it
-/// takes two flags because they cover different events.
-/// `CREATE_NEW_PROCESS_GROUP` alone — what this did before — only stops
-/// Ctrl-C/Ctrl-Break from reaching the daemon; the process stays attached to the
-/// console, so closing that console delivers `CTRL_CLOSE_EVENT` and kills it.
-/// Measured: without `DETACHED_PROCESS` the daemon died on every console close,
-/// even though `server start` had already exited and left it orphaned, so the
-/// console association was the only thing left to kill it.
-///
-/// `DETACHED_PROCESS` gives the child no console at all, which is safe only
-/// because stdio is fully redirected below: stdin is null and both output
-/// streams are the log file, so nothing ever reaches for a console handle.
-/// Changing that redirection would reintroduce the failure this flag fixes.
-///
-/// `--host 127.0.0.1` is always passed explicitly. The auto-spawned daemon is
-/// unauthenticated, so it must only ever bind loopback; passing the flag keeps
-/// that true regardless of inkentry-server's own default.
+// Counterpart to `setsid()`. `CREATE_NEW_PROCESS_GROUP` only stops Ctrl-C from
+// reaching the daemon; it stays on the console and dies on `CTRL_CLOSE_EVENT`, so
+// `DETACHED_PROCESS` is also needed. That is safe only because stdio is fully
+// redirected below; changing that reintroduces the failure.
 #[cfg(windows)]
 fn spawn_daemon_windows(
     bin: &Path,
@@ -960,23 +741,16 @@ fn spawn_daemon_windows(
     Ok(child)
 }
 
-/// Why a freshly spawned daemon did or did not become reachable.
 enum StartOutcome {
-    /// `/v1/health` responded, carrying whatever `instance_id` it reported.
     Ready { instance_id: Option<String> },
-    /// The process is gone. Whatever went wrong, it is not the network.
+    // The process is gone, so whatever went wrong is not the network.
     Exited(std::process::ExitStatus),
-    /// Still running, but never answered within the timeout.
     TimedOut,
 }
 
-/// Poll `GET http://127.0.0.1:{port}/v1/health` until it responds, the child
-/// exits, or the timeout elapses.
-///
-/// Watching the child is what separates "nothing can reach the listener" from
-/// "there is no listener". A daemon that refused its own configuration exits in
-/// milliseconds, and blaming a firewall for that (after a full 30 s wait) sends
-/// the user to the wrong place entirely.
+// Watching the child separates "nothing can reach the listener" from "there is no
+// listener": a daemon that refused its configuration exits in milliseconds, and
+// blaming a firewall after a 30 s wait sends the user to the wrong place.
 async fn wait_for_health(
     port: u16,
     timeout: Duration,
@@ -989,8 +763,8 @@ async fn wait_for_health(
                 instance_id: health.instance_id,
             };
         }
-        // Checked after the probe so a daemon that answers and then exits in
-        // the same tick still counts as having started.
+        // After the probe, so a daemon that answers and then exits in the same tick
+        // still counts as started.
         if let Ok(Some(status)) = child.try_wait() {
             return StartOutcome::Exited(status);
         }
@@ -999,16 +773,12 @@ async fn wait_for_health(
     StartOutcome::TimedOut
 }
 
-/// What a single `/v1/health` answer tells us about the daemon behind it.
-///
-/// `instance_id` stays `Option` inside a `Some`: a server that answered but
-/// named no instance is alive (every liveness caller only asks whether this is
-/// `Some`) and still has nothing worth recording.
+// `instance_id` stays `Option` inside a `Some`: a server that answered but named
+// no instance is alive and has nothing worth recording.
 struct HealthIdentity {
     instance_id: Option<String>,
 }
 
-/// Single non-retrying health probe. `None` when nothing usable answered.
 async fn probe_health(port: u16) -> Option<HealthIdentity> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(500))
@@ -1029,14 +799,8 @@ async fn probe_health(port: u16) -> Option<HealthIdentity> {
     })
 }
 
-// ── stop ──────────────────────────────────────────────────────────────────────
-
 async fn cmd_stop() -> Result<()> {
     let state_dir = inkentry_state_dir()?;
-    // A missing pid file means this CLI has no record of a daemon — not that no
-    // daemon exists. A server started outside this CLI, or one whose state files
-    // were removed under it, is plainly alive in `ps` while `stop` has nothing to
-    // signal; say which of the two this is and how to find the process.
     let pid = read_pid(&state_dir).ok_or_else(|| {
         anyhow::anyhow!(
             "no server.pid in {} — this CLI has no record of a running inkentry-server. If one \
@@ -1052,14 +816,9 @@ async fn cmd_stop() -> Result<()> {
         return Ok(());
     }
 
-    // ── Identity check ───────────────────────────────────────────────────────
-    // A liveness check alone is not enough: PIDs are reused, so after a
-    // crash/reboot the recorded PID may belong to an unrelated process. But a
-    // *health*-only check (the previous behaviour) is too strict — it refused
-    // to stop a wedged daemon whose `/v1/health` had stopped responding, which
-    // is exactly the hang this command must handle. Classify instead: a healthy
-    // *or* a hung-but-still-`inkentry-server` process is ours to kill; only a
-    // truly foreign process is refused.
+    // Liveness alone is not enough (PIDs are reused) and health alone is too strict
+    // (a wedged daemon's health is silent): healthy or hung-but-ours is ours to
+    // kill; only a foreign process is refused.
     match classify_running_server(&state_dir, pid).await {
         RunningServer::Healthy { .. } | RunningServer::HungOurs => {}
         RunningServer::Foreign => {
@@ -1073,8 +832,6 @@ async fn cmd_stop() -> Result<()> {
         }
     }
 
-    // Terminate (SIGTERM → SIGKILL on Unix) and confirm the process is gone
-    // before reporting success — never claim a stop that didn't happen.
     if terminate_and_wait(pid).await? {
         println!("inkentry-server stopped.");
         cleanup_state_files(&state_dir);
@@ -1102,7 +859,6 @@ fn terminate_process(pid: u32) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        // On Windows, use taskkill.
         let status = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
             .status()
@@ -1114,16 +870,9 @@ fn terminate_process(pid: u32) -> Result<()> {
     }
 }
 
-/// Record the `instance_id` a freshly started daemon reported.
-///
-/// A daemon that named no instance leaves no file, and loopback discovery then
-/// has nothing to compare against and declines to use it. That is the intended
-/// end of this path: an unidentifiable local server is one this CLI cannot tell
-/// apart from anything else holding the port.
-///
-/// Failing to write is not fatal to `server start`: the daemon is up and every
-/// other way of reaching it still works. It costs auto-discovery, which the
-/// warning says.
+// A daemon that named no instance leaves no file, so loopback discovery declines
+// it: it cannot be told apart from anything else holding the port. A write
+// failure is not fatal, since the daemon is up; it only costs auto-discovery.
 fn record_instance_id(state_dir: &Path, instance_id: Option<String>) {
     let Some(id) = instance_id else {
         tracing::warn!(
@@ -1147,8 +896,6 @@ fn cleanup_state_files(state_dir: &Path) {
     let _ = std::fs::remove_file(instance_id_path(state_dir));
 }
 
-// ── status ────────────────────────────────────────────────────────────────────
-
 async fn cmd_status() -> Result<()> {
     let state_dir = inkentry_state_dir()?;
     let pid = read_pid(&state_dir);
@@ -1161,7 +908,6 @@ async fn cmd_status() -> Result<()> {
             println!("  Port:  {port}");
             println!("  Log:   {}", log_path(&state_dir).display());
 
-            // Fetch extended info from /v1/health.
             match probe_health_verbose(port).await {
                 Some(info) => {
                     println!("  URL:   http://127.0.0.1:{port}");
@@ -1177,10 +923,8 @@ async fn cmd_status() -> Result<()> {
                     if let Some(device) = info.device {
                         println!("  Device:{device}");
                     }
-                    // A non-fatal readiness note (e.g. a GPU blocked by a
-                    // missing `render`-group membership, so embedding fell back
-                    // to CPU) — highlighted, since it is why the device reads
-                    // `cpu` and it is user-fixable.
+                    // Highlighted because it explains a `cpu` device and is user-fixable
+                    // (e.g. GPU blocked by a missing `render`-group membership).
                     if let Some(note) = info.note {
                         cprintln!("  \x1b[33mNote:  {note}\x1b[0m");
                     }
@@ -1211,9 +955,8 @@ struct HealthInfo {
     version: Option<String>,
     engine: Option<String>,
     device: Option<String>,
-    /// A non-fatal readiness note from `embedder.detail` — surfaced only while
-    /// `ready`, where `detail` is a hint (e.g. a GPU blocked by group perms),
-    /// never the load-failure error an `unavailable` embedder reports there.
+    // Only while `ready`, where `detail` is a hint, never an `unavailable`
+    // embedder's load-failure error.
     note: Option<String>,
 }
 
@@ -1255,8 +998,6 @@ async fn probe_health_verbose(port: u16) -> Option<HealthInfo> {
     })
 }
 
-// ── logs ──────────────────────────────────────────────────────────────────────
-
 fn cmd_logs(args: ServerLogsArgs) -> Result<()> {
     let state_dir = inkentry_state_dir()?;
     let log = log_path(&state_dir);
@@ -1280,15 +1021,11 @@ fn cmd_logs(args: ServerLogsArgs) -> Result<()> {
     Ok(())
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
-
-    // ── inkentry_state_dir ────────────────────────────────────────────────────
 
     #[test]
     #[serial(server_state_dir_env)]
@@ -1300,12 +1037,8 @@ mod tests {
         );
     }
 
-    // ── cleanup_state_files ──────────────────────────────────────────────────
-
-    // A leaked instance-id file outlives the daemon it names, and the next
-    // probe then compares a live server against a dead one's id and refuses
-    // it. Stop is the only thing that clears it, so nothing else would catch
-    // the file being forgotten here.
+    // A leaked instance-id file outlives its daemon, and the next probe then
+    // refuses a live server for not matching the dead one's id.
     #[test]
     fn cleanup_removes_every_recorded_state_file() {
         let dir = TempDir::new().expect("state dir");
@@ -1326,12 +1059,8 @@ mod tests {
         }
     }
 
-    // ── find_available_port ──────────────────────────────────────────────────
-
     #[test]
     fn find_available_port_returns_the_preferred_port_when_free() {
-        // Ask the OS for a free port, release it, then confirm we take it back
-        // rather than drifting: binding the *requested* port is the point.
         let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let free = probe.local_addr().unwrap().port();
         drop(probe);
@@ -1341,8 +1070,6 @@ mod tests {
 
     #[test]
     fn find_available_port_falls_back_to_an_ephemeral_port_when_taken() {
-        // The occupied case must yield a different, bindable port instead of
-        // failing or walking into the preferred port's neighbours.
         let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let taken = held.local_addr().unwrap().port();
 
@@ -1354,15 +1081,11 @@ mod tests {
         );
     }
 
-    // ── pid_is_alive ─────────────────────────────────────────────────────────
-
     #[test]
     fn current_process_is_alive() {
         let pid = std::process::id();
         assert!(pid_is_alive(pid), "current process should be alive");
     }
-
-    // ── read_pid / read_port ─────────────────────────────────────────────────
 
     #[test]
     fn read_pid_returns_none_for_missing_file() {
@@ -1384,14 +1107,9 @@ mod tests {
         assert_eq!(read_port(tmp.path()), Some(4655));
     }
 
-    // ── which_inkentry_server ─────────────────────────────────────────────────
-
-    /// Restores the `PATH` env var to its captured value when dropped, so a
-    /// panic mid-test cannot leak a mutated `PATH` into other tests.
     struct PathGuard(std::ffi::OsString);
 
     impl PathGuard {
-        /// Capture the current `PATH` so it can be restored on drop.
         fn capture() -> Self {
             PathGuard(std::env::var_os("PATH").unwrap_or_default())
         }
@@ -1405,39 +1123,27 @@ mod tests {
         }
     }
 
-    // NOTE: both `which_inkentry_server_*` tests mutate the process-global `PATH`,
-    // including setting it to "" entirely. Cargo runs unit tests multi-threaded
-    // by default, so they are pinned to the `path_env` serial group, along with
-    // every test that spawns a `DummyProc::graceful()`/`ignores_sigterm()`
-    // subprocess: those resolve the bare command name "sleep" via PATH, so an
-    // empty PATH from a concurrently-running sibling makes the spawn itself
-    // fail with ENOENT, not just the assertion under test.
+    // These tests mutate the process-global `PATH`, and `DummyProc` spawns resolve
+    // `sleep` through it, so an empty PATH from a sibling would fail the spawn with
+    // ENOENT; all share the `path_env` serial group.
 
     #[test]
     #[serial(path_env)]
     fn which_inkentry_server_finds_sibling_binary() {
-        // Create a fake `inkentry-server[.exe]` next to the current executable.
         let tmp = TempDir::new().unwrap();
-        // On Windows the binary must have the .exe extension to be recognised
-        // as a file by the PATH search in `which_inkentry_server`.
         #[cfg(windows)]
         let fake_bin = tmp.path().join("inkentry-server.exe");
         #[cfg(not(windows))]
         let fake_bin = tmp.path().join("inkentry-server");
         std::fs::write(&fake_bin, b"").unwrap();
 
-        // Temporarily redirect PATH so only our fake bin is discoverable and
-        // pretend current_exe lives in tmp.
-        //
-        // We can't override current_exe() at runtime, so just verify the PATH
-        // fallback path: put tmp on PATH and confirm discovery succeeds.
+        // `current_exe()` can't be overridden, so this exercises only the PATH fallback.
         //
         // SAFETY: `#[serial(path_env)]` serialises this test against every other
         // PATH-mutating test, so no other thread reads or writes PATH while this
         // runs. The `PathGuard` restores PATH even if the assertion below panics.
         let _guard = PathGuard::capture();
         let old_path = std::env::var_os("PATH").unwrap_or_default();
-        // Use the platform PATH separator (`;` on Windows, `:` on Unix).
         #[cfg(windows)]
         let new_path = format!("{};{}", tmp.path().display(), old_path.to_string_lossy());
         #[cfg(not(windows))]
@@ -1460,35 +1166,25 @@ mod tests {
         assert!(result.is_err(), "should fail when binary is not on PATH");
     }
 
-    // ── spawn_daemon arg list: loopback-only bind ────────────────────────────
-    //
-    // Security invariant: the auto-spawned inkentry-server daemon is
-    // unauthenticated, so it MUST only ever bind the loopback interface.
-    //
-    // These tests pin the arg list produced by `build_daemon_args` — the
-    // single source of truth for both the Unix and Windows spawn helpers —
-    // so that a future refactor cannot silently drop the flag.
+    // The auto-spawned daemon is unauthenticated, so `build_daemon_args` (shared by
+    // both spawn helpers) must pin it to loopback.
 
-    /// `--host 127.0.0.1` must appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_bind_loopback() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("test.db");
         let args = build_daemon_args(&db, 4655, &LlmSpawn::default());
 
-        // Collect as strings for readable assertions.
         let args_str: Vec<String> = args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
 
-        // `--host` flag must be present.
         assert!(
             args_str.contains(&"--host".to_string()),
             "daemon must bind loopback: --host flag missing from daemon args: {args_str:?}"
         );
 
-        // The value immediately following `--host` must be `127.0.0.1`.
         let host_idx = args_str
             .iter()
             .position(|a| a == "--host")
@@ -1502,7 +1198,6 @@ mod tests {
         );
     }
 
-    /// `0.0.0.0` must NOT appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_do_not_bind_wildcard() {
         let tmp = TempDir::new().unwrap();
@@ -1520,7 +1215,6 @@ mod tests {
         );
     }
 
-    /// `--port` and the supplied port value must appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_include_port() {
         let tmp = TempDir::new().unwrap();
@@ -1547,7 +1241,6 @@ mod tests {
         );
     }
 
-    /// `--db` and the supplied path must appear in the daemon arg list.
     #[test]
     fn spawn_daemon_args_include_db_path() {
         let tmp = TempDir::new().unwrap();
@@ -1573,8 +1266,6 @@ mod tests {
         );
     }
 
-    // An unconfigured LLM must leave the daemon command line exactly as it was
-    // before LLM wiring existed, so an existing install spawns identically.
     #[test]
     fn spawn_daemon_args_without_llm_are_host_port_db_only() {
         let tmp = TempDir::new().unwrap();
@@ -1625,10 +1316,8 @@ mod tests {
         );
     }
 
-    // `build_daemon_args` and `child_env` only describe the split; this drives
-    // the spawn helper that has to apply it. The parent deliberately carries no
-    // INKENTRY_LLM_KEY, so inheritance cannot be what delivers the credential:
-    // only an explicit `cmd.env` on the child can put it there.
+    // The parent carries no INKENTRY_LLM_KEY, so only an explicit `cmd.env` on the
+    // child can deliver the credential.
     #[cfg(unix)]
     #[test]
     #[serial(path_env)]
@@ -1682,8 +1371,6 @@ mod tests {
         );
     }
 
-    // The mirror of the test above: with nothing resolved, the child must not
-    // gain an entry we invented.
     #[cfg(unix)]
     #[test]
     #[serial(path_env)]
@@ -1721,7 +1408,6 @@ mod tests {
         );
     }
 
-    // Kills and reaps the daemon on drop, including on a failed assertion.
     #[cfg(windows)]
     struct KillOnDropWindows(std::process::Child);
 
@@ -1733,22 +1419,11 @@ mod tests {
         }
     }
 
-    // The Windows counterpart to `the_spawned_daemon_leads_a_session_of_its_own`.
-    // A process attached to our console appears in that console's process list,
-    // and every process in that list receives `CTRL_CLOSE_EVENT` when the
-    // console closes — which is what killed the daemon before `DETACHED_PROCESS`.
-    //
-    // Both spawns use the real `inkentry-server` binary and differ *only* in the
-    // creation flags, which is what makes the comparison mean anything: the
-    // control must be visible in the console list, the flagged one must not.
-    //
-    // The control also keeps the test from passing vacuously, in two ways that
-    // both bit earlier drafts. `GetConsoleProcessList` returns nothing when the
-    // test binary has no console of its own, and a child that has already
-    // exited is absent from the list for reasons having nothing to do with
-    // detachment — either would turn the real assertion into a tautology. The
-    // control is checked for liveness and presence first, so the assertion below
-    // only runs once the list is known to discriminate.
+    // Every process in the console's list receives `CTRL_CLOSE_EVENT` when it
+    // closes. Both spawns use the real binary and differ only in creation flags;
+    // the control must be alive and listed first, or the assertion is vacuous
+    // (`GetConsoleProcessList` is empty without a console, and an exited child is
+    // absent for unrelated reasons).
     #[cfg(windows)]
     #[test]
     fn the_spawned_daemon_is_not_attached_to_our_console() {
@@ -1763,8 +1438,6 @@ mod tests {
             buf
         }
 
-        // A port nothing is listening on. The daemon only has to start and stay
-        // up long enough to be observed; it is killed before it matters.
         fn free_port() -> u16 {
             std::net::TcpListener::bind("127.0.0.1:0")
                 .unwrap()
@@ -1838,9 +1511,8 @@ mod tests {
         );
     }
 
-    // SIGKILLs and reaps the daemon on drop, including on a failed assertion.
     // The child is in a session of its own, so nothing that signals this test's
-    // process group would reach it.
+    // process group would reach it; SIGKILL on drop is the only cleanup.
     #[cfg(unix)]
     struct KillOnDrop(std::process::Child);
 
@@ -1852,12 +1524,8 @@ mod tests {
         }
     }
 
-    // A daemon still in the caller's session dies with the caller's terminal.
-    // `spawn` returns only once the child has exec'd, so the session id read
-    // here is the one `pre_exec` left behind, not a pre-`setsid` reading.
-    //
-    // This asserts the mechanism, not the consequence: closing a terminal and
-    // watching the daemon survive is not something this harness can stage.
+    // Asserts the mechanism, not the consequence: closing a terminal can't be
+    // staged. `spawn` returns after exec, so the sid read is post-`setsid`.
     #[cfg(unix)]
     #[test]
     fn the_spawned_daemon_leads_a_session_of_its_own() {
@@ -1900,20 +1568,16 @@ mod tests {
         );
     }
 
-    // The LLM variables the child must never simply inherit.
     #[cfg(unix)]
     const LLM_ENV: [&str; 3] = ["INKENTRY_LLM_URL", "INKENTRY_LLM_MODEL", "INKENTRY_LLM_KEY"];
 
-    // Restores the LLM and secret-store variables on drop, so a panic mid-test
-    // cannot leak a mutated environment into another test.
     #[cfg(unix)]
     struct LlmEnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
 
     #[cfg(unix)]
     impl LlmEnvGuard {
-        // Clear every LLM variable and point the secret store at an empty file
-        // store under `config_dir`, so whatever a spawned child ends up with
-        // can only have come from what the code under test resolved.
+        // So whatever a spawned child ends up with can only come from what the
+        // code under test resolved.
         fn isolated(config_dir: &Path) -> Self {
             let names = ["INKENTRY_SECRET_STORE", "INKENTRY_CONFIG_DIR"];
             let saved = LLM_ENV
@@ -1934,7 +1598,6 @@ mod tests {
             Self(saved)
         }
 
-        // Export `value` for `name`, as a user's shell would.
         fn export(&self, name: &str, value: &str) {
             // SAFETY: see `isolated`.
             unsafe { std::env::set_var(name, value) };
@@ -1956,8 +1619,6 @@ mod tests {
         }
     }
 
-    // Write a stand-in for `inkentry-server` into `dir` that records its argv
-    // and environment and exits. Returns the record path.
     #[cfg(unix)]
     fn recording_server_named(dir: &Path, name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -1975,11 +1636,9 @@ mod tests {
         record
     }
 
-    // `inkentry-server` reads INKENTRY_LLM_URL/MODEL through clap `env`, so a
-    // variable this process resolved away has to be cleared on the child, not
-    // merely left out of argv. The exported empty endpoint is the case that
-    // makes it visible: it means "no endpoint", and inheriting it hands the
-    // daemon a present-but-empty one instead.
+    // The server reads these through clap `env`, so a resolved-away variable must be
+    // cleared on the child. An exported empty endpoint shows it: inheriting hands
+    // the daemon a present-but-empty one.
     #[cfg(unix)]
     #[test]
     #[serial(path_env)]
@@ -2011,9 +1670,8 @@ mod tests {
         }
     }
 
-    // `build_daemon_args` and `child_env` prove only what an already resolved
-    // `LlmSpawn` renders to. This drives `ensure_server_running` itself, so
-    // dropping the resolution at that call site cannot stay green.
+    // Drives `ensure_server_running` itself so dropping the resolution at that call
+    // site cannot stay green.
     #[cfg(unix)]
     #[tokio::test]
     #[serial(path_env, server_state_dir_env)]
@@ -2057,10 +1715,6 @@ mod tests {
         );
     }
 
-    // ── probe_local_relay_port: non-starting local-daemon detection (D6) ─────
-
-    /// Restores `INKENTRY_STATE_DIR` on drop, so a panic mid-test can't leak a
-    /// mutated env var into other tests. Mirrors `PathGuard` above.
     struct StateDirGuard(Option<std::ffi::OsString>);
     impl StateDirGuard {
         fn set(dir: &Path) -> Self {
@@ -2087,7 +1741,6 @@ mod tests {
     async fn probe_local_relay_port_none_when_no_state_dir_at_all() {
         let tmp = TempDir::new().unwrap();
         let _guard = StateDirGuard::set(&tmp.path().join("nonexistent"));
-        // No port file written at all: must return None without any network call.
         assert_eq!(probe_local_relay_port().await, None);
     }
 
@@ -2096,18 +1749,13 @@ mod tests {
     async fn probe_local_relay_port_none_when_port_file_present_but_unhealthy() {
         let tmp = TempDir::new().unwrap();
         let _guard = StateDirGuard::set(tmp.path());
-        // A stale port file (nothing listening) must not be reported as running.
         std::fs::write(port_path(tmp.path()), b"19999\n").unwrap();
         assert_eq!(probe_local_relay_port().await, None);
     }
 
-    // A healthy responder on the recorded port is no longer enough on its own:
-    // with only a `server.port` file and no recorded pid, the responder is not
-    // verifiable as the recorded daemon, so the relay is refused (ADR-091). The
-    // accept path needs a recorded pid the OS query would match, which cannot be
-    // staged in-process without leaking the discovery-trust seam into the
-    // discovery tests in this same binary; it is covered by the subprocess
-    // tests in `security_tests/loopback_discovery_trust.rs` instead.
+    // The accept path needs a recorded pid the OS query would match, which can't be
+    // staged in-process without leaking the discovery-trust seam into the discovery
+    // tests; `security_tests/loopback_discovery_trust.rs` covers it.
     #[tokio::test]
     #[serial(server_state_dir_env)]
     async fn probe_local_relay_port_none_when_responder_is_not_the_recorded_daemon() {
@@ -2126,20 +1774,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let _guard = StateDirGuard::set(tmp.path());
         let port = server.address().port();
-        // A port file with no `server.pid` beside it: healthy, but unverifiable.
         std::fs::write(port_path(tmp.path()), format!("{port}\n")).unwrap();
 
         assert_eq!(probe_local_relay_port().await, None);
     }
 
-    // ── listing_names_server (the process-identity substring) ────────────────
-    //
-    // These pin the exact, deliberately weak semantics of the command-line
-    // check ADR-085 describes: it is wrong in both directions. Pinning it means
-    // a later attempt to strengthen it (resolved path, start time, inode)
-    // starts from a recorded baseline rather than a guess about today's rule.
-    // Run on the host platform, which is where the substring semantics differ:
-    // `tasklist` output is folded to lowercase, `ps` argv is not.
+    // Pins the deliberately weak substring rule so a stronger check starts from a
+    // known baseline. `tasklist` output is case-folded, `ps` argv is not.
 
     #[test]
     fn listing_names_a_real_server_process() {
@@ -2148,8 +1789,7 @@ mod tests {
         ));
     }
 
-    // ADR-085's false negative: a daemon still running from a pre-rename install
-    // presents as `spelunk-server` and is not recognised as ours.
+    // A daemon still running from a pre-rename install is not recognised as ours.
     #[test]
     fn listing_does_not_name_a_pre_rename_server() {
         assert!(!listing_names_server(
@@ -2157,8 +1797,7 @@ mod tests {
         ));
     }
 
-    // ADR-085's false positive: any process whose argv merely contains the
-    // string passes, server or not.
+    // Any process whose argv merely contains the string passes.
     #[test]
     fn listing_names_an_unrelated_process_carrying_the_string() {
         assert!(listing_names_server(
@@ -2169,8 +1808,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn listing_names_server_case_insensitively_on_windows() {
-        // `tasklist` renders the image name in its own case; the Windows match
-        // folds case, so the uppercase image name still counts as ours.
         assert!(listing_names_server(
             "\"INKENTRY-SERVER.EXE\",\"4711\",\"Console\",\"1\",\"12,345 K\""
         ));
@@ -2179,20 +1816,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn listing_is_case_sensitive_on_unix() {
-        // `ps` argv is matched as-is, so an uppercased name is not a match. This
-        // pins the platform difference so a future refactor cannot erase it by
-        // accident.
         assert!(!listing_names_server("/usr/local/bin/INKENTRY-SERVER"));
     }
 
-    // ── classify_running_server (PID-reuse + hung-server handling) ───────────
-
-    /// A PID with no recorded port and no matching process command classifies
-    /// as `Foreign` — `stop` must refuse to signal it (possible PID reuse).
     #[tokio::test]
     async fn classify_foreign_when_no_port_and_no_match() {
         let tmp = TempDir::new().unwrap();
-        // No server.port written; PID 999_999 is not a inkentry-server process.
         let class = classify_running_server(tmp.path(), 999_999).await;
         assert!(
             matches!(class, RunningServer::Foreign),
@@ -2200,12 +1829,9 @@ mod tests {
         );
     }
 
-    /// An unreachable recorded port plus a non-matching process command is
-    /// still `Foreign` (health silent AND not a inkentry-server process).
     #[tokio::test]
     async fn classify_foreign_when_unhealthy_and_no_match() {
         let tmp = TempDir::new().unwrap();
-        // Bind then free an ephemeral port so it's real but not serving HTTP.
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -2219,8 +1845,6 @@ mod tests {
         );
     }
 
-    /// A responding `/v1/health` on the recorded port classifies as `Healthy`
-    /// regardless of the PID — the positive case mirroring a live server.
     #[tokio::test]
     async fn classify_healthy_when_health_responds() {
         use wiremock::matchers::{method, path};
@@ -2246,8 +1870,6 @@ mod tests {
             "expected Healthy when /v1/health responds on the recorded port"
         );
     }
-
-    // ── db-path state file (single-instance / different-DB guard) ────────────
 
     #[test]
     fn read_db_path_round_trips() {
@@ -2279,16 +1901,9 @@ mod tests {
         assert!(!port_path(tmp.path()).exists());
     }
 
-    // ── start lock (single-instance guard) ───────────────────────────────────
-
-    /// Polls `acquire_start_lock` until it succeeds or `timeout` elapses,
-    /// returning the last `Result`. `cargo test` compiles every `#[cfg(test)]`
-    /// module in the crate into one binary, so a `fork()` in an unrelated,
-    /// untagged test elsewhere in that binary can transiently duplicate this
-    /// process's fd table (including an already-released lock fd) and delay
-    /// when `flock`'s refcount actually reaches zero. That window is bounded
-    /// (milliseconds), so a short bounded retry reflects the lock's real
-    /// contract without requiring crate-wide serialization.
+    // A `fork()` in an unrelated test can transiently duplicate the fd table and
+    // delay `flock` release by milliseconds; a short retry avoids crate-wide
+    // serialisation.
     #[cfg(unix)]
     fn retry_acquire_start_lock(state_dir: &Path, timeout: Duration) -> Result<StartLock> {
         let deadline = std::time::Instant::now() + timeout;
@@ -2301,16 +1916,8 @@ mod tests {
         }
     }
 
-    /// A second `acquire_start_lock` on the same state dir must fail while the
-    /// first guard is still held (serialises concurrent `server start`).
-    ///
-    /// `#[serial(server_start_lock)]`: this test asserts on `flock` release
-    /// timing, which a concurrent `fork()+exec()` in another test can delay (a
-    /// forked child transiently inherits the lock fd until it execs). Grouped
-    /// with the process-spawning tests below so they never overlap each
-    /// other, though untagged subprocess-spawning tests elsewhere in the
-    /// crate's single test binary can still race this one; see
-    /// `retry_acquire_start_lock`.
+    // Asserts on `flock` release timing, which a concurrent fork+exec can delay
+    // (the child inherits the lock fd until it execs); see `retry_acquire_start_lock`.
     #[cfg(unix)]
     #[test]
     #[serial(server_start_lock)]
@@ -2322,16 +1929,12 @@ mod tests {
             "second lock must fail while the first is held"
         );
         drop(first);
-        // Released, but tolerate the bounded fork-fd race documented above
-        // instead of asserting success on the very first attempt.
         assert!(
             retry_acquire_start_lock(tmp.path(), Duration::from_millis(500)).is_ok(),
             "lock frees on drop"
         );
     }
 
-    /// `retry_acquire_start_lock` must still report failure when the lock
-    /// genuinely never frees, not silently pass once the timeout elapses.
     #[cfg(unix)]
     #[test]
     #[serial(server_start_lock)]
@@ -2343,8 +1946,6 @@ mod tests {
             "must fail when the lock genuinely never frees within the timeout"
         );
     }
-
-    // ── state file / dir permissions (unix-gated) ───────────────────────────
 
     #[cfg(unix)]
     #[test]
@@ -2382,7 +1983,6 @@ mod tests {
         }
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "log file should be 0600, got {mode:o}");
-        // Append semantics: opening again and writing should not truncate.
         {
             let mut f = open_log_file_for_append(&file).unwrap();
             f.write_all(b"line two\n").unwrap();
@@ -2391,8 +1991,6 @@ mod tests {
         assert_eq!(contents, "line one\nline two\n");
     }
 
-    /// `write_state_file` must refuse to follow a pre-existing symlink at the
-    /// target path rather than writing through it (O_NOFOLLOW).
     #[cfg(unix)]
     #[test]
     fn write_state_file_refuses_to_follow_symlink() {
@@ -2408,19 +2006,14 @@ mod tests {
             result.is_err(),
             "write_state_file must refuse to follow a symlink at the target path"
         );
-        // The symlink target must be untouched.
         assert_eq!(
             std::fs::read_to_string(&outside_target).unwrap(),
             "do not overwrite me"
         );
     }
 
-    // ── same_path (different-DB start guard predicate) ───────────────────────
-    //
-    // `cmd_start` refuses to start a second server against a *different* DB by
-    // comparing the recorded db-path against the requested one via `same_path`.
-    // The full decision runs against the real home state dir + a live daemon
-    // (an e2e-only path), so these cover the load-bearing predicate directly.
+    // `cmd_start`'s different-DB refusal needs a live daemon to exercise in full,
+    // so the predicate behind it is covered directly.
 
     #[test]
     fn same_path_true_for_identical() {
@@ -2433,15 +2026,12 @@ mod tests {
     #[test]
     fn same_path_false_for_distinct() {
         let tmp = TempDir::new().unwrap();
-        // Non-existent distinct paths fall back to raw comparison → not equal.
         assert!(!same_path(
             &tmp.path().join("a.db"),
             &tmp.path().join("b.db")
         ));
     }
 
-    /// A symlink and its target name the same DB — the guard must treat a
-    /// `start` against either as the same server, not a different DB.
     #[cfg(unix)]
     #[test]
     fn same_path_true_across_symlink() {
@@ -2456,9 +2046,6 @@ mod tests {
         );
     }
 
-    // ── ensure_port_available_for_start (no silent port drift) ───────────────
-
-    /// A free port passes — `start` binds the exact requested port.
     #[tokio::test]
     async fn ensure_port_available_for_start_ok_when_free() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -2467,11 +2054,8 @@ mod tests {
         assert!(ensure_port_available_for_start(port).await.is_ok());
     }
 
-    /// A port held by an unrelated process makes `start` fail loudly (naming
-    /// the port) instead of drifting to a different one.
     #[tokio::test]
     async fn ensure_port_available_for_start_fails_when_port_held() {
-        // Hold the listener for the whole call so the bounded retry never frees.
         let _held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = _held.local_addr().unwrap().port();
         let err = ensure_port_available_for_start(port)
@@ -2483,13 +2067,8 @@ mod tests {
         );
     }
 
-    // ── Live-process helpers: identity + termination ─────────────────────────
-    //
-    // These spawn a real short-lived process to exercise the Unix signal /
-    // identity paths that only a real PID can drive. Every spawned process is
-    // reaped: a background thread `wait()`s it (so a killed process can't linger
-    // as a zombie — a zombie still answers `kill(pid, 0)` and would fool
-    // `pid_is_alive`), and `Drop` SIGKILLs any still-live helper.
+    // A background thread `wait()`s each child so a killed process can't linger as
+    // a zombie, which still answers `kill(pid, 0)` and would fool `pid_is_alive`.
 
     #[cfg(unix)]
     struct DummyProc {
@@ -2500,7 +2079,6 @@ mod tests {
 
     #[cfg(unix)]
     impl DummyProc {
-        /// Spawn `cmd` detached from stdio and start reaping it immediately.
         fn spawn(cmd: &mut std::process::Command) -> Self {
             use std::sync::Arc;
             use std::sync::atomic::{AtomicBool, Ordering};
@@ -2525,15 +2103,12 @@ mod tests {
             }
         }
 
-        /// A `sleep`-style process that responds normally to SIGTERM.
         fn graceful() -> Self {
             DummyProc::spawn(std::process::Command::new("sleep").arg("30"))
         }
 
-        /// A process that ignores SIGTERM from birth (only SIGKILL reaps it) —
-        /// a wedged daemon. `pre_exec` sets SIGTERM to `SIG_IGN`, which is
-        /// preserved across the `exec` into `sleep` (POSIX), so there is no
-        /// trap-install race and no shell child to orphan on SIGKILL.
+        // `SIG_IGN` set in `pre_exec` survives the `exec` into `sleep` (POSIX), so
+        // there is no trap-install race and no shell child to orphan on SIGKILL.
         fn ignores_sigterm() -> Self {
             use std::os::unix::process::CommandExt;
             let mut cmd = std::process::Command::new("sleep");
@@ -2553,8 +2128,6 @@ mod tests {
             DummyProc::spawn(&mut cmd)
         }
 
-        /// A live process whose command line contains `inkentry-server`, so
-        /// `process_matches_server` recognises it as ours.
         fn named_server() -> (Self, TempDir) {
             use std::os::unix::fs::PermissionsExt;
             let dir = TempDir::new().unwrap();
@@ -2569,8 +2142,7 @@ mod tests {
     impl Drop for DummyProc {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering;
-            // SIGKILL only if it hasn't already exited, to avoid signalling a
-            // reused PID after the reaper collected ours.
+            // Skipped once exited, to avoid signalling a reused PID.
             if !self.done.load(Ordering::SeqCst) {
                 let _ = force_kill(self.pid);
             }
@@ -2579,8 +2151,6 @@ mod tests {
             }
         }
     }
-
-    // ── process_matches_server (hung-server identity signal) ─────────────────
 
     #[cfg(unix)]
     #[test]
@@ -2604,12 +2174,6 @@ mod tests {
         );
     }
 
-    // ── classify_running_server: HungOurs (reclaimable wedged daemon) ────────
-
-    /// A live `inkentry-server` process with a silent `/v1/health` (no recorded
-    /// port) is our wedged daemon — classified `HungOurs`, not `Foreign`, so
-    /// `stop`/`start` reclaim it instead of refusing. This is the core of the
-    /// fix: the old health-only check gave up on a hung server.
     #[cfg(unix)]
     #[tokio::test]
     #[serial(server_start_lock)]
@@ -2623,11 +2187,6 @@ mod tests {
         );
     }
 
-    // ── terminate_and_wait / force_kill / wait_for_exit ──────────────────────
-
-    /// `wait_for_exit` must NOT report a still-running process as gone — the
-    /// guard that keeps `terminate_and_wait` from claiming a stop that didn't
-    /// happen.
     #[cfg(unix)]
     #[tokio::test]
     #[serial(server_start_lock, path_env)]
@@ -2639,8 +2198,6 @@ mod tests {
         );
     }
 
-    /// Graceful path: a SIGTERM-responsive process is terminated and only
-    /// reported stopped once the PID is confirmed gone.
     #[cfg(unix)]
     #[tokio::test]
     #[serial(server_start_lock, path_env)]
@@ -2652,22 +2209,17 @@ mod tests {
         assert!(!pid_is_alive(proc.pid), "process must actually be gone");
     }
 
-    /// Escalation seam: SIGKILL reaps a process that ignores SIGTERM, and
-    /// `wait_for_exit` confirms it is gone — the mechanism `terminate_and_wait`
-    /// falls back to for a wedged daemon.
     #[cfg(unix)]
     #[tokio::test]
     #[serial(server_start_lock, path_env)]
     async fn force_kill_reaps_sigterm_ignoring_process() {
         let proc = DummyProc::ignores_sigterm();
         assert!(pid_is_alive(proc.pid));
-        // SIGTERM alone leaves it running (trap ignores it).
         terminate_process(proc.pid).expect("SIGTERM");
         assert!(
             !wait_for_exit(proc.pid, Duration::from_millis(400)).await,
             "SIGTERM-ignoring process should survive SIGTERM"
         );
-        // SIGKILL cannot be trapped; it must go.
         force_kill(proc.pid).expect("SIGKILL");
         assert!(
             wait_for_exit(proc.pid, FORCE_KILL_TIMEOUT).await,
@@ -2675,10 +2227,6 @@ mod tests {
         );
     }
 
-    /// Integrated wedged-stop: `terminate_and_wait` on a daemon that ignores
-    /// SIGTERM escalates to SIGKILL and reports success only once the PID is
-    /// gone. Slow (spans the graceful-stop timeout) but captures the exact
-    /// behaviour the fix is about — previously only exercised by hand.
     #[cfg(unix)]
     #[tokio::test]
     #[serial(server_start_lock, path_env)]
