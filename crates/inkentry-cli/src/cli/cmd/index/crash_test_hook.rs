@@ -1,19 +1,9 @@
-// Deterministic crash-point synchronisation for the crash-safety integration
-// suite (`crates/inkentry-cli/tests/crash_safety.rs`): landing a real SIGKILL
-// inside a specific write window by racing wall-clock sleeps against another
-// process is inherently flaky, so the harness instead waits for this
-// process to print a marker proving it reached the exact window, then kills
-// it while it is parked here. Reading from a pipe the harness never writes
-// to blocks until the harness closes it (by killing us) or writes a byte (to
-// release us without a crash, used by tests that need a held write window
-// rather than a kill).
+// Parks the process at a named crash point so the crash-safety suite can SIGKILL
+// it inside an exact write window instead of racing sleeps. It prints a marker,
+// then blocks on stdin until killed or released by a written byte.
 //
-// Gated on `debug_assertions` rather than `cfg(test)`: the harness spawns the
-// real `inkentry` binary as a subprocess (see `assert_cmd::cargo_bin` in
-// crash_safety.rs), which never gets `cfg(test)` even under `cargo test`.
-// `debug_assertions` is the one signal both builds agree on: on for the dev
-// profile the test harness spawns, off for `--release`, so this body carries
-// no reachable code path in a release binary.
+// Gated on `debug_assertions`, not `cfg(test)`: the harness spawns the real
+// binary, which never gets `cfg(test)`. Release builds carry no reachable code.
 #[cfg(debug_assertions)]
 pub(super) fn pause_at(point: &str, subject: &str) {
     let Ok(target) = std::env::var("INKENTRY_TEST_CRASH_POINT") else {

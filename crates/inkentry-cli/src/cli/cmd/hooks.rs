@@ -37,8 +37,6 @@ pub async fn hooks(args: HooksArgs, cfg: Config) -> Result<()> {
     }
 }
 
-/// The post-commit hook. `{inkentry}` is substituted with the shell-quoted
-/// absolute path of this binary by [`post_commit_hook_body`].
 const POST_COMMIT_HOOK_TEMPLATE: &str = r#"#!/bin/sh
 # inkentry post-commit hook (installed by `inkentry hooks install`)
 # Keeps the inkentry index in sync and harvests memory from new commits.
@@ -62,11 +60,8 @@ PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 "$INKENTRY" harvest --git-range HEAD~1..HEAD --detach
 "#;
 
-/// The pre-push shim. `{inkentry}` is substituted with the shell-quoted absolute
-/// path of this binary by [`pre_push_hook_body`].
-///
-/// Every decision lives in the command, not here: a hook body is a string a user
-/// already has on disk, so anything encoded in it cannot be changed by a release.
+// No logic here: the body is already on disk in users' repos, so a release
+// cannot change it.
 const PRE_PUSH_HOOK_TEMPLATE: &str = r#"#!/bin/sh
 # inkentry pre-push hook (installed by `inkentry hooks install --pre-push`)
 # Publishes inkentry memory (refs/notes/inkentry) to the remote you are pushing to,
@@ -93,8 +88,6 @@ const CI_STEP: &str = r#"# Add to your .github/workflows/ file:
     fi
 "#;
 
-/// An installable hook: git's filename for it, and the marker line identifying a
-/// inkentry-written copy.
 struct HookSpec {
     name: &'static str,
     marker: &'static str,
@@ -110,40 +103,31 @@ const PRE_PUSH: HookSpec = HookSpec {
     marker: "inkentry pre-push hook",
 };
 
-/// Every hook `uninstall` considers.
 const ALL_HOOKS: [&HookSpec; 2] = [&POST_COMMIT, &PRE_PUSH];
 
-/// The command that installs the pre-push hook. `init` names it when it tells
-/// the user their memory stays local until they opt in (ADR-069 D3).
 pub const PRE_PUSH_INSTALL_CMD: &str = "inkentry hooks install --pre-push";
 
-/// Quote `path` for a POSIX shell. The shim runs under Git for Windows' `sh`,
-/// where single quotes keep backslashes intact, so a Windows path has to arrive
-/// forward-slashed.
+// Git for Windows' `sh` keeps backslashes inside single quotes, so a Windows
+// path must be forward-slashed.
 fn sh_quoted(path: &Path) -> String {
     let forward = path.display().to_string().replace('\\', "/");
     format!("'{}'", forward.replace('\'', r"'\''"))
 }
 
-/// The pre-push shim, with this binary's resolved absolute path embedded.
 fn pre_push_hook_body() -> Result<String> {
     let exe = std::env::current_exe().context("resolving the path of the inkentry binary")?;
     Ok(PRE_PUSH_HOOK_TEMPLATE.replace("{inkentry}", &sh_quoted(&exe)))
 }
 
-/// The post-commit hook, with `exe`'s shell-quoted path embedded.
 fn post_commit_hook_body_for(exe: &Path) -> String {
     POST_COMMIT_HOOK_TEMPLATE.replace("{inkentry}", &sh_quoted(exe))
 }
 
-/// The post-commit hook, with this binary's resolved absolute path embedded.
 fn post_commit_hook_body() -> Result<String> {
     let exe = std::env::current_exe().context("resolving the path of the inkentry binary")?;
     Ok(post_commit_hook_body_for(&exe))
 }
 
-/// Whether inkentry's own pre-push hook is installed in the repo holding `dir`.
-/// False for a foreign pre-push hook: that one publishes nothing.
 pub fn pre_push_installed(dir: &Path) -> bool {
     let Ok(hooks_dir) = resolve_hooks_dir(dir) else {
         return false;
@@ -152,8 +136,6 @@ pub fn pre_push_installed(dir: &Path) -> bool {
         .is_ok_and(|body| body.contains(PRE_PUSH.marker))
 }
 
-/// Run `git <args>` in `dir` and return trimmed stdout, erroring on a non-zero
-/// exit.
 fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
     let output = std::process::Command::new("git")
         .current_dir(dir)
@@ -166,30 +148,14 @@ fn git_output(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Resolve the hooks directory the way git itself would run hooks from:
-/// `git rev-parse --git-path hooks`, run from `dir`. This is the only correct
-/// resolution because it honors `core.hooksPath` (set by husky, lefthook, and
-/// the pre-commit framework) and follows a linked worktree back to its shared
-/// hooks directory. Reading `$GIT_DIR/hooks` directly agrees with git only when
-/// `core.hooksPath` is unset.
-///
-/// The result is canonicalized (via [`inkentry_core::utils::canonicalize`], so
-/// symlinks are resolved and, on Windows, the `\\?\` prefix is stripped)
-/// before it is returned. `hooks_dir_is_tracked` compares this value against
-/// git's own `--show-toplevel` / `--git-common-dir` output with a plain
-/// `PathBuf::starts_with`, which is a component-wise comparison with no
-/// tolerance for two paths naming the same directory in different forms -
-/// resolved vs. un-resolved symlinks, a differently-cased Windows drive
-/// letter, or a `\\?\`-prefixed path next to a plain one. Canonicalizing both
-/// sides is what makes that comparison meaningful.
+// Asks git rather than reading `$GIT_DIR/hooks`, which ignores `core.hooksPath`
+// and linked worktrees. Canonicalized so `hooks_dir_is_tracked`'s `starts_with`
+// compares like with like (symlinks, Windows drive-letter case, `\\?\` prefix).
 fn resolve_hooks_dir(dir: &Path) -> Result<std::path::PathBuf> {
     let raw = git_output(dir, &["rev-parse", "--git-path", "hooks"])?;
     let path = std::path::PathBuf::from(raw);
-    // A relative result is relative to `dir`, the cwd git was invoked from
-    // (matches how git itself resolves a relative core.hooksPath). The
-    // target itself (e.g. a `core.hooksPath` that has never been created)
-    // may not exist yet, so canonicalize the base - which always exists -
-    // before joining, rather than the full result.
+    // Canonicalize the base, not the result: a relative `core.hooksPath` target
+    // may not exist yet.
     Ok(if path.is_absolute() {
         inkentry_core::utils::canonicalize(&path)
     } else {
@@ -197,36 +163,22 @@ fn resolve_hooks_dir(dir: &Path) -> Result<std::path::PathBuf> {
     })
 }
 
-/// Join a repository-relative path reported by git onto `base`, one component
-/// at a time.
-///
-/// git reports `rev-parse --git-path` output with `/` separators on every
-/// platform. Joining that whole string keeps the slashes inside the stored
-/// path, so a Windows result prints as `D:\repo\.git/hooks` and gains a
-/// backslash again the moment a file name is joined onto it. Pushing one
-/// component at a time writes the platform separator throughout.
+// git reports `/` separators on every platform; joining per component keeps a
+// Windows path on one separator.
 fn join_components(base: &Path, relative: &Path) -> std::path::PathBuf {
     let mut joined = base.to_path_buf();
     joined.extend(relative.components());
     joined
 }
 
-/// Whether `hooks_dir` sits inside the repository's tracked working tree
-/// rather than under its git directory. True for the husky/lefthook pattern:
-/// `core.hooksPath` pointing at a directory (e.g. `.husky/`) that is itself
-/// committed and shared with every clone. False for the default `.git/hooks`
-/// and for a `core.hooksPath` pointing outside the repo entirely.
+// True for the husky/lefthook pattern: `core.hooksPath` inside the working tree,
+// committed and shared with every clone.
 fn hooks_dir_is_tracked(dir: &Path, hooks_dir: &Path) -> Result<bool> {
     let Ok(toplevel) = git_output(dir, &["rev-parse", "--show-toplevel"]) else {
-        // No working tree (bare repo): nothing to be "inside".
+        // Bare repo.
         return Ok(false);
     };
-    // `--show-toplevel` is always absolute and always names a directory that
-    // exists, so canonicalizing it is safe unconditionally. `hooks_dir`
-    // (from `resolve_hooks_dir`) is canonicalized the same way, so this
-    // `starts_with` compares two paths in the same normalized form rather
-    // than risking a resolved-vs-unresolved-symlink or Windows case/`\\?\`
-    // mismatch between git's notion of the path and ours.
+    // Canonicalized like `hooks_dir`, so `starts_with` compares one form.
     let toplevel = inkentry_core::utils::canonicalize(&std::path::PathBuf::from(toplevel));
 
     let common_dir = git_output(dir, &["rev-parse", "--git-common-dir"])?;
@@ -236,29 +188,23 @@ fn hooks_dir_is_tracked(dir: &Path, hooks_dir: &Path) -> Result<bool> {
     } else {
         dir.join(common_dir)
     };
-    // The `.git` directory always exists, so this is always safe too.
     let common_dir = inkentry_core::utils::canonicalize(&common_dir);
 
     Ok(hooks_dir.starts_with(&toplevel) && !hooks_dir.starts_with(&common_dir))
 }
 
-/// What [`write_hook`] did.
 #[derive(Debug)]
 pub(crate) enum Installed {
     Wrote(std::path::PathBuf),
-    /// Ours, but the body changed: a moved binary re-resolves through here.
     Updated(std::path::PathBuf),
     AlreadyPresent(std::path::PathBuf),
 }
 
-/// Write `body` to the git-resolved hooks directory for the repo at `dir`,
-/// refusing to clobber a hook inkentry did not write.
 fn write_hook(dir: &Path, spec: &HookSpec, body: &str) -> Result<Installed> {
     let hooks_dir = resolve_hooks_dir(dir)?;
 
-    // A tracked hooks directory is shared with every teammate on clone: writing
-    // into it is committing inkentry's hook to the team, not to this machine, so
-    // it needs the user's own commit rather than a silent write on their behalf.
+    // A tracked hooks directory is shared with every clone, so writing there
+    // commits the hook to the team; leave that to the user.
     if hooks_dir_is_tracked(dir, &hooks_dir)? {
         anyhow::bail!(
             "core.hooksPath resolves to {}, which is inside this repository's tracked \
@@ -318,9 +264,6 @@ async fn hooks_install(args: HooksInstallArgs, cfg: &Config) -> Result<()> {
     install_post_commit(cfg).await
 }
 
-/// Install the post-commit hook in the repo at `dir`. Exposed so `inkentry
-/// init --hook` shares this resolution logic rather than re-implementing it
-/// against a hardcoded `$GIT_DIR/hooks`.
 pub(crate) fn install_post_commit_hook(dir: &Path) -> Result<Installed> {
     write_hook(dir, &POST_COMMIT, &post_commit_hook_body()?)
 }
@@ -329,11 +272,8 @@ fn cwd() -> Result<std::path::PathBuf> {
     std::env::current_dir().context("getting current directory")
 }
 
-/// What the install prints instead of leaving the harvest promise unqualified.
-///
-/// The guidance itself is [`capability::no_llm_message`], the same text
-/// `harvest` fails with, so the two cannot drift; only the framing that makes
-/// it read as a caveat rather than a failure belongs here.
+// Reuses `no_llm_message` so the install caveat and the `harvest` failure
+// cannot give different remedies.
 fn harvest_inactive_notice(reason: capability::NoLlmReason) -> String {
     format!(
         "Harvesting stays inactive until an LLM is reachable; indexing still runs on \
@@ -355,9 +295,7 @@ async fn install_post_commit(cfg: &Config) -> Result<()> {
     println!("After each commit, inkentry will:");
     println!("  - Re-index the project");
     println!("  - Harvest memory from the new commit");
-    // Harvest is the only LLM-backed feature and the hook runs it detached, so
-    // an install that stays silent here promises something the user would never
-    // see fail.
+    // The hook runs harvest detached, so a missing LLM would otherwise fail unseen.
     if let Some(reason) = capability::resolve_llm_route(cfg, &dir).await.reason() {
         println!("{}", harvest_inactive_notice(reason));
     }
@@ -405,8 +343,7 @@ fn hooks_uninstall() -> Result<()> {
         removed += 1;
     }
 
-    // Only a wholly ineffective uninstall is an error: with a inkentry hook
-    // removed, leaving someone else's hook alone is the correct outcome.
+    // A foreign hook is an error only when none of ours was removed.
     if removed == 0 {
         if let Some(p) = foreign.first() {
             anyhow::bail!(
@@ -431,10 +368,6 @@ fn hooks_uninstall() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// git reports `rev-parse --git-path` output with `/` separators on every
-    /// platform, so joining that string whole leaves the slash inside the
-    /// stored path and anything joined onto it afterwards adds the platform
-    /// separator next to it. The printed path is then a mix of both.
     #[test]
     fn a_relative_path_from_git_joins_with_the_platform_separator() {
         let base = Path::new("repo");
@@ -449,7 +382,6 @@ mod tests {
         );
     }
 
-    /// The resolved directory a real repo yields is displayed the same way.
     #[test]
     fn a_resolved_hooks_dir_is_displayed_with_one_separator() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -471,8 +403,6 @@ mod tests {
         );
     }
 
-    /// The post-commit hook runs the promoted top-level `inkentry harvest`, not
-    /// the deprecated `inkentry memory harvest` spelling.
     #[test]
     fn post_commit_hook_runs_the_top_level_harvest_command() {
         assert!(
@@ -485,7 +415,6 @@ mod tests {
         );
     }
 
-    /// The `--ci` workflow snippet runs the same top-level command.
     #[test]
     fn ci_step_runs_the_top_level_harvest_command() {
         assert!(
@@ -498,10 +427,6 @@ mod tests {
         );
     }
 
-    /// Re-running install over a pre-upgrade hook this tool wrote (marker
-    /// present, old `memory harvest` body) rewrites it to the new command. This
-    /// is how an installed hook migrates across the promotion once the user
-    /// re-runs `hooks install` / `init --hook`.
     #[test]
     fn reinstalling_over_a_pre_upgrade_hook_rewrites_it_to_the_new_command() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -533,8 +458,6 @@ mod tests {
         );
     }
 
-    /// A foreign post-commit hook (no inkentry marker) is never clobbered by a
-    /// re-install: it errors and leaves the foreign body byte-for-byte intact.
     #[test]
     fn reinstalling_leaves_a_foreign_post_commit_hook_untouched() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -558,8 +481,6 @@ mod tests {
         );
     }
 
-    // A stand-in for the inkentry binary that records how it was invoked, at a
-    // location no PATH lookup can reach.
     #[cfg(unix)]
     fn recording_binary(dir: &Path, log: &Path) -> std::path::PathBuf {
         std::fs::create_dir_all(dir).unwrap();
@@ -581,8 +502,6 @@ mod tests {
         std::fs::set_permissions(path, perms).unwrap();
     }
 
-    // A PATH holding git and nothing else: the hook still needs `git
-    // rev-parse`, but must not be able to find any inkentry through it.
     #[cfg(unix)]
     fn path_with_git_only() -> String {
         let out = std::process::Command::new("sh")
@@ -597,8 +516,6 @@ mod tests {
             .to_string()
     }
 
-    // Run an installed hook the way git does: executed directly, from the work
-    // tree, with no arguments.
     #[cfg(unix)]
     fn run_hook(hook: &Path, dir: &Path) -> std::process::ExitStatus {
         std::process::Command::new(hook)
@@ -618,8 +535,6 @@ mod tests {
         hook
     }
 
-    // The defect this replaces: the hook probed PATH for a bare `inkentry`, so
-    // every source build and every custom install directory ran nothing at all.
     #[cfg(unix)]
     #[test]
     fn the_post_commit_hook_runs_a_binary_that_is_not_on_path() {
@@ -643,8 +558,6 @@ mod tests {
         );
     }
 
-    // The caveat frames the guidance; it must never restate it, or the install
-    // and the failure a user eventually hits would give different remedies.
     #[test]
     fn the_caveat_carries_the_shared_no_llm_guidance_verbatim() {
         for reason in [
@@ -660,8 +573,6 @@ mod tests {
         }
     }
 
-    // Both hooks embed the same binary through the same quoting, so a path with
-    // a space, a quote or a backslash cannot work in one and break in the other.
     #[test]
     fn both_hooks_embed_the_path_through_the_shared_quoting_helper() {
         let exe = std::env::current_exe().unwrap();
@@ -686,8 +597,6 @@ mod tests {
         );
     }
 
-    // The silent skip is deliberate: it must survive the move to an embedded
-    // path, so a binary that has since been deleted still costs nobody a commit.
     #[cfg(unix)]
     #[test]
     fn a_post_commit_hook_whose_binary_is_gone_does_not_fail_the_commit() {
@@ -709,9 +618,8 @@ mod tests {
         );
     }
 
-    // The loud 127 on a moved binary is the pre-push hook's intended behaviour:
-    // a push that silently stops publishing is worse than one that stops. So the
-    // post-commit skip must not follow the shared path helper into the shim.
+    // A push that silently stops publishing is worse than one that stops, so
+    // unlike post-commit the shim must not guard the binary.
     #[test]
     fn the_pre_push_hook_keeps_failing_loudly_on_a_missing_binary() {
         let statements: Vec<&str> = PRE_PUSH_HOOK_TEMPLATE
@@ -727,8 +635,6 @@ mod tests {
         );
     }
 
-    /// A backslash reaches Git Bash intact through single quotes, so a Windows
-    /// path embedded raw would resolve to nothing and every push would fail.
     #[test]
     fn a_windows_path_is_forward_slashed() {
         assert_eq!(
@@ -737,7 +643,6 @@ mod tests {
         );
     }
 
-    /// A space in the path is why it is quoted at all.
     #[test]
     fn a_path_with_spaces_stays_one_word() {
         assert_eq!(
@@ -746,8 +651,6 @@ mod tests {
         );
     }
 
-    /// A quote in the path would otherwise close the string and let the rest of
-    /// the path parse as shell words.
     #[test]
     fn a_quote_in_the_path_cannot_escape_the_string() {
         assert_eq!(
@@ -756,8 +659,6 @@ mod tests {
         );
     }
 
-    /// The shim must carry a real path, never the literal placeholder: a hook
-    /// reading `exec '{inkentry}'` would fail on every push.
     #[test]
     fn the_shim_embeds_a_resolved_absolute_path() {
         let body = pre_push_hook_body().expect("resolve current_exe");
@@ -774,8 +675,6 @@ mod tests {
             exec.contains("plumbing publish-notes --best-effort \"$@\""),
             "the shim must delegate every decision to the command: {exec}"
         );
-        // `command -v` is withdrawn: it cannot occur (hooks are never cloned)
-        // and it broke GUI clients, whose PATH comes from launchd.
         assert!(
             !body.contains("command -v"),
             "the shim must not look inkentry up on PATH: {body}"
@@ -789,14 +688,8 @@ mod tests {
         );
     }
 
-    /// A repo with a real identity and one commit, isolated from the
-    /// developer's ambient git config.
-    ///
-    /// The isolation has to be process-wide (see
-    /// `cli::cmd::test_support::isolate_git_config`), not just set on the
-    /// setup `Command`s here: `resolve_hooks_dir` (the function under test)
-    /// spawns its own git via `git_output`, uninstrumented, and inherits
-    /// whatever the process environment holds at that point.
+    // Git config isolation is process-wide because `resolve_hooks_dir` spawns its
+    // own git and inherits the environment.
     fn init_repo(dir: &Path) {
         crate::cli::cmd::test_support::isolate_git_config();
         let run = |args: &[&str]| {
@@ -817,8 +710,6 @@ mod tests {
         run(&["commit", "-q", "-m", "init"]);
     }
 
-    // A commit that actually runs the installed post-commit hook, so its exit
-    // status is the commit's own.
     #[cfg(unix)]
     fn commit_all(dir: &Path) -> std::process::ExitStatus {
         crate::cli::cmd::test_support::isolate_git_config();
@@ -846,24 +737,9 @@ mod tests {
         assert!(status.success());
     }
 
-    /// A fresh temp dir, canonicalized. `resolve_hooks_dir`/`hooks_dir_is_tracked`
-    /// compare their `dir` argument against git's own output (`--show-toplevel`,
-    /// `--git-common-dir`), which git always reports symlink-resolved; every real
-    /// call site gets a `dir` the same way, via `std::env::current_dir()`, which
-    /// resolves symlinks for the same reason. `tempfile`'s raw path does not (on
-    /// macOS `$TMPDIR` is itself a symlink), so tests comparing paths must
-    /// canonicalize to match what these functions actually receive in practice.
-    ///
-    /// This must go through [`inkentry_core::utils::canonicalize`] (the `dunce`
-    /// wrapper), not `Path::canonicalize`/`std::fs::canonicalize` directly: on
-    /// Windows the std version returns the verbatim `\\?\`-prefixed form, while
-    /// `resolve_hooks_dir` and `hooks_dir_is_tracked` canonicalize through the
-    /// `dunce` wrapper and so never produce that prefix. Building an expected
-    /// path from the verbatim form and comparing it against the non-verbatim
-    /// form those functions actually return compares two different spellings
-    /// of the same real directory and fails `assert_eq!`/`PathBuf` equality
-    /// even though nothing is wrong - the fix is to canonicalize both sides
-    /// through the identical helper, not to chase the `\\?\` prefix itself.
+    // git reports symlink-resolved paths (macOS `$TMPDIR` is a symlink), and std's
+    // `canonicalize` adds a `\\?\` prefix on Windows that the helper under test
+    // strips, so expected paths must go through the same helper.
     fn canonical_tmp_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
         inkentry_core::utils::canonicalize(tmp.path())
     }
@@ -929,15 +805,6 @@ mod tests {
         assert!(!hooks_dir_is_tracked(&repo, &hooks_dir).unwrap());
     }
 
-    /// `dir` reaches these functions as `std::env::current_dir()` in real use,
-    /// which does not resolve symlinks. On a machine where the OS temp dir has
-    /// a symlinked component (e.g. macOS, where `$TMPDIR` sits under `/var`,
-    /// itself a symlink to `/private/var`), git resolves that away when it
-    /// prints `--show-toplevel` / `--git-common-dir`, while a hooks_dir built
-    /// by joining onto the raw, un-resolved `dir` does not. A component-wise
-    /// `starts_with` between the two then fails even though both name the
-    /// same real directory - the same class of bug as a Windows drive-letter
-    /// case or `\\?\`-prefix mismatch, reproduced here without needing Windows.
     #[test]
     fn hooks_dir_is_tracked_true_with_an_unresolved_symlinked_dir() {
         let tmp = tempfile::TempDir::new().unwrap();

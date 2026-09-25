@@ -26,19 +26,9 @@ pub struct ImportArgs {
     pub format: String,
 }
 
-/// Import a portable dump into this project's stores.
-///
-/// Three properties shape the order of what follows:
-///
-/// * The dump is read and verified **whole** before anything is written. A
-///   truncated or altered dump is refused outright; there is no partial import.
-/// * The write runs in one transaction with **no embedding inside it**. Vectors
-///   are not carried in a dump, and a network call per row under a write lock
-///   is not a shape to repeat.
-/// * Embedding is attempted afterwards, and its absence is **reported rather
-///   than swallowed**. An imported store that is never embedded still answers
-///   searches — the default mode is hybrid, so full-text carries it — which is
-///   worse than an empty result, because nothing signals the problem.
+// The write transaction embeds nothing (no network call per row under a write
+// lock). Embedding runs afterwards and a shortfall is reported: hybrid search
+// would otherwise quietly answer from full-text alone.
 pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
     cfg.validate()?;
     refuse_when_memory_is_not_local(&cfg)?;
@@ -94,8 +84,6 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
             if summary.projects == 1 { "" } else { "s" },
         );
         if summary.memory_entries > 0 {
-            // Import mints a fresh local id for every entry, so a count alone
-            // would report every visible id silently changing (ADR-093 D5).
             println!(
                 "The ids these entries show were minted on this machine; quote the entity id \
                  from `inkentry memory show` to name an entry anywhere else."
@@ -116,22 +104,11 @@ pub async fn import(args: ImportArgs, cfg: Config) -> Result<()> {
     Ok(())
 }
 
-/// Refuse before reading the file when this project's memory does not live in
-/// a local SQLite store.
-///
-/// The import writes through `MemoryStore` directly. Under `cloud_first` with a
-/// `server_url`, `open_memory_backend` makes that server the store of record,
-/// so a local write would land in a file every memory command reads past —
-/// success reported, data gone, on a move designed to be made once. The
-/// condition mirrors `open_memory_backend`'s `route_remote` exactly:
-/// `cloud_first` with no `server_url` has nothing to route to and resolves
-/// local, so it imports normally.
-///
-/// Importing into the server instead is not an option this can take: the remote
-/// backend adds entries through `add`, which mints its own identity and carries
-/// neither `entity_id` nor `created_at` verbatim, and it has no transaction to
-/// roll back — the two properties the dump format and this command exist to
-/// preserve. A refusal that names the recovery path keeps both.
+// Under `cloud_first` with a `server_url` the server is the store of record, so a
+// local write would land in a file every memory command reads past. Mirrors
+// `open_memory_backend`'s `route_remote`. Importing into the server is not an
+// option: remote `add` mints its own identity and timestamps and has no
+// transaction to roll back.
 fn refuse_when_memory_is_not_local(cfg: &Config) -> Result<()> {
     use crate::config::SyncMode;
 
@@ -149,24 +126,10 @@ fn refuse_when_memory_is_not_local(cfg: &Config) -> Result<()> {
     );
 }
 
-/// Append the imported entries to `refs/notes/inkentry`, so they clone with the
-/// repository like every other memory entry.
-///
-/// Runs **after** the import transaction commits, and is best-effort, exactly
-/// as `memory add`'s write-through is: the local store is the store of record
-/// and already holds the entries, so a failed carry is a warning rather than a
-/// reason to fail a crossing the user cannot easily repeat. Unlike `memory
-/// add`'s pre-`init` case there is no variant where the carrier is the sole
-/// store — an import always has a `memory.db` to write to first.
-///
-/// Returns `None` when there is nothing to carry to: `store_in_git_notes` is
-/// off, or this store does not sit inside a git repository (`--db` pointed
-/// outside one, or the project is not versioned). Neither is a failure, and
-/// neither has anything to report.
-///
-/// The repo is resolved from `mem_path`, never the process CWD: a `--db` naming
-/// another project's store must carry to that project's repo, not to whichever
-/// one the user happens to be standing in.
+// Best-effort after the import commits: the local store already holds the
+// entries, so a failed carry warns rather than failing an import that is hard
+// to repeat. The repo is resolved from `mem_path`, not the CWD, so a `--db` for
+// another project carries to that project's repo.
 async fn carry_to_git_notes(
     cfg: &Config,
     mem_path: &std::path::Path,
@@ -183,13 +146,8 @@ async fn carry_to_git_notes(
 
     match append_new_to_git_notes(Some(&git_root), records).await {
         Ok(outcome) => {
-            // Both warnings go to stderr rather than joining the counts on
-            // stdout, so they survive `--format json`, where stdout carries
-            // exactly one document.
-            //
-            // Visible without RUST_LOG: an unserialized write can lose a
-            // concurrent entry, and this is the only channel that reaches the
-            // user (ADR-069 D8).
+            // Warnings use stderr, not tracing, so they show without RUST_LOG
+            // and leave `--format json` stdout as one document.
             if let Some(degradation) = &outcome.lock_degradation {
                 eprintln!("Warning: {degradation}");
             }
@@ -202,9 +160,6 @@ async fn carry_to_git_notes(
             }
             Some(outcome)
         }
-        // Visible without RUST_LOG: a swallowed carry failure is how imported
-        // memory silently stops traveling with the repo, which is the defect
-        // this write exists to close.
         Err(e) => {
             eprintln!(
                 "Warning: entries were imported into the local store, but the git-notes \
@@ -215,11 +170,6 @@ async fn carry_to_git_notes(
     }
 }
 
-/// Say what will and will not clone with the repository.
-///
-/// The already-carried count is not noise: it is the answer for someone
-/// re-importing a dump that came off this repo's own notes ref, who would
-/// otherwise read "carried 0" as a failure.
 fn report_what_travels(carried: Option<&inkentry_core::storage::BatchAppendOutcome>) {
     let Some(carried) = carried else { return };
     if carried.written > 0 {
@@ -230,6 +180,8 @@ fn report_what_travels(carried: Option<&inkentry_core::storage::BatchAppendOutco
             if carried.written == 1 { "it" } else { "they" },
         );
     }
+    // Without this, re-importing a dump from this repo's own notes ref reads as
+    // "carried 0", which looks like a failure.
     if carried.already_carried > 0 {
         println!(
             "{} w{} already in this repository's git notes and {} written again.",
@@ -246,8 +198,7 @@ fn report_what_travels(carried: Option<&inkentry_core::storage::BatchAppendOutco
             },
         );
     }
-    // Announced only by the call that set it, so a repo says this once; the
-    // failure case is a warning and went to stderr with the others.
+    // Only the call that set it announces, so a repo hears this once.
     if carried.rewrite_ref == inkentry_core::storage::RewriteRefStatus::Configured {
         println!(
             "Configured git notes.rewriteRef in this repo, so memory now survives \
@@ -256,12 +207,8 @@ fn report_what_travels(carried: Option<&inkentry_core::storage::BatchAppendOutco
     }
 }
 
-/// Say what happened to the records that did not become a row.
-///
-/// The count above is rows, not records, and on a one-way move the difference
-/// is the number a user would otherwise have to go and count themselves. A
-/// merge in particular loses the folded entry's own `source_ref`, `created_at`
-/// and status, so it is the one outcome that must not pass in silence.
+// A merge drops the folded entry's own `source_ref`, `created_at` and status, so
+// it must not pass in silence.
 fn report_records_that_did_not_become_rows(summary: &inkentry_core::dump::ImportSummary) {
     if summary.memory_entries_merged > 0 {
         println!(
@@ -298,12 +245,8 @@ fn report_records_that_did_not_become_rows(summary: &inkentry_core::dump::Import
     }
 }
 
-/// Bring the imported entries into semantic search, using `memory reindex`'s
-/// own pass rather than a second mechanism that could drift from it.
-///
-/// Never fatal. The import has already committed and is complete on its own
-/// terms; an unreachable embedder is a reason to say what is left to do, not to
-/// fail a crossing the user cannot easily repeat.
+// Never fatal: the import has committed, so an unreachable embedder only
+// reports what is left to do.
 async fn finish_embeddings(
     args: &ImportArgs,
     mem_path: &std::path::Path,
@@ -321,15 +264,11 @@ async fn finish_embeddings(
 
     let reindex = crate::cli::cmd::memory::MemoryReindexArgs {
         force: false,
-        // Matches `memory reindex`'s own default: active entries only.
         include_archived: false,
         dry_run: false,
         format: args.format.clone(),
     };
-    // In json mode stdout carries exactly one document — the import summary
-    // printed above — so the finishing pass does not print its own. Anything
-    // it has to say about the part that is not done reaches the user through
-    // `report_pending`, on stderr.
+    // In json mode stdout is already the import summary, so the pass prints none.
     let summary_output = if json {
         crate::cli::cmd::memory::reindex::Summary::Suppressed
     } else {
@@ -349,9 +288,7 @@ async fn finish_embeddings(
         return;
     }
 
-    // Reindex embeds what it can and reports its own totals, but a partial run
-    // still leaves entries out of semantic search, so the count is re-read
-    // rather than assumed to be zero.
+    // Reindex can be partial, so re-read the count rather than assume zero.
     let still_pending = MemoryStore::open(mem_path)
         .and_then(|s| s.notes_missing_embeddings(false))
         .map(|v| v.len())
@@ -361,10 +298,8 @@ async fn finish_embeddings(
     }
 }
 
-/// Said on stderr, unconditionally — not through `tracing`, which is invisible
-/// without `RUST_LOG`. The gap is silent otherwise: these entries are still
-/// listed by `memory list` and `context`, so the store looks populated, and the
-/// phrase-exact memory text matcher is no fallback for the ranking they miss.
+// stderr, not tracing: these entries still appear in `memory list` and `context`,
+// so the store looks populated while they miss semantic ranking.
 fn report_pending(pending: usize, json: bool) {
     if json {
         eprintln!(

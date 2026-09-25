@@ -1,36 +1,18 @@
-//! Detached-child spawn and run-lock handoff machinery for `inkentry index`.
-//!
-//! Two sites in `index()` release the run lock and hand the rest of the work
-//! to a re-exec'd child process (`--_embed-phases`, `--_background-phases`) so
-//! the parent can return the prompt: the detached-embed spawn and the
-//! phases-3–5 background spawn. This module owns the argv both share, the
-//! embed-specific spawn helper, and the constants used to confirm a spawned
-//! child actually became the run lock's new holder before reporting success.
-
 use anyhow::Result;
 
 use super::IndexArgs;
 use crate::capability;
 
-/// Log for the detached phases-3–5 child, beside the index it reports on.
 pub(super) fn background_log_path(db_path: &std::path::Path) -> Option<std::path::PathBuf> {
     db_path.parent().map(|d| d.join("index-background.log"))
 }
 
-/// Point the detached child's stdout+stderr at `log`, returning the path
-/// actually in use. Falls back to a null sink when the log cannot be opened,
-/// since diagnostics are best-effort and must never fail the index.
-///
-/// Each spawn appends a header naming the child's argv and the spawn time,
-/// written before the child exists. A log whose last header is followed by
-/// nothing therefore means the spawn happened and the child never got as far
-/// as its own start line (see `background_log`). Appending also keeps this
-/// open from truncating a log a previous child still holds open and is still
-/// writing to at its own offset.
-///
-/// Inheriting the parent's streams instead is not an option: a pipe reader
-/// (`git commit`, CI) blocks until the detached child exits, and a reader that
-/// closes first SIGPIPEs the child mid-phase.
+// Not inheriting the parent's streams: a pipe reader (`git commit`, CI) would
+// block until the child exits, or SIGPIPE it by closing first.
+//
+// Appends rather than truncates, since a previous child may still be writing.
+// The header is written before the child exists, so a header followed by nothing
+// means the child never reached its own start line.
 pub(super) fn redirect_to_background_log<'a>(
     cmd: &mut std::process::Command,
     log: Option<&'a std::path::Path>,
@@ -41,7 +23,6 @@ pub(super) fn redirect_to_background_log<'a>(
         .map(|a| a.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ");
-    // stdout and stderr need independent handles onto the same file.
     let opened = log.and_then(|p| {
         let mut out = super::super::helpers::open_log_for_append(p).ok()?;
         let _ = writeln!(
@@ -57,6 +38,7 @@ pub(super) fn redirect_to_background_log<'a>(
             cmd.stdout(out).stderr(err);
             Some(path)
         }
+        // Diagnostics are best-effort and must never fail the index.
         None => {
             cmd.stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
@@ -65,32 +47,18 @@ pub(super) fn redirect_to_background_log<'a>(
     }
 }
 
-/// Outcome of the detached embed spawn.
 pub(super) enum EmbedSpawn<'a> {
-    /// Spawn failed; caller embeds inline.
     Inline,
-    /// Running detached: the diagnostics log actually in use (if any) so the
-    /// caller can point the user at it, and the child's pid so the caller can
-    /// confirm it (and not a racing third process) became the lock's holder.
     Detached {
         log_in_use: Option<&'a std::path::Path>,
+        // Lets the caller confirm this child, not a racing process, holds the run lock.
         child_pid: u32,
     },
 }
 
-/// Build the argv shared by every detached re-exec that continues indexing in
-/// a child process: the child parses its own fresh `IndexArgs`/`Config` from
-/// this argv rather than inheriting the parent's already-parsed values, so
-/// anything the parent resolved that isn't a plain pass-through of `args`
-/// itself (the global `--config` override) or on this list (`--no-summaries`)
-/// would otherwise silently reset to its default in
-/// the child. `mode_flag` selects which internal phase-only mode the child
-/// runs (`--_background-phases` or `--_embed-phases`); callers append any
-/// mode-specific flags (e.g. `--batch-size` for the embed phase) afterwards.
-///
-/// Env vars and cwd are not part of this contract: `std::process::Command`
-/// inherits both by default and nothing here calls `.env_clear()` or
-/// `.current_dir()` to opt out (see the regression test below).
+// The child re-parses `IndexArgs`/`Config` from this argv, so anything the parent
+// resolved must be forwarded here or it resets to its default. Env and cwd are
+// deliberately inherited.
 pub(super) fn build_detached_child_command(
     exe: &std::path::Path,
     mode_flag: &str,
@@ -113,10 +81,6 @@ pub(super) fn build_detached_child_command(
     cmd
 }
 
-/// Spawn a detached background process to run the embed phase (plus phases 3–5)
-/// against the chunks the foreground run just parsed, reusing the internal
-/// `--_embed-phases` mode. Mirrors the phases-3–5 background spawn: the parent
-/// regains its prompt immediately and the child's diagnostics go to `log`.
 pub(super) fn spawn_embed_subprocess<'a>(
     args: &IndexArgs,
     log: Option<&'a std::path::Path>,
@@ -137,11 +101,8 @@ pub(super) fn spawn_embed_subprocess<'a>(
     }
 }
 
-/// True when handing the embed pass to the detached worker can do useful work:
-/// the embedder is `ready`, or still `loading` (the worker owns the readiness
-/// wait, see [`super::phases::wait_for_embedder`]). `unavailable` and
-/// `disabled` are terminal for this server process, and an older server that
-/// never advertises `index.embed` has nothing to wait for.
+// A loading embedder still qualifies: the worker owns the readiness wait. The
+// terminal states would wait forever.
 pub(super) fn detach_embed_eligible(tier: &capability::Tier) -> bool {
     matches!(tier.caps(), Some(c) if c.index_embed)
         || matches!(
@@ -150,14 +111,9 @@ pub(super) fn detach_embed_eligible(tier: &capability::Tier) -> bool {
         )
 }
 
-/// How long the parent waits, after releasing the run lock and spawning a
-/// continuation child, to see it recorded as the lock's new holder before
-/// reporting the handoff as a background success. The release-then-spawn gap
-/// a racing `inkentry index` can win is normally low-single-digit
-/// milliseconds, so this bounds well above that without delaying the common
-/// case where the child wins on its first poll.
+// Bounds the release-then-spawn gap a racing `index` can win (normally
+// milliseconds) without delaying the common case.
 pub(super) const HANDOFF_CONFIRM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-/// Poll interval for `HANDOFF_CONFIRM_TIMEOUT`.
 pub(super) const HANDOFF_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 
 #[cfg(test)]
@@ -165,8 +121,6 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    /// Minimal parser wrapper so we can exercise `IndexArgs` clap parsing in
-    /// isolation without pulling in the whole top-level `Cli`.
     #[derive(clap::Parser, Debug)]
     struct TestCli {
         #[command(flatten)]
@@ -179,13 +133,8 @@ mod tests {
             .index
     }
 
-    // ── build_detached_child_command: shared re-exec contract ───────────────────
-
     #[test]
     fn detached_child_command_inherits_cwd_and_env() {
-        // `std::process::Command` inherits both by default; this only breaks
-        // if a future edit adds `.current_dir(...)` or `.env_clear()`/`.env(...)`
-        // to the shared builder.
         let cmd = build_detached_child_command(
             std::path::Path::new("/usr/bin/inkentry"),
             "--_background-phases",
@@ -203,9 +152,6 @@ mod tests {
 
     #[test]
     fn detached_child_command_forwards_config_path_when_resolved() {
-        // Before the fix, `IndexArgs` had no config-path field at all, so
-        // neither spawn could forward a resolved `--config` override and the
-        // child re-resolved the default config instead.
         let mut args = sample_index_args();
         args.config_path = Some(std::path::PathBuf::from("/tmp/custom-config.toml"));
         let cmd = build_detached_child_command(
@@ -223,10 +169,6 @@ mod tests {
 
     #[test]
     fn detached_child_command_omits_config_flag_when_not_resolved() {
-        // A default-config run must not force an explicit `--config` onto the
-        // child: `config_path` is `None` when the user passed no override, and
-        // an unconditional `--config` would stop the child from resolving its
-        // own default the way the parent did.
         let args = sample_index_args();
         assert!(args.config_path.is_none());
         let cmd = build_detached_child_command(
@@ -243,10 +185,6 @@ mod tests {
 
     #[test]
     fn detached_child_command_forwards_no_summaries_to_both_spawn_sites() {
-        // Before the fix the phases-3-5 background spawn built its argv
-        // independently and never included `--no-summaries` at all (only the
-        // embed-phase spawn did), so disabling summaries still let the
-        // background child generate them.
         let mut args = sample_index_args();
         args.no_summaries = true;
         for mode_flag in ["--_background-phases", "--_embed-phases"] {
@@ -274,8 +212,6 @@ mod tests {
 
     #[test]
     fn background_log_header_names_the_argv_and_spawn_time() {
-        // A user opening the log sees which run wrote it and when it was
-        // spawned before the child has said anything at all.
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("index-background.log");
         redirect_for("--_embed-phases", &log);
@@ -294,8 +230,6 @@ mod tests {
 
     #[test]
     fn a_second_spawn_appends_rather_than_truncating_the_earlier_run() {
-        // The failure reason a user came to the log for was written by an
-        // earlier child, and the next `index` must not take it away.
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("index-background.log");
         redirect_for("--_embed-phases", &log);
@@ -311,8 +245,6 @@ mod tests {
     fn header_lines(content: &str) -> impl Iterator<Item = &str> {
         content.lines().filter(|l| l.starts_with("=== "))
     }
-
-    // ── detach_embed_eligible: the spawn gate must include `loading` ────────────
 
     fn tier_with(embed_ready: bool, state: capability::EmbedderState) -> capability::Tier {
         let mut caps = capability::Capabilities::all();
@@ -336,9 +268,6 @@ mod tests {
 
     #[test]
     fn detach_eligible_when_embedder_still_loading() {
-        // The cold-start case ADR-070 D1/D2 exists for: a server started
-        // moments ago advertises no index.embed yet, but the worker can wait
-        // it out. Gating the spawn on readiness alone is the recorded no-op.
         assert!(detach_embed_eligible(&tier_with(
             false,
             capability::EmbedderState::Loading
