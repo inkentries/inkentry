@@ -145,9 +145,9 @@ indexer/
   mod.rs         — re-exports Chunk, ChunkKind, SourceParser
   chunker.rs     — Chunk / ChunkKind structs; sliding_window fallback
   docparser.rs   — document-level parsing helpers
-  embed_scope.rs — is_text_only: which chunks skip embedding and stay
-                   full-text only (tests, changelogs, JSON, unnamed code
-                   windows; ADR-104)
+  embed_scope.rs — is_text_only_row: which chunks skip embedding and stay
+                   full-text only (tests, in-file Rust test code, changelogs,
+                   JSON, unnamed code windows; ADR-104)
   pagerank.rs    — PageRank over the code graph
   pdf.rs         — PDF text extraction
   secrets.rs     — contains_secret(): regex scanner, drops credential chunks
@@ -601,9 +601,12 @@ Each file is hashed with blake3. On re-index, unchanged files are skipped.
 Changed files: delete old chunks + embeddings, reparse, re-embed.
 
 ### What gets embedded
-Not every chunk gets a vector. `indexer::embed_scope::is_text_only` leaves
+Not every chunk gets a vector. `indexer::embed_scope::is_text_only_row` leaves
 test files, changelogs, JSON and unnamed windows of code to the full-text
-index alone; the flag is stored as `chunks.text_only` when a chunk is written,
+index alone, and so does test code the syntax marks inside a source file (Rust
+`#[cfg(test)]`/`#[test]`: the walker records those spans, and a chunk inside one
+carries `in_test_code` in its metadata); the flag is stored as
+`chunks.text_only` when a chunk is written,
 and the embed queue, tier 3 and embedding coverage in `status`/`search` all
 exclude those chunks (ADR-104). On Lago that is two thirds of the tokens, and
 leaving tests out of the vector side improved hybrid recall.

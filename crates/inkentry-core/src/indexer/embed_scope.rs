@@ -26,10 +26,29 @@ const TEST_DIRS: &[&str] = &[
     "e2e",
 ];
 
-/// Whether a chunk is kept out of the embed queue. Evaluated on stored columns
-/// (`files.path`, `files.language`, `chunks.node_type`, `chunks.name`), so the
-/// schema step that introduced the flag computes it for existing rows exactly
+/// Metadata key a chunk inside test code the syntax marks as such
+/// (`Chunk::in_test_code`) carries; absent otherwise.
+pub const IN_TEST_CODE_KEY: &str = "in_test_code";
+
+/// Whether a stored chunk is kept out of the embed queue. Evaluated on stored
+/// columns (`files.path`, `files.language`, `chunks.node_type`, `chunks.name`,
+/// `chunks.metadata`), so a schema step computes it for existing rows exactly
 /// as a fresh index does.
+pub fn is_text_only_row(
+    path: &str,
+    language: &str,
+    node_type: &str,
+    name: Option<&str>,
+    metadata: Option<&str>,
+) -> bool {
+    is_text_only(path, language, node_type, name)
+        || metadata
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v.get(IN_TEST_CODE_KEY)?.as_bool())
+            .unwrap_or(false)
+}
+
+/// The part of the rule a chunk's location decides, without its metadata.
 pub fn is_text_only(path: &str, language: &str, node_type: &str, name: Option<&str>) -> bool {
     language == "json"
         || is_test_path(path)
@@ -79,7 +98,7 @@ fn is_changelog(path: &str, language: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_text_only;
+    use super::{is_text_only, is_text_only_row};
 
     fn code(path: &str) -> bool {
         is_text_only(path, "rust", "function", Some("f"))
@@ -172,6 +191,33 @@ mod tests {
     fn an_unnamed_window_of_prose_keeps_its_vector() {
         assert!(!is_text_only("NOTES.txt", "text", "verbatim", None));
         assert!(!is_text_only("docs/intro.md", "markdown", "verbatim", None));
+    }
+
+    #[test]
+    fn a_chunk_marked_as_test_code_is_text_only_wherever_it_lives() {
+        let marked = r#"{"docstring":null,"parent_scope":null,"in_test_code":true}"#;
+        let plain = r#"{"docstring":null,"parent_scope":null}"#;
+        assert!(is_text_only_row(
+            "src/lib.rs",
+            "rust",
+            "function",
+            Some("parses"),
+            Some(marked)
+        ));
+        assert!(!is_text_only_row(
+            "src/lib.rs",
+            "rust",
+            "function",
+            Some("parse"),
+            Some(plain)
+        ));
+        assert!(!is_text_only_row(
+            "src/lib.rs",
+            "rust",
+            "function",
+            Some("parse"),
+            None
+        ));
     }
 
     #[test]

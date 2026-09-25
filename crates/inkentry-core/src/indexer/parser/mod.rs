@@ -222,6 +222,12 @@ impl SourceParser {
 
         let mut chunks = walked.chunks;
         fill_gaps(source, file_path, language, &walked.scopes, &mut chunks);
+        for chunk in &mut chunks {
+            chunk.in_test_code = walked
+                .test_spans
+                .iter()
+                .any(|&(start, end)| start <= chunk.start_line && chunk.end_line <= end);
+        }
         Ok(chunks)
     }
 }

@@ -220,6 +220,7 @@ mod tests {
             docstring: None,
             parent_scope: None,
             summary: None,
+            in_test_code: false,
         };
         // The only tree chunk is dropped as a secret, so what is stored reads as a window.
         let chunks = [

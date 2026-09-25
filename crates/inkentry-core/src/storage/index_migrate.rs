@@ -92,18 +92,20 @@ fn mark_text_only_chunks(conn: &Connection) -> Result<()> {
 
     let flagged: Vec<i64> = conn
         .prepare(
-            "SELECT c.id, f.path, f.language, c.node_type, c.name
+            "SELECT c.id, f.path, f.language, c.node_type, c.name, c.metadata
              FROM chunks c JOIN files f ON f.id = c.file_id",
         )
         .context("preparing the chunk read")?
         .query_map([], |r| {
             let language: Option<String> = r.get(2)?;
             let name: Option<String> = r.get(4)?;
-            let text_only = crate::indexer::embed_scope::is_text_only(
+            let metadata: Option<String> = r.get(5)?;
+            let text_only = crate::indexer::embed_scope::is_text_only_row(
                 &r.get::<_, String>(1)?,
                 language.as_deref().unwrap_or(""),
                 &r.get::<_, String>(3)?,
                 name.as_deref(),
+                metadata.as_deref(),
             );
             Ok(text_only.then_some(r.get::<_, i64>(0)?))
         })

@@ -177,6 +177,7 @@ fn parse_spreadsheet(bytes: &[u8], file_path: &str) -> Vec<Chunk> {
                 docstring: None,
                 parent_scope: None,
                 summary: None,
+                in_test_code: false,
             });
         } else {
             for mut chunk in sliding_window(&content, file_path, "spreadsheet", None, None, None) {

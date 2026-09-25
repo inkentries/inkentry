@@ -397,6 +397,7 @@ fn pages_to_chunks(pages: Vec<(u32, String)>, path_str: &str) -> Vec<crate::inde
             docstring: None,
             parent_scope: None,
             summary: None,
+            in_test_code: false,
         })
         .collect()
 }
@@ -488,8 +489,11 @@ fn store_chunks(
             );
             continue;
         }
-        let metadata =
+        let mut metadata =
             serde_json::json!({ "docstring": chunk.docstring, "parent_scope": chunk.parent_scope });
+        if chunk.in_test_code {
+            metadata[inkentry_core::indexer::embed_scope::IN_TEST_CODE_KEY] = true.into();
+        }
         let tc = estimate_tokens(&chunk.content);
         db.insert_chunk(
             file_id,
@@ -597,6 +601,7 @@ mod tests {
                 docstring: docstring.map(str::to_string),
                 parent_scope: None,
                 summary: None,
+                in_test_code: false,
             };
             let metadata = serde_json::json!({
                 "docstring": chunk.docstring,
@@ -640,6 +645,7 @@ mod tests {
                 docstring: docstring.map(str::to_string),
                 parent_scope: None,
                 summary: Some(summary.to_string()),
+                in_test_code: false,
             };
             let metadata = serde_json::json!({
                 "docstring": chunk.docstring,
@@ -796,6 +802,7 @@ mod tests {
                 docstring: docstring.map(str::to_string),
                 parent_scope: None,
                 summary: None,
+                in_test_code: false,
             };
             let metadata = serde_json::json!({
                 "docstring": chunk.docstring,
@@ -917,6 +924,45 @@ mod tests {
             4_300_000_000,
             "a far-future mtime must round-trip verbatim, not overflow or panic"
         );
+    }
+
+    #[test]
+    fn a_function_in_a_cfg_test_module_is_stored_but_not_queued_for_embedding() {
+        use indicatif::MultiProgress;
+
+        let db = open_db();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn parse() -> u32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    \
+             fn parses() {\n        assert_eq!(super::parse(), 1);\n    }\n}\n",
+        )
+        .unwrap();
+
+        let args = default_args(dir.path().to_path_buf());
+        run_parse_phase(
+            dir.path(),
+            &db,
+            &args,
+            &MultiProgress::new(),
+            &Default::default(),
+        )
+        .expect("parse phase");
+
+        let stored: Vec<String> = db
+            .chunks_for_file("lib.rs")
+            .unwrap()
+            .into_iter()
+            .filter_map(|c| c.name)
+            .collect();
+        assert!(stored.contains(&"parses".to_string()), "{stored:?}");
+        let queued: Vec<String> = missing_embedding_texts(&db)
+            .unwrap()
+            .into_iter()
+            .map(|(_, text, _)| text)
+            .collect();
+        assert_eq!(queued.len(), 1, "{queued:#?}");
+        assert!(queued[0].starts_with("title: parse |"), "{queued:#?}");
     }
 
     #[test]

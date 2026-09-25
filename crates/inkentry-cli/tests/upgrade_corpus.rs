@@ -550,7 +550,7 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
     // Step 20 flags each chunk exactly as a fresh index would, and removes none.
     let flags: Vec<(String, bool, bool)> = conn
         .prepare(
-            "SELECT f.path, f.language, c.node_type, c.name, c.text_only
+            "SELECT f.path, f.language, c.node_type, c.name, c.text_only, c.metadata
              FROM chunks c JOIN files f ON f.id = c.file_id",
         )
         .and_then(|mut stmt| {
@@ -558,11 +558,13 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
                 let path: String = r.get(0)?;
                 let language: Option<String> = r.get(1)?;
                 let name: Option<String> = r.get(3)?;
-                let expected = inkentry_core::indexer::embed_scope::is_text_only(
+                let metadata: Option<String> = r.get(5)?;
+                let expected = inkentry_core::indexer::embed_scope::is_text_only_row(
                     &path,
                     language.as_deref().unwrap_or(""),
                     &r.get::<_, String>(2)?,
                     name.as_deref(),
+                    metadata.as_deref(),
                 );
                 Ok((path, r.get(4)?, expected))
             })?
