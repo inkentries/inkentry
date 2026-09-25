@@ -1,12 +1,8 @@
-//! Component tests for `inkentry plumbing ls-files`.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{index_fixture_project, inkentry_bin, inkentry_cmd, parse_jsonl};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
-
-// ── happy path ────────────────────────────────────────────────────────────────
 
 #[test]
 fn ls_files_emits_jsonl_for_indexed_project() {
@@ -34,7 +30,6 @@ fn ls_files_emits_jsonl_for_indexed_project() {
             "missing 'indexed_at': {row}"
         );
         assert!(row.get("stale").is_some(), "missing 'stale': {row}");
-        // chunk_count should be at least 1 for our fixture files.
         assert!(
             row["chunk_count"].as_u64().unwrap_or(0) >= 1,
             "chunk_count should be >= 1, got: {row}"
@@ -46,7 +41,6 @@ fn ls_files_emits_jsonl_for_indexed_project() {
 fn ls_files_prefix_filter_narrows_results() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // Use a prefix that matches nothing: expect exit 1.
     inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .arg("--prefix")
@@ -59,7 +53,6 @@ fn ls_files_prefix_filter_narrows_results() {
 fn ls_files_stale_flag_returns_subset_or_empty() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // Without --stale: all files returned.
     let all_output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .output()
@@ -67,7 +60,6 @@ fn ls_files_stale_flag_returns_subset_or_empty() {
     let all_rows = parse_jsonl(&all_output.stdout);
     let all_count = all_rows.len();
 
-    // With --stale: only stale files returned (may be 0..all_count).
     let stale_output = inkentry_cmd(&db_path, &config_path)
         .arg("ls-files")
         .arg("--stale")
@@ -75,14 +67,12 @@ fn ls_files_stale_flag_returns_subset_or_empty() {
         .unwrap();
     let stale_rows = parse_jsonl(&stale_output.stdout);
 
-    // Stale subset must not exceed total count.
     assert!(
         stale_rows.len() <= all_count,
         "--stale results ({}) should not exceed total ({})",
         stale_rows.len(),
         all_count
     );
-    // Every row returned by --stale must have stale=true.
     for row in &stale_rows {
         assert_eq!(
             row["stale"].as_bool(),
@@ -92,13 +82,9 @@ fn ls_files_stale_flag_returns_subset_or_empty() {
     }
 }
 
-// ── stale exit-1: freshly indexed project has no stale files ─────────────────
-
 #[test]
 fn ls_files_stale_exits_1_when_no_stale_files() {
-    // `index_fixture_project` indexes the fixture and immediately returns.
-    // Because no on-disk files have changed since indexing, every stored hash
-    // matches → --stale emits nothing → ls_files calls std::process::exit(1).
+    // A freshly indexed project has no changed files, so --stale emits nothing and exits 1.
     let (_tmp, db_path, config_path) = index_fixture_project();
 
     inkentry_cmd(&db_path, &config_path)
@@ -109,8 +95,6 @@ fn ls_files_stale_exits_1_when_no_stale_files() {
         .assert()
         .code(1);
 }
-
-// ── error path: missing DB ────────────────────────────────────────────────────
 
 #[test]
 fn ls_files_exits_nonzero_when_db_missing() {
@@ -136,13 +120,8 @@ fn ls_files_exits_nonzero_when_db_missing() {
         .stderr(predicate::str::contains("No index found"));
 }
 
-// ── exit-2 path: plumbing errors route through main.rs std::process::exit(2) ─
-
 #[test]
 fn plumbing_exits_2_on_error() {
-    // When the plumbing dispatcher returns Err (e.g. missing DB),
-    // main.rs intercepts it and calls std::process::exit(2).
-    // This test asserts the exact exit code, not just non-zero.
     let tmp = TempDir::new().unwrap();
     let config_path = tmp.path().join("config.toml");
     let db_path = tmp.path().join("nonexistent.db");

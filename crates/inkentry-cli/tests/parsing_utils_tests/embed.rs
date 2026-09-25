@@ -1,9 +1,3 @@
-//! Component tests for `inkentry plumbing embed`.
-//!
-//! Tests use a `wiremock::MockServer` that responds to
-//! `POST /v1/projects/{id}/index/embed` (the inkentry-server endpoint) with
-//! a fixed 768-dimensional vector, so no real server is needed.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{
     FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin, inkentry_bin_in, mount_health,
@@ -16,14 +10,9 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// Point loopback auto-discovery at `url` and return the port to hand its
-// fixed-port fallback (step 3b) through `INKENTRY_TEST_DISCOVERY_PORT`.
-//
-// Not the `server.port` file (step 3a): that step now uses a responder only
-// when the pid recorded beside the port is a live `inkentry-server` process and
-// the instance id it reports is the recorded one, neither of which a wiremock
-// stand-in can be. The state dir is still created and still redirected, so
-// nothing here reaches the developer's own daemon or state.
+// Hands the fixed-port fallback (step 3b) the mock's port via INKENTRY_TEST_DISCOVERY_PORT.
+// Step 3a (`server.port`) needs a live inkentry-server pid and matching instance id, which a
+// wiremock stand-in cannot be; the state dir is still created and redirected.
 fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).expect("create state dir");
     url.rsplit(':')
@@ -33,10 +22,7 @@ fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
         .to_string()
 }
 
-// Build a `inkentry plumbing embed` command that auto-discovers the loopback
-// server via `INKENTRY_STATE_DIR`, with every ambient `INKENTRY_*` var these
-// tests isolate scrubbed so a developer/CI shell value can't change which tier
-// is probed.
+// Ambient INKENTRY_* vars are scrubbed so a developer/CI shell cannot change which tier is probed.
 fn embed_loopback_cmd(
     home: &Path,
     project: &Path,
@@ -59,21 +45,10 @@ fn embed_loopback_cmd(
     cmd
 }
 
-// Build a config.toml with `embedding_model`, and separately point
-// `server_url`/`project_id` at `<dir>/.inkentry/config.toml`: `Config::load`
-// only honors those two fields from a project-level config (or env), never
-// the global `--config` file. The caller's `Command` must set
-// `.current_dir(dir.path())`.
-//
-// `mode = "cloud_first"` in the global config makes the explicit `server_url`
-// the inference target: since the 2026-07-23 ADR-004 revision, a bare
-// `server_url` under the default `local_first` mode is a memory sync replica
-// only and never serves inference. These tests exercise that explicit-remote
-// path (a mocked `server_url` that IS used for embedding, no local server
-// involved), which is exactly the `cloud_first` case. `plumbing embed` now
-// bridges loopback auto-discovery the same way `search`/`memory search` do —
-// covered separately by `embed_finds_auto_discovered_loopback_server` below,
-// which needs no `server_url` at all.
+// `Config::load` honors `server_url`/`project_id` only from a project-level config or env,
+// never the `--config` file, so the caller's Command must set `.current_dir(dir.path())`.
+// `mode = "cloud_first"` makes the explicit `server_url` the inference target; under the default
+// `local_first` it is a memory replica only.
 fn write_server_config(dir: &TempDir, server_uri: &str) -> std::path::PathBuf {
     let config = dir.path().join("config.toml");
     std::fs::write(
@@ -85,12 +60,9 @@ fn write_server_config(dir: &TempDir, server_uri: &str) -> std::path::PathBuf {
     config
 }
 
-// ── exit 0: no stdin piped (empty pipe) ──────────────────────────────────────
-
 #[tokio::test]
 async fn embed_exits_0_with_empty_piped_stdin() {
     let mock = MockServer::start().await;
-    // Health probe for tier detection.
     Mock::given(method("GET"))
         .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -103,7 +75,6 @@ async fn embed_exits_0_with_empty_piped_stdin() {
     let tmp = TempDir::new().unwrap();
     let config = write_server_config(&tmp, &mock.uri());
 
-    // Pipe empty stdin — command should succeed (no lines to embed).
     inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
@@ -116,13 +87,10 @@ async fn embed_exits_0_with_empty_piped_stdin() {
         .stdout(predicate::str::is_empty());
 }
 
-// ── happy path: single line → one JSON embedding ──────────────────────────────
-
 #[tokio::test]
 async fn embed_document_mode_produces_jsonl_vector() {
     let mock = MockServer::start().await;
 
-    // Health probe.
     Mock::given(method("GET"))
         .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -132,7 +100,6 @@ async fn embed_document_mode_produces_jsonl_vector() {
         .mount(&mock)
         .await;
 
-    // index/embed endpoint — echoes chunk_ids with constant 768-d vectors.
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/index/embed$"))
         .respond_with(IndexEmbedResponder)
@@ -159,9 +126,8 @@ async fn embed_document_mode_produces_jsonl_vector() {
     assert_eq!(rows.len(), 1, "one stdin line → one embedding");
 
     let row = &rows[0];
-    // The config.toml written by `write_server_config` sets a *different*
-    // `embedding_model` value ("test-model"): the reported model must be the
-    // pinned constant regardless, never that config default.
+    // The config sets a different `embedding_model`; the reported model must be the pinned
+    // constant regardless.
     assert_eq!(
         row.get("model").and_then(|v| v.as_str()),
         Some(inkentry_core::embeddings::MODEL_ID),
@@ -260,15 +226,8 @@ async fn embed_multiple_lines_produce_multiple_vectors() {
     assert_eq!(rows.len(), 3, "three stdin lines → three embeddings");
 }
 
-// ── happy path: auto-discovered loopback server (no server_url configured) ────
-
-// The reported bug: a healthy local `inkentry-server` discovered via loopback
-// auto-discovery, with NO explicit
-// `server_url` and the default `local_first` mode — must be found by `plumbing
-// embed`, exactly as `search --mode semantic` / `memory search` already find
-// it. Before the fix, `embed` skipped the capability-tier / `effective_config`
-// bridge those commands use and reported `requires inkentry-server` here, even
-// while every other server-backed command found the same server.
+// No `server_url` and the default `local_first` mode: embed must still find the loopback
+// server, as `search` and `memory search` do.
 #[tokio::test]
 async fn embed_finds_auto_discovered_loopback_server() {
     let mock = MockServer::start().await;
@@ -277,8 +236,7 @@ async fn embed_finds_auto_discovered_loopback_server() {
 
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    // No `.inkentry/config.toml` at all: no server_url, no project_id — pure
-    // loopback auto-discovery, the default no-team-server case.
+    // No `.inkentry/config.toml`: pure loopback auto-discovery.
     let state_dir = home.path().join("state");
     let discovery_port = loopback_discovery_port(&state_dir, &mock.uri());
 
@@ -308,9 +266,7 @@ async fn embed_finds_auto_discovered_loopback_server() {
     );
 }
 
-// The `--query` prefix path must reach the same auto-discovered loopback
-// server (it routes through `embed_query_vec`, a distinct code path from the
-// document branch).
+// `--query` goes through `embed_query_vec`, a code path distinct from the document branch.
 #[tokio::test]
 async fn embed_query_finds_auto_discovered_loopback_server() {
     let mock = MockServer::start().await;
@@ -345,12 +301,8 @@ async fn embed_query_finds_auto_discovered_loopback_server() {
     assert!(rows[0].get("vector").is_some(), "missing 'vector'");
 }
 
-// ── error path: no server reachable (gate preserved) ─────────────────────────
-
-// The locked-feature gate must survive the fix: with no server reachable
-// (here forced with `INKENTRY_NO_SERVER=1` so the result is deterministic
-// regardless of any real server on the default loopback port), `plumbing
-// embed` still fails with the actionable `requires inkentry-server` error.
+// With no server reachable (`INKENTRY_NO_SERVER=1` keeps this deterministic) embed still fails
+// with the actionable `requires inkentry-server` error.
 #[test]
 fn embed_exits_nonzero_when_no_server_configured() {
     let tmp = TempDir::new().unwrap();

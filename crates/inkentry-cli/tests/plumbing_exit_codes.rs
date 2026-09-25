@@ -1,17 +1,7 @@
-// Exit-code contract for the plumbing commands (docs/stability.md).
-//
-// The 0/1/2 split is the part of the plumbing interface a shell script depends
-// on most directly, and it is the easiest to break by accident: exit 2 is a
-// single catch-all in `main.rs`, and every exit 1 is an inline
-// `std::process::exit(1)` inside its own handler. Nothing but these tests keeps
-// an empty result from starting to look like a failure.
-//
-//   0: succeeded, one or more results emitted
-//   1: succeeded, no results (an empty set, not an error)
-//   2: hard error; diagnostics on stderr, nothing on stdout
-//
-// Three commands cannot reach 1 by construction. Those are asserted as
-// deliberate exceptions rather than quietly skipped.
+// Exit-code contract for the plumbing commands: 0 = results, 1 = empty set (not an error),
+// 2 = hard error with a stderr diagnostic and empty stdout.
+// hash-file, embed and publish-notes cannot reach 1 by construction; those are asserted as
+// deliberate exceptions.
 
 mod plumbing_helpers;
 
@@ -28,7 +18,6 @@ const FIXTURE_EMBEDDING_DIM: usize = 896;
 const EMPTY: i32 = 1;
 const HARD_ERROR: i32 = 2;
 
-// A project directory with no index at all, for the "missing DB" error path.
 fn unindexed_project() -> (TempDir, PathBuf, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
     let db_path = tmp.path().join("index.db");
@@ -47,8 +36,7 @@ fn assert_exit(label: &str, output: &std::process::Output, expected: i32) {
     );
 }
 
-// Exit 2 promises diagnostics on stderr and nothing on stdout, so a consumer
-// that pipes stdout into a JSON parser never sees a half-written record.
+// Exit 2 leaves stdout empty so a JSON-piping consumer never sees a half-written record.
 fn assert_hard_error(label: &str, output: &std::process::Output) {
     assert_exit(label, output, HARD_ERROR);
     assert!(
@@ -62,8 +50,6 @@ fn assert_hard_error(label: &str, output: &std::process::Output) {
     );
 }
 
-// Exit 1 is an empty result, not an error, so it must not print a stack of
-// error text that a caller would mistake for a failure.
 fn assert_empty(label: &str, output: &std::process::Output) {
     assert_exit(label, output, EMPTY);
     assert!(
@@ -73,12 +59,7 @@ fn assert_empty(label: &str, output: &std::process::Output) {
     );
 }
 
-// ── the three codes are distinct, and 2 covers usage errors too ──────────────
-
-// One command, all three codes, in one place. The per-command tests below check
-// each code where it is reachable, but nothing there would notice if two of the
-// three collapsed onto the same number, which is the break that silently turns
-// "no results" into "failed" for every script downstream.
+// The per-command tests would not notice two of the three codes collapsing onto one number.
 #[test]
 fn the_three_exit_codes_are_distinct_for_a_single_command() {
     let (_tmp, db, cfg) = index_fixture_project();
@@ -112,9 +93,7 @@ fn the_three_exit_codes_are_distinct_for_a_single_command() {
     assert!(error.stdout.is_empty(), "exit 2 carries none");
 }
 
-// A usage error is not an empty result set, so clap's own exit path has to land
-// on 2 as well. If it ever returned 1, a script would read a typo'd flag as
-// "the query matched nothing" and carry on.
+// clap's own usage-error exit must land on 2, or a typo'd flag reads as "no matches".
 #[test]
 fn an_unknown_flag_is_a_hard_error_not_an_empty_result() {
     let (_tmp, db, cfg) = index_fixture_project();
@@ -127,8 +106,6 @@ fn an_unknown_flag_is_a_hard_error_not_an_empty_result() {
         assert_hard_error(&format!("plumbing {}", args.join(" ")), &out);
     }
 }
-
-// ── cat-chunks ───────────────────────────────────────────────────────────────
 
 #[test]
 fn cat_chunks_exit_codes() {
@@ -155,8 +132,6 @@ fn cat_chunks_exit_codes() {
     assert_hard_error("cat-chunks no index", &err);
 }
 
-// ── ls-files ─────────────────────────────────────────────────────────────────
-
 #[test]
 fn ls_files_exit_codes() {
     let (_tmp, db, cfg) = index_fixture_project();
@@ -165,7 +140,6 @@ fn ls_files_exit_codes() {
     assert_exit("ls-files results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
-    // A prefix nothing matches is an empty set, not a failure.
     let empty = inkentry_cmd(&db, &cfg)
         .args(["ls-files", "--prefix", "no/such/directory/"])
         .output()
@@ -180,8 +154,6 @@ fn ls_files_exit_codes() {
     assert_hard_error("ls-files no index", &err);
 }
 
-// ── parse-file ───────────────────────────────────────────────────────────────
-
 #[test]
 fn parse_file_exit_codes() {
     let (_tmp, db, cfg) = unindexed_project();
@@ -195,7 +167,6 @@ fn parse_file_exit_codes() {
     assert_exit("parse-file results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
-    // An unrecognised extension yields no chunks; that is an empty set.
     let unsupported = _tmp.path().join("payload.bin");
     std::fs::write(&unsupported, [0u8, 1, 2, 3]).unwrap();
     let empty = inkentry_cmd(&db, &cfg)
@@ -212,8 +183,6 @@ fn parse_file_exit_codes() {
         .unwrap();
     assert_hard_error("parse-file unreadable", &err);
 }
-
-// ── hash-file ────────────────────────────────────────────────────────────────
 
 #[test]
 fn hash_file_exit_codes() {
@@ -238,9 +207,6 @@ fn hash_file_exit_codes() {
 
 #[test]
 fn hash_file_never_reports_an_empty_result() {
-    // Documented exception: a hash always exists for a readable file, so this
-    // command answers with one row or fails. A future exit 1 here would be a
-    // new state for callers to handle, not a bug fix.
     let (tmp, db, cfg) = index_fixture_project();
     let never_indexed = tmp.path().join("scratch.rs");
     std::fs::write(&never_indexed, "fn scratch() {}\n").unwrap();
@@ -256,8 +222,6 @@ fn hash_file_never_reports_an_empty_result() {
         "an un-indexed file still has a hash to report"
     );
 }
-
-// ── knn ──────────────────────────────────────────────────────────────────────
 
 fn knn_query() -> String {
     serde_json::json!({
@@ -280,8 +244,7 @@ fn knn_exit_codes() {
     assert_exit("knn results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit at least one row");
 
-    // A similarity threshold above 1.0 is unreachable, so every result is
-    // filtered out and the empty set is the honest answer.
+    // A min-score above 1.0 is unreachable, so everything is filtered out.
     let empty = inkentry_cmd(&db, &cfg)
         .args(["knn", "--min-score", "1.5"])
         .write_stdin(knn_query())
@@ -296,8 +259,6 @@ fn knn_exit_codes() {
         .unwrap();
     assert_hard_error("knn malformed stdin", &err);
 }
-
-// ── graph-edges ──────────────────────────────────────────────────────────────
 
 #[test]
 fn graph_edges_exit_codes() {
@@ -316,13 +277,11 @@ fn graph_edges_exit_codes() {
         .unwrap();
     assert_empty("graph-edges unknown symbol", &empty);
 
-    // Neither filter given is a usage error, not an empty set.
     let err = inkentry_cmd(&db, &cfg).arg("graph-edges").output().unwrap();
     assert_hard_error("graph-edges no filter", &err);
 }
 
-// A `--file` path that matches nothing in the index is a hard error, not an
-// empty set: a mistyped path must never read the same as a file with no edges.
+// A mistyped `--file` path must never read the same as a file with no edges.
 #[test]
 fn graph_edges_unindexed_file_is_a_hard_error() {
     let (_tmp, db, cfg) = index_fixture_project();
@@ -338,7 +297,6 @@ fn graph_edges_unindexed_file_is_a_hard_error() {
         "stderr must name the path as not indexed, got {stderr:?}"
     );
 
-    // A matching --symbol does not rescue a mistyped --file.
     let err = inkentry_cmd(&db, &cfg)
         .args([
             "graph-edges",
@@ -352,13 +310,10 @@ fn graph_edges_unindexed_file_is_a_hard_error() {
     assert_hard_error("graph-edges unindexed file with matching symbol", &err);
 }
 
-// An indexed file that simply has no edges is still an empty set, so the
-// not-in-index error does not over-reach.
 #[test]
 fn graph_edges_indexed_file_without_edges_is_an_empty_set() {
     let project = TempDir::new().expect("create project dir");
     std::fs::create_dir_all(project.path().join("src")).expect("create src");
-    // An edge-free file calls and imports nothing.
     std::fs::write(
         project.path().join("src/leaf.rs"),
         "pub fn ab() -> u8 {\n    42\n}\n",
@@ -366,9 +321,7 @@ fn graph_edges_indexed_file_without_edges_is_an_empty_set() {
     .expect("write leaf.rs");
     let (_tmp, db, cfg) = index_project_dir(project.path());
 
-    // An empty result only means "indexed, no edges" if the file reached the
-    // index at all; without this the assertion below would also pass for a
-    // file that was never indexed.
+    // Without this the empty result would also pass for a file that was never indexed.
     let listed = inkentry_cmd(&db, &cfg).args(["ls-files"]).output().unwrap();
     assert!(
         String::from_utf8_lossy(&listed.stdout).contains("src/leaf.rs"),
@@ -381,8 +334,6 @@ fn graph_edges_indexed_file_without_edges_is_an_empty_set() {
         .unwrap();
     assert_empty("graph-edges indexed file without edges", &empty);
 }
-
-// ── read-memory ──────────────────────────────────────────────────────────────
 
 #[test]
 fn read_memory_exit_codes() {
@@ -419,8 +370,7 @@ fn read_memory_exit_codes() {
         .unwrap();
     assert_empty("read-memory unmatched kind", &empty);
 
-    // No memory store at all, which is not the same as a store holding no
-    // entries: exit 2, never the exit 1 that means "no results".
+    // A missing store is not an empty one: exit 2, never 1.
     let (_t2, missing_db, cfg2) = unindexed_project();
     let err = inkentry_cmd(&missing_db, &cfg2)
         .arg("read-memory")
@@ -428,12 +378,8 @@ fn read_memory_exit_codes() {
         .unwrap();
     assert_hard_error("read-memory no store", &err);
 
-    // The same refusal when an index *is* present. This is the input the
-    // helper above cannot reach, and the only one whose exit code this change
-    // moves: resolution used to key off the index, so a present index carried
-    // the command through to a store it then created empty, and an absent
-    // store reported itself as an empty one. Pinned separately because a
-    // regression here is invisible to every other case.
+    // With an index present the missing store must still be refused, not created empty;
+    // no other case here would notice.
     let t3 = TempDir::new().expect("create temp dir");
     let indexed_db = t3.path().join("index.db");
     std::fs::write(&indexed_db, b"").expect("create index db");
@@ -444,8 +390,6 @@ fn read_memory_exit_codes() {
         .unwrap();
     assert_hard_error("read-memory no store beside a present index", &err);
 }
-
-// ── embed ────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn embed_exit_codes() {
@@ -483,8 +427,7 @@ async fn embed_exit_codes() {
     assert_exit("embed results", &ok, 0);
     assert!(!ok.stdout.is_empty(), "exit 0 must emit a vector");
 
-    // Documented exception: no reachable input is an empty *input*, not an
-    // empty result set, so embed answers 0 with no rows rather than 1.
+    // Empty input is not an empty result set: exit 0 with no rows.
     let no_input = inkentry_bin()
         .current_dir(tmp.path())
         .arg("--config")
@@ -496,7 +439,6 @@ async fn embed_exit_codes() {
     assert_exit("embed empty stdin", &no_input, 0);
     assert!(no_input.stdout.is_empty(), "no input means no vectors");
 
-    // No embedding backend reachable is a hard error, not an empty set.
     let unreachable = TempDir::new().unwrap();
     let bare_cfg = unreachable.path().join("config.toml");
     std::fs::write(&bare_cfg, "llm_model = \"x\"\n").unwrap();
@@ -512,8 +454,6 @@ async fn embed_exit_codes() {
         .unwrap();
     assert_hard_error("embed no backend", &err);
 }
-
-// ── publish-notes ────────────────────────────────────────────────────────────
 
 fn git_in(dir: &Path, args: &[&str]) {
     plumbing_helpers::isolate_git_config();
@@ -532,9 +472,8 @@ fn publish_notes_exit_codes() {
     std::fs::create_dir_all(&repo).unwrap();
     init_git_repo(&repo);
 
-    // Nothing to publish is reported in the JSON payload, not the exit status:
-    // this runs from a pre-push hook, where a non-zero exit aborts the user's
-    // branch push. That coupling is why the skip path is exit 0 and not 1.
+    // Nothing to publish is reported in the payload, not the exit status: this runs from a
+    // pre-push hook, where a non-zero exit aborts the user's push.
     let skipped = inkentry_bin()
         .current_dir(&repo)
         .env("INKENTRY_NO_SERVER", "1")
@@ -547,8 +486,6 @@ fn publish_notes_exit_codes() {
         "the skip outcome is still reported as JSONL"
     );
 
-    // A remote that resolves but cannot be pushed to is a real failure, and
-    // without --best-effort it must surface as one.
     inkentry_bin()
         .current_dir(&repo)
         .env("INKENTRY_NO_SERVER", "1")
@@ -579,8 +516,7 @@ fn publish_notes_exit_codes() {
         .unwrap();
     assert_hard_error("publish-notes unpushable remote", &err);
 
-    // The same failure under --best-effort is exit 0 with the error in the
-    // payload, so an installed pre-push hook never blocks a code push.
+    // Under --best-effort the same failure is exit 0, so a pre-push hook never blocks a code push.
     let tolerated = inkentry_bin()
         .current_dir(&repo)
         .env("INKENTRY_NO_SERVER", "1")
@@ -594,14 +530,8 @@ fn publish_notes_exit_codes() {
     );
 }
 
-// ── push / pull (team-server transfer) ───────────────────────────────────────
-//
-// Unlike every read-only command above, push/pull are network-touching and
-// their exit 1 (an empty delta) still emits the one report object — only exit 2
-// leaves stdout empty. So these use bespoke assertions rather than
-// `assert_empty` (which requires empty stdout on 1). Setup mirrors
-// `memory_push_sync_total_failure.rs`: a mock team server plus a real seeded
-// local project.
+// Unlike the read-only commands, push/pull touch the network and their exit 1 (empty delta)
+// still emits the one report object, so they use bespoke assertions instead of `assert_empty`.
 
 use plumbing_helpers::{
     init_local_project, inkentry_bin_in, mount_memory_batch, mount_memory_since, mount_team_health,
@@ -609,17 +539,13 @@ use plumbing_helpers::{
 };
 use wiremock::MockServer;
 
-// An empty delta needs a store that is genuinely there and holds nothing. An
-// absent store is a different case with a different code: `push` refuses it
-// with exit 2 (see `absent_memory_store.rs`).
+// An absent store is a different case: push refuses it with exit 2.
 fn create_empty_memory_store(proj: &Path) {
     register_sqlite_vec();
     let mem_path = proj.join(".inkentry").join("memory.db");
     inkentry_core::storage::MemoryStore::open(&mem_path).expect("create empty memory.db");
 }
 
-// Return the single report object push/pull emit, asserting there is exactly
-// one. Their contract is one object per completed run.
 fn sole_report(label: &str, out: &std::process::Output) -> serde_json::Value {
     let rows = plumbing_helpers::parse_jsonl(&out.stdout);
     assert_eq!(
@@ -631,9 +557,8 @@ fn sole_report(label: &str, out: &std::process::Output) -> serde_json::Value {
     rows.into_iter().next().unwrap()
 }
 
-// Echoes the batch request back as all-`created`, stamping cloud ids that match
-// the entries' real uuids, so a follow-up push correctly sees them as already
-// synced. A static body cannot do this: it never knows the seeded notes' uuids.
+// Echoes the batch back as all-`created` with cloud ids matching the entries' uuids, so a
+// follow-up push sees them as synced; a static body cannot know the seeded uuids.
 struct BatchEchoCreated;
 impl wiremock::Respond for BatchEchoCreated {
     fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
@@ -673,8 +598,6 @@ async fn mount_batch_echo(server: &MockServer) {
         .await;
 }
 
-// Push a batch with N created entries (using the echo responder), one report on
-// stdout, exit 0.
 #[tokio::test]
 async fn plumbing_push_clean_push_is_exit_0_with_report() {
     let server = MockServer::start().await;
@@ -704,8 +627,6 @@ async fn plumbing_push_clean_push_is_exit_0_with_report() {
     assert_eq!(report["interrupted"], false, "report: {report}");
 }
 
-// A completed run that created nothing but had failures alongside real
-// creations still exits 0 — at least one entry moved.
 #[tokio::test]
 async fn plumbing_push_partial_failure_with_a_creation_is_exit_0() {
     let server = MockServer::start().await;
@@ -743,8 +664,6 @@ async fn plumbing_push_partial_failure_with_a_creation_is_exit_0() {
     assert_eq!(report["failed"], 1, "report: {report}");
 }
 
-// Nothing local to push is an empty delta: exit 1, and the report is still
-// emitted (attempted == 0), unlike the read-only commands' empty-stdout exit 1.
 #[tokio::test]
 async fn plumbing_push_nothing_to_push_is_exit_1_with_report() {
     let server = MockServer::start().await;
@@ -770,9 +689,7 @@ async fn plumbing_push_nothing_to_push_is_exit_1_with_report() {
     assert_eq!(report["created"], 0, "report: {report}");
 }
 
-// Re-pushing entries already on the server is also an empty delta (exit 1):
-// after the first push stamps their remote ids, the second push has nothing
-// live to send.
+// The first push stamps remote ids, so the second has nothing live to send.
 #[tokio::test]
 async fn plumbing_push_repush_already_synced_is_exit_1() {
     let server = MockServer::start().await;
@@ -808,8 +725,6 @@ async fn plumbing_push_repush_already_synced_is_exit_1() {
     assert_eq!(report["already_synced"], 1, "report: {report}");
 }
 
-// A total failure — nothing durably landed — did not complete: exit 2, stdout
-// empty, diagnostic on stderr.
 #[tokio::test]
 async fn plumbing_push_total_failure_is_exit_2_empty_stdout() {
     let server = MockServer::start().await;
@@ -837,14 +752,12 @@ async fn plumbing_push_total_failure_is_exit_2_empty_stdout() {
     assert_hard_error("plumbing push total failure", &out);
 }
 
-// No explicit team server_url configured is a setup error: exit 2, empty
-// stdout. (The loopback inference server must never satisfy push.)
+// The loopback inference server must never satisfy push.
 #[tokio::test]
 async fn plumbing_push_no_server_url_is_exit_2() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     init_local_project(proj.path());
-    // A global config with a db_path but no server_url anywhere.
     let cfg = proj.path().join("config.toml");
     let db = proj.path().join(".inkentry").join("index.db");
     std::fs::write(&cfg, format!("db_path = {db:?}\n")).unwrap();
@@ -862,7 +775,6 @@ async fn plumbing_push_no_server_url_is_exit_2() {
     assert_hard_error("plumbing push no server_url", &out);
 }
 
-// Pull that applies new remote entries: exit 0, report {applied > 0}.
 #[tokio::test]
 async fn plumbing_pull_applies_is_exit_0_with_report() {
     let server = MockServer::start().await;
@@ -897,8 +809,6 @@ async fn plumbing_pull_applies_is_exit_0_with_report() {
     assert_eq!(report["applied"], 1, "report: {report}");
 }
 
-// Pull with nothing new is an empty delta: exit 1, report {applied: 0}. A second
-// pull of the same entry dedups, so it too is exit 1 (idempotence).
 #[tokio::test]
 async fn plumbing_pull_empty_then_idempotent_is_exit_1() {
     let server = MockServer::start().await;
@@ -920,8 +830,6 @@ async fn plumbing_pull_empty_then_idempotent_is_exit_1() {
     init_local_project(proj.path());
     let cfg = write_team_config(proj.path(), &server.uri());
 
-    // First pull applies the one entry (exit 0); the second re-fetches it but it
-    // is already present, so nothing new applies.
     let first = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
@@ -943,7 +851,6 @@ async fn plumbing_pull_empty_then_idempotent_is_exit_1() {
     assert_eq!(report["applied"], 0, "report: {report}");
 }
 
-// No explicit team server_url configured is a setup error for pull too: exit 2.
 #[tokio::test]
 async fn plumbing_pull_no_server_url_is_exit_2() {
     let home = TempDir::new().unwrap();
