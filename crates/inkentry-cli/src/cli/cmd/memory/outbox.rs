@@ -1,32 +1,3 @@
-//! ADR-037 P2: post-write nudge + read/status poll for the local relay
-//! (`crate::cli::cmd::server::probe_local_relay_port`, inkentry-server's
-//! `relay` module).
-//!
-//! Two entry points:
-//! - [`nudge_after_write`] — called after a `local_first` `memory
-//!   add`/`archive`/`supersede` commits, to auto-start (interactive only, D6)
-//!   and hand the local server's relay any newly-unpushed rows. Best-effort
-//!   only: any failure here must never surface as a write error, a
-//!   meaningfully added write latency, or a non-zero exit (items 7/9/10/11).
-//! - [`poll_and_apply`] — called from `inkentry status` and from `memory
-//!   list`/`search`/`show`/`timeline`/`inkentry context` (items 42-47) to
-//!   apply whatever the relay has buffered (push acks, pulled rows) locally,
-//!   so both status and reads stay converged without ever printing a
-//!   manual-sync call to action. Never triggers `ensure_server_running`
-//!   (item 43): only polls an already-running relay.
-//!
-//! The relay's `GET /local/relay/poll` is a **peek, not a drain**: entries
-//! stay buffered until [`poll_and_apply`] explicitly confirms which ones it
-//! applied via `POST /local/relay/ack`. This is what makes a failed local
-//! apply (a write error, a killed process mid-loop) recoverable on the very
-//! next poll instead of silently losing the row (pull side) or stranding it
-//! pending forever (push side) — see `relay.rs`'s module docs for the fuller
-//! account of the bug this closes.
-//!
-//! `memory.db` is opened and written **only** by this CLI-side code — never
-//! by the server (D5); the relay's own local HTTP surface only ever carries
-//! row data and identifiers, never a filesystem path.
-
 use std::io::IsTerminal;
 use std::time::Duration;
 
@@ -35,14 +6,10 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Config, DEFAULT_SERVER_PORT};
 use crate::storage::{MemoryStore, NoteId};
 
-/// Bound on both the nudge and poll HTTP calls to the local relay: high
-/// enough for a loopback round trip, low enough that an absent/wedged local
-/// server can never make a write feel slow (item 9).
+// Short so an absent or wedged local server can't slow a write.
 const LOCAL_RELAY_TIMEOUT: Duration = Duration::from_millis(800);
 
-/// Cap on entries offered in a single nudge, mirroring `push_local`'s own
-/// batch chunking (`sync.rs`) — the relay forwards them to the team server in
-/// its own batches regardless, so this only bounds one loopback request body.
+// Bounds one loopback request body; the relay batches to the team server itself.
 const MAX_NUDGE_ENTRIES: usize = 200;
 
 #[derive(Debug, Serialize)]
@@ -97,11 +64,6 @@ struct RelayPollResponseWire {
     last_error: Option<String>,
 }
 
-/// Body of `POST /local/relay/ack`: names exactly the entries this call
-/// confirmed applying to `memory.db`, so a failed/skipped one (still
-/// unstamped or unapplied) stays buffered on the relay and is offered again
-/// on the next poll, rather than being lost — see `relay.rs`'s module docs
-/// for the destructive-drain bug this closes.
 #[derive(Debug, Default, Serialize)]
 struct RelayAckRequestWire {
     server_url: String,
@@ -112,12 +74,6 @@ struct RelayAckRequestWire {
     applied_pull_remote_ids: Vec<String>,
 }
 
-/// Resolve `(server_url, project_id)` for the relay, or `None` when this
-/// project has nothing to relay: not `local_first`, no `server_url`, or no
-/// `project_id` (mirrors `inkentry sync`'s own requirement — there is no
-/// `--project` override on a write command to fall back to, so a missing
-/// `project_id` here just means the background nudge quietly does nothing,
-/// same as it always has).
 fn relay_target(cfg: &Config) -> Option<(String, String)> {
     if cfg.resolve_mode() != inkentry_core::config::SyncMode::LocalFirst {
         return None;
@@ -127,16 +83,14 @@ fn relay_target(cfg: &Config) -> Option<(String, String)> {
     Some((server_url, project_id))
 }
 
-/// Auto-start (interactive only, D6) and nudge the local relay after a
-/// `local_first` write. See module docs for the non-blocking contract.
+// Best-effort: must never fail or noticeably slow the write.
 pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) {
     let Some((server_url, project_id)) = relay_target(cfg) else {
         return;
     };
 
     if std::io::stdin().is_terminal() {
-        // One line on purpose: `daemon_spawn_call_sites` pins the config
-        // argument lexically, and it reads a single line at a time.
+        // Keep on one line: `daemon_spawn_call_sites` matches this call lexically, line by line.
         let _ = super::super::server::ensure_server_running(DEFAULT_SERVER_PORT, cfg).await;
     }
 
@@ -146,13 +100,8 @@ pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) 
     register_and_push(cfg, mem_path, &server_url, &project_id, port).await;
 }
 
-/// Register this project's relay session (creating it and starting its pull
-/// loop on first sight — item 12/18/20) and hand over any currently-pending
-/// outbox rows. An empty outbox still registers: the server-side push
-/// handler starts the session's pull task regardless of whether `entries` is
-/// empty, which is what lets a purely-read instance (never writing locally)
-/// still receive live pulls (item 20's two-instance scenario needs exactly
-/// this — instance B may never call `memory add` at all).
+// An empty outbox still registers: any push starts the session's pull task,
+// so a read-only instance still receives live pulls.
 async fn register_and_push(
     cfg: &Config,
     mem_path: &std::path::Path,
@@ -208,8 +157,6 @@ async fn register_and_push(
         .await;
 }
 
-/// What [`poll_and_apply`] applied, for `inkentry status`'s pending/last-synced
-/// line.
 pub(crate) struct PollOutcome {
     pub applied_pushes: usize,
     pub applied_pulls: usize,
@@ -217,18 +164,6 @@ pub(crate) struct PollOutcome {
     pub last_error: Option<String>,
 }
 
-/// Poll the local relay (if reachable) for a project's buffered push-acks and
-/// pulled rows, apply them via the CLI-side storage layer, and return what
-/// happened. Returns `None` when there is nothing to poll (not `local_first`,
-/// no server configured, or no local relay reachable) — `inkentry status`
-/// falls back to a purely local pending-count in that case.
-///
-/// Also registers the relay session (via [`register_and_push`]) before
-/// polling, same as a write's nudge: a purely-read instance that never calls
-/// `memory add` still needs its session registered at some point for live
-/// pull to reach it at all (item 20 — this is the mechanism that lets
-/// instance B in the two-instance scenario pick up instance A's write
-/// without ever writing locally itself).
 pub(crate) async fn poll_and_apply(
     cfg: &Config,
     mem_path: &std::path::Path,
@@ -250,13 +185,8 @@ pub(crate) async fn poll_and_apply(
         .ok()?;
     let body: RelayPollResponseWire = resp.json().await.ok()?;
 
-    // The relay's poll is a peek, not a drain (see `relay.rs`'s module docs):
-    // every entry applied here is named explicitly in a follow-up `ack` call
-    // below, and only those names are retired from the relay's buffer. An
-    // entry this loop fails to apply (a local write error, a killed process
-    // mid-loop) is simply never named, so it stays buffered and is offered
-    // again on the CLI's next poll — closing the "poll succeeds, apply fails,
-    // row is gone forever" gap the old destructive `drain`-on-poll had.
+    // Peek, not drain: only entries named in the ack below are retired from the relay's
+    // buffer, so one that fails to apply is offered again on the next poll.
     let mut applied_pushes = 0usize;
     let mut acked_push_ids: Vec<String> = Vec::new();
     for r in &body.push_results {
@@ -301,10 +231,8 @@ pub(crate) async fn poll_and_apply(
             applied_push_external_ids: acked_push_ids,
             applied_pull_remote_ids: acked_pull_ids,
         };
-        // Best-effort: a failed/dropped ack just means these already-applied
-        // (and locally idempotent to re-apply) entries are offered again on
-        // the next poll instead of being retired promptly. Never surfaced as
-        // an error here.
+        // Best-effort: a dropped ack only means already-applied (idempotent) entries
+        // are offered again on the next poll.
         let _ = client
             .post(format!("http://127.0.0.1:{port}/local/relay/ack"))
             .json(&ack_body)
@@ -356,10 +284,8 @@ mod tests {
         MemoryStore::open(path).expect("open memory.db")
     }
 
-    // Stands in for the machine's `.inkentry/config.toml`. The relay only
-    // connects to team targets local configuration declares, so a test driving
-    // a team server declares it here — the same handshake a real install
-    // performs by having the URL in its project config.
+    // Stands in for `.inkentry/config.toml`: the relay connects only to team targets
+    // that local configuration declares.
     #[derive(Clone, Default)]
     struct DeclaredTargets(
         std::sync::Arc<std::sync::Mutex<Vec<inkentry_core::config::TeamTarget>>>,
@@ -383,14 +309,6 @@ mod tests {
         }
     }
 
-    /// Spin up a real `inkentry-server` axum router (the actual production
-    /// router, not a hand-rolled stand-in) on an ephemeral loopback port and
-    /// return its address. Serves BOTH roles the same binary can play: the
-    /// team-hosting `/v1/projects/*/memory*` routes (a stand-in for a real
-    /// team server) and the local-only `/local/relay/*` routes (a stand-in
-    /// for a real `inkentry server start`-ed daemon) — callers pick which
-    /// role they're using it for by whether they write a state-dir port file
-    /// (see [`spawn_local_relay`]) or pass the address as `server_url`.
     async fn spawn_inkentry_server(declared: &DeclaredTargets) -> (SocketAddr, String) {
         register_sqlite_vec();
         let db_dir = TempDir::new().unwrap();
@@ -430,18 +348,13 @@ mod tests {
         (addr, reported_id)
     }
 
-    /// Like [`spawn_inkentry_server`], but also writes the port into
-    /// `state_dir/server.port` so `server::probe_local_relay_port`
-    /// discovers it exactly the way it would discover a real
-    /// `inkentry server start`-ed daemon — the *local relay* role.
     async fn spawn_local_relay(state_dir: &std::path::Path) -> (SocketAddr, DeclaredTargets) {
         let declared = DeclaredTargets::default();
         let (addr, instance_id) = spawn_inkentry_server(&declared).await;
         std::fs::create_dir_all(state_dir).unwrap();
         std::fs::write(state_dir.join("server.port"), format!("{}\n", addr.port())).unwrap();
-        // The relay gate wants what a real start recorded, so record all three.
-        // The pid is this process: there is no separate `inkentry-server` to
-        // point at, which is what the trust seam on the guard exists to cover.
+        // The relay gate requires all three files a real start records; the pid is this
+        // process because the relay runs in-process.
         std::fs::write(
             state_dir.join("server.pid"),
             format!("{}\n", std::process::id()),
@@ -455,9 +368,6 @@ mod tests {
         (addr, declared)
     }
 
-    /// Sets `INKENTRY_STATE_DIR` to a fresh temp dir for the test's duration,
-    /// restoring the previous value on drop. Mirrors the guard in
-    /// `server.rs`'s own tests.
     struct StateDirGuard {
         prev_state_dir: Option<std::ffi::OsString>,
         prev_trust: Option<std::ffi::OsString>,
@@ -470,10 +380,8 @@ mod tests {
             let tmp = TempDir::new().unwrap();
             unsafe {
                 std::env::set_var("INKENTRY_STATE_DIR", tmp.path());
-                // The relay these tests stand up is in-process, so the recorded
-                // pid is this test binary and the OS query cannot match it. The
-                // seam relaxes only that: the pid must still be recorded and the
-                // reported instance id must still match what was written.
+                // The relay is in-process, so the recorded pid is this binary and the OS query
+                // cannot match it; the seam relaxes only that.
                 std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1");
             }
             Self {
@@ -512,8 +420,6 @@ mod tests {
         }
     }
 
-    // ── items 7/8/11/12/14: nudge -> relay push -> poll stamps remote_id ────
-
     #[tokio::test]
     #[serial(server_state_dir_env)]
     async fn nudge_after_write_relays_pending_rows_and_a_later_poll_stamps_remote_id() {
@@ -551,8 +457,6 @@ mod tests {
         let cfg = local_first_cfg(&team_server.uri());
         nudge_after_write(&cfg, &mem_path).await;
 
-        // The remote push happens in the local relay's own detached task;
-        // poll until it lands rather than assuming a fixed sleep.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut applied = 0usize;
         while std::time::Instant::now() < deadline {
@@ -585,8 +489,6 @@ mod tests {
         );
     }
 
-    // ── item 26/29: gated on local_first (offline/cloud_first are no-ops) ──
-
     #[tokio::test]
     #[serial(server_state_dir_env)]
     async fn nudge_after_write_is_a_noop_when_mode_is_not_local_first() {
@@ -615,12 +517,7 @@ mod tests {
             nudge_after_write(&cfg, &mem_path).await;
         }
 
-        // Direct, race-free check: neither nudge touched the row at all — it
-        // is exactly as it was before either call, still pending. (A
-        // subsequent `local_first` `poll_and_apply` would itself register
-        // and push, per item 20, so it is not used here to avoid conflating
-        // "the gated nudges did nothing" with "a later, ungated poll did
-        // something".)
+        // Not checked via `poll_and_apply`: a local_first poll would itself register and push.
         let store = open_store(&mem_path);
         assert_eq!(
             store.pending_sync_count().unwrap(),
@@ -644,8 +541,6 @@ mod tests {
             project_id: None,
             ..Default::default()
         };
-        // No INKENTRY_STATE_DIR override, no local relay reachable either way:
-        // this must return promptly without an unbounded wait.
         let start = std::time::Instant::now();
         nudge_after_write(&cfg, &mem_path).await;
         assert!(
@@ -661,16 +556,10 @@ mod tests {
         );
     }
 
-    // ── item 9/10: absent local relay must not add meaningful latency ──────
-
     #[tokio::test]
     #[serial(server_state_dir_env)]
     async fn nudge_after_write_returns_quickly_when_no_local_relay_is_running() {
         let _state_guard = StateDirGuard::new();
-        // No `spawn_local_relay` call: the state dir has no port file, so
-        // `probe_local_relay_port` must return `None` without any network
-        // call (item 10: outbox visibility never depends on a live
-        // reconciler; item 9: latency stays offline-shaped).
         let mem_dir = TempDir::new().unwrap();
         let mem_path = mem_dir.path().join("memory.db");
         let store = open_store(&mem_path);
@@ -696,8 +585,6 @@ mod tests {
         );
     }
 
-    // ── poll_and_apply gating mirrors nudge_after_write's ───────────────────
-
     #[tokio::test]
     async fn poll_and_apply_returns_none_when_not_local_first() {
         let mem_dir = TempDir::new().unwrap();
@@ -710,10 +597,6 @@ mod tests {
         };
         assert!(poll_and_apply(&cfg, &mem_path).await.is_none());
     }
-
-    // ── item 30 guard: repeated nudges never disturb the running relay ─────
-    // No idle-reap logic exists anywhere in this task's scope; this pins that
-    // a later change cannot silently smuggle one in via this call path.
 
     #[tokio::test]
     #[serial(server_state_dir_env)]
@@ -748,19 +631,12 @@ mod tests {
         }
     }
 
-    /// Point `INKENTRY_STATE_DIR` at `dir` for the remainder of the current
-    /// scope. Caller must hold `#[serial(server_state_dir_env)]` AND keep a
-    /// [`RelayEnvGuard`] alive for the test's duration, or the
-    /// mutated value leaks into whichever test in the same serial group runs
-    /// next.
+    // Caller must hold `serial(server_state_dir_env)` and a `RelayEnvGuard`, or the value
+    // leaks into the next test in the group.
     fn point_state_dir_at(dir: &std::path::Path) {
         unsafe { std::env::set_var("INKENTRY_STATE_DIR", dir) };
     }
 
-    /// Captures the current `INKENTRY_STATE_DIR` on construction and restores
-    /// it on drop. Tests that call [`point_state_dir_at`] more than once (so
-    /// [`StateDirGuard`] alone won't do, since it only knows the value it
-    /// itself set) must hold one of these for the whole test body.
     struct RelayEnvGuard {
         prev_state_dir: Option<std::ffi::OsString>,
         prev_trust: Option<std::ffi::OsString>,
@@ -771,8 +647,7 @@ mod tests {
                 prev_state_dir: std::env::var_os("INKENTRY_STATE_DIR"),
                 prev_trust: std::env::var_os("INKENTRY_TEST_TRUST_RECORDED_RESPONDER"),
             };
-            // Same reason as `StateDirGuard`: the relays these tests point at
-            // are in-process, so the recorded pid is this test binary.
+            // In-process relays: the recorded pid is this test binary.
             unsafe { std::env::set_var("INKENTRY_TEST_TRUST_RECORDED_RESPONDER", "1") };
             me
         }
@@ -793,18 +668,9 @@ mod tests {
         }
     }
 
-    // Points the process CWD at a fresh directory with no `.git` ancestor for
-    // the guard's lifetime, restoring the previous one on drop.
-    //
-    // `memory list`'s read path imports `refs/notes/inkentry` from the repo
-    // discovered off the CWD (`refresh_read_path_from_git_notes` ->
-    // `NotesRefs::discover(None)`), which for an in-process test is this very
-    // checkout. Whatever another test left on that ref is then imported into
-    // the store under test as an unsynced row, pushed to the team server on the
-    // next relay nudge, and its remote id advances `since_cursor` past the
-    // entry the test is waiting for — so the pull never delivers it. No config
-    // suppresses this: `store_in_git_notes` gates only the write-through
-    // carrier, never the read path.
+    // Runs with the CWD outside any git repo: `memory list` imports `refs/notes/inkentry`
+    // from the CWD's repo, and stray rows there get pushed and advance `since_cursor`
+    // past the entry under test. No config disables that read path.
     struct CwdOutsideAnyRepo {
         prev: std::path::PathBuf,
         _dir: TempDir,
@@ -815,10 +681,8 @@ mod tests {
             let dir = TempDir::new().unwrap();
             std::env::set_current_dir(dir.path()).expect("set cwd");
             let guard = Self { prev, _dir: dir };
-            // Constructed first so a failure here still restores the CWD. A
-            // `TMPDIR` inside a checkout would put the ambient ref back in
-            // reach and silently undo the isolation, so assert rather than
-            // assume the temp dir has no `.git` ancestor.
+            // Constructed first so a failure still restores the CWD. A TMPDIR inside a checkout
+            // would silently undo the isolation, so assert it.
             assert!(
                 crate::storage::NotesRefs::discover(None).is_none(),
                 "TMPDIR resolves inside a git repo, so the CWD guard isolates nothing"
@@ -828,27 +692,15 @@ mod tests {
     }
     impl Drop for CwdOutsideAnyRepo {
         fn drop(&mut self) {
-            // Runs before the TempDir field drops, so its removal never races
-            // a CWD still pointing inside it.
+            // Restore before the TempDir field drops.
             let _ = std::env::set_current_dir(&self.prev);
         }
     }
-
-    // ── item 20: SSE-driven live pull, two local instances, one team server ─
-    //
-    // Uses a REAL `inkentry-server` router as the team server (not a wiremock
-    // stub): its `/v1/projects/*/memory*` team-hosting routes are the same
-    // production handlers a real cloud-api-or-OSS team server would run, so
-    // pushing through instance A's relay and having instance B's relay pick
-    // it up exercises the actual SSE `/memory/stream` code path this
-    // module's pull loop consumes, not just `/memory/since` polling.
 
     #[tokio::test]
     #[serial(server_state_dir_env, process_cwd)]
     async fn entry_added_on_instance_a_becomes_visible_on_instance_b_via_live_pull() {
         let _restore_state_dir = RelayEnvGuard::install();
-        // Held for the whole body: this test drives a real `memory list`, whose
-        // git-notes import is keyed off the CWD.
         let _cwd = CwdOutsideAnyRepo::enter();
         let (team_addr, _) = spawn_inkentry_server(&DeclaredTargets::default()).await;
         let team_uri = format!("http://{}", team_addr);
@@ -869,18 +721,14 @@ mod tests {
 
         let cfg = local_first_cfg(&team_uri);
 
-        // Register B FIRST, before A ever writes, so B's pull loop is live
-        // (holding its SSE connection) with nothing yet to catch up on — the
-        // entry it eventually sees can only have arrived via the live SSE
-        // wake-up + re-catch-up path, not B's own initial registration
-        // catch-up.
+        // Register B first so its pull loop is live with nothing to catch up on: the entry
+        // can then only arrive via the live SSE wake-up.
         point_state_dir_at(state_b.path());
         assert!(
             poll_and_apply(&cfg, &mem_b).await.is_some(),
             "instance B's relay must be reachable"
         );
 
-        // Now instance A writes and relays it to the team server.
         point_state_dir_at(state_a.path());
         let store_a = open_store(&mem_a);
         store_a
@@ -897,14 +745,8 @@ mod tests {
         drop(store_a);
         nudge_after_write(&cfg, &mem_a).await;
 
-        // Instance B: drive a REAL `inkentry memory list` invocation (item 45)
-        // until the entry arrives via live pull — not `poll_and_apply`
-        // directly. This is the actual gap the founder review found: the
-        // item-20 e2e test previously passed by calling `poll_and_apply`
-        // itself, so it never exercised the read path item 20's own text
-        // names ("visible via `inkentry memory list`/`search`"). Calling the
-        // production `memory_list` function here means this test can no
-        // longer pass without `memory list` itself draining the buffer.
+        // Drive the real `memory list`, not `poll_and_apply`, so the test fails unless the
+        // read path itself applies relay results.
         point_state_dir_at(state_b.path());
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut seen = false;
@@ -947,14 +789,6 @@ mod tests {
         );
     }
 
-    // ── item 16: kill-and-restart mid-drain, no data loss, no duplicates ───
-    //
-    // Simulates a killed-and-restarted local server with a genuinely fresh
-    // process: a second `spawn_local_relay` (a brand new axum router + a
-    // brand new, empty `RelayRegistry`) that shares no state at all with the
-    // first. Re-registering against it must re-derive the outbox/cursor from
-    // `memory.db` alone and reach a correct, duplicate-free end state.
-
     #[tokio::test]
     #[serial(server_state_dir_env)]
     async fn kill_and_restart_the_local_relay_mid_drain_loses_nothing_and_dedupes() {
@@ -981,8 +815,6 @@ mod tests {
         point_state_dir_at(state_1.path());
         nudge_after_write(&cfg, &mem_path).await;
 
-        // Wait for both A and B to land on the (real) team server before the
-        // "restart".
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             poll_and_apply(&cfg, &mem_path).await;
@@ -1002,7 +834,6 @@ mod tests {
         let (_, declared_2) = spawn_local_relay(state_2.path()).await;
         declared_2.declare(&team_uri, "proj");
 
-        // A new, never-yet-pushed row, added after the "restart".
         let store = open_store(&mem_path);
         store
             .add_note("decision", "C", "body", &[], &[], None, None)
@@ -1039,32 +870,10 @@ mod tests {
         );
     }
 
-    // ── founder review (PR #728): apply-fails-without-restart, end to end ──
-    //
-    // The kill/restart test above (item 16) only covers the path where a
-    // fresh relay re-derives everything from `memory.db`, which already
-    // works because the outbox/cursor are durable. The actual gap the
-    // founder review found is narrower and does NOT involve a restart at
-    // all: the relay hands the CLI a result, the CLI's own local write to
-    // `memory.db` fails (e.g. `SQLITE_BUSY`, no `busy_timeout` is
-    // configured), and — before this fix — that result was already gone
-    // from the relay's buffer (destructive `drain`-on-poll), so nothing
-    // would ever retry it. These two tests force that exact failure with a
-    // real competing SQLite writer (same technique as
-    // `inkentry_core::storage::db::tests::insert_embeddings_rolls_back_on_a_real_sqlite_error_not_just_bad_dimension`)
-    // holding `memory.db`'s write lock across one or more `poll_and_apply`
-    // calls, through the real `nudge_after_write`/`poll_and_apply` code path
-    // — not a synthetic unit test of the relay's buffer alone. Verification
-    // while the lock is held goes through a bare read-only connection: even
-    // `MemoryStore::open` itself always attempts a write on every call (the
-    // FTS-sync migration's `INSERT OR IGNORE`, unconditional regardless of
-    // content), so it is itself lock-contentious and cannot be used to probe
-    // state during the locked window without tripping the very contention
-    // under test.
+    // Forces the apply failure with a competing SQLite writer holding memory.db's write
+    // lock. State is read through a bare connection because `MemoryStore::open` always
+    // writes and would itself contend for the lock.
 
-    /// Read-only, migration-free probe: whether any local row already
-    /// carries `remote_id`. Deliberately bypasses `MemoryStore::open` (see
-    /// the comment above) so this itself never contends for the write lock.
     fn raw_has_remote_id(mem_path: &std::path::Path, remote_id: &str) -> bool {
         let conn = rusqlite::Connection::open(mem_path).unwrap();
         let n: i64 = conn
@@ -1077,11 +886,6 @@ mod tests {
         n > 0
     }
 
-    /// Peek the local relay directly (bypassing `poll_and_apply`, so this
-    /// never consumes or applies anything — the poll itself is non-
-    /// destructive after this fix). Used only to deterministically wait for
-    /// the relay's own background catch-up/push to have buffered something,
-    /// without racing a blind sleep against it.
     async fn raw_relay_peek(
         port: u16,
         server_url: &str,
@@ -1109,34 +913,22 @@ mod tests {
 
         let mem_dir = TempDir::new().unwrap();
         let mem_path = mem_dir.path().join("memory.db");
-        let _store = open_store(&mem_path); // create + migrate, nothing local yet
+        let _store = open_store(&mem_path);
 
-        // Register (unlocked) so the relay's background pull loop is alive
-        // and holding its own SSE connection to the team server BEFORE the
-        // row is seeded — same ordering `entry_added_on_instance_a_...`
-        // above uses, so the row is picked up by the relay's own background
-        // catch-up, entirely independent of any later `poll_and_apply` call.
+        // Register unlocked so the relay's pull loop is live before the row is seeded and
+        // its own catch-up picks the row up.
         assert!(
             poll_and_apply(&cfg, &mem_path).await.is_some(),
             "the local relay must be reachable"
         );
 
-        // `memory_stream`'s server-side polling loop only yields notes with
-        // `created_at` strictly after the SSE connection's own second-
-        // granularity start time; without this, a note created in the same
-        // wall-clock second as registration can be silently invisible to the
-        // stream forever (nothing else ever advances `last_seen` past it in
-        // this single-write test). Cross a second boundary first so the seed
-        // below is unambiguously "after".
+        // The stream only yields notes created strictly after its second-granularity start;
+        // cross a second boundary so the seed cannot be missed.
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
-        // Seed the entry directly on the team server, as if pushed by a
-        // different instance — this instance only ever sees it via pull.
-        // Deliberately NOT capturing `results[0].id` from this response as
-        // the row's identity: that field is the server's raw local row id,
-        // a different value from the `sync_id` `/memory/since` (and thus
-        // this relay's `pulled[].remote_id`) actually keys on. Instead, read
-        // the real identity back off the relay's own buffered entry below.
+        // Seed on the team server as if pushed by another instance. Take the identity from
+        // the relay's buffered entry: the batch response's `id` differs from the sync_id
+        // `/memory/since` keys on.
         let http = reqwest::Client::new();
         http.post(format!("{team_uri}/v1/projects/proj/memory/batch"))
             .json(&serde_json::json!({
@@ -1149,9 +941,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait for the relay's own SSE-driven background catch-up to buffer
-        // the row on its own — verified via a direct, non-destructive peek
-        // at the relay (never through `poll_and_apply`, so this wait itself
+        // Wait via a non-destructive peek so the wait never applies anything.
         // never applies/consumes anything).
         let port = crate::cli::cmd::server::probe_local_relay_port()
             .await
@@ -1169,9 +959,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
 
-        // Only now hold `memory.db`'s write lock from a second, competing
-        // connection — the row is confirmed buffered relay-side; this is the
-        // CLI's first attempt to retrieve+apply it.
+        // Lock only after the row is buffered, so this is the CLI's first apply attempt.
         let locker = rusqlite::Connection::open(&mem_path).unwrap();
         locker.execute_batch("BEGIN IMMEDIATE;").unwrap();
 
@@ -1190,9 +978,6 @@ mod tests {
 
         locker.execute_batch("COMMIT;").unwrap();
 
-        // Now that the lock is released, the row must still be recoverable
-        // — proving it was never dropped from the relay's buffer despite
-        // every earlier apply attempt failing.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             poll_and_apply(&cfg, &mem_path).await;
@@ -1225,17 +1010,9 @@ mod tests {
         };
 
         let team_server = MockServer::start().await;
-        // The FIRST push lands and creates the row. `register_and_push` is
-        // called on every `nudge_after_write`/`poll_and_apply` and always
-        // re-offers every still-unstamped row (item 8/11) — including this
-        // one, while its earlier `created` ack sits unstamped due to the
-        // lock below — so any SUBSEQUENT push of the same `external_id` must
-        // behave like a real team server's idempotent dedupe: `skipped`,
-        // with **no id** (`handlers.rs`'s pre-fix behavior; the exact trap
-        // named in the founder review). If the fix relied on that later
-        // push somehow re-minting a fresh id, this mock would silently mask
-        // the regression — it must not: recovery has to come from the
-        // relay's still-buffered original `created` result, never a re-push.
+        // Only the first push creates the row. A re-push of the same external_id gets
+        // `skipped` with no id, like a real team server's dedupe, so recovery must come from
+        // the relay's still-buffered `created` result rather than a re-push.
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/memory/batch"))
             .respond_with(ResponseTemplate::new(207).set_body_json(serde_json::json!({
@@ -1264,13 +1041,8 @@ mod tests {
 
         declared.declare(&team_server.uri(), "proj");
         let cfg = local_first_cfg(&team_server.uri());
-        // Unlocked: registers the session and relays the push to the (mock)
-        // team server in a detached background task on the relay side.
         nudge_after_write(&cfg, &mem_path).await;
 
-        // Wait for that detached push to land and buffer a `created` ack
-        // relay-side — verified via a direct, non-destructive peek at the
-        // relay, entirely independent of any `poll_and_apply` call.
         let port = crate::cli::cmd::server::probe_local_relay_port()
             .await
             .expect("local relay must be reachable");
@@ -1287,9 +1059,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        // Only now hold `memory.db`'s write lock — this is the CLI's first
-        // attempt to retrieve+apply (stamp) the already-buffered ack, even
-        // though the push already durably landed remotely.
+        // Lock only after the ack is buffered.
         let locker = rusqlite::Connection::open(&mem_path).unwrap();
         locker.execute_batch("BEGIN IMMEDIATE;").unwrap();
 
@@ -1308,11 +1078,6 @@ mod tests {
 
         locker.execute_batch("COMMIT;").unwrap();
 
-        // Once the lock is released, the SAME buffered `created` ack (never
-        // dropped by an earlier failed poll) must still be there to stamp —
-        // this is the fix for the "re-push comes back `skipped` with no id"
-        // trap: there is no re-push at all here, just a retried apply of the
-        // original, still-buffered result.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             poll_and_apply(&cfg, &mem_path).await;
