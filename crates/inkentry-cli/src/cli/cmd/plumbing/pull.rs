@@ -1,11 +1,3 @@
-//! `inkentry plumbing pull` — one-way server→local memory delta pull with a
-//! JSONL report.
-//!
-//! Shares its core (`pull_and_apply`, cursored on `MAX(remote_id)`) and its
-//! egress guards with `inkentry sync`, emitting one machine-readable report
-//! object and following the plumbing 0/1/2 exit contract. It makes an outbound
-//! request, so it requires an explicitly-configured team `server_url`.
-
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -19,14 +11,8 @@ use crate::{
     storage::{CloudSyncClient, MemoryStore},
 };
 
-/// The one report object emitted on a completed run (exit 0 or 1). `applied` is
-/// the number of new remote entries written to the local store this run.
-///
-/// The two embed counts mirror `push`'s: `embedded_locally` is the missing
-/// local vectors this run minted for synced rows, `without_local_vector` the
-/// synced rows still waiting on one (no local embedder was reachable, or that
-/// row's embed call failed). A non-zero `without_local_vector` is what tells a
-/// scripted caller that entries landed text-only rather than searchable.
+// A non-zero `without_local_vector` tells a scripted caller that entries landed
+// text-only rather than searchable.
 #[derive(Serialize)]
 struct PullReport {
     applied: usize,
@@ -55,9 +41,8 @@ pub(super) async fn pull(mem_path: &std::path::Path, cfg: &Config) -> Result<()>
         cfg.server_ca.as_deref().map(std::path::Path::new),
     )?;
 
-    // A network/auth/setup failure returns Err and reaches exit 2 via main; an
-    // empty page (nothing new, including a 404) returns an `applied` of 0 and is
-    // an empty delta, not an error.
+    // Failures reach exit 2 via main; an empty page (including a 404) is an
+    // empty delta, not an error.
     let local_embed = LocalEmbedPolicy::resolve(cfg, mem_path);
     let summary = pull_and_apply(&local, &client, &local_embed).await?;
 
@@ -73,8 +58,7 @@ pub(super) async fn pull(mem_path: &std::path::Path, cfg: &Config) -> Result<()>
     )?;
     stdout.flush()?;
 
-    // Exit 1 is an empty delta (nothing new to apply); exit 0 means at least
-    // one entry was applied. The report is emitted in both cases.
+    // Exit 1 is an empty delta; the report is emitted either way.
     if summary.applied == 0 {
         std::process::exit(1);
     }

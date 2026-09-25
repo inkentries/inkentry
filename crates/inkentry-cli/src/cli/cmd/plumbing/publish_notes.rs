@@ -3,11 +3,8 @@ use inkentry_core::storage::{PublishOutcome, SkipReason, publish_notes as core_p
 
 use super::PlumbingPublishNotesArgs;
 
-/// Publish `refs/notes/inkentry` to a remote (ADR-069 D7).
-///
-/// Runs against the git repo holding the CWD, so it works before `inkentry init`:
-/// git notes are the pre-`init` store of record (ADR-068), and publishing them
-/// must not require an index.
+// Runs against the git repo holding the CWD: git notes are the store of record
+// before `inkentry init`, so publishing must not require an index.
 pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
     let remote = args.remote.as_deref().unwrap_or("origin");
 
@@ -22,9 +19,8 @@ pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
             Ok(())
         }
         Ok(PublishOutcome::Skipped(reason)) => {
-            // The hook drops stdout, so a JSON-only skip reaches nobody. A user
-            // whose memory did not publish has to be told that it did not; the
-            // other skips had nothing to publish in the first place.
+            // The hook drops stdout, so this skip must also go to stderr; the
+            // other skips had nothing to publish.
             if reason == SkipReason::LockUnavailable {
                 eprintln!(
                     "inkentry: memory not published: another inkentry process holds the \
@@ -39,8 +35,7 @@ pub async fn publish_notes(args: PlumbingPublishNotesArgs) -> Result<()> {
             }));
             Ok(())
         }
-        // A hook exiting non-zero aborts the user's branch push outright, so a
-        // publish failure must not reach the exit status through it (D3).
+        // A non-zero hook exit aborts the user's branch push.
         Err(e) if args.best_effort => {
             eprintln!("inkentry: {e:#}");
             eprintln!(

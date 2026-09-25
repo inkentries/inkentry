@@ -1,13 +1,3 @@
-//! `inkentry plumbing push` — one-way local→server memory push with a JSONL
-//! report.
-//!
-//! Shares its core (`push_local_oneway`) and its egress guards with
-//! `inkentry sync`, but it emits a single machine-readable report object on
-//! stdout and follows the plumbing 0/1/2 exit contract. Unlike the read-only
-//! plumbing commands it makes an outbound request, so it requires an
-//! explicitly-configured team `server_url` (never the inference loopback),
-//! exactly as `inkentry sync` does.
-
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -22,10 +12,8 @@ use crate::{
     storage::{CloudSyncClient, MemoryStore},
 };
 
-/// The one report object emitted on a completed run (exit 0 or 1). Field names
-/// and types are the stability contract; see the golden schema entry for
-/// `push`. Every field is drawn from `PushSummary`; `interrupted` is always
-/// `false` here because a run that was interrupted exits 2 without a report.
+// Field names and types are the stability contract. `interrupted` is always
+// false: an interrupted run exits 2 without a report.
 #[derive(Serialize)]
 struct PushReport {
     attempted: usize,
@@ -76,11 +64,8 @@ pub(super) async fn push(
     )
     .await?;
 
-    // Exit 2 (did not complete): leave stdout empty and let main's error path
-    // write the diagnostic to stderr. Two shapes reach here — a mid-run
-    // interruption (some chunks landed, the rest were not attempted) and a
-    // total failure (nothing durably landed at all). Both must be
-    // distinguishable from an empty delta, which is why they are not a report.
+    // Exit 2 with empty stdout: an interruption or total failure must be
+    // distinguishable from an empty delta, so neither is a report.
     if let Some(reason) = summary.interrupted.as_deref() {
         anyhow::bail!(
             "pushed {} of {} entries, then stopped: {reason}. \
@@ -112,10 +97,7 @@ pub(super) async fn push(
     writeln!(stdout, "{}", serde_json::to_string(&report)?)?;
     stdout.flush()?;
 
-    // Exit 1 is an empty delta: nothing was newly created (nothing local to
-    // push, or everything was already present). Exit 0 means at least one entry
-    // moved. The report is emitted in both cases; only a hard error (exit 2)
-    // leaves stdout empty.
+    // Exit 1 is an empty delta; the report is emitted either way.
     if summary.created == 0 {
         std::process::exit(1);
     }

@@ -1,6 +1,3 @@
-//! Push local memory entries to the cloud (`inkentry sync` and the one-way
-//! `inkentry plumbing push`).
-
 use std::collections::HashSet;
 
 use anyhow::Result;
@@ -9,76 +6,31 @@ use crate::storage::{BatchPushItem, CloudSyncClient, MemoryStore, NoteId, SyncEd
 
 use super::local_embed::{LocalEmbedPolicy, repair_local_embeddings, usable_vector};
 
-/// How many entries go in each `POST /memory/batch` request. Kept small so even
-/// the worst case (text-only, the server re-embedding a full chunk on a cold
-/// embedder) finishes with wide margin under the request timeout, and a
-/// with-vectors chunk (N x 896 fp32) is a sub-megabyte JSON body rather than
-/// multi-MB; still large enough that a few hundred entries is only a handful of
-/// requests. A finer chunk also bounds the loss on a mid-push failure to at most
-/// this many entries before the resumable re-run continues. Fixed, not
-/// configurable: no evidence a user needs to tune it, and a constant is trivial
-/// to adjust later.
+// Small enough that a text-only chunk the server must re-embed on a cold
+// embedder stays well under the request timeout, and a with-vectors chunk
+// stays a sub-megabyte body.
 const PUSH_BATCH_CHUNK_SIZE: usize = 50;
 
-/// Outcome of a push pass (shared by `sync` and the one-way `plumbing push`).
 #[derive(Debug)]
 pub(in crate::cli::cmd) struct PushSummary {
-    /// Rows actually sent to `push_batch` (the `live` set) — not the raw
-    /// pre-filter row count, which would over-report when rows are already
-    /// synced (`remote_id` already set) and no request is made at all.
+    // Rows sent to `push_batch`, excluding already-synced ones.
     pub attempted: usize,
-    /// Tallied from `results[].status`, not the server's own aggregate
-    /// `created`/`skipped` ints — the two are independent wire fields
-    /// (`BatchPushResult`) and can diverge (a server has been observed
-    /// reporting aggregate `created: 0` for a batch whose per-item results
-    /// showed entries durably persisted). `results[]` is the reconciled
-    /// signal.
+    // Tallied from `results[].status`: the server's aggregate ints are
+    // independent wire fields and have been seen to disagree with them.
     pub created: u32,
     pub skipped: u32,
-    /// Items whose status did not affirmatively mean "durably persisted"
-    /// — anything other than `created`/`skipped` (`failed`, or an
-    /// unrecognized status riding along with a result). Kept separate so a
-    /// partial-failure batch still reports its real successes instead of
-    /// reading as "nothing happened".
+    // Any status other than `created`/`skipped`, including unrecognized ones.
     pub failed: u32,
-    /// Non-archived rows already carrying a `remote_id` — i.e. previously
-    /// synced and excluded from `attempted`. Lets callers report an honest
-    /// "nothing to push" message instead of implying a push happened.
     pub already_synced: usize,
-    /// `Some(reason)` when a chunk failed mid-push and the loop stopped before
-    /// the remaining chunks (see [`push_local`]); `None` on a clean run. Lets the
-    /// command layer report honest partial progress plus a resume hint and exit
-    /// non-zero, instead of discarding the chunks that already landed.
+    // `Some(reason)` when a chunk failed and the remaining chunks were not sent.
     pub interrupted: Option<String>,
-    /// Push-set rows whose missing local vector this push minted and committed
-    /// to `memory.db`. Reported separately from `created`/`skipped`/`failed`,
-    /// which are all about what the *destination* did.
+    // Separate from created/skipped/failed, which describe the destination.
     pub embedded_locally: usize,
-    /// Push-set rows that still have no usable local vector after the repair
-    /// pass: no local embedder was reachable, or that row's embed call failed.
-    /// Drives the one counted warning the command layer emits. Always 0 when
-    /// the repair does not apply ([`LocalEmbedPolicy::Skip`]).
+    // Always 0 under `LocalEmbedPolicy::Skip`.
     pub without_local_vector: usize,
-    /// `relates_to` edges the cloud confirmed it stored during this push (their
-    /// second endpoint reached the cloud this round). Best-effort and secondary
-    /// to entries: a failure to push them warns but never fails the push. See
-    /// [`push_relates_to_edges`].
     pub edges_pushed: usize,
 }
 
-/// One-way push entry point reused by `inkentry plumbing push`.
-///
-/// `accepts_pushed_vectors` mirrors the destination server's `/v1/health`
-/// capability: when true, each entry that has a local embedding
-/// carries its fp32/896 vector so the server stores it as-is; when false the
-/// push is text-only and the server re-embeds.
-///
-/// `force` is the `plumbing push --force` recovery path (ADR-092): it re-offers
-/// every active entry rather than only `remote_id IS NULL` rows, and each
-/// already-synced entry carries its existing `remote_id` (the server's own prior
-/// id) as the ingest `id`, so a server that lost its database restores each row
-/// under its original identity. Without `force`, the push offers only unstamped
-/// rows and omits `id`.
 pub(in crate::cli::cmd) async fn push_local_oneway(
     local: &MemoryStore,
     client: &CloudSyncClient,
@@ -99,29 +51,10 @@ pub(in crate::cli::cmd) async fn push_local_oneway(
     .await
 }
 
-/// The per-chunk progress line both push entry points emit on stderr; the final
-/// one-line summary stays on stdout in the command layer.
 fn stderr_progress(done: usize, total: usize) {
     eprintln!("Pushed {done}/{total}…");
 }
 
-/// Push local entries to the cloud in batches, then propagate tombstones for any
-/// archived rows that exist cloud-side.
-///
-/// Before the batch is built, `local_embed` decides whether push-set rows that
-/// lack a local vector are embedded through the loopback embedder and committed
-/// to `memory.db`: without that repair a pushed row stays invisible to semantic
-/// `memory search` locally, with nothing telling the user.
-///
-/// Each entry is text-only unless
-/// `accepts_pushed_vectors` is set and the row has a local fp32/896 embedding,
-/// in which case that vector is attached (the server stores it without
-/// re-embedding).
-///
-/// On a chunk-level failure the push stops at the first failed chunk and returns
-/// a summary marked `interrupted` (rather than `?`-propagating and discarding
-/// the chunks that already landed); the already-stamped chunks make the next run
-/// resume from the remainder. See [`push_local_reporting`].
 pub(super) async fn push_local(
     local: &MemoryStore,
     client: &CloudSyncClient,
@@ -141,10 +74,7 @@ pub(super) async fn push_local(
     .await
 }
 
-/// [`push_local`] with the per-chunk progress emission injected as `on_progress`
-/// (called with cumulative `done`/`total` after each chunk that lands), so tests
-/// can observe the progress sequence without capturing stderr. `push_local`
-/// passes the stderr-writing closure.
+// `on_progress` is injected so tests can observe progress without capturing stderr.
 async fn push_local_reporting(
     local: &MemoryStore,
     client: &CloudSyncClient,
@@ -169,35 +99,20 @@ async fn push_local_reporting(
         });
     }
 
-    // Split into live entries (batch-created/upserted by external_id) and
-    // archived entries already known to the cloud (tombstoned via DELETE).
     let mut created = 0u32;
     let mut skipped = 0u32;
     let mut failed = 0u32;
-    // Local row ids whose `remote_id` this push stamped: the entries that
-    // reached the cloud this round. A `relates_to` edge becomes pushable in the
-    // round its second endpoint lands, so only edges touching this set are new
-    // and worth posting (see `push_relates_to_edges`).
+    // A `relates_to` edge becomes pushable in the round its second endpoint
+    // lands, so only edges touching this set are new.
     let mut just_synced: HashSet<NoteId> = HashSet::new();
-    // Set once a chunk fails: the loop stops and the tombstone pass is skipped.
     let mut interrupted: Option<String> = None;
 
-    // Push set (decision #183): live entries not yet on the cloud — i.e.
-    // `WHERE remote_id IS NULL`. Already-synced rows carry a `remote_id` and are
-    // skipped here (the cloud already has them; re-pushing would only earn a 207
-    // `skipped`). Archived rows are handled by the tombstone pass below.
-    //
-    // `--force` (ADR-092) overrides that skip: it re-offers *every* active
-    // entry, already-synced or not, so a server that lost its database is
-    // restored. Under `--force`, `remote_id` is not a skip signal but is sent
-    // back to the server as the ingest `id`, which restores each row under its
-    // original identity (see the item build below).
+    // `--force` re-offers every active row so a server that lost its database
+    // is restored.
     let live: Vec<&_> = rows
         .iter()
         .filter(|r| !r.archived && (force || r.remote_id.is_none()))
         .collect();
-    // Under `--force` nothing is treated as already-synced: every active row is
-    // re-offered and reported as created/skipped, never `already_synced`.
     let already_synced = if force {
         0
     } else {
@@ -206,23 +121,14 @@ async fn push_local_reporting(
             .count()
     };
     let attempted = live.len();
-    // Repair the local store BEFORE the batch is built, so a freshly-minted
-    // vector is available to `maybe_attach_vector` below and the pushed rows
-    // are searchable locally afterwards.
+    // Must run before the batch is built so minted vectors reach `maybe_attach_vector`.
     let repair = repair_local_embeddings(local, &live, local_embed).await?;
-    // Progress is only worth emitting when the push actually spans multiple
-    // chunks; a single-chunk push stays quiet (no noise on small pushes).
     let multi_chunk = attempted.div_ceil(PUSH_BATCH_CHUNK_SIZE) > 1;
-    // The external_id a result carries is the entry's own id, so the
-    // cloud-minted id in the 207 result lands straight back on the right row.
     for chunk in live.chunks(PUSH_BATCH_CHUNK_SIZE) {
         let mut items: Vec<BatchPushItem> = Vec::with_capacity(chunk.len());
         for r in chunk {
-            // Only read the local embedding when the server can accept it. The
-            // stored blob is raw little-endian fp32 (`vec_to_blob`); decode it
-            // and only attach a correctly-dimensioned (896) vector — a
-            // wrong-length or missing embedding falls back to text-only rather
-            // than poisoning the whole batch with a 4xx.
+            // A wrong-length embedding falls back to text-only rather than
+            // failing the whole batch with a 4xx.
             let vector = if accepts_pushed_vectors {
                 usable_vector(local.get_embedding(&r.id)?)
             } else {
@@ -230,11 +136,8 @@ async fn push_local_reporting(
             };
             items.push(
                 BatchPushItem {
-                    // Only `--force` restores identity: hand the server back its
-                    // own previously-minted id (this row's `remote_id`) so a
-                    // reset server re-inserts the row under it instead of minting
-                    // a new one. Never the CLI's local id, and never sent on the
-                    // normal path (where live rows have no `remote_id` anyway).
+                    // Sending the row's prior `remote_id` lets a reset server
+                    // re-insert it under its original identity.
                     id: if force { r.remote_id.clone() } else { None },
                     kind: r.kind.clone(),
                     title: r.title.clone(),
@@ -253,12 +156,8 @@ async fn push_local_reporting(
             );
         }
 
-        // A chunk failure (timeout / transport / non-2xx) usually means the
-        // server is overloaded; pushing the remaining chunks would only make that
-        // worse, and the resumable design (already-stamped chunks are filtered
-        // out of `live` on the next run) means a re-run resumes from exactly
-        // here. So stop at the first failed chunk and return the progress that
-        // already landed instead of discarding it via `?`.
+        // A chunk failure usually means an overloaded server, so stop here;
+        // stamped rows leave `live`, so a re-run resumes from this chunk.
         let res = match client.push_batch(items).await {
             Ok(res) => res,
             Err(e) => {
@@ -267,38 +166,21 @@ async fn push_local_reporting(
             }
         };
 
-        // `created`/`skipped`/`failed` (aggregate ints) and `results[]`
-        // (per-item) are independent fields on `BatchPushResult` — nothing on
-        // the wire guarantees they agree, and a server can send an aggregate
-        // `created: 0` for a batch whose `results[]` shows the entries
-        // durably persisted. The aggregate ints are NOT trusted here: tally
-        // from `results[].status`, the reconciled signal, and only fall back
-        // to the aggregate when the server sent no per-item detail at all to
-        // reconcile against.
+        // The aggregate ints are only a fallback: they can disagree with `results[]`.
         if res.results.is_empty() {
             created += res.created;
             skipped += res.skipped;
             failed += res.failed;
         }
 
-        // Record cloud ids for created entries so a later pull dedupes them and
-        // a later archive can tombstone them by id.
         for item in &res.results {
             match item.status.as_str() {
                 "created" => created += 1,
                 "skipped" => skipped += 1,
-                // Anything else — `"failed"`, or an unrecognized status — did
-                // not affirmatively land; count it as failed rather than
-                // silently dropping it from every tally.
                 _ => failed += 1,
             }
-            // Stamping `remote_id` is permanent (it's what excludes a row from
-            // `live` on every future push), so only do it for a status that
-            // affirmatively means the cloud durably has this row: `created`
-            // (just persisted) or `skipped` (already persisted — dedup on
-            // identity). Any other status — `failed`, or an id riding along
-            // with a status that doesn't mean persisted — must not stamp, or
-            // that row can never be retried again.
+            // Stamping is permanent, so an id riding along with any other
+            // status must not stamp or the row is never retried.
             let durably_persisted = item.status == "created" || item.status == "skipped";
             if durably_persisted
                 && let (Some(ext), Some(cloud_id)) =
@@ -317,17 +199,12 @@ async fn push_local_reporting(
         }
 
         if multi_chunk {
-            // `done` is the running durably-landed count (created + skipped),
-            // which never exceeds `attempted`; the final `done` equals
-            // `created + skipped`.
             on_progress((created + skipped) as usize, attempted);
         }
     }
 
-    // Tombstone archived entries that the cloud already knows about. An archived
-    // row with no `remote_id` was never pushed live, so there is nothing to
-    // delete cloud-side; we skip it. Skipped entirely on an interrupted push: the
-    // connection is already failing and the remaining live chunks were not sent.
+    // An archived row with no `remote_id` was never pushed, so has nothing to
+    // tombstone. Skipped on an interrupted push since the connection is failing.
     if interrupted.is_none() && include_archived {
         for r in rows.iter().filter(|r| r.archived) {
             if let Some(remote_id) = r.remote_id.as_deref() {
@@ -336,10 +213,7 @@ async fn push_local_reporting(
         }
     }
 
-    // Propagate local relates_to edges completed by this round's entry push.
-    // Best-effort and secondary to entries: a failure here warns but does not
-    // fail the push (the entries already landed). Skipped on an interrupted
-    // push, since the connection is already failing.
+    // Best-effort: the entries already landed, so a failure only warns.
     let edges_pushed = if interrupted.is_none() {
         match push_relates_to_edges(local, client, &just_synced).await {
             Ok(n) => n,
@@ -365,24 +239,9 @@ async fn push_local_reporting(
     })
 }
 
-/// Push the local `relates_to` edges completed by this round's entry push.
-///
-/// `just_synced` is the set of entry ids whose `remote_id` this push
-/// stamped (the entries that reached the cloud this round). An edge is
-/// propagated when it touches one of those rows and BOTH its endpoints are
-/// synced, so each edge is posted exactly in the round its second endpoint
-/// lands, never re-posted on a later no-op sync. `relates_to` is the only kind
-/// pushed: a `supersedes` edge rides its entry's lifecycle, and `contradicts`
-/// is server-generated. Server-side the batch route dedupes
-/// (`ON CONFLICT DO NOTHING`), so a redundant re-push is still harmless.
-///
-/// Since `memory add --relates-to` is the only producer of a `relates_to` edge
-/// and always mints a fresh (unsynced) entry as the edge's `from` endpoint,
-/// that endpoint is always in `just_synced` the round the edge first becomes
-/// pushable, so this never silently drops a genuinely new edge.
-///
-/// Returns the number of edges the server confirmed it stored (an `unresolved`
-/// edge is not counted; it is retried when its endpoint later syncs).
+// Only `relates_to` is pushed: `supersedes` rides its entry's lifecycle and
+// `contradicts` is server-generated. An `unresolved` edge is not counted and is
+// retried once its endpoint syncs.
 async fn push_relates_to_edges(
     local: &MemoryStore,
     client: &CloudSyncClient,

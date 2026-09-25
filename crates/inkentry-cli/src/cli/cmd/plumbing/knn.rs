@@ -5,7 +5,7 @@ use super::PlumbingKnnArgs;
 use crate::storage::Database;
 
 pub(super) async fn knn(args: PlumbingKnnArgs, db: &Database) -> Result<()> {
-    // Read entire stdin and parse as JSON: {"model":"...","dimensions":N,"vector":[...]}
+    // stdin is one `embed` output line: {"model":"...","dimensions":N,"vector":[...]}
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
@@ -27,8 +27,7 @@ pub(super) async fn knn(args: PlumbingKnnArgs, db: &Database) -> Result<()> {
 
     let mut results = db.search_similar(&vector, args.limit + 20)?;
 
-    // Filter by min_score (distance ≤ 1 - min_score for cosine) and language.
-    // sqlite-vec returns cosine distance; convert to similarity for --min-score.
+    // sqlite-vec returns cosine distance; `--min-score` is a similarity.
     results.retain(|r| {
         let score = 1.0 - r.distance;
         if score < args.min_score {
@@ -48,7 +47,6 @@ pub(super) async fn knn(args: PlumbingKnnArgs, db: &Database) -> Result<()> {
     }
 
     for r in &results {
-        // Augment with a `score` field without changing SearchResult struct.
         let score = 1.0 - r.distance;
         let mut val = serde_json::to_value(r)?;
         if let serde_json::Value::Object(ref mut m) = val {

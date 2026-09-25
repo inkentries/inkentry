@@ -169,20 +169,10 @@ mod pull;
 mod push;
 mod read_memory;
 
-/// Resolve the memory store a memory-targeting plumbing subcommand acts on.
-///
-/// Keys on the `.inkentry/` **directory** ([`find_project_dir`]), never on a
-/// present `index.db`: a project can be configured and never indexed, and the
-/// index walk would then step over it to the machine-global store while
-/// `memory add`, `memory list` and `sync` in that same directory stay on the
-/// project store. Memory needs no index, so the index is not what says a
-/// project is here.
-///
-/// Outside any project the global store is still the honest answer, but a
-/// silent one is indistinguishable from an empty project store, so it is named
-/// on stderr. stdout stays the JSONL report alone.
-///
-/// [`find_project_dir`]: inkentry_core::config::find_project_dir
+// Keys on the `.inkentry/` directory, not `index.db`: a never-indexed project
+// would otherwise fall through to the global store while `memory add` and `sync`
+// stay on the project store. The global fallback is named on stderr because
+// silence is indistinguishable from an empty project; stdout stays JSONL only.
 fn resolve_memory_path(explicit_db: Option<&std::path::Path>, cfg: &Config) -> std::path::PathBuf {
     if let Some(p) = explicit_db {
         return p.with_file_name("memory.db");
@@ -201,16 +191,10 @@ fn resolve_memory_path(explicit_db: Option<&std::path::Path>, cfg: &Config) -> s
     global
 }
 
-/// Refuse a memory store that is not there.
-///
-/// Applied to the commands that only read from the store or only send from it
-/// (`read-memory`, `push`), never to the ones that receive: exit 1 means "no
-/// entries" or "empty delta", and an absent store is neither. Skipped when
-/// `cloud_first` routes memory to a team server, which owns the store and
-/// leaves the local path a placeholder nothing opens.
-/// `path_flag` is the flag that command uses to name a store itself, so the
-/// remedy points at one the caller can actually reach: `push` resolves
-/// `--source` ahead of `--db`, which makes `--db` inert advice there.
+// For commands that only read or only send: exit 1 means "no entries" or "empty
+// delta", and an absent store is neither. Skipped under `cloud_first`, where the
+// server owns the store. `path_flag` must be one the caller can reach: `push`
+// resolves `--source` ahead of `--db`.
 fn require_memory_store(mem_path: &std::path::Path, cfg: &Config, path_flag: &str) -> Result<()> {
     let routes_remote =
         cfg.resolve_mode() == crate::config::SyncMode::CloudFirst && cfg.server_url.is_some();
@@ -225,8 +209,6 @@ fn require_memory_store(mem_path: &std::path::Path, cfg: &Config, path_flag: &st
 }
 
 pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
-    // Most plumbing commands need the project DB; open it once here.
-    // `embed` and `parse-file` do not need it but it's cheap to open.
     let db_path = args
         .db
         .as_deref()
@@ -236,13 +218,11 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
     match args.command {
         PlumbingCommand::ParseFile(a) => return parse_file::parse_file(a),
         PlumbingCommand::Embed(a) => return embed_cmd::embed_cmd(&cfg, &db_path, a.query).await,
-        // Notes are the pre-`init` store (ADR-068), so publishing must not
-        // require an index.
+        // Notes predate `init`, so no index is required.
         PlumbingCommand::PublishNotes(a) => return publish_notes::publish_notes(a).await,
-        // The memory commands target memory.db and never read a chunk, so they
-        // neither require an index nor take the project's identity from one.
-        // Checked here rather than in `push_local_oneway`, which `sync` also
-        // travels: sync bootstraps a fresh checkout and must keep creating.
+        // The memory commands never read a chunk, so they need no index. The store
+        // check lives here, not in `push_local_oneway`: `sync` also uses that and
+        // must keep creating the store on a fresh checkout.
         PlumbingCommand::Push(a) => {
             let mem_path = a
                 .source
@@ -251,8 +231,8 @@ pub async fn plumbing(args: PlumbingArgs, cfg: Config) -> Result<()> {
             require_memory_store(&mem_path, &cfg, "--source")?;
             return push::push(a, &mem_path, &cfg).await;
         }
-        // Pull receives, so it may create: that is how a fresh checkout first
-        // gets team memory.
+        // Pull receives, so it may create the store: that is how a fresh checkout
+        // first gets team memory.
         PlumbingCommand::Pull(_) => {
             let mem_path = resolve_memory_path(args.db.as_deref(), &cfg);
             return pull::pull(&mem_path, &cfg).await;

@@ -1,12 +1,8 @@
-// Shared test fixtures for the `sync` module's submodule test suites
-// (`super::push`, `super::pull`, `super::round`).
-
 use crate::storage::MemoryStore;
 
 pub(in crate::cli::cmd::memory) fn register_sqlite_vec() {
     use std::sync::OnceLock;
-    // `MemoryStore::open` creates a vec0 table, so the extension must be
-    // registered before any connection opens.
+    // `MemoryStore::open` creates a vec0 table, so this must precede any connection.
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
         #[allow(clippy::missing_transmute_annotations)]
@@ -18,9 +14,6 @@ pub(in crate::cli::cmd::memory) fn register_sqlite_vec() {
     });
 }
 
-// Spin up a real `inkentry-server` axum router (the production router) on
-// an ephemeral loopback port, serving the team-hosting
-// `/v1/projects/*/memory*` routes this test's `CloudSyncClient`s talk to.
 pub(in crate::cli::cmd::memory) async fn spawn_inkentry_server() -> std::net::SocketAddr {
     register_sqlite_vec();
     let db_dir = tempfile::TempDir::new().unwrap();
@@ -58,15 +51,9 @@ pub(in crate::cli::cmd::memory) async fn spawn_inkentry_server() -> std::net::So
     addr
 }
 
-// A mocked local inkentry-server standing in for the loopback embedder, found
-// through auto-discovery's fixed-port fallback pointed at the mock. Going
-// through the real discovery path (rather than injecting an `inference_url`) is
-// what makes the "embed never reaches the team server_url" tests meaningful,
-// and pointing the fallback at this mock pins the probe to it instead of
-// whatever happens to listen on the default port on the machine running the
-// tests.
-//
-// Mutates process-global env, so every test using it must be `#[serial]`.
+// Found through real auto-discovery (fixed-port fallback pointed at the mock),
+// which is what makes the "embed never reaches the team server_url" tests
+// meaningful. Mutates process-global env, so users must be `#[serial]`.
 pub(in crate::cli::cmd::memory) struct LoopbackEmbedder {
     pub(in crate::cli::cmd::memory) server: wiremock::MockServer,
     _state_dir: tempfile::TempDir,
@@ -94,26 +81,18 @@ impl Drop for LoopbackEmbedder {
     }
 }
 
-// The fp32 vector `spawn_loopback_embedder`'s `/index/embed` route returns.
-// L2-normalised and 896-dim, so it survives the push's own dimension guard.
+// L2-normalised and 896-dim, so it survives the push's dimension guard.
 pub(in crate::cli::cmd::memory) fn stub_vector() -> Vec<f32> {
     let dim = inkentry_core::embeddings::EMBEDDING_DIM;
     vec![1.0 / (dim as f32).sqrt(); dim]
 }
 
-// Start a mocked loopback inference server for `project_id` and point
-// auto-discovery at it. `failing_title_marker`, when given, makes the embed
-// route 500 for any request whose body contains it, so a single row's embed
-// failure can be exercised without failing the rest.
+// `failing_title_marker` makes the embed route 500 for any request body
+// containing it, so one row can fail without failing the rest.
 //
-// This mutates `INKENTRY_STATE_DIR` and `INKENTRY_NO_SERVER`, which are
-// process-global. Every caller must carry
-// `#[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]`:
-// those are the keys the rest of the crate guards these two variables under,
-// and serial_test's unnamed key is a *separate* lock, so a bare `#[serial]`
-// leaves a caller racing the probe and daemon tests. A concurrent probe then
-// reads this test's discovery override and hits this test's mock, which is
-// exactly what breaks the "no embed calls" assertions.
+// Callers must carry `#[serial_test::serial(inkentry_no_server_env,
+// server_state_dir_env)]`: a bare `#[serial]` uses a separate lock and races
+// the probe and daemon tests that guard these env vars under those keys.
 pub(in crate::cli::cmd::memory) async fn spawn_loopback_embedder(
     project_id: &str,
     failing_title_marker: Option<&str>,
@@ -144,12 +123,9 @@ pub(in crate::cli::cmd::memory) async fn spawn_loopback_embedder(
     point_discovery_at(server)
 }
 
-// The same loopback embedder, but answering with a vector derived from the
-// document it was handed rather than one constant vector. Two texts sharing
-// words come back close together and unrelated ones do not, which is what lets
-// a test assert a real KNN round trip instead of "some blob was written".
-//
-// Carries the same `#[serial]` requirement as `spawn_loopback_embedder`.
+// Answers with a vector derived from the document, so texts sharing words land
+// close together and a test can assert a real KNN round trip. Same `#[serial]`
+// requirement as `spawn_loopback_embedder`.
 pub(in crate::cli::cmd::memory) async fn spawn_content_embedder(
     project_id: &str,
     failing_title_marker: Option<&str>,
@@ -188,10 +164,7 @@ pub(in crate::cli::cmd::memory) async fn spawn_content_embedder(
     point_discovery_at(server)
 }
 
-// A unit vector whose direction is the bag of words of `text`: every token is
-// hashed to one dimension. Shared tokens are shared direction, so cosine
-// distance behaves the way a real embedder's does for the purposes of "does the
-// right entry come back first".
+// Bag-of-words unit vector: each token hashes to one dimension.
 pub(in crate::cli::cmd::memory) fn content_vector(text: &str) -> Vec<f32> {
     let dim = inkentry_core::embeddings::EMBEDDING_DIM;
     let mut v = vec![0f32; dim];
@@ -212,8 +185,7 @@ pub(in crate::cli::cmd::memory) fn content_vector(text: &str) -> Vec<f32> {
             *x /= norm;
         }
     } else {
-        // A zero vector has no direction for a distance metric to compare, so a
-        // token-less document still gets a unit one.
+        // A zero vector has no direction to compare.
         v[0] = 1.0;
     }
     v
@@ -237,11 +209,9 @@ pub(in crate::cli::cmd::memory) async fn mount_health(server: &wiremock::MockSer
         .await;
 }
 
-// Through the fixed-port fallback (step 3b), not the `server.port` file: step
-// 3a now uses a responder only when the pid recorded beside the port is a live
-// `inkentry-server` process reporting the recorded instance id, and a wiremock
-// stand-in is neither. The state dir is still redirected at an empty temp dir,
-// so nothing here reads the developer's own state.
+// Uses the fixed-port fallback, not the `server.port` file: that path accepts
+// only a live `inkentry-server` pid, which a wiremock stand-in is not. The
+// state dir is redirected to an empty temp dir so the developer's is never read.
 pub(in crate::cli::cmd::memory) fn point_discovery_at(
     server: wiremock::MockServer,
 ) -> LoopbackEmbedder {
@@ -264,8 +234,7 @@ pub(in crate::cli::cmd::memory) fn point_discovery_at(
     }
 }
 
-// Open a fresh local memory store in a new tempdir, returning both (the
-// tempdir must be kept alive by the caller for the store's lifetime).
+// The caller must keep the tempdir alive for the store's lifetime.
 pub(in crate::cli::cmd::memory) fn fresh_store() -> (tempfile::TempDir, MemoryStore) {
     register_sqlite_vec();
     let tmp = tempfile::TempDir::new().unwrap();

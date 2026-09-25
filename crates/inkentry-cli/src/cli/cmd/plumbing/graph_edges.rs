@@ -11,8 +11,7 @@ pub(super) fn graph_edges(args: PlumbingGraphEdgesArgs, db: &Database) -> Result
     let mut edges = vec![];
 
     if let Some(ref file) = args.file {
-        // A path the index does not hold is an error, not an empty set: a
-        // mistyped path must never read the same as a file with no edges.
+        // A mistyped path must not read the same as a file with no edges.
         if db.file_id_for_path(file)?.is_none() {
             bail!(
                 "'{file}' is not in the index; pass the project-relative path as stored (see `plumbing ls-files`)"
