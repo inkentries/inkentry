@@ -1,7 +1,3 @@
-// `inkentry hooks install` promises per-commit harvesting, and harvest is the
-// only feature that needs an LLM. A default install has none, so the promise
-// has to be qualified at the moment the user opts in.
-
 use crate::command_llm_routing::{
     base_cmd, combined, harvest_payload, loopback_discovery_port, seed_index, server_mock,
     write_git_project,
@@ -28,8 +24,6 @@ fn post_commit_hook(project: &Path) -> std::path::PathBuf {
     project.join(".git").join("hooks").join("post-commit")
 }
 
-// The top-level harvest the installed hook runs, detached exactly as it is
-// there.
 fn detached_harvest_cmd(
     home: &Path,
     project: &Path,

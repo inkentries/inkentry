@@ -1,16 +1,5 @@
-//! Test-engineer coverage: drive per-origin bearer resolution (ADR-071 D1/D2)
-//! through the real binary, over the real wire, against two independent mock
-//! servers standing in for the motivating multi-server case: two projects,
-//! two `server_url`s, two keys, resolving correctly with no env-juggling.
-//!
-//! The Engineer's own suite (`crates/inkentry-core/src/config/server_keys.rs`,
-//! `crates/inkentry-cli/tests/auth_server_keys.rs`) verifies resolution at the
-//! unit level and the command surface (`set-key`/`list-servers`/`logout`)
-//! end to end, but nothing exercises the actual `Authorization` header a real
-//! request carries to a real (mocked) origin. That is the one place a
-//! same-string-comparison or map-mixup bug would actually manifest as a
-//! credential going to the wrong server, so this file inspects the header
-//! wiremock received rather than trusting the CLI's own stdout/exit code.
+// Inspects the `Authorization` header wiremock received per origin, so a key
+// going to the wrong server is caught rather than trusting the CLI's stdout.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
@@ -32,8 +21,6 @@ async fn mount_health_and_pull(server: &MockServer) {
         })))
         .mount(server)
         .await;
-    // `plumbing pull` cursors on `?since_id=`, whose response is the
-    // `{entries, count}` envelope (not the legacy `?t=` bare array).
     Mock::given(method("GET"))
         .and(path_regex(r"^/v1/projects/.+/memory/since$"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"entries": []})))
@@ -41,12 +28,9 @@ async fn mount_health_and_pull(server: &MockServer) {
         .await;
 }
 
-// `server_url`/`project_id` are set via `INKENTRY_SERVER_URL`/`INKENTRY_PROJECT_ID`
-// env on each command below, not this file: `Config::load` only honors those
-// two fields from a project-level `.inkentry/config.toml` (discovered by
-// walking up from CWD) or env, never from the `--config` file this test
-// swaps per origin. Env is the natural fit here since this file's whole
-// point is bearer-per-origin resolution, not config-file precedence.
+// `server_url`/`project_id` come from env: `Config::load` honors them only
+// from a project-level `.inkentry/config.toml` or env, never from the `--config`
+// file swapped per origin here.
 fn write_server_config(dir: &Path, name: &str) -> std::path::PathBuf {
     let config_path = dir.join(format!("{name}.toml"));
     std::fs::write(&config_path, "").unwrap();
@@ -64,13 +48,8 @@ fn set_key(home: &Path, server: &str, key: &str) {
         .success();
 }
 
-// The multi-server acceptance case, driven for real: two `server_url`s
-// under the *same* HOME (so they share one secret-store map, D1's whole
-// point), each with its own key set via the real `auth set-key` command,
-// then two separate `inkentry plumbing pull` invocations, one per origin,
-// each inspected for the literal `Authorization` header wiremock received.
-// Each origin must get exactly its own key, never the other's, and never
-// an env var (none is set at any point in this test).
+// Both origins share one HOME, so they share one secret-store map; no env key
+// is ever set.
 #[tokio::test]
 async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     let server_a = MockServer::start().await;
@@ -88,8 +67,7 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     let config_b = write_server_config(cfg_dir.path(), "b");
 
     // `plumbing pull` derives the memory store from `--db`'s sibling; an empty
-    // pull exits 1 (empty delta), so this inspects the request, not the exit
-    // code. What matters here is the bearer on the wire, one origin at a time.
+    // pull exits 1, so this inspects the request, not the exit code.
     let index_db = cfg_dir.path().join("index.db");
 
     inkentry_bin_in(home.path())
@@ -147,12 +125,9 @@ async fn two_servers_two_keys_each_gets_only_its_own_bearer_over_the_wire() {
     );
 }
 
-// ADR-088 D2/D3, end to end through the real binary and the real
-// (file-backed) secret store: a flat key planted the way a pre-ADR-071 client
-// would have left it is read for nothing. The request goes out with no
-// `Authorization` header at all, the server's rejection names
-// `inkentry auth set-key --server <url>`, and nothing is migrated into the
-// per-origin map on the way past.
+// A flat key left by a pre-per-origin client is read for nothing: no
+// `Authorization` header, the rejection names `auth set-key --server <url>`,
+// and nothing is migrated into the per-origin map.
 #[tokio::test]
 async fn a_flat_key_from_an_older_client_is_not_migrated_and_the_failure_names_the_fix() {
     let server = MockServer::start().await;
@@ -174,9 +149,8 @@ async fn a_flat_key_from_an_older_client_is_not_migrated_and_the_failure_names_t
     let home = TempDir::new().unwrap();
     let cfg_dir = TempDir::new().unwrap();
 
-    // `auth set-key` only ever writes the per-origin map, so writing
-    // secrets.toml directly is the only way to simulate an upgrading (not
-    // fresh) install.
+    // `auth set-key` only writes the per-origin map, so simulating an upgraded
+    // install needs `secrets.toml` written directly.
     let secrets_dir = home.path().join(".config").join("inkentry");
     std::fs::create_dir_all(&secrets_dir).unwrap();
     std::fs::write(
@@ -217,7 +191,6 @@ async fn a_flat_key_from_an_older_client_is_not_migrated_and_the_failure_names_t
         "the failure must name the fix, got:\n{stderr}"
     );
 
-    // Nothing was migrated into the map on the way past.
     inkentry_bin_in(home.path())
         .arg("auth")
         .arg("list-servers")

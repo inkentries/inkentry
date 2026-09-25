@@ -1,20 +1,6 @@
-//! End-to-end coverage for the CLI's real TLS-server client path.
-//!
-//! Every existing capability-probe test talks to a plaintext wiremock server;
-//! none ever drove a genuine TLS handshake through the CLI's real `reqwest`
-//! client. That gap is exactly how a broken `server_ca` setup shipped
-//! invisible: the server was reachable (`curl` returned 200), only
-//! certificate trust failed, and the CLI reported "unreachable" with no
-//! further detail.
-//!
-//! This spins up a real axum-server rustls listener signed by an in-test CA
-//! (rcgen) and drives the actual `inkentry` binary against it over
-//! `https://127.0.0.1:<port>`:
-//!
-//! - a proper CA -> leaf chain: the CLI must reach `Tier::Server`.
-//! - the classic server-setup.md client-trust trap (a CA:TRUE certificate
-//!   served as the listener's own leaf): the CLI must stay offline AND name
-//!   the certificate cause, not just report "unreachable".
+// Drives the real binary against a real rustls listener signed by an in-test
+// CA: a plaintext wiremock never exercises certificate trust, which is how a
+// broken `server_ca` setup once reported only "unreachable".
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
@@ -27,11 +13,7 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-// ── cert generation ──────────────────────────────────────────────────────────
-
-/// A self-signed CA (CA:TRUE, SAN `127.0.0.1`). Returns the CA's own
-/// `(cert_pem, key_pem)` (usable directly as a broken leaf) plus an `Issuer`
-/// handle for signing a proper leaf.
+// CA:TRUE; its own cert/key are usable directly as a broken leaf.
 struct TestCa {
     cert_pem: String,
     key_pem: String,
@@ -61,8 +43,6 @@ fn new_ca() -> TestCa {
     }
 }
 
-/// Issue a proper `127.0.0.1` leaf (CA:FALSE, serverAuth EKU) from `issuer`.
-/// Returns `(cert_pem, key_pem)` for the TLS listener.
 fn new_leaf(issuer: &Issuer<'static, KeyPair>) -> (String, String) {
     let mut params = CertificateParams::new(vec!["127.0.0.1".to_string()]).expect("valid leaf SAN");
     params
@@ -81,9 +61,6 @@ fn new_leaf(issuer: &Issuer<'static, KeyPair>) -> (String, String) {
     (cert.pem(), key_pair.serialize_pem())
 }
 
-/// Issue a `127.0.0.1` leaf identical to `new_leaf`, except its validity
-/// window is entirely in the past (expired since 2001), for the "expired
-/// certificate" classification-matrix case.
 fn new_expired_leaf(issuer: &Issuer<'static, KeyPair>) -> (String, String) {
     let mut params = CertificateParams::new(vec!["127.0.0.1".to_string()]).expect("valid leaf SAN");
     params
@@ -104,8 +81,6 @@ fn new_expired_leaf(issuer: &Issuer<'static, KeyPair>) -> (String, String) {
     (cert.pem(), key_pair.serialize_pem())
 }
 
-// ── TLS listener ─────────────────────────────────────────────────────────────
-
 async fn health_handler() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "status": "ok",
@@ -115,11 +90,7 @@ async fn health_handler() -> axum::Json<serde_json::Value> {
     }))
 }
 
-/// Spawn a real axum-server rustls TLS listener on `127.0.0.1` serving
-/// `GET /v1/health`, on its own thread with its own Tokio runtime. The thread
-/// is detached (never joined) but spawns no separate OS process, so it dies
-/// with the test binary; nothing survives the test run to sweep. Returns the
-/// bound port.
+// Detached thread with its own runtime; it dies with the test binary.
 fn spawn_tls_server(cert_pem: String, key_pem: String) -> u16 {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind tls listener");
     let port = std_listener.local_addr().expect("local_addr").port();
@@ -130,7 +101,6 @@ fn spawn_tls_server(cert_pem: String, key_pem: String) -> u16 {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime for tls test server");
         rt.block_on(async move {
-            // Same provider choice as inkentry-server's own TLS listener (ADR-066).
             let _ = rustls::crypto::ring::default_provider().install_default();
             let config = axum_server::tls_rustls::RustlsConfig::from_pem(
                 cert_pem.into_bytes(),
@@ -148,19 +118,14 @@ fn spawn_tls_server(cert_pem: String, key_pem: String) -> u16 {
         });
     });
 
-    // The socket is already bound+listening (kernel backlog accepts
-    // immediately); this only covers the accept loop's cold start, since the
-    // CLI's probe against an explicit server_url is a single attempt with no
-    // retry.
+    // The socket is already listening; this only covers the accept loop's cold
+    // start, since the probe against an explicit server_url is a single attempt.
     std::thread::sleep(std::time::Duration::from_millis(150));
     port
 }
 
-// ── project setup ────────────────────────────────────────────────────────────
-
-/// Build a minimal indexed project, entirely offline (`INKENTRY_NO_SERVER=1`),
-/// so the later `status` run only exercises the probe against our own TLS
-/// listener, not real embedding.
+// Built offline (`INKENTRY_NO_SERVER=1`) so the later `status` run exercises
+// only the probe against our TLS listener.
 fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let temp = TempDir::new().expect("tempdir");
     let project_dir = temp.path().join("project");
@@ -191,12 +156,8 @@ fn setup_project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     (temp, project_dir, config_path)
 }
 
-// Overwrite `config_path` (the global `--config` file) with `db_path` and
-// `server_ca`, and separately point `server_url` (our TLS test listener) at
-// `<project_dir>/.inkentry/config.toml`: `Config::load` only honors
-// `server_url` from a project-level config (or env), never the global file.
-// The loopback address means `project_id` is not required (see
-// `Config::validate_with_project`).
+// `server_url` is honored only from a project-level config (or env), never the
+// global file. A loopback address means `project_id` is not required.
 fn write_tls_config(
     config_path: &Path,
     db_path: &Path,
@@ -217,8 +178,6 @@ fn write_tls_config(
     );
 }
 
-/// Same as `write_tls_config`, but deliberately omits `server_ca`: the CLI
-/// trusts only the default root store, so our in-test CA is untrusted.
 fn write_tls_config_no_ca(config_path: &Path, db_path: &Path, port: u16, project_dir: &Path) {
     let cfg = format!("db_path = {:?}\n", db_path.display().to_string());
     fs::write(config_path, cfg).expect("write tls config with no server_ca");
@@ -229,10 +188,6 @@ fn write_tls_config_no_ca(config_path: &Path, db_path: &Path, port: u16, project
     );
 }
 
-// ── tests ────────────────────────────────────────────────────────────────────
-
-/// A properly issued CA -> leaf chain: the CLI's real client path must reach
-/// `Tier::Server` (the CA-trust config working as documented).
 #[test]
 fn tls_server_with_proper_ca_chain_reaches_server_tier() {
     let ca = new_ca();
@@ -274,14 +229,11 @@ fn tls_server_with_proper_ca_chain_reaches_server_tier() {
     );
 }
 
-// The classic server-setup.md client-trust trap: the server presents a
-// CA:TRUE certificate as its own leaf. The CLI must stay offline, but must
-// distinguish "reachable, TLS trust failed" from a plain "[unreachable]",
-// and must name the certificate cause in both the WARN and the status line.
+// A CA:TRUE certificate served as the listener's own leaf: the CLI must stay
+// offline and name the certificate cause, not just report `[unreachable]`.
 #[test]
 fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
     let ca = new_ca();
-    // Serve the CA certificate itself (CA:TRUE) as the listener's own leaf.
     let port = spawn_tls_server(ca.cert_pem.clone(), ca.key_pem.clone());
 
     let (temp, project_dir, config_path) = setup_project();
@@ -332,8 +284,7 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
          CaUsedAsEndEntity string-match broke and the cause fell through to \
          the generic 'certificate rejected: ...' branch): {combined}"
     );
-    // tracing's fmt subscriber writes to stdout by default, so the WARN lands
-    // there, not on stderr; check the combined output either way.
+    // tracing writes to stdout by default, so the WARN lands there, not stderr.
     assert!(
         combined.contains("full error chain"),
         "the WARN must include the full source chain, not just reqwest's \
@@ -346,11 +297,8 @@ fn tls_server_with_ca_cert_as_leaf_names_the_cause_not_just_unreachable() {
     );
 }
 
-/// Expired-certificate classification: a properly CA-signed leaf whose
-/// validity window is entirely in the past. The CA is trusted (`server_ca`
-/// configured), so this exercises rustls's own expiry check rather than
-/// issuer trust; the cause must name "expired", not collapse to a generic
-/// TLS-handshake-failed message or, worse, `[unreachable]`.
+// The CA is trusted, so this exercises rustls's own expiry check rather than
+// issuer trust.
 #[test]
 fn tls_server_with_expired_leaf_names_expired_cause() {
     let ca = new_ca();
@@ -393,12 +341,9 @@ fn tls_server_with_expired_leaf_names_expired_cause() {
     );
 }
 
-/// `UnknownIssuer` classification: a properly-formed leaf signed by our
-/// in-test CA, but `server_ca` is deliberately left unset, so the CLI trusts
-/// only the default root store and our CA is unknown to it. The failure must
-/// still be named as a TLS cause (not `[unreachable]`), but the
-/// `server_ca`-specific hint must be ABSENT: it names a `server_ca`
-/// misconfiguration that does not apply here (`server_ca` isn't set at all).
+// `server_ca` is deliberately unset, so the CLI trusts only the default roots.
+// The `server_ca`-specific hint must be absent: it names a misconfiguration
+// that does not apply.
 #[test]
 fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_without_hint() {
     let ca = new_ca();
@@ -445,19 +390,12 @@ fn tls_server_with_untrusted_cert_and_no_server_ca_configured_names_cause_withou
     );
 }
 
-// ── cloud_first memory against an untrusted certificate ──────────────────────
-
-// A server whose certificate is not trusted is running: it accepted the
-// connection and completed enough of the handshake to present a certificate.
-// Reporting that as "unreachable" sends the operator to restart a server that
-// is already up, when the fix is a trust anchor. `reqwest` reports a TLS
-// handshake failure as a connect error, so telling the two apart takes more
-// than `is_connect()`, and this is the end-to-end proof that it does.
+// `reqwest` reports a TLS handshake failure as a connect error, so telling it
+// from an absent server takes more than `is_connect()`.
 #[test]
 fn cloud_first_write_to_an_untrusted_certificate_is_a_certificate_error_not_unreachable() {
-    // A properly issued leaf, signed by a CA this machine does not trust and
-    // with no `server_ca` configured: the ordinary internal-CA setup, rather
-    // than a malformed certificate.
+    // Signed by a CA this machine does not trust, with no `server_ca`: the
+    // ordinary internal-CA setup.
     let ca = new_ca();
     let (leaf_pem, leaf_key_pem) = new_leaf(&ca.issuer);
     let port = spawn_tls_server(leaf_pem, leaf_key_pem);
@@ -500,7 +438,6 @@ fn cloud_first_write_to_an_untrusted_certificate_is_a_certificate_error_not_unre
         stderr.contains("server_ca") || stderr.contains("INKENTRY_SERVER_CA"),
         "the error must name the setting that fixes it: {stderr}"
     );
-    // The whole point: a running server must never be described as absent.
     assert!(
         !stderr.contains("unreachable"),
         "a server that answered must not be reported as unreachable: {stderr}"

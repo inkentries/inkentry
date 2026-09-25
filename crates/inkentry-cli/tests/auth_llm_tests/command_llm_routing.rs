@@ -1,12 +1,6 @@
-// LLM routing for `inkentry memory harvest`.
-//
-// Harvest uses one inference client for two concerns: LLM completion and the
-// embedding it needs for dedup vectors. Once LLM and embed can resolve to
-// different servers, one client is wrong, so these tests assert on which mock
-// received which route, not only on the outcome.
-//
-// Unlike `index` summaries, harvest cannot do its job without an LLM, so an
-// unavailable LLM is an error with a non-zero exit here.
+// Harvest uses one inference client for LLM completion and for the embedding it
+// needs for dedup vectors, and the two can resolve to different servers. These
+// tests assert on which mock received which route, not only on the outcome.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{
@@ -18,8 +12,6 @@ use std::path::Path;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-// ── mocks ─────────────────────────────────────────────────────────────────
 
 fn health_body(llm: bool) -> serde_json::Value {
     let mut caps = vec!["memory", "index.embed", "search.semantic"];
@@ -35,9 +27,8 @@ fn health_body(llm: bool) -> serde_json::Value {
     })
 }
 
-// A inkentry-server mock. `llm_payload` is the text the `/llm/complete` SSE
-// stream carries; it is only mounted when the server advertises an LLM, so a
-// server without one cannot accidentally answer a misrouted request.
+// `llm_payload` is mounted only when the server advertises an LLM, so a server
+// without one cannot answer a misrouted request.
 pub(crate) async fn server_mock(llm_payload: Option<String>) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -74,16 +65,10 @@ async fn count_path(server: &MockServer, needle: &str) -> usize {
         .count()
 }
 
-// ── project fixtures ──────────────────────────────────────────────────────
-
-// Point loopback auto-discovery at `url` and return the port to hand its
-// fixed-port fallback (step 3b) through `INKENTRY_TEST_DISCOVERY_PORT`.
-//
-// Not the `server.port` file (step 3a): that step now uses a responder only
-// when the pid recorded beside the port is a live `inkentry-server` process and
-// the instance id it reports is the recorded one, neither of which a wiremock
-// stand-in can be. The state dir is still created and still redirected, so
-// nothing here reaches the developer's own daemon or state.
+// Points loopback auto-discovery at `url` through the fixed-port fallback
+// (`INKENTRY_TEST_DISCOVERY_PORT`). The `server.port` file is unusable here: it
+// requires a live inkentry-server pid and matching instance id, which a wiremock
+// stand-in cannot supply.
 pub(crate) fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).expect("create state dir");
     url.rsplit(':')
@@ -103,8 +88,6 @@ fn write_server_config(project_dir: &Path, server_url: &str) {
     .expect("write project config");
 }
 
-// A git project with one substantive commit, so harvest has something to
-// extract.
 pub(crate) fn write_git_project(dir: &Path) {
     isolate_git_config();
     let run = |args: &[&str]| {
@@ -152,8 +135,6 @@ pub(crate) fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
     cmd
 }
 
-// Build an index so project-scoped commands have a `.inkentry/` project and a
-// db to work from. Offline, so it contacts nothing.
 pub(crate) fn seed_index(home: &Path, project: &Path, db: &Path) {
     base_cmd(home, project)
         .env("INKENTRY_NO_SERVER", "1")
@@ -191,7 +172,6 @@ fn assert_no_internal_names(output: &str) {
     }
 }
 
-// A harvest extraction reply matching the command's JSON schema.
 pub(crate) fn harvest_payload() -> String {
     serde_json::json!({
         "entries": [{
@@ -204,8 +184,6 @@ pub(crate) fn harvest_payload() -> String {
     })
     .to_string()
 }
-
-// ── inkentry memory harvest ────────────────────────────────────────────────
 
 fn harvest_cmd(
     home: &Path,
@@ -263,8 +241,6 @@ async fn harvest_uses_the_loopback_for_both_extraction_and_dedup_embedding() {
     );
 }
 
-// The split, observable: extraction on the remote, dedup vectors on the
-// loopback, in the same command.
 #[tokio::test]
 async fn harvest_splits_extraction_to_the_remote_and_embedding_to_the_loopback() {
     let loopback = server_mock(None).await;
@@ -338,8 +314,8 @@ async fn harvest_stops_with_the_restart_message_when_the_local_llm_is_not_served
         text.contains("inkentry server stop") && text.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
-    // The privacy guard rendered as prose: never nudge a user who asked for a
-    // local LLM toward the remote this run deliberately avoided.
+    // Privacy guard: never nudge a user who asked for a local LLM toward the
+    // remote this run deliberately avoided.
     assert!(
         !text.contains("server_url"),
         "the message must not offer the remote as a way out:\n{text}"
@@ -388,13 +364,9 @@ async fn harvest_stops_with_the_no_llm_message_when_none_is_available() {
     assert_no_internal_names(&text);
 }
 
-// Regression: the built-in default range `HEAD~10..HEAD` names `HEAD~10`, a
-// commit that does not exist in a repo with fewer than 11 commits, so an
-// unclamped range makes `git log` abort with a raw `fatal: bad revision`. The
-// range must clamp to the commits that actually exist, and the single commit in
-// this one-commit fixture must still be harvested. Uses the DEFAULT range (no
-// `--branch`), unlike the routing tests above, so the clamp is what is under
-// test.
+// The default range `HEAD~10..HEAD` names a commit a repo with fewer than 11
+// commits lacks; it must clamp instead of letting `git log` abort. No
+// `--branch`, so the clamp is what is under test.
 #[tokio::test]
 async fn harvest_clamps_the_default_range_on_a_shallow_repo() {
     let loopback = server_mock(Some(harvest_payload())).await;
@@ -433,10 +405,8 @@ async fn harvest_clamps_the_default_range_on_a_shallow_repo() {
     );
 }
 
-// Regression: with no LLM available, `harvest` on a shallow repo must surface
-// the actionable no-LLM message, never a raw `git log` `bad revision` error.
-// The LLM precheck runs before the git range is resolved, so how many commits
-// the repo has cannot change which message the user sees.
+// With no LLM available, a shallow repo must surface the no-LLM message, never
+// a raw `bad revision`: the LLM precheck runs before the git range resolves.
 #[tokio::test]
 async fn harvest_reports_no_llm_before_the_git_range_on_a_shallow_repo() {
     let loopback = server_mock(None).await; // embedding only, no LLM
@@ -474,13 +444,6 @@ async fn harvest_reports_no_llm_before_the_git_range_on_a_shallow_repo() {
     assert_no_internal_names(&text);
 }
 
-// ── top-level `inkentry harvest` promotion ────────────────────────────────
-//
-// The promoted top-level command shares the handler and the memory-store
-// resolution with the deprecated `memory harvest` alias. These pin the two
-// promotion-specific guarantees the shared handler alone cannot: results
-// identical to the alias, and the alias-only stderr deprecation warning.
-
 fn toplevel_harvest_cmd(
     home: &Path,
     project: &Path,
@@ -499,7 +462,6 @@ fn toplevel_harvest_cmd(
     cmd
 }
 
-// Replace every `#<uuid>` id token with a fixed placeholder.
 fn mask_ids(out: &str) -> String {
     out.split('#')
         .enumerate()
@@ -527,8 +489,7 @@ async fn toplevel_harvest_matches_the_alias_and_only_the_alias_warns() {
     let state_dir = home.path().join("state");
     let discovery_port = loopback_discovery_port(&state_dir, &loopback.uri());
 
-    // Two fresh memory stores so neither run sees the other's entries; both
-    // start empty and harvest the same single commit, so stdout must match.
+    // Two fresh stores so neither run sees the other's entries.
     let mem_top = project.path().join("memory_top.db");
     let top = toplevel_harvest_cmd(
         home.path(),
@@ -565,23 +526,18 @@ async fn toplevel_harvest_matches_the_alias_and_only_the_alias_warns() {
         "alias harvest failed:\n{alias_out}\n{alias_err}"
     );
 
-    // Both spellings store the harvested decision.
     assert!(
         top_out.contains("Stored 1 memory entries"),
         "top-level harvest must store the extracted entry:\n{top_out}"
     );
 
-    // Identical stdout: the promotion is a rename, not a behaviour change.
-    // The stored entry's id is a freshly minted UUID, so it differs between
-    // two independent runs by construction and is masked before comparing.
+    // Ids are freshly minted UUIDs, so they differ between runs and are masked.
     assert_eq!(
         mask_ids(&top_out),
         mask_ids(&alias_out),
         "the two spellings must produce identical stdout once ids are masked"
     );
 
-    // Exactly one deprecation line, on the alias's stderr only, naming the
-    // canonical command; the top-level command must never warn.
     let alias_warnings = alias_err
         .lines()
         .filter(|l| l.contains("deprecated"))
@@ -600,14 +556,9 @@ async fn toplevel_harvest_matches_the_alias_and_only_the_alias_warns() {
     );
 }
 
-// ── memory harvest --source failures ──────────────────────────────────────
-//
-// The third harvest source. It builds its clients at its own call site, so the
-// git source passing says nothing about it, exactly as with claude-code.
-
-// The failures harvester only looks at commits whose subject reads as a
-// failure signal, so the fixture's feature commit alone yields an empty run
-// that never reaches client construction.
+// The failures harvester only considers commits whose subject reads as a
+// failure, so the feature commit alone yields an empty run that never reaches
+// client construction.
 fn write_failure_commit(dir: &Path) {
     std::fs::write(
         dir.join("src").join("guard.rs"),
@@ -631,7 +582,6 @@ fn write_failure_commit(dir: &Path) {
     ]);
 }
 
-// The failures schema carries no `kind`, unlike the git source's.
 fn failures_payload() -> String {
     serde_json::json!({
         "entries": [{
@@ -740,8 +690,8 @@ async fn failures_harvest_stops_with_the_restart_message_when_the_local_llm_is_n
         text.contains("inkentry server stop") && text.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
-    // The privacy guard rendered as prose: never nudge a user who asked for a
-    // local LLM toward the remote this run deliberately avoided.
+    // Privacy guard: never nudge a user who asked for a local LLM toward the
+    // remote this run deliberately avoided.
     assert!(
         !text.contains("server_url"),
         "the message must not offer the remote as a way out:\n{text}"
@@ -754,15 +704,9 @@ async fn failures_harvest_stops_with_the_restart_message_when_the_local_llm_is_n
     assert_no_internal_names(&text);
 }
 
-// ── memory harvest --source claude-code ───────────────────────────────────
-//
-// The Claude Code harvester builds its own clients, so the git source passing
-// says nothing about it.
-
 fn write_claude_history(path: &Path, project_root: &Path, session: &str) {
-    // `project` is matched against the git workdir the command discovers, which
-    // is canonical; on macOS the temp dir is a symlink, so an uncanonicalised
-    // path here would silently filter every session out.
+    // `project` is matched against the canonical git workdir; on macOS the temp
+    // dir is a symlink, so an uncanonicalised path would filter every session out.
     let root = std::fs::canonicalize(project_root).expect("canonicalize project root");
     let entry = serde_json::json!({
         "display": "we chose sqlite over postgres for the local index",
@@ -891,8 +835,8 @@ async fn claude_code_harvest_stops_with_the_restart_message_when_the_local_llm_i
         text.contains("inkentry server stop") && text.contains("inkentry server start"),
         "the restart is the only useful instruction here:\n{text}"
     );
-    // The privacy guard rendered as prose: never nudge a user who asked for a
-    // local LLM toward the remote this run deliberately avoided.
+    // Privacy guard: never nudge a user who asked for a local LLM toward the
+    // remote this run deliberately avoided.
     assert!(
         !text.contains("server_url"),
         "the message must not offer the remote as a way out:\n{text}"

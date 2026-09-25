@@ -1,14 +1,5 @@
-// `cloud_first` against a self-hosted team server, driven through the real
-// binary against a real TLS peer.
-//
-// The configured `project_id` must reach the server as the project path
-// segment exactly as written, and the open path must contact the server for
-// nothing else first. The one unacceptable outcome is a silent fall back to
-// local data.
-//
-// A non-loopback `server_url` must be `https://`, so this drives a real rustls
-// listener, as `tls_trust.rs` does, and addresses it via the non-loopback
-// `0.0.0.0` alias of the same socket.
+// A non-loopback server_url must be https://, so this drives a real rustls
+// listener addressed via the non-loopback 0.0.0.0 alias.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
@@ -24,8 +15,6 @@ use tempfile::TempDir;
 const LOCAL_TITLE: &str = "local only entry";
 const SERVER_TITLE: &str = "entry that only exists on the server";
 const PROJECT_SLUG: &str = "github.com/owner/repo";
-
-// ── cert generation (SAN 0.0.0.0, the non-loopback alias) ────────────────────
 
 struct TestCa {
     cert_pem: String,
@@ -67,12 +56,8 @@ fn new_leaf(issuer: &Issuer<'static, KeyPair>) -> (String, String) {
     (cert.pem(), key_pair.serialize_pem())
 }
 
-// ── TLS listener ─────────────────────────────────────────────────────────────
-
-// `paths` holds every request the listener saw, so a reintroduced pre-flight
-// would show up rather than pass silently. `memory_segments` holds the project
-// path segment as the server decoded it, which is what proves the configured
-// `project_id` travelled verbatim.
+// `paths` records every request so a reintroduced pre-flight shows up;
+// `memory_segments` is the project segment as the server decoded it.
 #[derive(Default)]
 struct Seen {
     paths: Mutex<Vec<String>>,
@@ -89,16 +74,9 @@ impl Seen {
     }
 }
 
-// Spawn a TLS listener on 127.0.0.1 (reachable as 0.0.0.0) answering `memory`
-// on the OSS team server's project-scoped memory list route, and recording
-// anything else it is asked for. Detached thread, no separate process: it dies
-// with the test binary.
-//
-// The port is taken from a listener that is already bound and listening before
-// this returns, and that same socket is handed to the server, so nothing can
-// claim the port in between and the sleep below is a courtesy rather than a
-// correctness requirement: the kernel accepts connections into the backlog from
-// the moment of bind.
+// Detached thread that dies with the test binary. The listener is bound
+// before this returns and handed to the server, so the port cannot be claimed
+// in between.
 fn spawn_tls_server(
     cert_pem: String,
     key_pem: String,
@@ -168,8 +146,6 @@ fn spawn_tls_server(
     port
 }
 
-// The OSS team server's memory list body: a bare array of entries. Entry ids
-// are opaque string tokens on the wire (ADR-078).
 fn oss_memory_list() -> serde_json::Value {
     serde_json::json!([{
         "id": "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33",
@@ -183,8 +159,6 @@ fn oss_memory_list() -> serde_json::Value {
         "superseded_by": null,
     }])
 }
-
-// ── project setup ────────────────────────────────────────────────────────────
 
 fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
     let cfg = format!(
@@ -265,15 +239,10 @@ fn memory_list(tmp: &TempDir, cfg: &Path, mem_path: &Path) -> std::process::Outp
         .unwrap()
 }
 
-// End to end through the binary: a self-hosted OSS-shaped server opens under
-// `cloud_first`, reads come from it rather than from the local store, and the
-// configured slug arrives as the project path segment exactly as written. A
-// slug containing `/` is used deliberately: it must survive as one
-// percent-encoded segment and decode back to the original on the server.
+// A slug containing `/` must survive as one percent-encoded segment and
+// decode back on the server.
 //
-// Connecting to `0.0.0.0` raises `WSAEADDRNOTAVAIL` (os error 10049) on Windows,
-// which is why every `0.0.0.0`-addressed test in `inkentry-core` carries the same
-// attribute. CI runs this suite on windows-latest, so it is required here too.
+// Connecting to `0.0.0.0` raises `WSAEADDRNOTAVAIL` on Windows.
 #[test]
 #[cfg_attr(windows, ignore)]
 fn cloud_first_reads_remotely_with_the_configured_slug_verbatim() {
@@ -304,9 +273,8 @@ fn cloud_first_reads_remotely_with_the_configured_slug_verbatim() {
         vec![PROJECT_SLUG.to_string()],
         "the configured project_id must reach the server verbatim, in one segment"
     );
-    // `/v1/health` is the peer probe that picks the memory dialect; it is
-    // issued on every open by design. What this pins is that no *project*
-    // lookup happens and the read itself is a single request.
+    // `/v1/health` is the dialect probe issued on every open; only project
+    // lookups and extra reads are forbidden.
     assert_eq!(
         seen.paths()
             .into_iter()

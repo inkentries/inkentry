@@ -1,6 +1,3 @@
-// Integration tests for issue #308: `memory_backend` field in
-// `inkentry status --format json`.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
 
@@ -8,12 +5,6 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-/// Spin up a minimal indexed project in a temp directory and return
-/// `(TempDir, project_dir, config_path)`.  The index is built with no server
-/// URL and no explicit backend override, so the resolved backend is the
-/// default local SQLite store.
 fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let temp = tempdir().unwrap();
     let project_dir = temp.path().join("project");
@@ -26,18 +17,14 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
 
     let db_path = temp.path().join("index.db");
     let config_path = temp.path().join("config.toml");
-    // No server_url → offline, default backend is sqlite.
     fs::write(
         &config_path,
         format!("db_path = {:?}\n", db_path.display().to_string()),
     )
     .unwrap();
 
-    // Build index. `INKENTRY_NO_SERVER=1` forces offline so the index skips the
-    // embed phase entirely (no embedding server needed); without it, loopback
-    // auto-discovery can pick up a `inkentry-server` running on 127.0.0.1:4655
-    // and route the embed call there, which fails the build with a dimension
-    // mismatch. We only care about the SQLite memory-backend path here.
+    // INKENTRY_NO_SERVER=1: loopback auto-discovery could route the embed call
+    // to a running inkentry-server and fail the build with a dimension mismatch.
     inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -50,10 +37,6 @@ fn setup_offline_project() -> (tempfile::TempDir, std::path::PathBuf, std::path:
     (temp, project_dir, config_path)
 }
 
-// ── `inkentry status --format json` ───────────────────────────────────────────
-
-/// `inkentry status --format json` must include a top-level `memory_backend`
-/// field whose value is one of the known backend identifiers (issue #308).
 #[test]
 fn status_json_includes_memory_backend_field() {
     let (_temp, project_dir, config_path) = setup_offline_project();
@@ -79,20 +62,17 @@ fn status_json_includes_memory_backend_field() {
     let body: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("output must be valid JSON");
 
-    // Field must be present.
     assert!(
         body.get("memory_backend").is_some(),
         "expected a `memory_backend` key in status JSON, got: {}",
         serde_json::to_string_pretty(&body).unwrap_or_default()
     );
 
-    // Value must be a non-empty string.
     let kind = body["memory_backend"]
         .as_str()
         .expect("`memory_backend` must be a string");
     assert!(!kind.is_empty(), "`memory_backend` must not be empty");
 
-    // Value must be one of the known backend identifiers.
     const KNOWN: &[&str] = &["sqlite", "git-meta", "git-notes", "remote"];
     assert!(
         KNOWN.contains(&kind),
@@ -100,12 +80,6 @@ fn status_json_includes_memory_backend_field() {
     );
 }
 
-// ── `inkentry status` text output ─────────────────────────────────────────────
-
-/// `inkentry status` text output (no --format json) must mention the active
-/// memory backend so humans can see which store is in use (issue #308). Since
-/// ADR-067 D3 the line reflects the resolved backend (sqlite by default), sourced
-/// from `backend_kind()` rather than the capability tier.
 #[test]
 fn status_text_mentions_memory_backend() {
     let (_temp, project_dir, config_path) = setup_offline_project();
