@@ -69,6 +69,26 @@ once, and no vector is discarded.
   CLI (`inkentry status`'s usage summary now reads `events` instead); the
   table itself is untouched.
   See [ADR-098](docs/adr/098-metrics-and-evaluation-indexed-by-commit.md) D5/D6.
+- **`memory add` entries anchor to the commit that carries them.** `memory.db`
+  moves to schema version 14: a new `pending_anchors` table records, per
+  worktree, where a write happened until a commit claims it — local working
+  state, never carried by the git-notes carrier or synced. The post-commit
+  hook (re-run `inkentry hooks install` to pick up the new line) claims a
+  pending entry with `inkentry memory anchor --commit HEAD` once the write
+  has grown into the new commit (same worktree, and an ancestor relationship
+  or an amend), never by recency, branch, or session. Claiming sets the
+  entry's `source_ref`, so it now shows up in `--source-ref` lookups and
+  `rec.commit_coverage` exactly like a harvested entry. `memory add --commit
+  <sha>` and `memory anchor --commit <ref> <id>...` anchor by hand,
+  bypassing the wait. `inkentry index` best-effort follows a local rebase or
+  amend by `git patch-id`, so a claim (or a still-pending write) survives
+  history moving under it. `inkentry status` reports a pending entry as
+  unanchored, and never assigns it, once it is older than 14 days or its
+  worktree is gone; new state metric `rec.unanchored_rate`. A team server
+  gains a small `POST /memory/{id}/anchor` update endpoint, and `inkentry
+  sync`/`plumbing push` send it for entries claimed after they had already
+  synced. See
+  [ADR-099](docs/adr/099-anchor-memory-entries-to-the-commit-that-carries-the-work.md).
 
 ### Changed
 
