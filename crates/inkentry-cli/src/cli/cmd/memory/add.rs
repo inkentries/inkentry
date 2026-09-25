@@ -13,24 +13,10 @@ use crate::{
     },
 };
 
-/// How long an interactive `memory add` waits for its own vector before
-/// storing the entry without one and leaving it to the catch-up paths.
-///
-/// A healthy single embed on a quiet local embedder takes tens of
-/// milliseconds, so this is orders of magnitude more than the work needs and
-/// nothing that was going to succeed is cut short. What it bounds is the
-/// embedder being held by a bulk index pass, where the wait was measured in
-/// minutes: long enough that a caller with a timeout sees a failed command
-/// rather than a slow one, and long enough that the entry was not yet durable
-/// when that happened.
+// Bounds the embedder being held by a bulk index pass, where the wait runs to
+// minutes; a healthy embed takes tens of milliseconds.
 pub(super) const INTERACTIVE_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The warning printed when an entry is stored without its vector.
-///
-/// `reason` says what went wrong; the rest names the way out. Semantic ranking
-/// cannot reach the entry until a vector exists, and the entry is otherwise
-/// indistinguishable from one that never had one, so it is picked up by the
-/// ordinary backfill paths with no rule of its own.
 pub(super) fn pending_embedding_warning(reason: &str) -> String {
     format!(
         "warning: entry stored, but {reason}, so `inkentry search` cannot rank it \
@@ -46,19 +32,12 @@ pub(super) async fn memory_add(
     backend_override: Option<&str>,
     pre_init_notes: bool,
 ) -> Result<()> {
-    // Recorded once here; the event (ADR-098 D5) is written after the
-    // response below, against this instant.
     let started = std::time::Instant::now();
-    // Honor the auto-discovered server tier (ADR-004): loopback auto-discovery
-    // sets the capability tier without populating `cfg.server_url`, so without
-    // this bridge `try_embed_via_server` cannot reach the local embedder and the
-    // note is stored without a vector (invisible to semantic `memory search`).
-    // Build an effective config that routes inference to the discovered server
-    // while leaving `server_url` unset, so `open_memory_backend` still writes the
-    // note to the project's local `memory.db` (the single canonical store).
-    // On the git-notes paths `mem_path` is a placeholder (explicit `--backend
-    // git-notes` or the ADR-068 D3 pre-init carrier); the project is the git
-    // repo at CWD, so derive the inference project id from there instead.
+    // Loopback auto-discovery sets the tier without populating `cfg.server_url`;
+    // the effective config routes inference there while leaving `server_url`
+    // unset so the note still lands in the local `memory.db`.
+    // On the git-notes paths `mem_path` is a placeholder; the project is the git
+    // repo at CWD.
     let cwd;
     let placeholder_path = pre_init_notes || backend_override == Some("git-notes");
     let project_root: &std::path::Path = if placeholder_path {
@@ -67,11 +46,8 @@ pub(super) async fn memory_add(
     } else {
         mem_path.parent().unwrap_or(mem_path)
     };
-    // `get_inference_tier` (not `get_tier`): in `local_first`, inference must
-    // always prefer the local loopback embedder, even when `server_url` is
-    // explicitly set (2026-07-23 founder decision, ADR-004 revision).
-    // `get_tier` alone would probe the explicit `server_url` and hand its
-    // (wrong, for inference) URL to `effective_config`.
+    // Not `get_tier`: in `local_first` inference must prefer the local loopback
+    // embedder even when `server_url` is set, and `get_tier` would probe `server_url`.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
@@ -112,15 +88,9 @@ pub(super) async fn memory_add(
         .map(|s| s.split(',').map(|f| f.trim().to_string()).collect())
         .unwrap_or_default();
 
-    // ── Linked-file resolution (ADR-101 D3) ──────────────────────────────────
-    // Resolved here, ahead of any write, purely to warn on a `missing` state
-    // and to report it in `--format json`: an escaping path errors out before
-    // anything is stored, and the actual storage below (`MemoryStore::add_note`,
-    // via the backend) re-resolves the same paths against the same root, which
-    // is where `note_files` is actually written. `files_root` is the real
-    // project root — the grandparent of `memory.db`'s `.inkentry/` directory —
-    // not the `project_root` above (which is a placeholder pre-init and is used
-    // only to steer inference routing).
+    // Resolved ahead of any write so an escaping path errors before anything is
+    // stored; storage re-resolves the same paths. `files_root` is the real
+    // project root, not `project_root`, which is a placeholder pre-init.
     let files_root = if placeholder_path {
         project_root.to_path_buf()
     } else {
@@ -143,10 +113,8 @@ pub(super) async fn memory_add(
         file_link_states.push((link.path, link.state.as_str().to_string()));
     }
 
-    // ── Secret-scan gate (binding requirement #8) ────────────────────────────
-    // Checked before ANY persistence (SQLite or git-notes) so no credential
-    // can reach either store.  Error message deliberately does not echo the
-    // matched text.
+    // Before any persistence so no credential reaches either store; the error
+    // deliberately does not echo the matched text.
     if contains_secret(&title) || contains_secret(&body) {
         anyhow::bail!(
             "memory add: refusing to store entry — title or body matches a secret pattern. \
@@ -154,23 +122,15 @@ pub(super) async fn memory_add(
         );
     }
 
-    // The portable identity: a pure function of (kind, title, body), the same
-    // value every reader recomputes and the git-notes carrier records. Computed
-    // once here so the id `add` surfaces is the one that travels with the repo,
-    // not the per-machine row id — on every store path (sqlite / carrier / remote).
+    // The id `add` surfaces is the portable one, not the per-machine row id.
     let entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
 
-    // `memory.db` is the store of record unless `cloud_first` routes memory CRUD
-    // to a server, or git notes is the primary store. Only a local row can have
-    // a vector attached to it after the fact, so only there can the write go
-    // first; the other backends take the vector as part of the add and have no
-    // local backfill to fall back on (`memory reindex` refuses on this same
-    // condition, and a transfer's local-embedding repair skips it).
+    // Only a local row can have a vector attached after the fact, so only there
+    // can the write go first; other backends take the vector as part of the add
+    // and have no local backfill.
     let store_first = !placeholder_path
         && !(cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some());
-    // Pre-init carrier entries carry no vector (git notes hold none), and
-    // semantic ranking stays gated until the project is indexed and the
-    // carrier hydrates the index (ADR-068 D3/D4).
+    // Git notes hold no vector.
     let embedding = if store_first || pre_init_notes {
         None
     } else {
@@ -182,15 +142,9 @@ pub(super) async fn memory_add(
         .valid_at
         .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten());
 
-    // ── Supersede pre-flight (ADR-068 E4) ────────────────────────────────────
-    // If `--supersedes OLD` is given, OLD must still be active — checked
-    // *before* any write (SQLite or git-notes), on both storage paths,
-    // mirroring `memory supersede`'s existing reject-on-stale-OLD contract.
-    // Without this, the SQL layer's `WHERE status = 'active'` guard on the
-    // archive-OLD UPDATE silently no-ops on a stale OLD, leaving an orphaned
-    // new note plus a conflicting git-notes carrier record — the bug this
-    // amendment closes. The read is reused below by the write-through
-    // carrier instead of reading OLD a second time.
+    // OLD must still be active before any write: the SQL `WHERE status = 'active'`
+    // guard on the archive UPDATE silently no-ops on a stale OLD, which would
+    // leave an orphaned new note plus a conflicting carrier record.
     let mut backend_for_add: Option<Box<dyn MemoryBackend + Send>> = None;
     let mut old_note_for_carrier = None;
     if let Some(old_id) = args.supersedes.clone() {
@@ -214,19 +168,11 @@ pub(super) async fn memory_add(
         }
     }
 
-    // ── Relate-to pre-flight ─────────────────────────────────────────────────
-    // Like the supersede pre-flight above, the `--relates-to` target is checked
-    // to exist *before* the new entry is written, so a bad id fails cleanly
-    // instead of leaving an orphaned new note with a dangling edge. The
-    // `memory_edges` foreign key would refuse it too, but a pre-flight names
-    // the entry the user got wrong instead of surfacing a constraint error.
-    // Unlike supersede this does NOT require the target to be `active` and never
-    // archives it — a relates_to link is non-superseding. Skipped pre-init
-    // (there is no local graph to read or to hold an edge). Reuses/opens
-    // `backend_for_add` so the backend is opened at most once.
-    // The target entry itself is kept, not just the fact that it exists: the
-    // carrier records the edge by the target's `entity_id`, which is the only
-    // name for it that survives a re-`init` renumbering ids on another machine.
+    // Checked before the write so a bad id fails cleanly with a message naming
+    // it, not a foreign-key error. The target need not be active. Skipped
+    // pre-init: there is no local graph. The carrier records the edge by the
+    // target's `entity_id`, the only name that survives an `init` renumbering
+    // ids on another machine.
     let mut relates_to_entity_id: Option<String> = None;
     if let Some(rel_id) = args.relates_to.as_ref()
         && !pre_init_notes
@@ -243,15 +189,9 @@ pub(super) async fn memory_add(
         relates_to_entity_id = Some(note_entity_id(&target));
     }
 
-    // Primary store (ADR-004): the local SQLite `memory.db`, an explicit team
-    // server, or (with `--backend git-notes`) git notes itself. Pre-init there
-    // is no primary; the write-through carrier below is the sole writer, so mint
-    // an id the same way the backends do (`now_millis`). Reuses the backend
-    // opened above for the E4 pre-flight read (`backend_for_add`) instead of
-    // opening it twice.
-    // Held past the write so the `--relates-to` edge below can be recorded
-    // through the same backend handle (`None` pre-init, where there is no
-    // primary store).
+    // Pre-init there is no primary store; the carrier is the sole writer, so the
+    // id is minted the way the backends do. Held past the write so the
+    // `--relates-to` edge goes through the same handle.
     let mut primary_backend: Option<Box<dyn MemoryBackend + Send>> = None;
     let (id, created) = if pre_init_notes {
         (crate::storage::carrier_token(now_millis()), true)
@@ -278,18 +218,7 @@ pub(super) async fn memory_add(
         added
     };
 
-    // ── Relate-to edge (mirror of --supersedes, without the archiving) ───────
-    // `--supersedes` writes a `supersedes` edge *and* archives OLD (handled
-    // inside `add_note_superseding` above); a `relates_to` link is
-    // non-superseding, so it only writes the edge and leaves both entries
-    // active. A single directed `relates_to` row is visible from BOTH
-    // endpoints: `get_edges` returns it as outgoing from the new entry and
-    // incoming to the target, so `memory graph`/`memory show` render it from
-    // either id. Both stores that can hold a graph take it: SQLite writes a
-    // `memory_edges` row, git notes appends a record carrying the edge. The
-    // remote backend reports edge ops as a no-op, and pre-init there is no
-    // primary store at all. The target's existence was validated in the
-    // pre-flight above.
+    // The remote backend reports edge ops as a no-op, hence the kind check.
     if let Some(rel_id) = args.relates_to.as_ref()
         && let Some(backend) = primary_backend.as_ref()
         && matches!(backend.backend_kind(), "sqlite" | "git-notes")
@@ -300,12 +229,9 @@ pub(super) async fn memory_add(
             .with_context(|| format!("recording relates_to edge to {rel_id}"))?;
     }
 
-    // ── Git-notes write-through carrier ──────────────────────────────────────
-    // The single write path to `refs/notes/inkentry` both pre- and post-`init`,
-    // so every note carries an identical record shape. Suppressed only when git
-    // notes is already the primary store (explicit `--backend git-notes`), to
-    // avoid a double write. Post-`init` it is best-effort (SQLite already holds
-    // the entry); pre-`init` it is the sole store, so a failed carry is fatal.
+    // Suppressed when git notes is already the primary store, to avoid a double
+    // write. Post-`init` it is best-effort; pre-`init` it is the sole store, so
+    // a failed carry is fatal.
     let write_through =
         pre_init_notes || (cfg.store_in_git_notes && backend_override != Some("git-notes"));
     let mut notes_rewrite_note: Option<&str> = None;
@@ -324,24 +250,19 @@ pub(super) async fn memory_add(
             valid_at,
             invalid_at: None,
             superseded_by: None,
-            // Never-synced local row: no cross-machine id yet.
             remote_id: None,
             entity_id: Some(entity_id.clone()),
             superseded_by_entity_id: None,
-            // A `--relates-to` link starts at this entry, so it rides this
-            // entry's record (ADR-086 D1).
             edges: relates_to_entity_id
                 .iter()
                 .map(|to| CarriedEdge::new("relates_to", to.clone()))
                 .collect(),
             origin: crate::storage::Origin::from_caller(&cfg.caller),
         };
-        // Secret scan already ran above; no second check needed here.
         match append_to_git_notes(Some(project_root), &record).await {
             Ok(outcome) => {
-                // Visible without RUST_LOG: an unserialized write can lose a
-                // concurrent entry, and this is the only channel that reaches
-                // the user (ADR-069 D8: proceed unlocked, loudly).
+                // An unserialized write can lose a concurrent entry; `eprintln!`
+                // because `tracing` is invisible without RUST_LOG.
                 if let Some(degradation) = outcome.lock_degradation {
                     eprintln!("Warning: {degradation}");
                 }
@@ -368,8 +289,6 @@ pub(super) async fn memory_add(
                     "recording memory entry to git notes (no local project store to fall back on)",
                 ));
             }
-            // Visible without RUST_LOG: a swallowed carry failure is how an
-            // entry silently stops traveling with the repo (ADR-069 D8).
             Err(e) => {
                 eprintln!(
                     "Warning: entry stored locally, but the git-notes carry failed, \
@@ -378,17 +297,9 @@ pub(super) async fn memory_add(
             }
         }
 
-        // ── Carry the OLD entity's supersede edge too ────────────────────────
-        // `--supersedes` already archived OLD in the primary store above; the
-        // edge itself only travels once a state-update record is appended for
-        // OLD's own entry, pointing at NEW's `entity_id` — writing it on NEW's
-        // record (the one just written above) would be backwards. Best-effort
-        // and non-fatal like the write above: SQLite already holds the
-        // authoritative archive.
-        //
-        // Reuses the pre-flight read above (`old_note_for_carrier`) rather than
-        // re-reading OLD a second time — it was already validated `active`
-        // there, before either write in this function ran (ADR-068 E4).
+        // The supersede edge travels as a state-update on OLD's own record
+        // pointing at NEW's `entity_id`, not on NEW's record. Non-fatal: the
+        // primary store already holds the archive.
         if let Some(old_note) = old_note_for_carrier {
             let old_id = old_note.id.clone();
             let invalid_at = old_note.invalid_at.or_else(|| Some(now_secs()));
@@ -410,16 +321,12 @@ pub(super) async fn memory_add(
         }
     }
 
-    // Only now, with the entry durable in both stores, is the vector asked for.
-    // An embed that stalls or never returns therefore costs the caller a
-    // vector, not the entry. Nothing records that the vector is outstanding,
-    // because nothing needs to: an entry with no vector is exactly what
-    // `memory reindex` and a transfer's local-embedding repair already look
-    // for, so the catch-up is the one that already exists.
+    // Embedding only after the entry is durable, so a stalled embed costs the
+    // vector, not the entry. A vectorless entry is what `memory reindex` and
+    // sync's repair already look for.
     let mut pending_embedding = None;
     if store_first {
-        // Closed before the attach reopens the store, so the write below is not
-        // contending with this command's own idle connection.
+        // Closed so the attach does not contend with our own idle connection.
         drop(primary_backend);
         let doc = format!("title: {title} | text: {body}");
         pending_embedding = embed_and_attach(cfg, mem_path, &id, &doc).await;
@@ -427,9 +334,8 @@ pub(super) async fn memory_add(
 
     let format = crate::utils::effective_format(&args.format);
     match format {
-        // stdout is only the object: the human lead line and the rewrite-ref
-        // note would corrupt it, so they are dropped here (the pending-embedding
-        // warning already goes to stderr, below).
+        // stdout is only the object; the human lead line and rewrite-ref note
+        // would corrupt it.
         "json" | "jsonl" => {
             let mut obj = serde_json::json!({
                 "id": &id,
@@ -451,8 +357,6 @@ pub(super) async fn memory_add(
             }
         }
         _ => {
-            // Lead with the portable handle, the id that travels with the repo;
-            // then both identities in full, as `memory show` does.
             let handle = crate::storage::entity_id_handle(&entity_id);
             if created {
                 println!("Stored [{kind}] #{handle}: {title}", kind = args.kind);
@@ -469,25 +373,15 @@ pub(super) async fn memory_add(
             }
         }
     }
-    // On stderr, so a deferred vector never changes what a caller reading
-    // stdout sees, and unconditionally rather than through `tracing`, which is
-    // invisible without `RUST_LOG` and so cannot warn anyone.
+    // stderr so stdout is unchanged; `eprintln!` because `tracing` is invisible
+    // without `RUST_LOG`.
     if let Some(reason) = pending_embedding {
         eprintln!("{}", pending_embedding_warning(&reason));
     }
 
-    // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
-    // `local_first` write's outbox drains promptly. Never affects this
-    // command's own success/output; see `outbox.rs`.
-    //
-    // Gated on `placeholder_path`, not just `pre_init_notes`: when there is no
-    // local `.inkentry/` project yet and this write rode the git-notes carrier
-    // via an explicit `--backend git-notes` (not the pre-init carrier),
-    // `resolve_memory_store` still hands back a placeholder `mem_path` that no
-    // caller is meant to open (see its doc comment). Nudging it would call
-    // `MemoryStore::open`, which unconditionally creates the parent directory
-    // and an empty `memory.db` there as a side effect, a phantom SQLite store
-    // for a project that deliberately opted out of one.
+    // Not just `pre_init_notes`: with `--backend git-notes`, `mem_path` is still
+    // a placeholder, and nudging would make `MemoryStore::open` create a phantom
+    // `memory.db` for a project that opted out of one.
     if !placeholder_path {
         super::outbox::nudge_after_write(cfg, mem_path).await;
     }
@@ -511,13 +405,8 @@ pub(super) async fn memory_add(
     Ok(())
 }
 
-/// Mint this entry's vector and attach it to the local store, giving up after
-/// [`INTERACTIVE_EMBED_BUDGET`].
-///
-/// Returns `None` once the vector is stored, or `Some(reason)` when the entry
-/// is left without one. The attach goes through `MemoryStore::insert_embedding`,
-/// the same call the backfill commits with, so an entry embedded here and one
-/// embedded by a later backfill are identical on disk.
+// Returns `Some(reason)` when the entry is left without a vector. Attaches via
+// `insert_embedding`, as backfill does, so both paths are identical on disk.
 async fn embed_and_attach(
     cfg: &Config,
     mem_path: &std::path::Path,
@@ -530,9 +419,8 @@ async fn embed_and_attach(
         return Some("no embedder was reachable".to_string());
     };
     let sp = super::super::ui::spinner("Embedding…");
-    // Dropping the future cancels the request rather than leaving it racing the
-    // caller, so giving up adds nothing further to an embedder that is already
-    // saturated, and no second attempt is made against it.
+    // Dropping the future cancels the request, adding no load to a saturated
+    // embedder.
     let result = tokio::time::timeout(INTERACTIVE_EMBED_BUDGET, client.embed_text(doc)).await;
     sp.finish_and_clear();
 
@@ -585,19 +473,9 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
         }
     }
 
-    // Optional user hook: `memory add --from-url` can shell out to a local
-    // Markdown-conversion script under `bun` for higher-fidelity extraction
-    // than the naive HTML strip below. This is opt-in and guarded: the script
-    // must live at a fixed, inkentry-owned path
-    // (`~/.config/inkentry/scripts/web-to-md.ts`), *not* anywhere under the
-    // home directory. Prior to this guard the CLI ran `~/scripts/web-to-md.ts`
-    // whenever it happened to exist — a surprising, undocumented dependency
-    // that made any attacker-writable home-dir script (e.g. via a prior
-    // unrelated compromise, or a shared/managed machine) an implicit
-    // code-execution path every time `memory add --from-url` ran. Scoping the
-    // path to `~/.config/inkentry/` narrows this to a location the user
-    // explicitly manages for inkentry and documents the mechanism in one place.
-    // See docs/memory.md#web-to-md-hook.
+    // The script runs only from an inkentry-owned path, never a general home-dir
+    // location, so an attacker-writable script elsewhere is not a code-execution
+    // path.
     let script = web_to_md_script_path().filter(|p| p.exists());
 
     if let Some(script_path) = script {
@@ -614,9 +492,6 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
         }
     }
 
-    // Fall back to a basic HTTP fetch using the reqwest client from
-    // ServerInferenceClient's underlying connection (we build a fresh one here
-    // since we have no server config at this call site).
     let http = reqwest::Client::builder()
         .user_agent(concat!("inkentry/", env!("CARGO_PKG_VERSION")))
         .build()?;
@@ -645,16 +520,8 @@ async fn fetch_url_content(url: &str) -> Result<(String, String)> {
     Ok((title, body))
 }
 
-/// The fixed, inkentry-owned path the web-to-md hook script must live at to be
-/// picked up (`~/.config/inkentry/scripts/web-to-md.ts`). Deliberately does
-/// *not* consider the old `~/scripts/web-to-md.ts` location — see the
-/// opt-in-guard comment above this function's call site.
-///
-/// `INKENTRY_SCRIPTS_DIR` overrides the `~/.config/inkentry/scripts` directory
-/// wholesale. Useful in tests and on Windows CI, where `dirs::home_dir()`
-/// (v6) calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
-/// making per-process environment overrides of `HOME` ineffective — see the
-/// identical note on `inkentry_state_dir` in `capability/probe.rs`.
+// `INKENTRY_SCRIPTS_DIR` exists because `dirs::home_dir()` ignores `HOME` on
+// Windows, so tests cannot redirect the home directory.
 fn web_to_md_script_path() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("INKENTRY_SCRIPTS_DIR") {
         return Some(std::path::PathBuf::from(dir).join("web-to-md.ts"));
@@ -686,11 +553,7 @@ fn html_unescape(s: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
-/// Try to embed `text` via inkentry-server.
-///
-/// Returns `None` (with a log warning) if the server is not configured or
-/// unreachable, so that callers can store entries without embeddings rather
-/// than failing outright. Semantic search will not surface unembedded entries.
+// `None` lets callers store the entry without a vector rather than fail.
 async fn try_embed_via_server(cfg: &Config, text: &str) -> Option<Vec<u8>> {
     use crate::embeddings::vec_to_blob;
     let Some(client) = ServerInferenceClient::from_config(cfg) else {
@@ -728,12 +591,6 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    /// Run `f` with `INKENTRY_SCRIPTS_DIR` pointed at `dir` for the duration of
-    /// the call. `#[serial]` on each test guards the shared process-wide env
-    /// var. Deliberately overrides `INKENTRY_SCRIPTS_DIR` rather than `HOME` —
-    /// `dirs::home_dir()` (v6) doesn't read `HOME` on Windows (it calls
-    /// `SHGetKnownFolderPath`), so a `HOME`-only override is silently
-    /// ineffective there. See the identical note on `web_to_md_script_path`.
     fn with_scripts_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
         let prev = std::env::var_os("INKENTRY_SCRIPTS_DIR");
         // SAFETY: guarded by #[serial] — no other thread in this test binary
@@ -748,8 +605,6 @@ mod tests {
         }
     }
 
-    /// `web_to_md_script_path` must resolve to the new, inkentry-owned path
-    /// (`~/.config/inkentry/scripts/web-to-md.ts`, or `INKENTRY_SCRIPTS_DIR` if set).
     #[test]
     #[serial]
     fn web_to_md_script_path_is_config_inkentry_scripts() {
@@ -760,12 +615,6 @@ mod tests {
         });
     }
 
-    /// Regression guard for the opt-in fix: a script left
-    /// at the *old*, unguarded location (`~/scripts/web-to-md.ts`) must NOT be
-    /// picked up any more — only the fixed `~/.config/inkentry/scripts/` path
-    /// counts. Prior to the fix, any attacker-writable home-dir script at the
-    /// old path was an implicit code-execution path on every `memory add
-    /// --from-url` call; this test ensures that door stays shut.
     #[test]
     #[serial]
     fn old_home_scripts_path_is_not_used() {
@@ -791,7 +640,6 @@ mod tests {
         });
     }
 
-    /// Positive case: a script placed at the new, guarded location IS found.
     #[test]
     #[serial]
     fn new_config_inkentry_scripts_path_is_used_when_present() {
