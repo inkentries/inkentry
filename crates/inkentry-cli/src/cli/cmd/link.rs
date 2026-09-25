@@ -28,14 +28,12 @@ pub fn link(args: LinkArgs, _cfg: Config) -> Result<()> {
     let cwd = std::env::current_dir().context("getting current directory")?;
     let reg = Registry::open().context("opening registry")?;
 
-    // Resolve current project
     let primary = reg.find_project_for_path(&cwd)?.with_context(|| {
         "No indexed project found for the current directory.\n\
              Run `inkentry index .` first."
             .to_string()
     })?;
 
-    // Resolve target
     let target_path = if args.path.is_absolute() {
         args.path.clone()
     } else {

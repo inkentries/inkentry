@@ -35,8 +35,6 @@ pub async fn links(args: LinksArgs, _cfg: Config) -> Result<()> {
     }
 }
 
-// ── links list ────────────────────────────────────────────────────────────────
-
 #[derive(Serialize)]
 struct LinkedProjectInfo {
     name: String,
@@ -70,8 +68,7 @@ async fn links_list(format: String) -> Result<()> {
             match Database::open(&dep.db_path) {
                 Ok(db) => {
                     let fc = db.stats().ok().map(|s| s.file_count);
-                    // Resolve indexed (root-relative) paths against the LINKED
-                    // project's own root, not this (linking) project's cwd.
+                    // Indexed paths are root-relative to the linked project, not the cwd.
                     let staleness = db.staleness_report(&dep.root_path, Some(5)).ok();
                     let status_str = match staleness {
                         Some(r) if r.stale > 0 => "stale".to_string(),
@@ -109,7 +106,6 @@ async fn links_list(format: String) -> Result<()> {
 
             println!("linked projects ({}):\n", infos.len());
 
-            // Compute column widths for aligned output.
             let name_w = infos.iter().map(|i| i.name.len()).max().unwrap_or(0).max(4);
             let path_w = infos
                 .iter()
@@ -139,8 +135,6 @@ async fn links_list(format: String) -> Result<()> {
 
     Ok(())
 }
-
-// ── links check ───────────────────────────────────────────────────────────────
 
 async fn links_check() -> Result<()> {
     let cwd = std::env::current_dir().context("getting current directory")?;
@@ -172,8 +166,7 @@ async fn links_check() -> Result<()> {
         }
 
         match Database::open(&dep.db_path) {
-            // Resolve indexed (root-relative) paths against the LINKED project's
-            // own root, not this (linking) project's cwd.
+            // Indexed paths are root-relative to the linked project, not the cwd.
             Ok(db) => match db.staleness_report(&dep.root_path, Some(5)) {
                 Ok(r) if r.stale > 0 => {
                     all_ok = false;
@@ -210,9 +203,6 @@ async fn links_check() -> Result<()> {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Replace the home directory prefix with `~` for compact display.
 fn abbreviated_path(path: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         let home_str = home.to_string_lossy();

@@ -1,38 +1,3 @@
-//! `inkentry login` — WorkOS device-authorization grant, direct.
-//!
-//! Flow
-//! ----
-//! 1. POST WorkOS `/authorize/device` (client_id only) → device_code, user_code,
-//!    verification_uri.
-//! 2. Print the verification URL and user code for the operator.
-//! 3. Poll POST WorkOS `/authenticate` (device-code grant) every `interval`
-//!    seconds (RFC 8628):
-//!    - success                         → persist tokens, done
-//!    - authorization_pending           → keep polling
-//!    - slow_down                       → increase interval by 5 s
-//!    - expired_token / access_denied   → exit 1
-//!    - MFA / step-up challenge         → print "complete in browser", keep polling
-//!
-//! Org selection happens browser-side on WorkOS's hosted approval page, so the
-//! CLI never sees an org-selection step and the returned token is already
-//! org-scoped.
-//!
-//! `--org <slug>` is login-then-switch: a device login always yields a token
-//! first; if `--org` is given, the session is then silently re-scoped to that
-//! org via the refresh grant. When the operator is already logged in with a
-//! valid refresh token and passes `--org`, login short-circuits straight to the
-//! silent org-switch (no device re-entry).
-//!
-//! No-org token, no `--org` (first-run UX)
-//! ---------------------------------------
-//! WorkOS does not auto-select an org even for single-org users, so a plain
-//! `inkentry login` yields a token with an empty `org_id`. Rather than leave the
-//! operator with a session that can't do anything until they run
-//! `inkentry org switch`, the `None` arm resolves an org itself:
-//!   - one org   → auto-select it silently;
-//!   - many orgs → an interactive selector on a TTY (require `--org` otherwise);
-//!   - zero orgs → a clear onboarding message, and no dangling session written.
-
 use std::io::{IsTerminal as _, Write as _};
 use std::time::Duration;
 
@@ -43,8 +8,6 @@ use inkentry_core::config::{self, AuthTokens};
 
 use super::auth_api::{self, DEFAULT_CLOUD_URL, MeOrg, PollOutcome};
 use super::org::switch_org;
-
-// ── CLI args ──────────────────────────────────────────────────────────────────
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -65,8 +28,6 @@ pub struct LoginArgs {
     pub org: Option<String>,
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
-
 pub async fn login(args: LoginArgs) -> Result<()> {
     let cloud_url = args
         .cloud_url
@@ -79,7 +40,7 @@ pub async fn login(args: LoginArgs) -> Result<()> {
 
     let client = auth_api::build_client()?;
 
-    // Already logged in with a valid refresh token + `--org`: silent re-scope.
+    // Already logged in: re-scope silently, skipping the device flow.
     if let Some(org_slug) = &args.org {
         let cfg = config::Config::load(None).context("loading config")?;
         if let Some(auth) = cfg.cloud_session()? {
@@ -96,10 +57,8 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         }
     }
 
-    // ── Step 1: initiate device authorization ─────────────────────────────────
     let device = auth_api::initiate_device(&client, &workos_url, &client_id).await?;
 
-    // ── Step 2: prompt the user ───────────────────────────────────────────────
     println!();
     println!("Open the following URL in your browser:");
     println!();
@@ -120,7 +79,6 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         device.expires_in
     );
 
-    // ── Step 3: polling loop ──────────────────────────────────────────────────
     let mut interval_secs = device.interval.max(5);
     let mut consecutive_errors: u32 = 0;
     let mut challenge_announced = false;
@@ -181,8 +139,6 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         }
     };
 
-    // A device login always yields a token first; honour `--org` as a
-    // login-then-switch by re-scoping the freshly-issued session.
     match &args.org {
         Some(org_slug) => {
             let switched = switch_org(
@@ -196,22 +152,13 @@ pub async fn login(args: LoginArgs) -> Result<()> {
             .await?;
             finish_login(&cloud_url, switched, Some(org_slug.as_str())).await
         }
-        // No `--org`: if WorkOS already scoped the token to an org (browser-side
-        // pick), keep it. Otherwise resolve one ourselves so the first run does
-        // not leave a session that needs a follow-up `org switch`.
+        // WorkOS never auto-selects an org, so a plain login can yield an empty
+        // `org_id`; resolve one here so the first run needs no `org switch`.
         None if !tokens.org_id.is_empty() => finish_login(&cloud_url, tokens, None).await,
         None => resolve_org_after_login(&client, &workos_url, &cloud_url, &client_id, tokens).await,
     }
 }
 
-/// Resolve an org for a freshly-issued **no-org** token (no `--org` given).
-///
-/// Fetches the caller's memberships via `GET /v1/me` and:
-/// - **1 org** → silently `switch_org` to it (auto-select);
-/// - **N orgs** → interactive selector on a TTY; a non-TTY/agent shell errors
-///   with an actionable "pass `--org`" message and a non-zero exit;
-/// - **0 orgs** → a clear onboarding message and a non-zero exit, leaving no
-///   dangling no-org session persisted.
 async fn resolve_org_after_login(
     client: &reqwest::Client,
     workos_url: &str,
@@ -229,36 +176,23 @@ async fn resolve_org_after_login(
 
     match choose_org(&me.orgs, interactive)? {
         OrgChoice::Switch(org) => {
-            // Prefer the WorkOS org id (skips a redundant /v1/me in switch_org);
-            // fall back to the slug when the membership lacks a workos_org_id.
+            // The WorkOS org id spares `switch_org` a redundant /v1/me.
             let target = org
                 .workos_org_id
                 .clone()
                 .unwrap_or_else(|| org.slug.clone());
             let switched =
                 switch_org(client, workos_url, cloud_url, client_id, &tokens, &target).await?;
-            // We already know the human name; pass the slug as the display hint.
             finish_login(cloud_url, switched, Some(&org.slug)).await
         }
     }
 }
 
-/// The outcome of resolving an org for a no-org login.
 #[derive(Debug)]
 enum OrgChoice {
-    /// Switch the session to this membership.
     Switch(MeOrg),
 }
 
-/// Decide which org a no-org login should scope to, given the caller's
-/// memberships and whether we may prompt interactively.
-///
-/// Pure and side-effect-free apart from the interactive prompt (which only runs
-/// when `interactive` is true), so every branch is unit-testable:
-/// - 0 orgs → onboarding error;
-/// - 1 org → auto-select;
-/// - N + TTY → prompt;
-/// - N + non-TTY → actionable "pass `--org`" error.
 fn choose_org(orgs: &[MeOrg], interactive: bool) -> Result<OrgChoice> {
     match orgs.len() {
         0 => anyhow::bail!(
@@ -285,10 +219,6 @@ fn choose_org(orgs: &[MeOrg], interactive: bool) -> Result<OrgChoice> {
     }
 }
 
-/// Prompt the operator to pick one of `orgs` (guaranteed len >= 2) on a TTY.
-///
-/// Lists each org as `name (slug)` and reads a 1-based index from stdin,
-/// re-prompting on invalid input. Returns the chosen 0-based index.
 fn prompt_org_selection(orgs: &[MeOrg]) -> Result<usize> {
     eprintln!();
     eprintln!("You are a member of multiple organizations. Select one:");
@@ -307,7 +237,7 @@ fn prompt_org_selection(orgs: &[MeOrg]) -> Result<usize> {
             .read_line(&mut line)
             .context("reading org selection")?;
         if n == 0 {
-            // EOF (e.g. stdin closed mid-prompt) — don't loop forever.
+            // EOF: bail rather than re-prompt forever.
             anyhow::bail!("no organization selected (input closed)");
         }
         match line.trim().parse::<usize>() {
@@ -317,26 +247,17 @@ fn prompt_org_selection(orgs: &[MeOrg]) -> Result<usize> {
     }
 }
 
-/// Persist tokens and print the success message naming the org entered.
-///
-/// Attempts a best-effort `GET /v1/me` lookup to resolve the WorkOS org id to
-/// a human-readable `"<name> (<slug>)"` string. The lookup is never fatal: any
-/// error, timeout, or missing entry falls back to the `--org` slug hint (when
-/// provided) or the raw `org_id` from the token.
 async fn finish_login(
     cloud_url: &str,
     tokens: AuthTokens,
     org_slug_hint: Option<&str>,
 ) -> Result<()> {
     // Write before printing so a write error surfaces before the user believes
-    // they are logged in. The session is cached as the active org (ADR-074 D4),
-    // recording the resolved slug so a repo can later pin `org = "<slug>"`.
+    // they are logged in. Records the slug so a repo can later pin `org = "<slug>"`.
     config::store_active_session(&tokens, org_slug_hint)?;
     println!();
-    // Best-effort: resolve the WorkOS org id to a display name.
     let display =
         auth_api::lookup_org_display_name(cloud_url, &tokens.access_token, &tokens.org_id).await;
-    // Fall back chain: resolved name → slug hint → raw org_id.
     let label = display
         .as_deref()
         .or(org_slug_hint)
@@ -345,7 +266,6 @@ async fn finish_login(
     Ok(())
 }
 
-/// Print the "logged in to <org>" confirmation with a switch hint.
 fn print_logged_in(org: &str) {
     println!("Logged in to {org}. Use `inkentry org switch` to change.");
 }
@@ -389,17 +309,14 @@ mod tests {
         ]
     }
 
-    /// Exactly one org → auto-select it (no prompt), even when non-interactive.
     #[test]
     fn choose_org_single_org_auto_selects() {
         let OrgChoice::Switch(picked) = choose_org(&one_org(), false).unwrap();
         assert_eq!(picked.slug, "acme");
-        // Interactivity is irrelevant for a single org — same result on a TTY.
         let OrgChoice::Switch(picked) = choose_org(&one_org(), true).unwrap();
         assert_eq!(picked.slug, "acme");
     }
 
-    /// Zero orgs → a clear onboarding error, never a dangling session.
     #[test]
     fn choose_org_zero_orgs_points_at_onboarding() {
         let err = choose_org(&[], true).unwrap_err();
@@ -414,8 +331,6 @@ mod tests {
         );
     }
 
-    /// Multiple orgs on a non-interactive shell → actionable `--org` error naming
-    /// the available slugs, with no prompt (and thus a non-zero exit upstream).
     #[test]
     fn choose_org_multi_non_interactive_requires_org_flag() {
         let err = choose_org(&two_orgs(), false).unwrap_err();
@@ -430,13 +345,9 @@ mod tests {
         );
     }
 
-    /// The scripted path is `--org`, resolved by `switch_org`; `choose_org` is only
-    /// reached when `--org` is absent, so a multi-org non-interactive caller must
-    /// be told to use it rather than hang on a prompt.
     #[test]
     fn choose_org_multi_non_interactive_does_not_prompt() {
-        // `interactive = false` must return Err synchronously (no stdin read),
-        // proving the non-TTY guard prevents a blocking prompt.
+        // Must return Err without reading stdin.
         assert!(choose_org(&two_orgs(), false).is_err());
     }
 }
