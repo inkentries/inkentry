@@ -1,9 +1,3 @@
-//! `inkentry harvest --source claude-code`
-//!
-//! Mines `~/.claude/history.jsonl` for memory entries by sending each
-//! unprocessed Claude Code session through the LLM and storing the extracted
-//! entries in the memory database.
-
 use std::collections::HashMap;
 use std::io::BufRead as _;
 
@@ -18,8 +12,6 @@ use crate::{
     server_client::LlmMessage,
     storage::{NoteInput, open_memory_backend},
 };
-
-// ── Serde structs ─────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize, Debug)]
 struct ClaudeHistoryEntry {
@@ -38,18 +30,14 @@ struct PastedContent {
     content: String,
 }
 
-// ── Main entry point ──────────────────────────────────────────────────────────
-
 pub(super) async fn harvest_claude_code(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    // Tier-0 gate: harvest requires server inference.
     let (embed_server, llm_server) = super::harvest::harvest_clients(cfg, mem_path).await?;
 
-    // 1. Require explicit confirmation.
     if !args.confirm {
         println!(
             "This will read ~/.claude/history.jsonl which contains your full Claude Code session history."
@@ -58,7 +46,6 @@ pub(super) async fn harvest_claude_code(
         return Ok(());
     }
 
-    // 2. Resolve history file path.
     let history_path = match args.history_file.clone() {
         Some(p) => p,
         None => {
@@ -77,7 +64,6 @@ pub(super) async fn harvest_claude_code(
         return Ok(());
     }
 
-    // 3. Resolve current git repo root.
     let cwd = std::env::current_dir().context("getting current directory")?;
     let repo = gix::discover(&cwd)
         .context("Not inside a git repository — cannot determine project root for filtering.")?;
@@ -89,7 +75,6 @@ pub(super) async fn harvest_claude_code(
         .to_string_lossy()
         .to_string();
 
-    // 4. Parse --since into milliseconds threshold.
     let since_ms: i64 = if let Some(ref s) = args.since {
         let epoch_secs = crate::utils::dates::parse_as_of(Some(s.as_str()))
             .with_context(|| format!("parsing --since '{s}'"))?
@@ -99,11 +84,9 @@ pub(super) async fn harvest_claude_code(
         0
     };
 
-    // 5. Load known source_refs.
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let known_refs = backend.harvested_shas().await.map_err(backend_err)?;
 
-    // 6. Stream-read history file; accumulate sessions relevant to this repo.
     let file = std::fs::File::open(&history_path)
         .with_context(|| format!("opening {}", history_path.display()))?;
     let reader = std::io::BufReader::new(file);
@@ -145,7 +128,6 @@ pub(super) async fn harvest_claude_code(
         return Ok(());
     }
 
-    // 7. Filter out already-harvested sessions and secret-containing sessions.
     let mut new_sessions: Vec<(String, String)> = Vec::new(); // (session_id, combined_text)
 
     for (session_id, entries) in &sessions {
@@ -177,7 +159,6 @@ pub(super) async fn harvest_claude_code(
             continue;
         }
 
-        // Cap at 16 000 chars.
         const CAP: usize = 16_000;
         if combined.len() > CAP {
             let boundary = combined.floor_char_boundary(CAP);
@@ -196,7 +177,6 @@ pub(super) async fn harvest_claude_code(
         return Ok(());
     }
 
-    // 8. Batch and send to LLM.
     let batch_size = args.batch_size.max(1);
     let total = new_sessions.len();
     let num_batches = total.div_ceil(batch_size);
@@ -355,7 +335,6 @@ pub(super) async fn harvest_claude_code(
                 })
                 .unwrap_or_default();
 
-            // Secret check on LLM output.
             if contains_secret(&body) {
                 eprintln!("warning: skipping entry '{title}' (secret detected in LLM body)");
                 continue;
@@ -462,13 +441,9 @@ pub(super) async fn harvest_claude_code(
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── ClaudeHistoryEntry deserialization ────────────────────────────────────
 
     #[test]
     fn deserializes_minimal_entry() {
@@ -505,7 +480,6 @@ mod tests {
 
     #[test]
     fn deserializes_missing_pasted_contents() {
-        // Some entries may omit the field entirely.
         let json = r#"{
             "display": "hello",
             "timestamp": 1773481284710,
@@ -515,8 +489,6 @@ mod tests {
         let entry: ClaudeHistoryEntry = serde_json::from_str(json).unwrap();
         assert!(entry.pasted_contents.is_empty());
     }
-
-    // ── Project-root filter ───────────────────────────────────────────────────
 
     #[test]
     fn project_root_filter_matches_exact() {
@@ -541,15 +513,11 @@ mod tests {
 
     #[test]
     fn project_root_filter_rejects_prefix_only_match() {
-        // "/Users/test/myproject-extra" must NOT match "/Users/test/myproject"
-        // as a repo root. The filter uses starts_with on the raw string, so
-        // this correctly passes if the repo root has a trailing separator.
+        // Only a trailing separator on the root prevents a sibling-prefix match.
         let repo_root = "/Users/test/myproject/".to_string();
         let project = "/Users/test/myproject-extra".to_string();
         assert!(!project.starts_with(&repo_root));
     }
-
-    // ── Secret scan gate ──────────────────────────────────────────────────────
 
     #[test]
     fn secret_scan_blocks_aws_key() {
@@ -568,8 +536,6 @@ mod tests {
         let text = "How does the chunker split files? I want to understand the design.";
         assert!(!contains_secret(text));
     }
-
-    // ── Cap logic ─────────────────────────────────────────────────────────────
 
     #[test]
     fn cap_truncates_long_text() {
