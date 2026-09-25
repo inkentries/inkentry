@@ -351,21 +351,14 @@ pub(crate) use corpus::{MemoryCorpus, memory_corpus_search};
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
     let be = backend_override(&args.backend);
-    // ADR-067 fails closed when there is no local `.inkentry/` project rather than
-    // silently using the machine-global store. ADR-068 D3 narrows that for
-    // `add`/`list` only: with no project DB but CWD inside a git repo they ride
-    // the git-notes carrier instead of failing. `pre_init_notes` signals that
-    // carrier mode downstream (add skips the absent SQLite primary; list reads
-    // from `refs/notes/inkentry`). Store priority is otherwise unchanged (ADR-004).
     let (mem_path, pre_init_notes) = resolve_memory_store(&args, &cfg, be).await?;
     match args.command {
         MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be, pre_init_notes).await,
         MemoryCommand::List(a) => list::memory_list(a, &mem_path, &cfg, be, pre_init_notes).await,
         MemoryCommand::Show(a) => show::memory_show(a, &mem_path, &cfg, be).await,
         MemoryCommand::Harvest(a) => {
-            // The alias path is the only one that warns; the top-level
-            // `inkentry harvest` command shares this handler but emits nothing.
-            // Lives with the alias and is removed when the alias is.
+            // Only the alias warns; the top-level `inkentry harvest` shares the
+            // handler silently.
             eprintln!(
                 "warning: 'inkentry memory harvest' is deprecated; use 'inkentry harvest' instead."
             );
@@ -386,8 +379,6 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
     }
 }
 
-/// Convert the `--backend` string to a static override token for `open_memory_backend`.
-/// Returns `None` for the default "sqlite" to fall through to config-based dispatch.
 fn backend_override(s: &str) -> Option<&'static str> {
     match s {
         "git-notes" => Some("git-notes"),
@@ -395,38 +386,19 @@ fn backend_override(s: &str) -> Option<&'static str> {
     }
 }
 
-/// Resolve `(mem_path, pre_init_notes)` for the dispatched memory subcommand.
-///
-/// Store priority is ADR-004's, unchanged: `--db` › a resolvable local
-/// `.inkentry/` DB › (for `add`/`list` without a local project) an explicit
-/// CloudFirst team `server_url` › the git-notes carrier when CWD is inside a git
-/// repo › fail. `open_memory_backend` still makes the final local-vs-remote and
-/// `--backend git-notes` choice from `mem_path`/`cfg`; nothing here reshapes it.
-///
-/// The one behavioural change (ADR-068 D3) is that `add`/`list` do not fail
-/// closed pre-`init`: with no project DB but a git repo, they ride the universal
-/// git-notes write-through instead. `pre_init_notes` is `true` only in that
-/// carrier case (no SQLite primary). Explicit `--backend git-notes` keeps git
-/// notes as the *primary* store, so it is not carrier mode; its own `add`
-/// writes the record and the write-through is suppressed to avoid a double
-/// write. Every other subcommand keeps ADR-067's fail-closed behaviour.
 async fn resolve_memory_store(
     args: &MemoryArgs,
     cfg: &crate::config::Config,
     be: Option<&'static str>,
 ) -> Result<(PathBuf, bool)> {
-    // Only `add`/`list` narrow the fail-closed bail (ADR-068 D3); every other
-    // subcommand — harvest included — fails closed without a local project.
+    // Only `add`/`list` may ride the git-notes carrier; every other subcommand,
+    // harvest included, fails closed without a local project.
     let allow_pre_init_carrier =
         matches!(args.command, MemoryCommand::Add(_) | MemoryCommand::List(_));
     resolve_store_path(args.db.clone(), allow_pre_init_carrier, cfg, be).await
 }
 
-/// The store-resolution core shared by the `memory` dispatch and the top-level
-/// `inkentry harvest` command, so both select the memory store identically
-/// (ADR-004/067/068). `allow_pre_init_carrier` is the ADR-068 D3 narrowing:
-/// `true` only for `add`/`list`, which ride the git-notes carrier pre-`init`
-/// instead of failing closed. Harvest passes `false` and keeps failing closed.
+// Shared with the top-level `inkentry harvest` so both pick the store identically.
 pub(crate) async fn resolve_store_path(
     db: Option<PathBuf>,
     allow_pre_init_carrier: bool,
@@ -435,11 +407,9 @@ pub(crate) async fn resolve_store_path(
 ) -> Result<(PathBuf, bool)> {
     use crate::config::SyncMode;
 
-    // `--db` is an explicit override; always honored.
     if let Some(p) = db {
         return Ok((p, false));
     }
-    // A resolvable local `.inkentry/` DB is the normal case.
     match crate::config::require_project_db(&cfg.db_path, false) {
         Ok(p) => return Ok((p.with_file_name("memory.db"), false)),
         Err(e) => {
@@ -448,14 +418,14 @@ pub(crate) async fn resolve_store_path(
             }
         }
     }
-    // No local project, running `add`/`list`. An explicit CloudFirst team
-    // `server_url` still owns the store and wins over the carrier;
-    // `open_memory_backend` routes remote from this placeholder path.
+    // An explicit CloudFirst `server_url` still owns the store and wins over the
+    // carrier; `open_memory_backend` routes remote from this placeholder path.
     if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
         return Ok((cfg.db_path.with_file_name("memory.db"), false));
     }
-    // Inside a git repo: ride the git-notes carrier rather than failing closed.
-    // The returned path is a placeholder the pre-init callers never open.
+    // Placeholder path the pre-init callers never open. Explicit `--backend
+    // git-notes` already makes notes the primary store, so it is not carrier
+    // mode (which would double-write).
     if git_head_reachable().await {
         return Ok((
             cfg.db_path.with_file_name("memory.db"),
@@ -468,11 +438,6 @@ pub(crate) async fn resolve_store_path(
     )
 }
 
-/// Run a harvest with an explicit `--db`/`--backend`, resolving the memory store
-/// exactly as the `memory` dispatch does. Shared by the top-level
-/// `inkentry harvest` command and the deprecated `memory harvest` alias so the
-/// two produce identical results; the alias adds only a stderr warning at its
-/// own dispatch site.
 pub(super) async fn run_harvest(
     args: MemoryHarvestArgs,
     db: Option<PathBuf>,
@@ -485,9 +450,7 @@ pub(super) async fn run_harvest(
     harvest::memory_harvest(args, &mem_path, cfg, be).await
 }
 
-/// Whether CWD is inside a git repo with a resolvable HEAD. An empty repo with
-/// no commits fails this (`git rev-parse HEAD` errors), matching ADR-068's
-/// "no git repo available" case.
+// An empty repo with no commits fails this: `git rev-parse HEAD` errors.
 async fn git_head_reachable() -> bool {
     use std::process::Stdio;
     tokio::process::Command::new("git")
@@ -500,8 +463,6 @@ async fn git_head_reachable() -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
-
-// ── Shared display helpers ────────────────────────────────────────────────────
 
 pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
     let dist = if let Some(s) = n.score {
@@ -564,10 +525,8 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
     println!();
 }
 
-/// Create the draft file used by [`open_editor_for_body`]: an unpredictably-named,
-/// `O_EXCL`-created, mode-0600 (unix), `.md`-suffixed temp file pre-populated with
-/// `title`. Kept as its own function so tests can exercise draft creation without
-/// spawning an editor.
+// Separate from `open_editor_for_body` so tests can create a draft without
+// spawning an editor.
 fn create_draft_file(title: &str) -> Result<tempfile::NamedTempFile> {
     let mut builder = tempfile::Builder::new();
     builder.prefix("inkentry_memory_").suffix(".md");
@@ -591,19 +550,13 @@ fn create_draft_file(title: &str) -> Result<tempfile::NamedTempFile> {
     Ok(file)
 }
 
-/// Open $EDITOR (or $VISUAL, then vi) for the user to write a memory body.
 pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
 
-    // NamedTempFile is created with a random name via O_EXCL (mode 0600 on unix,
-    // set via the Builder above). The handle is kept open across the editor spawn
-    // and read back through that same open file descriptor afterwards (not by
-    // re-opening the path), so a symlink swapped in at the draft's path during
-    // the edit window can't redirect the read-back (TOCTOU-safe by construction:
-    // an fd, once open, always refers to the same underlying file regardless of
-    // what the path is later made to point at).
+    // Read back through the retained handle, not by re-opening the path, so a
+    // symlink swapped in during the edit can't redirect the read.
     let mut tmp = create_draft_file(title)?;
     let tmp_path = tmp.path().to_path_buf();
 
@@ -614,9 +567,7 @@ pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
 
     let content = {
         use std::io::{Read, Seek, SeekFrom};
-        // The editor wrote to the file via the path, not our fd, so our fd's
-        // cursor/state may be stale; seek to the start before reading fresh
-        // contents through the retained handle.
+        // The editor wrote via the path, so rewind our fd before reading.
         tmp.seek(SeekFrom::Start(0))
             .context("failed to seek draft file for read-back")?;
         let mut buf = String::new();
@@ -624,7 +575,6 @@ pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
             .context("failed to read draft file back through the retained handle")?;
         buf
     };
-    // `tmp` (NamedTempFile) removes the file on drop.
 
     if !status.success() {
         anyhow::bail!("Editor exited with a non-zero status; entry not saved.");
@@ -644,12 +594,8 @@ pub(super) fn open_editor_for_body(title: &str) -> Result<String> {
     Ok(body)
 }
 
-// Re-export from the shared dates module for use within this submodule tree.
 pub(super) use crate::utils::dates::parse_as_of;
 
-/// Convert a `BackendUnsupported` error into a user-friendly message.
-/// Pass as `.map_err(backend_err)?` at each call site that invokes an
-/// unsupported method on a limited backend.
 pub(super) fn backend_err(e: anyhow::Error) -> anyhow::Error {
     if e.downcast_ref::<crate::error::InkentryError>()
         .is_some_and(|s| matches!(s, crate::error::InkentryError::BackendUnsupported(_)))
@@ -694,11 +640,6 @@ mod draft_file_tests {
         assert_eq!(mode & 0o777, 0o600, "draft file must be owner-only");
     }
 
-    /// A local attacker who can predict/guess the draft's location pre-creates a
-    /// symlink there pointing at a victim-owned file. Because `NamedTempFile`
-    /// creates its file with `O_CREAT | O_EXCL` at an unpredictable, randomised
-    /// name, draft creation must never land on — let alone follow/clobber — a
-    /// pre-existing path.
     #[cfg(unix)]
     #[test]
     fn preexisting_symlink_at_guessed_path_is_not_clobbered() {
@@ -708,16 +649,11 @@ mod draft_file_tests {
         let victim = dir.path().join("victim.md");
         std::fs::write(&victim, "victim contents\n").expect("victim file should be writable");
 
-        // Recreate the *old* predictable-name scheme's guessed path as a symlink
-        // to the victim file, as a local attacker would.
         let guessed = dir
             .path()
             .join(format!("ca_memory_{}.md", std::process::id()));
         symlink(&victim, &guessed).expect("symlink should be created");
 
-        // The new draft-creation path never targets `guessed` at all — it asks
-        // the OS for a random, exclusively-created name — so the symlink must be
-        // left completely untouched.
         let file = create_draft_file("t").expect("draft file should be created");
         assert_ne!(
             file.path(),
@@ -740,14 +676,6 @@ mod draft_file_tests {
         );
     }
 
-    /// `open_editor_for_body` never invokes the editor for its own draft-file
-    /// lifecycle guarantee — the draft is a `NamedTempFile`, which removes its
-    /// backing file on `Drop` regardless of how the scope is exited. This
-    /// covers both paths `open_editor_for_body` can take after creating the
-    /// draft: the success path (editor exits 0, body read back) and the
-    /// editor-failure path (non-zero exit -> `anyhow::bail!`, function returns
-    /// `Err` early). In both cases the `NamedTempFile` guard drops and the file
-    /// must not be left behind on disk.
     #[test]
     fn draft_file_is_removed_on_drop_after_simulated_success_path() {
         let file = create_draft_file("t").expect("draft file should be created");
@@ -757,8 +685,6 @@ mod draft_file_tests {
             "draft should exist immediately after creation"
         );
 
-        // Simulate the success path: read the body back (as open_editor_for_body
-        // does after a zero exit status), then let the guard drop.
         let _content = std::fs::read_to_string(&path).expect("draft should be readable");
         drop(file);
 
@@ -777,9 +703,6 @@ mod draft_file_tests {
             "draft should exist immediately after creation"
         );
 
-        // Simulate the editor-failure path: open_editor_for_body bails out with
-        // an Err before returning, dropping `tmp` as the function unwinds. No
-        // read-back happens on this path.
         let result: anyhow::Result<()> = (|| {
             anyhow::bail!("Editor exited with a non-zero status; entry not saved.");
         })();
@@ -792,32 +715,6 @@ mod draft_file_tests {
         );
     }
 
-    /// SECURITY FIX VERIFICATION: `open_editor_for_body` previously read the
-    /// draft body back via `std::fs::read_to_string(&tmp_path)` — i.e. by
-    /// re-opening the path — rather than via the already-open
-    /// `NamedTempFile` handle it retains (which implements `Read`/`Seek`
-    /// directly against the original file descriptor and cannot be
-    /// redirected by a path swap). `NamedTempFile`'s `O_EXCL` creation
-    /// prevents an attacker from pre-empting draft *creation*, but a
-    /// path-based read-back after creation was still vulnerable: if the file
-    /// at that (randomised but now-known-to-an-attacker, e.g. via
-    /// `/proc/<pid>/fd` or a directory watch) path was removed and replaced
-    /// with a symlink to a victim file before read-back ran,
-    /// `std::fs::read_to_string` would follow the symlink and return the
-    /// victim's content instead of the drafted memory body — silently
-    /// injecting attacker-controlled content into the stored memory entry.
-    ///
-    /// This test performs the same attacker race (remove the draft at its
-    /// path, replace it with a symlink to attacker-controlled content) and
-    /// then reads back the same way `open_editor_for_body` now does: through
-    /// the retained `NamedTempFile` handle (seek-to-start + `Read`), not by
-    /// re-opening the path. It asserts the handle-based read-back is
-    /// TOCTOU-safe: it returns the *original* draft content (an empty body,
-    /// since the editor never actually ran in this test) and does NOT
-    /// observe the attacker's swapped-in content, proving the fix closes the
-    /// gap. A control assertion also shows that reading via the path
-    /// directly (what the old, vulnerable code did) *would* have followed
-    /// the symlink, so the contrast is explicit.
     #[cfg(unix)]
     #[test]
     fn handle_based_read_back_ignores_a_post_creation_symlink_swap() {
@@ -832,15 +729,10 @@ mod draft_file_tests {
         std::fs::write(&victim, "ATTACKER-CONTROLLED CONTENT\n")
             .expect("victim file should be writable");
 
-        // Attacker wins the race: removes the draft file at its now-known path
-        // and replaces it with a symlink to attacker-controlled content. This
-        // models the window between draft creation (path becomes known/guessable
-        // to a co-resident attacker) and read-back after the editor returns.
         std::fs::remove_file(&tmp_path).expect("should be able to remove the draft for the PoC");
         symlink(&victim, &tmp_path).expect("symlink should be created at the draft's old path");
 
-        // Control: a path-based read-back (the old, vulnerable behaviour)
-        // does follow the symlink and would leak attacker content.
+        // Control: a path-based read follows the symlink.
         let path_based_content = std::fs::read_to_string(&tmp_path)
             .expect("path-based read-back follows the symlink (control demonstrates the gap)");
         assert_eq!(
@@ -848,9 +740,6 @@ mod draft_file_tests {
             "control: path-based read-back should still be shown to follow the swapped symlink"
         );
 
-        // This mirrors open_editor_for_body's actual (fixed) read-back: seek
-        // the retained handle to the start and read through the open fd,
-        // never re-opening by path.
         file.seek(SeekFrom::Start(0))
             .expect("seek on retained handle should succeed");
         let mut handle_based_content = String::new();
@@ -869,8 +758,6 @@ mod draft_file_tests {
              the original fd rather than the swapped path: got {handle_based_content:?}"
         );
 
-        // Best-effort cleanup of the PoC symlink (not the NamedTempFile's own
-        // path management, since we've already replaced what's there).
         let _ = std::fs::remove_file(&tmp_path);
     }
 }

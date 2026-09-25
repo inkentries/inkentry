@@ -11,16 +11,8 @@ use crate::{
     storage::{NoteInput, open_memory_backend},
 };
 
-/// Reject a `--branch` / `--git-range` value that could be parsed by `git log`
-/// as an option rather than a revision (argument-injection / option-injection
-/// guard).
-///
-/// Every callsite in this file already appends a `--` separator before the
-/// pathspec position, which stops git from treating the ref as an option to
-/// `git log` itself; this check is defense-in-depth for revision walkers
-/// (like `A..B` ranges) where a leading `-` component can still be
-/// misinterpreted, and it gives a clear, immediate error instead of relying
-/// solely on the separator.
+// Defence in depth beside the `--` separator: a leading `-` in one side of an
+// `A..B` range can still be read by `git log` as an option.
 fn reject_option_like_ref(git_ref: &str) -> Result<()> {
     let is_option_like = |s: &str| s.starts_with('-') && s != "-";
     let offending = git_ref
@@ -37,11 +29,8 @@ fn reject_option_like_ref(git_ref: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parse the built-in default range shape `HEAD~<N>..HEAD`, returning `N`.
-///
-/// Only this exact shape is clamped (see [`resolve_range_revs`]); any other
-/// range the user passes — a tag range like `v1.0..HEAD`, a raw SHA range, or a
-/// single ref — is their explicit choice and reaches `git log` untouched.
+// Only the default `HEAD~<N>..HEAD` shape is clamped; an explicit range is the
+// user's choice and must reach `git log` untouched.
 fn parse_head_count_range(range: &str) -> Option<usize> {
     range
         .strip_prefix("HEAD~")?
@@ -50,8 +39,6 @@ fn parse_head_count_range(range: &str) -> Option<usize> {
         .ok()
 }
 
-/// Number of commits reachable from `HEAD`, or `None` when it cannot be
-/// determined (an empty repo with no commits yet, or `git` failing/absent).
 fn head_commit_count() -> Option<usize> {
     let out = std::process::Command::new("git")
         .args(["rev-list", "--count", "HEAD"])
@@ -67,17 +54,9 @@ fn head_commit_count() -> Option<usize> {
         .ok()
 }
 
-/// Resolve the `git log` revision argument(s) and the quoted display label for
-/// a range harvest (i.e. when no `--branch` override is in play).
-///
-/// The default range `HEAD~N..HEAD` names `HEAD~N`, a commit that does not
-/// exist in a repo with fewer than `N + 1` commits, so `git log` aborts with a
-/// raw `fatal: bad revision`. When the range has that shape we clamp `N` to the
-/// commits that actually exist and select them with `--max-count` against
-/// `HEAD`: that lists the most recent `min(N, commit_count)` commits (the whole
-/// history, root included, on a shallow repo) and never errors. A `commit_count`
-/// of `None` (git could not count) or any non-default range is left untouched,
-/// so a genuinely malformed range still surfaces git's own error.
+// `HEAD~N` does not exist in a repo with fewer than N+1 commits and `git log`
+// would abort with `bad revision`, so the default shape is clamped via
+// `--max-count`. An unknown count or a custom range is left for git to judge.
 fn resolve_range_revs(git_range: &str, commit_count: Option<usize>) -> (Vec<String>, String) {
     match (parse_head_count_range(git_range), commit_count) {
         (Some(requested), Some(count)) if count > 0 => {
@@ -91,23 +70,9 @@ fn resolve_range_revs(git_range: &str, commit_count: Option<usize>) -> (Vec<Stri
     }
 }
 
-/// Split `commits` into the ones safe to harvest and the count whose message
-/// matches a secret pattern, warning about each match by SHA.
-///
-/// Harvest promotes a commit message into memory, which is written to
-/// `refs/notes/inkentry` and pushed to a team or hosted server: the same
-/// destination `memory add` refuses a matched secret for, so the same scanner
-/// applies here.
-///
-/// **The failure shape deliberately differs from `memory add`'s.** `add`
-/// aborts the whole command (`cmd/memory/add.rs`), which is right for one
-/// interactive title/body. A `--branch` walk can cover thousands of commits,
-/// so ending the run over one long-since-rotated credential would discard
-/// every other commit in it. Skipping the match and continuing is the posture
-/// `indexer::secrets` already takes for code chunks.
-///
-/// The warning names the SHA only: echoing what matched would copy the
-/// credential into the terminal and into any captured log.
+// Skips rather than aborts, unlike `memory add`: a `--branch` walk can cover
+// thousands of commits and one rotated credential must not discard the rest.
+// Warns by SHA only so the secret is never echoed into the terminal or logs.
 fn drop_commits_with_secrets(
     commits: Vec<&(String, String, String)>,
 ) -> (Vec<&(String, String, String)>, usize) {
@@ -128,28 +93,16 @@ pub(super) async fn memory_harvest(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    // Honor the auto-discovered server tier (IMP-3 / spelunk-cloud/spelunk#316): loopback
-    // auto-discovery sets the capability tier without populating
-    // `cfg.server_url`. Build an effective config that fills in the inference
-    // URL / `project_id` from the tier (mirrors `memory search`) and use it for the
-    // remainder of this call tree, including the git/failures/claude-code
-    // sub-harvesters and `ServerInferenceClient::from_config`.
-    //
-    // ADR-004: harvest is an inference-driven command. It needs the server for
-    // embeddings + LLM extraction (gate on the inference URL), but its memory
-    // CRUD goes to the project's local `memory.db` via `open_memory_backend`
-    // (which reads only `server_url`). For an auto-discovered server that means
-    // local storage; for an explicit team `server_url` memory stays remote.
+    // Loopback auto-discovery sets the tier without populating `cfg.server_url`,
+    // so fill the inference URL / `project_id` from it. Memory CRUD still goes
+    // through `open_memory_backend`, which reads only `server_url`.
     let project_root = mem_path.parent().unwrap_or(mem_path);
-    // `get_inference_tier` (not `get_tier`): local_first always prefers the
-    // local loopback embedder/LLM, even with an explicit server_url set
-    // (2026-07-23 founder decision).
+    // Not `get_tier`: local_first prefers the loopback embedder/LLM even when
+    // `server_url` is set.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
 
-    // Tier-0: harvest requires server inference (#259 locked-feature error).
-    // Guidance points at the local auto-server, never team `server_url` setup.
     if cfg.resolve_inference_url().is_none() {
         return Err(harvest_requires_server());
     }
@@ -171,11 +124,8 @@ pub(super) async fn memory_harvest(
     }
 }
 
-/// Build harvest's two inference clients: one for embedding (dedup vectors),
-/// one for LLM extraction.
-///
-/// They resolve independently and can land on different servers, so a single
-/// shared client would silently send one of the two to the wrong place.
+// Embedding and LLM resolve independently and can land on different servers,
+// so one shared client would send one of them to the wrong place.
 pub(super) async fn harvest_clients(
     cfg: &Config,
     mem_path: &std::path::Path,
@@ -204,24 +154,17 @@ async fn memory_harvest_git(
     backend_override: Option<&str>,
 ) -> Result<()> {
     let started = std::time::Instant::now();
-    // Validate the user-supplied ref first, so a malicious option-shaped
-    // `--branch`/`--git-range` value is rejected even before the LLM precheck.
+    // Ahead of the LLM precheck so an option-shaped ref is rejected first.
     let user_ref = args
         .branch
         .clone()
         .unwrap_or_else(|| args.git_range.clone());
     reject_option_like_ref(&user_ref)?;
 
-    // LLM capability precheck, BEFORE the git range is resolved. With no LLM
-    // available the user must see the actionable locked-feature message, not a
-    // raw `git log` error from an unresolvable range on a shallow repo — the
-    // message must not depend on repo size.
+    // Before the range is resolved: with no LLM the user must see the
+    // locked-feature message, not a raw `git log` error, whatever the repo size.
     let (embed_server, llm_server) = harvest_clients(cfg, mem_path).await?;
 
-    // Resolve the revisions to walk: `--branch` means the full history of that
-    // ref; otherwise clamp the default `HEAD~N..HEAD` range to the commits that
-    // actually exist so a repo with fewer than N+1 commits never trips
-    // `bad revision`.
     let (git_revs, range_label): (Vec<String>, String) = match &args.branch {
         Some(branch) => (vec![branch.clone()], format!("full history of '{branch}'")),
         None => resolve_range_revs(&args.git_range, head_commit_count()),
@@ -288,7 +231,7 @@ async fn memory_harvest_git(
     }
 
     // Before the LLM sees anything: a matched message must reach neither the
-    // extraction request nor the memory store.
+    // extraction request nor the store.
     let (new_commits, secret_skipped) = drop_commits_with_secrets(new_commits);
 
     if new_commits.is_empty() {
@@ -333,8 +276,6 @@ async fn memory_harvest_git(
             "additionalProperties": false
         }
     });
-
-    // `embed_server` / `llm_server` were resolved up front as the LLM precheck.
 
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
@@ -580,7 +521,6 @@ async fn memory_harvest_git(
     Ok(())
 }
 
-/// Returns true for commit subjects that are obviously routine.
 fn is_routine_subject(subject: &str) -> bool {
     let s = subject.trim().to_lowercase();
 
@@ -627,7 +567,6 @@ fn is_routine_subject(subject: &str) -> bool {
     patterns.iter().any(|p| s.contains(p))
 }
 
-/// Harvest antipatterns from failure-signal commits (reverts, bug fixes, regressions).
 async fn memory_harvest_failures(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
@@ -641,8 +580,6 @@ async fn memory_harvest_failures(
         .unwrap_or_else(|| args.git_range.clone());
     reject_option_like_ref(&user_ref)?;
 
-    // Clamp the default `HEAD~N..HEAD` range to the commits that exist so a
-    // shallow repo never trips `bad revision` (mirrors the git source).
     let (git_revs, range_label): (Vec<String>, String) = match &args.branch {
         Some(branch) => (vec![branch.clone()], format!("full history of '{branch}'")),
         None => resolve_range_revs(&args.git_range, head_commit_count()),
@@ -681,7 +618,6 @@ async fn memory_harvest_failures(
         })
         .collect();
 
-    // Keep only failure-signal commits.
     let failure_commits: Vec<_> = all_commits
         .iter()
         .filter(|(_, subject, _)| is_failure_subject(subject))
@@ -705,8 +641,6 @@ async fn memory_harvest_failures(
         return Ok(());
     }
 
-    // Same store, same scanner, same skip-and-continue shape as the `git`
-    // source above: `--source failures` is a git-commit walk too.
     let (new_commits, secret_skipped) = drop_commits_with_secrets(new_commits);
 
     if new_commits.is_empty() {
@@ -975,7 +909,6 @@ async fn memory_harvest_failures(
     Ok(())
 }
 
-/// Returns true for commits that signal a failure (revert, bug fix, regression, crash, etc.).
 fn is_failure_subject(subject: &str) -> bool {
     let s = subject.trim().to_lowercase();
     if s.starts_with("revert \"") || s.starts_with("revert: ") || s.starts_with("revert ") {
@@ -1034,20 +967,11 @@ mod option_injection_guard_tests {
         assert!(reject_option_like_ref("HEAD..--output=/tmp/x").is_err());
     }
 
-    /// A ref that is exactly the `--` end-of-options marker. It starts with
-    /// `-` and is not the single-char `-` literal, so it is rejected like any
-    /// other option-like value — it must not be special-cased into an accept,
-    /// since `git log -- --` is ambiguous/nonsensical as a revision anyway.
     #[test]
     fn rejects_bare_double_dash() {
         assert!(reject_option_like_ref("--").is_err());
     }
 
-    /// Short numeric-looking options (`git log -1`, `-n5`, etc.) must be
-    /// rejected too, not just long `--flag=value` forms — the guard checks
-    /// only the leading `-`, so this should already hold, but it's worth
-    /// pinning explicitly since `-1`/`-n` are among the most common ways to
-    /// accidentally (or maliciously) alter `git log`'s behavior.
     #[test]
     fn rejects_short_option_like_refs() {
         assert!(reject_option_like_ref("-1").is_err());
@@ -1055,21 +979,12 @@ mod option_injection_guard_tests {
         assert!(reject_option_like_ref("-p").is_err());
     }
 
-    /// A very long option-like value must still be rejected (no length-based
-    /// bypass / no truncation before the check).
     #[test]
     fn rejects_long_option_like_ref() {
         let long_val = format!("--output={}", "a".repeat(4096));
         assert!(reject_option_like_ref(&long_val).is_err());
     }
 
-    /// Refs containing shell metacharacters are not shell-parsed anywhere in
-    /// this codebase (git is always spawned via argv, never a shell), so
-    /// these are harmless from a shell-injection standpoint — but they must
-    /// still pass straight through unless they are *also* option-like
-    /// (leading `-`), proving the guard is narrowly scoped to option-shape
-    /// and doesn't accidentally reject or mangle legitimate-looking (if
-    /// unusual) ref/range strings.
     #[test]
     fn shell_metacharacters_alone_do_not_trigger_rejection() {
         assert!(reject_option_like_ref("feature/$(whoami)").is_ok());
@@ -1077,10 +992,6 @@ mod option_injection_guard_tests {
         assert!(reject_option_like_ref("main..feature`x`").is_ok());
     }
 
-    /// Combining a leading dash with shell metacharacters must still be
-    /// rejected via the option-like check (belt-and-braces: even though argv
-    /// spawning means these can't reach a shell, the leading `-` alone is
-    /// sufficient grounds for rejection).
     #[test]
     fn rejects_option_like_ref_with_shell_metacharacters() {
         assert!(reject_option_like_ref("--output=/tmp/x;rm -rf /").is_err());
@@ -1097,7 +1008,6 @@ mod range_clamp_tests {
         assert_eq!(parse_head_count_range("HEAD~10..HEAD"), Some(10));
         assert_eq!(parse_head_count_range("HEAD~1..HEAD"), Some(1));
         assert_eq!(parse_head_count_range("HEAD~30..HEAD"), Some(30));
-        // Anything else is a user-chosen range and must not be clamped.
         assert_eq!(parse_head_count_range("v1.0..HEAD"), None);
         assert_eq!(parse_head_count_range("HEAD~10..main"), None);
         assert_eq!(parse_head_count_range("main"), None);
@@ -1107,9 +1017,6 @@ mod range_clamp_tests {
 
     #[test]
     fn clamps_the_default_range_to_a_one_commit_repo() {
-        // The last-10 default must collapse to the single commit that exists,
-        // selected via --max-count so `HEAD~10` (which does not exist here) is
-        // never named to git.
         let (revs, label) = resolve_range_revs("HEAD~10..HEAD", Some(1));
         assert_eq!(revs, vec!["--max-count=1".to_string(), "HEAD".to_string()]);
         assert_eq!(label, "'HEAD~1..HEAD'");
@@ -1138,8 +1045,6 @@ mod range_clamp_tests {
 
     #[test]
     fn leaves_the_range_alone_when_the_commit_count_is_unknown() {
-        // git rev-list failed (empty repo, or git absent): don't fabricate a
-        // range, let the existing `git log` error path speak.
         let (revs, label) = resolve_range_revs("HEAD~10..HEAD", None);
         assert_eq!(revs, vec!["HEAD~10..HEAD".to_string()]);
         assert_eq!(label, "'HEAD~10..HEAD'");

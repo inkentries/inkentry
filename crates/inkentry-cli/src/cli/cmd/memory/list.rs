@@ -15,10 +15,8 @@ pub(super) async fn memory_list(
     pre_init_notes: bool,
 ) -> Result<()> {
     let started = std::time::Instant::now();
-    // Read from git notes when it's the explicit backend (`--backend git-notes`)
-    // or the ADR-068 D3 pre-init carrier: `mem_path` is a placeholder in both, so
-    // skip the SQLite-oriented nudge and cross-project pass (they'd open the
-    // local/global SQLite store) and route the read to `refs/notes/inkentry`.
+    // `mem_path` is a placeholder in both git-notes cases, so the SQLite-oriented
+    // nudge and cross-project pass must be skipped.
     let git_notes = pre_init_notes || backend_override == Some("git-notes");
     let effective_override = if git_notes {
         Some("git-notes")
@@ -26,12 +24,10 @@ pub(super) async fn memory_list(
         backend_override
     };
 
-    // A teammate's `git fetch` lands their notes on a tracking ref that nothing
-    // else merges into `memory.db`, so without this they stay invisible on the
-    // default read path (ADR-077 D1).
+    // A teammate's fetched notes sit on a tracking ref nothing else merges into
+    // `memory.db`, so they would stay invisible on the default read path.
     super::reconcile::refresh_read_path_from_git_notes(cfg, mem_path, effective_override).await;
 
-    // Discovery nudge: warn once when unimported server.db notes exist.
     if !git_notes {
         super::reconcile::maybe_emit_nudge(mem_path, cfg);
         super::outbox::poll_and_apply(cfg, mem_path).await;
@@ -39,12 +35,9 @@ pub(super) async fn memory_list(
 
     let as_of = parse_as_of(args.as_of.as_deref())?;
 
-    // `--tag`/`--file` (ADR-101 D4) are exact filters backed by the
-    // `note_tags`/`note_files` indexes, which only the local sqlite store
-    // has. They bypass the `MemoryBackend` trait (which has no such method,
-    // and would need one on every backend for a filter two of the three
-    // cannot serve) and the cross-project/`--source-ref` combinations below,
-    // which is why they are handled up front and return early.
+    // Only the local sqlite store has the `note_tags`/`note_files` indexes, and
+    // `MemoryBackend` has no method for them, so these filters bypass it (and the
+    // cross-project/`--source-ref` handling below).
     if args.tag.is_some() || args.file.is_some() {
         anyhow::ensure!(
             !git_notes,
@@ -74,20 +67,14 @@ pub(super) async fn memory_list(
 
     let backend = open_memory_backend(cfg, mem_path, effective_override).await?;
     let mut notes = if let Some(ref sha_prefix) = args.source_ref {
-        // (1) Harvest-provenance matches: entries whose `source_ref` COLUMN
-        // records this commit (harvested entries, ADR-062). On the git-notes
-        // backend this instead returns the note-anchored entries directly, so
-        // that path is already complete here.
+        // Harvested entries match on the `source_ref` column; the git-notes
+        // backend returns note-anchored entries here directly.
         let mut matches = backend
             .list_by_source_ref(sha_prefix, args.limit, args.archived, as_of)
             .await?;
-        // (2) Note-anchored matches: a `memory add` entry records which commit
-        // it belongs to only as the git-notes attachment; its `source_ref`
-        // COLUMN stays NULL, so (1) can never surface it (the reported bug).
-        // Resolve the ids anchored to the commit from the notes ref, then read
-        // the authoritative local rows back so the listing keeps this store's
-        // own ids and status. SQLite-primary only: the git-notes backend covers
-        // its own path in (1), and a remote backend has no local notes ref.
+        // A `memory add` entry's commit is recorded only as the git-notes
+        // attachment, so the column query cannot find it. A remote backend has
+        // no local notes ref.
         if backend.backend_kind() == "sqlite" {
             augment_with_note_anchored(
                 &mut matches,
@@ -106,23 +93,17 @@ pub(super) async fn memory_list(
             .await?
     };
 
-    // Cross-project dep pass (ADR-003): append locked/cross-project decisions
-    // and requirements from linked projects unless --local-only is set.
-    // The dep pass is skipped when --source-ref is given (commit-specific queries
-    // are inherently local) or when --archived is set (archived entries are
-    // project-local housekeeping noise, not cross-cutting signals).
+    // Skipped for --source-ref (commit-specific, so inherently local) and
+    // --archived (project-local housekeeping, not cross-cutting signal).
     if !args.local_only && args.source_ref.is_none() && !args.archived && !git_notes {
         let index_db_path = crate::config::resolve_db(None, &cfg.db_path);
         let mut seen: std::collections::HashSet<(String, NoteId)> = Default::default();
-        // Seed seen set from local results so local entries don't collide with
-        // same-id entries from a dep that happens to share a local path (unlikely
-        // but defensive). Local notes have no root_path key, so we use "".
+        // Local notes have no root_path key, hence "".
         for n in &notes {
             seen.insert((String::new(), n.id.clone()));
         }
         let dep_notes =
             super::cross_project::collect_dep_cross_cutting(&index_db_path, &mut seen).await;
-        // Filter dep notes to the requested kind (if --kind was specified).
         let dep_notes: Vec<_> = if let Some(ref k) = args.kind {
             dep_notes.into_iter().filter(|n| &n.kind == k).collect()
         } else {
@@ -143,8 +124,6 @@ pub(super) async fn memory_list(
     result
 }
 
-/// Shared best-effort event recording (ADR-098 D5) for both `memory list`
-/// paths above.
 fn record_list_event(
     cfg: &Config,
     mem_path: &std::path::Path,
@@ -168,8 +147,6 @@ fn record_list_event(
     );
 }
 
-/// Shared output for every `memory list` path (the normal query and the
-/// `--tag`/`--file` sqlite-direct path above).
 fn print_notes(notes: &[crate::storage::memory::Note], format: &str) -> Result<()> {
     if notes.is_empty() {
         println!("No memory entries found.");
@@ -192,21 +169,10 @@ fn print_notes(notes: &[crate::storage::memory::Note], format: &str) -> Result<(
     Ok(())
 }
 
-/// Append the entries anchored (via git notes) to the `--source-ref` commit to
-/// `matches`, deduped by `entity_id`.
-///
-/// The commit anchor of a `memory add` entry lives only in the enclosing repo's
-/// notes ref (commit → note object); it is never written into the SQLite
-/// `source_ref` column, so the column query in `memory_list` cannot find it.
-/// This reads the ids anchored to the commit off the notes ref, then reads the
-/// authoritative local rows back so the listing keeps this store's own ids and
-/// status.
-///
-/// Best-effort by design: outside a git repo, with no `refs/notes/inkentry`, or
-/// on any git failure there is simply nothing to add and the column matches in
-/// `matches` stand. `mem_path.parent()` is the same root the write-through
-/// carrier anchors against (see `memory add`), so reads and writes agree on
-/// which repo owns the notes.
+// Best-effort: any git failure means nothing to add. Anchored ids are read back
+// from the local store so the listing keeps its own ids and status.
+// `mem_path.parent()` is the root `memory add` anchors against, so reads and
+// writes agree on which repo owns the notes.
 async fn augment_with_note_anchored(
     matches: &mut Vec<crate::storage::memory::Note>,
     mem_path: &std::path::Path,
@@ -242,16 +208,14 @@ async fn augment_with_note_anchored(
         return;
     }
 
-    // Dedup by entity_id: an entry that is both harvested (column match) and
-    // note-anchored must appear once.
+    // An entry both harvested and note-anchored must appear once.
     let mut seen: std::collections::HashSet<String> = matches.iter().map(note_entity_id).collect();
     for n in anchored {
         if seen.insert(note_entity_id(&n)) {
             matches.push(n);
         }
     }
-    // Restore the newest-first order and re-cap so the union still honours the
-    // limit the single-source query would have.
+    // Re-sort and re-cap so the union still honours `limit`.
     matches.sort_by_key(|n| std::cmp::Reverse(n.created_at));
     matches.truncate(limit.min(500));
 }
