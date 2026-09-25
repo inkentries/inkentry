@@ -99,10 +99,13 @@ pub fn set_chunk_token_cap(tokens: usize) {
 /// Identifier for the chunk-boundary-affecting knobs, stamped into a DB's
 /// `index_meta` so a later run can detect that its stored chunks were cut
 /// under a different configuration (see `Database::ensure_chunker_config`).
-/// Only `MAX_CHUNK_TOKENS` (via `chunk_token_cap`) affects boundaries today;
-/// fold any future boundary-affecting knob into this string too.
+/// Fold any future boundary-affecting knob into this string too.
+///
+/// `rules` counts changes to which nodes become chunks. 2: JS/TS function
+/// bindings are chunks, and code outside every chunk is windowed rather than
+/// dropped.
 pub fn chunker_config_id() -> String {
-    format!("max_chunk_tokens={}", chunk_token_cap())
+    format!("max_chunk_tokens={};rules=2", chunk_token_cap())
 }
 
 /// Whether `chunks` came from the file's syntax tree, as opposed to one

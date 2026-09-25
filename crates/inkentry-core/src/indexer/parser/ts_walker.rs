@@ -50,6 +50,9 @@ pub(super) struct NodeSpec {
     pub chunk_kind: ChunkKind,
     /// Field name to use for the symbol name (e.g. "name")
     pub name_field: Option<&'static str>,
+    /// Further condition a node of `kind` must meet, for kinds that are only
+    /// sometimes a chunk.
+    pub guard: Option<fn(&tree_sitter::Node<'_>) -> bool>,
 }
 
 pub(super) fn s(
@@ -61,6 +64,17 @@ pub(super) fn s(
         kind,
         chunk_kind,
         name_field,
+        guard: None,
+    }
+}
+
+/// A module-level `const`/`let`/`var` binding of a function, which is how most
+/// JS/TS functions and nearly all React components are written
+/// (`export const Picker = (props) => { … }`). Named by the binding.
+fn function_binding(kind: &'static str) -> NodeSpec {
+    NodeSpec {
+        guard: Some(is_module_level_function_binding),
+        ..s(kind, ChunkKind::Function, None)
     }
 }
 
@@ -86,6 +100,8 @@ pub(super) fn node_specs(language: &str) -> Vec<NodeSpec> {
             s("method_definition", Method, Some("name")),
             s("class_declaration", Class, Some("name")),
             s("generator_function_declaration", Function, Some("name")),
+            function_binding("lexical_declaration"),
+            function_binding("variable_declaration"),
         ],
         "typescript" | "tsx" => vec![
             s("function_declaration", Function, Some("name")),
@@ -94,6 +110,8 @@ pub(super) fn node_specs(language: &str) -> Vec<NodeSpec> {
             s("interface_declaration", Interface, Some("name")),
             s("type_alias_declaration", TypeAlias, Some("name")),
             s("generator_function_declaration", Function, Some("name")),
+            function_binding("lexical_declaration"),
+            function_binding("variable_declaration"),
         ],
         "go" => vec![
             s("function_declaration", Function, Some("name")),
@@ -244,7 +262,11 @@ fn walk_node_inner(
     if depth >= MAX_WALK_DEPTH || out.len() >= MAX_CHUNKS {
         return;
     }
-    if let Some(spec) = ctx.specs.iter().find(|s| s.kind == node.kind()) {
+    if let Some(spec) = ctx
+        .specs
+        .iter()
+        .find(|s| s.kind == node.kind() && s.guard.is_none_or(|guard| guard(&node)))
+    {
         // Skip keyword leaf tokens: grammars like proto reuse the node kind
         // name for both the keyword token ("message") and the structural block.
         // Structural nodes always have named children; keyword leaves do not.
@@ -413,8 +435,64 @@ pub(super) fn extract_name(
         "sql" => sql_object_name(node, src),
         "kotlin" => kotlin_decl_name(node, src),
         "swift" => swift_init_name(node),
+        "javascript" | "jsx" | "typescript" | "tsx" => function_binding_name(node, src),
         _ => None,
     }
+}
+
+/// Whether `value` is a function, or a call wrapping one directly as an
+/// argument (`memo(() => …)`, `forwardRef((props, ref) => …)`).
+fn is_function_value(value: &tree_sitter::Node<'_>) -> bool {
+    const FUNCTIONS: &[&str] = &[
+        "arrow_function",
+        "function_expression",
+        "function",
+        "generator_function",
+    ];
+    if FUNCTIONS.contains(&value.kind()) {
+        return true;
+    }
+    if value.kind() != "call_expression" {
+        return false;
+    }
+    let Some(args) = value.child_by_field_name("arguments") else {
+        return false;
+    };
+    (0..args.named_child_count())
+        .filter_map(|i| args.named_child(i as u32))
+        .any(|arg| FUNCTIONS.contains(&arg.kind()))
+}
+
+fn function_declarator<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    (0..node.named_child_count())
+        .filter_map(|i| node.named_child(i as u32))
+        .filter(|d| d.kind() == "variable_declarator")
+        .find(|d| {
+            d.child_by_field_name("value")
+                .is_some_and(|v| is_function_value(&v))
+        })
+}
+
+// Module level only: a function bound inside another function (`const onClick
+// = () => …` in a component) is already part of its enclosing chunk, and
+// giving it its own would embed the same lines twice.
+fn is_module_level_function_binding(node: &tree_sitter::Node<'_>) -> bool {
+    let module_level = match node.parent() {
+        Some(p) if p.kind() == "program" => true,
+        Some(p) if p.kind() == "export_statement" => {
+            p.parent().is_some_and(|pp| pp.kind() == "program")
+        }
+        _ => false,
+    };
+    module_level && function_declarator(node).is_some()
+}
+
+fn function_binding_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+    function_declarator(node)?
+        .child_by_field_name("name")?
+        .utf8_text(src)
+        .ok()
+        .map(str::to_owned)
 }
 
 /// Extract the declared name from a Kotlin declaration node. tree-sitter-kotlin
@@ -594,8 +672,10 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 /// (skipping whitespace), if any.
 ///
 /// Rust attributes (`#[derive(...)]`) are real siblings, skipped in the loop
-/// below. Python wraps decorator+def in one `decorated_definition` node, so
-/// the walk must start from that parent instead of `node`. TS/Java attach
+/// below. Python wraps decorator+def in one `decorated_definition` node, and
+/// JS/TS wraps an exported declaration in an `export_statement` whose first
+/// child is the `export` keyword, so in both the walk must start from that
+/// parent instead of `node`. TS/Java attach
 /// decorators as a child, so neither case applies there. Ruby's
 /// `private def foo; end` visibility idiom (and lookalikes like `memoize def
 /// foo; end`) parses the def as a `method` node nested two levels inside a
@@ -613,7 +693,9 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
 /// its block precedes it), check one level up for that comment-as-child case.
 pub(super) fn preceding_comment(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let start = match node.parent() {
-        Some(parent) if parent.kind() == "decorated_definition" => parent,
+        Some(parent) if matches!(parent.kind(), "decorated_definition" | "export_statement") => {
+            parent
+        }
         Some(parent) if parent.kind() == "argument_list" && parent.named_child_count() == 1 => {
             match parent.parent() {
                 Some(call) if call.kind() == "call" => call,

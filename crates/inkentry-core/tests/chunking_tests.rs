@@ -4,8 +4,12 @@
 
 #[path = "chunking_tests/adversarial_chunker.rs"]
 mod adversarial_chunker;
+#[path = "chunking_tests/gap_coverage.rs"]
+mod gap_coverage;
 #[path = "chunking_tests/lang_csharp_kotlin_swift.rs"]
 mod lang_csharp_kotlin_swift;
+#[path = "chunking_tests/lang_js_ts_function_bindings.rs"]
+mod lang_js_ts_function_bindings;
 #[path = "chunking_tests/lang_php_ruby.rs"]
 mod lang_php_ruby;
 #[path = "chunking_tests/prop_chunker.rs"]
