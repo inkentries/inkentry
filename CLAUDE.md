@@ -221,6 +221,10 @@ storage/
   backend.rs     — StorageBackend trait (local vs remote)
   remote/
     mod.rs         — RemoteMemoryBackend struct + URL helpers + MemoryBackend impl
+    session.rs     — Bearer + SessionRefresher: the CLI installs a refresher at
+                     startup so a remote memory backend rotates an expired cloud
+                     session before its first request, and once more after a 401
+                     (core cannot reach WorkOS itself). Self-hosted keys pass through
     wire_types.rs  — HTTP request/response structs (AddNoteRequest, NoteResponse, etc.)
     tests.rs       — #[cfg(test)] tests for URL encoding and search wire format
 

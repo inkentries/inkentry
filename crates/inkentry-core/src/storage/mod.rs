@@ -44,10 +44,10 @@ pub use memory::{
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{CarriedEdge, NoteRecord, carrier_token, now_millis, now_secs};
 pub use origin::Origin;
-pub use remote::credential_hint;
 pub use remote::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
-    RemoteMemoryBackend, SincePage, SyncEdgePush,
+    RemoteMemoryBackend, SessionRefresher, SincePage, SyncEdgePush, credential_hint,
+    install_session_refresher,
 };
 pub use specs::{SpecRecord, StaleSpec};
 pub use stats::{DriftCandidate, EmbedTokenStats, IndexStats, LanguageStat, StalenessReport};
@@ -187,7 +187,8 @@ async fn open_remote_memory_backend(
     // Bearer resolved per-origin (ADR-071 D2): `url` may be a self-hosted team
     // server (`cloud_first` mode routes any configured `server_url`, not only
     // the cloud one), and a cloud login must never leak to a self-hosted
-    // server, so the origin decides which credential kind is consulted.
+    // server, so the origin decides which credential kind is consulted. An
+    // installed `SessionRefresher` re-resolves it, rotated, before first use.
     let bearer = cfg.bearer_for(url)?;
     open_remote_memory_backend_with_bearer(cfg, url, bearer).await
 }
@@ -239,18 +240,22 @@ async fn open_remote_memory_backend_with_bearer(
     // branched on inside every CRUD method. Any uncertain probe resolves to the
     // team-server dialect, which is what this function returned unconditionally
     // before the probe existed.
+    let bearer = match remote::installed_refresher() {
+        Some(refresher) => remote::Bearer::renewable(bearer, refresher, cfg, url),
+        None => remote::Bearer::fixed(bearer),
+    };
     match remote::detect_dialect(&client, url).await {
         remote::PeerDialect::CloudApi => Ok(Box::new(remote::CloudApiMemoryBackend {
             client,
             base_url: url.to_string(),
             project_id,
-            api_key: bearer,
+            bearer,
         })),
         remote::PeerDialect::TeamServer => Ok(Box::new(RemoteMemoryBackend {
             client,
             base_url: url.to_string(),
             project_id,
-            api_key: bearer,
+            bearer,
         })),
     }
 }

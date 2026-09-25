@@ -10,10 +10,13 @@ use crate::embeddings::{PUSHED_VECTOR_PRECISION, blob_to_vec, pushed_vector_mode
 mod cloud_api;
 mod peer;
 mod retry;
+mod session;
 mod sync;
 mod wire_types;
 pub use cloud_api::CloudApiMemoryBackend;
 pub(super) use peer::{PeerDialect, detect_dialect};
+pub(super) use session::installed_refresher;
+pub use session::{Bearer, SessionRefresher, install_session_refresher};
 pub use sync::{
     BatchItemResult, BatchPushItem, BatchPushResult, CloudSyncClient, EdgePushResult, RemoteEntry,
     SincePage, SyncEdgePush,
@@ -69,7 +72,7 @@ pub struct RemoteMemoryBackend {
     pub client: reqwest::Client,
     pub base_url: String,
     pub project_id: String,
-    pub api_key: Option<String>,
+    pub bearer: Bearer,
 }
 
 impl RemoteMemoryBackend {
@@ -85,14 +88,6 @@ impl RemoteMemoryBackend {
         )
     }
 
-    fn authed(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(key) = &self.api_key {
-            req.header("Authorization", format!("Bearer {key}"))
-        } else {
-            req
-        }
-    }
-
     /// Send an authenticated request, classifying any transport failure once.
     ///
     /// When a connection to this origin already failed earlier in this process,
@@ -102,13 +97,7 @@ impl RemoteMemoryBackend {
     /// is the one an attempt would have produced, and which store this backend
     /// talks to is decided before this is ever called.
     async fn send(&self, req: reqwest::RequestBuilder, op: &str) -> Result<reqwest::Response> {
-        if crate::reachability::connect_already_failed(&self.base_url) {
-            return Err(already_unreachable(&self.base_url, op));
-        }
-        self.authed(req)
-            .send()
-            .await
-            .map_err(|err| transport_error(err, &self.base_url, op))
+        session::send_request(&self.bearer, &self.base_url, req, op).await
     }
 }
 
@@ -118,6 +107,10 @@ impl RemoteMemoryBackend {
 /// A 401/403 from a self-hosted server is a missing per-origin key more often
 /// than anything else, and nothing migrates one into place on the user's
 /// behalf any more (ADR-088 D3), so the error is where they learn the command.
+///
+/// Callers must have renewed an expired cloud session before reaching this
+/// (the memory backends do so in `Bearer::send`); otherwise `inkentry login`
+/// is advised for a session a refresh would have revived.
 pub fn credential_hint(status: reqwest::StatusCode, base_url: &str) -> String {
     if status != reqwest::StatusCode::UNAUTHORIZED && status != reqwest::StatusCode::FORBIDDEN {
         return String::new();
@@ -326,9 +319,20 @@ impl MemoryBackend for RemoteMemoryBackend {
         if crate::reachability::connect_already_failed(&self.base_url) {
             return Err(already_unreachable(&self.base_url, "POST /memory"));
         }
-        let http_resp =
-            retry::send_retrying_while_shed(&retry::RetryPolicy::default(), "POST /memory", || {
-                self.authed(self.client.post(&url)).json(&body).send()
+        let (url, body) = (&url, &body);
+        let http_resp = self
+            .bearer
+            .send(|token| async move {
+                retry::send_retrying_while_shed(
+                    &retry::RetryPolicy::default(),
+                    "POST /memory",
+                    || {
+                        session::authorize(self.client.post(url), token.as_deref())
+                            .json(body)
+                            .send()
+                    },
+                )
+                .await
             })
             .await
             .map_err(|e| unreachable_headline(e, &self.base_url))?;

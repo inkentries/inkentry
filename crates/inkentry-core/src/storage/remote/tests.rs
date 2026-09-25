@@ -5,7 +5,7 @@ fn backend(project_id: &str) -> RemoteMemoryBackend {
         client: reqwest::Client::new(),
         base_url: "http://127.0.0.1:4655".to_string(),
         project_id: project_id.to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     }
 }
 
@@ -111,7 +111,7 @@ async fn search_sends_query_text_not_precomputed_embedding() {
         client: reqwest::Client::new(),
         base_url: server.uri(),
         project_id: "local/abc123".to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     };
 
     // `MemoryBackend::search` takes both a pre-computed query embedding
@@ -169,7 +169,7 @@ async fn list_sends_query_parameters_the_oss_server_silently_drops() {
         client: reqwest::Client::new(),
         base_url: server.uri(),
         project_id: "local/abc123".to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     };
 
     backend
@@ -236,7 +236,7 @@ fn backend_at(uri: String) -> RemoteMemoryBackend {
         client: reqwest::Client::new(),
         base_url: uri,
         project_id: "proj".to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     }
 }
 
@@ -515,7 +515,7 @@ async fn a_slow_but_connected_server_is_not_reported_as_unreachable() {
             .expect("build a client with a collapsed request budget"),
         base_url: server.uri(),
         project_id: "proj".to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     };
 
     let err = backend
@@ -596,7 +596,7 @@ async fn team_backend_listing(
         client: reqwest::Client::new(),
         base_url: server.uri(),
         project_id: "team".to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     };
     (server, backend)
 }
@@ -659,7 +659,7 @@ async fn team_backend_ignoring_offset(count: usize) -> (wiremock::MockServer, Re
         client: reqwest::Client::new(),
         base_url: server.uri(),
         project_id: "team".to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     };
     (server, backend)
 }
