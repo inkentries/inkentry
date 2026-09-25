@@ -27,7 +27,7 @@ pub(super) fn ls_files(args: PlumbingLsFilesArgs, db: &Database) -> Result<()> {
 
     let mut emitted = false;
     for record in records {
-        // Paths in the DB are relative to the project root; join before hashing.
+        // Indexed paths are relative to the project root.
         let on_disk = root.join(&record.path);
         let stale = match std::fs::read(&on_disk) {
             Ok(bytes) => format!("{}", blake3::hash(&bytes)) != record.hash,
@@ -41,7 +41,6 @@ pub(super) fn ls_files(args: PlumbingLsFilesArgs, db: &Database) -> Result<()> {
         let chunks = db.chunks_for_file(&record.path)?;
         let chunk_count = chunks.len();
 
-        // language from DB record; fall back to first chunk's language if not stored
         let lang = record
             .language
             .or_else(|| chunks.first().map(|c| c.language.clone()));

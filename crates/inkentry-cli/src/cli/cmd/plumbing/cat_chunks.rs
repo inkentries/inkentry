@@ -4,8 +4,7 @@ use super::PlumbingCatChunksArgs;
 use crate::{config::Config, storage::Database};
 
 pub(super) fn cat_chunks(args: PlumbingCatChunksArgs, db: &Database, _cfg: &Config) -> Result<()> {
-    // Stored paths are normalized to forward slashes; normalize the query arg so
-    // a Windows caller passing `src\lib.rs` matches the indexed `src/lib.rs`.
+    // Stored paths use forward slashes, so a Windows `src\lib.rs` must be normalised.
     let file = inkentry_core::utils::normalize_index_path(&args.file);
     let chunks = db.chunks_for_file(&file)?;
     if chunks.is_empty() {

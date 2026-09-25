@@ -27,19 +27,12 @@ pub(super) async fn embed_cmd(
         std::process::exit(2);
     }
 
-    // Resolve the server exactly as the other server-backed commands do
-    // (`search --mode semantic`, `memory search`): honour the capability tier
-    // so an auto-discovered loopback server — which sets the tier without
-    // populating `cfg.server_url` (ADR-004) — is reached, rather than gating on
-    // an explicitly configured `server_url`. Without this bridge, `embed` alone
-    // reported `requires inkentry-server` while every other server-backed
-    // command found the running server.
+    // An auto-discovered loopback server sets the tier without populating
+    // `cfg.server_url`, so gating on `server_url` would miss it.
     let project_root = db_path.parent().unwrap_or(db_path);
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let client = require_server_client(&eff_cfg, "plumbing embed")?;
-    // The pinned model id, not a config value: the effective embedding model
-    // is fixed product-wide and is never selected by `config.toml`.
     let model = inkentry_core::embeddings::MODEL_ID.to_string();
 
     let stdin = std::io::stdin();

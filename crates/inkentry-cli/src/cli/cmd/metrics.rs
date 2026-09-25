@@ -1,9 +1,3 @@
-//! `inkentry metrics` — ADR-098's deterministic state-metrics snapshot.
-//!
-//! CLI-thin: everything that reads `memory.db` or `git` lives in
-//! `inkentry_core::metrics`; this module resolves the project, calls it, and
-//! renders the result as JSON or a short human summary.
-
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use inkentry_core::metrics::{
@@ -48,10 +42,6 @@ pub async fn metrics(args: MetricsArgs, cfg: Config) -> Result<()> {
     }
 }
 
-/// `inkentry metrics clear`: empty the local `events` table. The store's
-/// entries, tags, linked files and edges are a separate concern (D5: "the
-/// whole of the privacy story a separate file would have given" is that
-/// clearing `events` alone is sufficient — nothing else needs touching).
 async fn clear(cfg: Config) -> Result<()> {
     let db_path = crate::config::require_project_db(&cfg.db_path, false)?;
     let mem_path = db_path.with_file_name("memory.db");
@@ -62,15 +52,12 @@ async fn clear(cfg: Config) -> Result<()> {
 }
 
 async fn snapshot(args: MetricsSnapshotArgs, cfg: Config) -> Result<()> {
-    // ADR-067: fail closed when there is no local `.inkentry/` project rather
-    // than reporting the machine-global store as if it were this project's.
+    // Fail closed without a local `.inkentry/` rather than reporting the
+    // machine-global store as this project's.
     let db_path = crate::config::require_project_db(&cfg.db_path, false)?;
     let mem_path = db_path.with_file_name("memory.db");
-    // `db_path` is always `<project_root>/.inkentry/index.db` (stability.md);
-    // two `.parent()` calls recover the actual project root, which both
-    // `derive_project_id`/`resolve_project_id` and the git commands need —
-    // not `.inkentry/` itself, whose canonical path a non-git-repo fallback
-    // id would hash instead of the project's own.
+    // `db_path` is `<project_root>/.inkentry/index.db`. Hashing `.inkentry/`
+    // instead of the root would give a non-git project the wrong fallback id.
     let project_root = db_path
         .parent()
         .and_then(|p| p.parent())
@@ -166,8 +153,6 @@ fn print_snapshot_summary(snap: &Snapshot) {
     print_events_summary(&snap.events);
 }
 
-/// The `events` block (ADR-098 D3), shared by the full snapshot summary and
-/// `inkentry status`'s compact section below it.
 fn print_events_summary(e: &EventsMetrics) {
     println!("events ({}d window)", e.window_days);
     println!(
@@ -224,8 +209,6 @@ fn print_events_summary(e: &EventsMetrics) {
     );
 }
 
-/// The compact status section: the cheap subset of the metrics above,
-/// printed as a few lines under `inkentry status`.
 pub(super) fn print_status_summary(summary: &StatusMetricsSummary) {
     println!("Metrics ({}d window)", summary.window_days);
     let entries: Vec<String> = summary
@@ -268,10 +251,7 @@ pub(super) fn print_status_summary(summary: &StatusMetricsSummary) {
     print_status_use_section(&summary.events);
 }
 
-/// The compact "use, last 7 days" section (ADR-098 D3/D5): explicit vs hook
-/// columns per named command, and the two automation rates. Always the fixed
-/// [`inkentry_core::metrics::EVENTS_WINDOW_DAYS`] window, shown only when at
-/// least one event was recorded — an untouched project prints nothing extra.
+// Silent until an event is recorded, so an untouched project prints nothing extra.
 fn print_status_use_section(e: &EventsMetrics) {
     let total_calls: u64 = e.calls.values().map(|c| c.total).sum();
     if total_calls == 0 {
@@ -333,9 +313,7 @@ fn format_median_duration(m: &MedianSeconds) -> String {
     }
 }
 
-/// Like [`format_median_duration`] but without the trailing `(n=...)` —
-/// for a caller (the `status` compact section) that already shows the
-/// sample size as its own number and would otherwise double-parenthesise it.
+// No `(n=...)` suffix: the status section shows the sample size itself.
 fn format_bare_duration(median_seconds: Option<i64>) -> String {
     match median_seconds {
         Some(secs) => format_duration(secs),

@@ -1,12 +1,9 @@
-//! `inkentry memory tags`: the normalised tag vocabulary with counts
-//! (ADR-101 D1/D2). Sqlite-only — the vocabulary is a `note_tags` query, and
-//! neither the git-notes carrier nor a remote backend expose one.
-
 use anyhow::Result;
 
 use super::MemoryTagsArgs;
 use crate::storage::MemoryStore;
 
+// Sqlite-only: neither the git-notes carrier nor a remote backend exposes a vocabulary.
 pub(super) async fn memory_tags(args: MemoryTagsArgs, mem_path: &std::path::Path) -> Result<()> {
     let store = MemoryStore::open(mem_path)?;
     let tags = store.tags_with_counts()?;

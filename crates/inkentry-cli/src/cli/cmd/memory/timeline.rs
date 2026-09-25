@@ -11,25 +11,18 @@ pub(super) async fn memory_timeline(
     cfg: &Config,
     backend_override: Option<&str>,
 ) -> Result<()> {
-    // Honor the auto-discovered server tier (IMP-3 / spelunk-cloud/spelunk#316): see
-    // `memory_search` for rationale — loopback auto-discovery sets the
-    // capability tier without populating `cfg.server_url`.
+    // Loopback auto-discovery sets the tier without populating `cfg.server_url`.
     let project_root = mem_path.parent().unwrap_or(mem_path);
-    // `get_inference_tier` (not `get_tier`): local_first always prefers the
-    // local loopback embedder, even with an explicit server_url set
-    // (2026-07-23 founder decision).
+    // Not `get_tier`: local_first prefers the loopback embedder even with an
+    // explicit server_url set.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
 
     super::outbox::poll_and_apply(cfg, mem_path).await;
 
-    // Timeline is a local, always-available capability: it filters the topic
-    // through the same no-server full-text path as `memory search --mode text`
-    // (the local backend matches on `query` and ignores `query_blob`), so no
-    // query embedding — and thus no running inference server — is required.
-    // The empty blob is only consulted by the remote backend, which embeds the
-    // `query` text server-side anyway.
+    // Full-text only: the local backend ignores the blob and a remote backend
+    // embeds `query` server-side, so no inference server is needed.
     let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
     let notes = backend
         .search_timeline(&[], &args.query, args.limit)
