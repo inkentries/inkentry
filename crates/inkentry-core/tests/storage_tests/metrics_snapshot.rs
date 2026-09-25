@@ -228,14 +228,11 @@ async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_w
         latency_ms: Some(10),
         ok: true,
     };
-    record_event_at(tmp.path(), fields("search", "explicit"));
-    record_event_at(tmp.path(), fields("search", "hook"));
-    // The window ends at the newest entry's `created_at`, in whole seconds.
-    // Added after the events, the entry cannot close the window before them;
-    // added first, a second boundary crossed in between left both outside it.
     store
         .add_note("decision", "Use X", "because Y", &[], &[], None, None)
         .unwrap();
+    record_event_at(tmp.path(), fields("search", "explicit"));
+    record_event_at(tmp.path(), fields("search", "hook"));
 
     let snap = build_snapshot(&store, dir.path(), "proj".into(), "0.0.0-test".into(), 30)
         .await
@@ -252,6 +249,39 @@ async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_w
         !rendered.contains("rrftieterm") && rendered.len() < 20_000,
         "sanity: the events block stays small and carries no query text"
     );
+}
+
+#[tokio::test]
+async fn an_event_recorded_since_the_last_commit_is_inside_the_events_window() {
+    use inkentry_core::storage::memory::{EventFields, record_event_at};
+
+    register_sqlite_vec();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = MemoryStore::open(tmp.path()).expect("open memory store");
+    let (dir, _) = git_repo_with_commit_at(1_000_000, "a.txt", "a");
+    record_event_at(
+        tmp.path(),
+        EventFields {
+            command: "search",
+            surface: "cli",
+            trigger: "explicit",
+            actor_kind: "human",
+            session_ref: None,
+            code_results: Some(1),
+            memory_results: Some(0),
+            returned_ids: None,
+            tokens_out: None,
+            latency_ms: None,
+            ok: true,
+        },
+    );
+
+    let snap = build_snapshot(&store, dir.path(), "proj".into(), "0.0.0-test".into(), 30)
+        .await
+        .unwrap();
+    let json = serde_json::to_value(&snap).unwrap();
+
+    assert_eq!(json["events"]["calls"]["search"]["total"], 1);
 }
 
 // ── window boundaries ────────────────────────────────────────────────────────
