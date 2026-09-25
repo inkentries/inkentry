@@ -1,18 +1,3 @@
-//! Integration tests for `inkentry memory reconcile`.
-//!
-//! Covers all 8 acceptance criteria:
-//!
-//! 1. Dedup by `entity_id` — sha256 over the canonical JSON of {body, kind,
-//!    title} (ADR-068) — not by rowid.
-//! 2. No-op when server.db is absent (exit 0, no error).
-//! 3. Read-only guarantee on server.db (implementer opens it read-only).
-//! 4. Archived rows in server.db import as archived in memory.db.
-//! 5. --dry-run flag: report what would be imported without writing.
-//! 6. INKENTRY_NO_SERVER=1 path: reconcile exits cleanly without a running server.
-//! 7. Mid-run rollback: if a row import fails mid-transaction, the whole
-//!    transaction rolls back (no partial import).
-//! 8. Exit codes: 0 on success and on no-op; non-zero only on real fault.
-
 mod plumbing_helpers;
 use plumbing_helpers::{inkentry_bin, inkentry_bin_in, mount_health, mount_index_embed};
 
@@ -23,13 +8,7 @@ use std::sync::OnceLock;
 use tempfile::TempDir;
 use wiremock::MockServer;
 
-// ── Test helpers ──────────────────────────────────────────────────────────────
-
-/// Register the sqlite-vec extension once per test process so that rusqlite
-/// connections in the test binary can open memory.db files that contain the
-/// `note_embeddings` vec0 virtual table created by the CLI.
-///
-/// Must be called before any `Connection::open` on a inkentry memory.db.
+// Must run before any `Connection::open` on a memory.db (it holds the `note_embeddings` vec0 table).
 fn ensure_sqlite_vec() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
@@ -42,21 +21,8 @@ fn ensure_sqlite_vec() {
     });
 }
 
-/// Write a minimal inkentry config file and make `dir` a real project.
-///
-/// ADR-067: `memory reconcile` (a memory subcommand) fails closed without a
-/// local `.inkentry/` project, so we create `<dir>/.inkentry/`. Memory is now
-/// project-scoped: the CLI resolves it to `<dir>/.inkentry/memory.db` regardless
-/// of the config `db_path`. The incoming `db_path` argument is ignored (kept for
-/// call-site compatibility).
-///
-/// We deliberately do NOT pass `memory --db` in `reconcile_cmd` because the
-/// `MemoryArgs.db` arg is `global = true` in clap, which means a second `--db`
-/// on the `reconcile` subcommand would override the memory path rather than
-/// setting the reconcile source path.
-///
-/// Returns `(config_path, mem_path)` where `mem_path` is where the CLI will
-/// write `memory.db`.
+// Creates `<dir>/.inkentry/`: `memory reconcile` fails closed without a project, and memory
+// resolves there regardless of `db_path`, which is ignored.
 fn write_config(dir: &Path, _db_path: &Path) -> (PathBuf, PathBuf) {
     let inkentry_dir = dir.join(".inkentry");
     std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry");
@@ -70,27 +36,19 @@ fn write_config(dir: &Path, _db_path: &Path) -> (PathBuf, PathBuf) {
         ),
     )
     .expect("write config");
-    // Project-scoped memory store lives next to the index inside `.inkentry/`.
     let mem_path = index_db.with_file_name("memory.db");
     (config_path, mem_path)
 }
 
-/// Create a minimal server.db with the server schema and a single project.
-///
-/// The database is created in WAL journal mode so that the CLI can open it
-/// read-only with `PRAGMA journal_mode=WAL` without error (setting WAL on a
-/// read-only connection is a no-op when the DB is already in WAL mode).
-///
-/// Returns `(db_path, project_id)`.
+// WAL mode so the CLI can open it read-only with `PRAGMA journal_mode=WAL`.
 fn create_server_db(dir: &Path, slug: &str) -> (PathBuf, i64) {
     let path = dir.join("server.db");
     let conn = Connection::open(&path).expect("open server.db");
 
-    // Enable WAL mode before creating the schema.
     conn.execute_batch("PRAGMA journal_mode=WAL;")
         .expect("set WAL");
 
-    // Apply the server schema (matches inkentry-server/migrations/server_001.sql).
+    // Mirrors inkentry-server/migrations/server_001.sql.
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS projects (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +82,6 @@ fn create_server_db(dir: &Path, slug: &str) -> (PathBuf, i64) {
     (path, project_id)
 }
 
-/// Insert a note row into an already-open server.db connection.
 #[allow(clippy::too_many_arguments)]
 fn insert_server_note(
     conn: &Connection,
@@ -158,7 +115,6 @@ fn insert_server_note(
     conn.last_insert_rowid()
 }
 
-/// Count rows in memory.db's notes table.
 fn count_memory_notes(mem_path: &Path) -> i64 {
     ensure_sqlite_vec();
     let conn = Connection::open(mem_path).expect("open memory.db");
@@ -166,11 +122,7 @@ fn count_memory_notes(mem_path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-// The single memory.db row's tags/linked files as comma-joined strings, read
-// from `note_tags`/`note_files` (ADR-101) rather than the dropped
-// `notes.tags`/`notes.linked_files` columns. Only meaningful when the store
-// holds exactly one note, which is what every caller here has already
-// asserted.
+// Reads the first note only; callers have already asserted there is exactly one.
 fn mem_tags_and_files(mem_path: &Path) -> (String, String) {
     ensure_sqlite_vec();
     let conn = Connection::open(mem_path).expect("open memory.db");
@@ -193,7 +145,6 @@ fn mem_tags_and_files(mem_path: &Path) -> (String, String) {
     (read("note_tags", "tag"), read("note_files", "path"))
 }
 
-/// Read all notes from memory.db, returning (kind, title, status) tuples.
 fn read_memory_notes(mem_path: &Path) -> Vec<(String, String, String)> {
     ensure_sqlite_vec();
     let conn = Connection::open(mem_path).expect("open memory.db");
@@ -212,26 +163,10 @@ fn read_memory_notes(mem_path: &Path) -> Vec<(String, String, String)> {
     .expect("collect")
 }
 
-/// Build a `inkentry memory reconcile` command with the common flags pre-set.
-///
-/// `config_path`  - the `--config` arg (controls where memory.db is resolved via config db_path)
-/// `server_db`    - the `reconcile --source-db` arg (source server.db)
-///
-/// The memory.db location is derived from the `db_path` config key rather than
-/// from `memory --db`, because `MemoryArgs.db` is a `global = true` clap arg
-/// whose VALUE is propagated by clap to all sub-commands using the same field
-/// name `db`.  The `MemoryReconcileArgs` field was renamed to `source_db` and
-/// exposed as `--source-db` to break this collision; tests pass the source path
-/// via `--source-db` and rely on config for memory.db resolution.
-///
-/// IMPORTANT: the process's `current_dir` is set to the temp dir so that
-/// `find_project_db()` does not walk up into the repo root and discover the
-/// project's real `.inkentry/index.db`, which would cause the CLI to write to
-/// the repo's own memory.db instead of the test's isolated one.
+// memory.db resolves from the config's `db_path`, not `memory --db`: that global arg would
+// collide with the reconcile source path (hence `--source-db`). The cwd is the temp dir so
+// `find_project_db()` cannot walk up into the repo and write to its real memory.db.
 fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
-    // config_path is in the temp dir (e.g. /tmp/tmpXXX/config.toml).
-    // Run from that temp dir so find_project_db() returns None and the CLI
-    // uses the config db_path for memory.db resolution.
     let tmp_dir = config_path
         .parent()
         .expect("config_path must have a parent");
@@ -248,11 +183,8 @@ fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
     cmd
 }
 
-// ── AC-2: No-op when server.db is absent ─────────────────────────────────────
-
 #[test]
 fn noop_when_server_db_absent() {
-    // Criteria #2: exit 0, no error output, when server.db does not exist.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -260,13 +192,11 @@ fn noop_when_server_db_absent() {
 
     reconcile_cmd(&config_path, &missing_server_db)
         .assert()
-        .success(); // exit 0
+        .success();
 }
 
 #[test]
 fn noop_when_server_db_absent_json_output_is_valid() {
-    // Criteria #2 + #5: when server.db is absent and --format json is passed,
-    // the summary is emitted on stdout as valid JSON with candidates=0.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -296,12 +226,8 @@ fn noop_when_server_db_absent_json_output_is_valid() {
     );
 }
 
-// ── AC-6: INKENTRY_NO_SERVER=1 path ───────────────────────────────────────────
-
 #[test]
 fn inkentry_no_server_exits_cleanly_with_import() {
-    // Criteria #6: even with INKENTRY_NO_SERVER=1 (no embedding server),
-    // reconcile should complete successfully and import rows (without embeddings).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -323,14 +249,11 @@ fn inkentry_no_server_exits_cleanly_with_import() {
     );
     drop(conn);
 
-    // INKENTRY_NO_SERVER=1 is already set by reconcile_cmd.
-    // Use --all-projects so the slug from server.db is used regardless of cwd.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
-        .success(); // exit 0
+        .success();
 
-    // Notes should have been imported without embeddings.
     assert_eq!(
         count_memory_notes(&mem_path),
         1,
@@ -338,10 +261,6 @@ fn inkentry_no_server_exits_cleanly_with_import() {
     );
 }
 
-// ── local_first must embed via loopback, not a bare server_url ──
-
-/// Start a mock inkentry-server (health + `/index/embed` mounted) on a
-/// dedicated runtime kept alive for the caller's duration.
 fn start_mock() -> (tokio::runtime::Runtime, MockServer) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let server = rt.block_on(async {
@@ -355,13 +274,6 @@ fn start_mock() -> (tokio::runtime::Runtime, MockServer) {
 
 #[test]
 fn local_first_with_server_url_still_embeds_via_loopback() {
-    // Regression guard: step 5's best-effort embed used
-    // to call `ServerInferenceClient::from_config` on the raw (unbridged)
-    // config, so a `local_first` project with an explicit `server_url`
-    // silently imported every note WITHOUT an embedding, the exact
-    // silent-unembedded-write symptom this fix eliminates. It must bridge
-    // via `get_inference_tier`/`effective_config` like `add`/`reindex`/
-    // `search` do, and reach the local loopback embedder instead.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -386,10 +298,8 @@ fn local_first_with_server_url_still_embeds_via_loopback() {
     let (_rt, mock) = start_mock();
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).expect("create state dir");
-    // Discovery reaches the mock through the fixed-port fallback's test
-    // override. Step 3a's `server.port` file is not usable here: it now honours
-    // a responder only when the pid recorded beside it is a live
-    // `inkentry-server` process reporting the recorded instance id.
+    // Discovery reaches the mock via the fixed-port fallback's test override; the
+    // `server.port` file is only trusted for a live `inkentry-server` process.
     let discovery_port = mock
         .uri()
         .rsplit(':')
@@ -402,9 +312,8 @@ fn local_first_with_server_url_still_embeds_via_loopback() {
         .env_remove("INKENTRY_NO_SERVER")
         .env("INKENTRY_STATE_DIR", &state_dir)
         .env("INKENTRY_TEST_DISCOVERY_PORT", &discovery_port)
-        // Deliberately unroutable: local_first must never fall back to this,
-        // an accidental fallback surfaces as a connection error, not a
-        // silent unembedded import.
+        // Unroutable: an accidental fallback to it must surface as a connection error,
+        // not a silent unembedded import.
         .env("INKENTRY_SERVER_URL", "https://cloud.invalid.example:1")
         .env("INKENTRY_PROJECT_ID", slug)
         .arg("--all-projects")
@@ -430,12 +339,8 @@ fn local_first_with_server_url_still_embeds_via_loopback() {
     assert_eq!(count_memory_notes(&mem_path), 1);
 }
 
-// ── AC-1: Dedup by content-hash, not rowid ───────────────────────────────────
-
 #[test]
 fn dedup_by_content_hash_not_rowid() {
-    // Criteria #1: running reconcile twice imports rows once, not twice,
-    // even if rowids differ between runs (we delete and reinsert in server.db).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -443,7 +348,6 @@ fn dedup_by_content_hash_not_rowid() {
     let slug = "dedup-project";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
-    // Insert two distinct notes with fixed timestamps.
     let conn = Connection::open(&server_db).unwrap();
     insert_server_note(
         &conn,
@@ -471,7 +375,6 @@ fn dedup_by_content_hash_not_rowid() {
     );
     drop(conn);
 
-    // First reconcile run - imports both notes.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -482,7 +385,6 @@ fn dedup_by_content_hash_not_rowid() {
         "both notes should be imported on first run"
     );
 
-    // Second reconcile run - should be a no-op (same content, same hash).
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -496,8 +398,6 @@ fn dedup_by_content_hash_not_rowid() {
 
 #[test]
 fn dedup_ignores_rowid_changes() {
-    // Criteria #1: a note with a different server-side rowid but identical
-    // content should NOT be re-imported.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -505,7 +405,6 @@ fn dedup_ignores_rowid_changes() {
     let slug = "rowid-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
-    // Insert note with rowid=1 via autoincrement.
     let conn = Connection::open(&server_db).unwrap();
     insert_server_note(
         &conn,
@@ -521,14 +420,12 @@ fn dedup_ignores_rowid_changes() {
     );
     drop(conn);
 
-    // First run: import.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
         .success();
     assert_eq!(count_memory_notes(&mem_path), 1);
 
-    // Delete the note and re-insert it - new rowid, same content.
     let conn = Connection::open(&server_db).unwrap();
     conn.execute(
         "DELETE FROM notes WHERE project_id = ?1",
@@ -549,7 +446,6 @@ fn dedup_ignores_rowid_changes() {
     );
     drop(conn);
 
-    // Second run: same content hash, still only 1 note in memory.db.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -561,8 +457,6 @@ fn dedup_ignores_rowid_changes() {
     );
 }
 
-/// Insert a server note at an explicit rowid, so the source store's ids can be
-/// made to diverge from the ids memory.db will assign on import.
 #[allow(clippy::too_many_arguments)]
 fn insert_server_note_with_id(
     conn: &Connection,
@@ -585,12 +479,9 @@ fn insert_server_note_with_id(
 
 #[test]
 fn supersede_edge_resolves_across_differing_ids() {
-    // Two independent reasons an id-positional edge breaks here, both live:
-    //  1. the source rows sit at server ids 101/102 while memory.db mints its
-    //     own ids for them;
-    //  2. an earlier note is already imported, so the pair's position among the
-    //     *candidates* differs from its position in the *import set*.
-    // Resolved by entity_id, the edge is immune to both.
+    // An id-positional edge would break twice here: the source rows sit at server ids
+    // 101/102 while memory.db mints its own, and the already-imported earlier note shifts
+    // the pair's position between candidates and import set. entity_id resolution must survive both.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -598,7 +489,6 @@ fn supersede_edge_resolves_across_differing_ids() {
     let slug = "supersede-renumber";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
-    // Phase 1: one earlier note, imported on its own.
     let conn = Connection::open(&server_db).unwrap();
     insert_server_note_with_id(
         &conn,
@@ -621,12 +511,9 @@ fn supersede_edge_resolves_across_differing_ids() {
         "phase 1 imported one note"
     );
 
-    // Phase 2: the supersede pair arrives. Note 100 is now already present, so
-    // the pair's candidate indices (1, 2) no longer match its import-set
-    // indices (0, 1).
     let conn = Connection::open(&server_db).unwrap();
-    // Successor first: `superseded_by` is a FK, so 102 must exist before 101
-    // can reference it. Import order is driven by created_at, not insert order.
+    // Successor first: `superseded_by` is a FK, so 102 must exist before 101 can
+    // reference it; import order follows created_at.
     insert_server_note_with_id(
         &conn,
         102,
@@ -670,7 +557,6 @@ fn supersede_edge_resolves_across_differing_ids() {
         )
         .unwrap();
 
-    // Guard the premise: local ids must actually differ from the server's.
     assert!(
         old_id != "101" && new_id != "102",
         "memory.db must have minted its own ids ({old_id}, {new_id}) — \
@@ -685,9 +571,7 @@ fn supersede_edge_resolves_across_differing_ids() {
 
 #[test]
 fn dedup_key_excludes_created_at() {
-    // `created_at` is not part of the identity: a second machine recording the
-    // same decision cannot reproduce the first one's timestamp. Two rows with
-    // identical text therefore collapse to one entry, whatever their timestamps.
+    // A second machine recording the same decision cannot reproduce the timestamp.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -696,7 +580,6 @@ fn dedup_key_excludes_created_at() {
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
     let conn = Connection::open(&server_db).unwrap();
-    // Same content, different timestamps.
     insert_server_note(
         &conn,
         project_id,
@@ -734,7 +617,6 @@ fn dedup_key_excludes_created_at() {
         "identical text at different times is one entity"
     );
 
-    // Re-running is a no-op: the collapsed entry is already present.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -744,8 +626,6 @@ fn dedup_key_excludes_created_at() {
 
 #[test]
 fn dedup_key_excludes_tags_which_union_on_collapse() {
-    // Two rows with identical text but disjoint tags/linked_files are one
-    // entity; the survivor carries the union rather than dropping either set.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -798,10 +678,8 @@ fn dedup_key_excludes_tags_which_union_on_collapse() {
 
 #[test]
 fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
-    // The add-wins union must also fire when a candidate collapses onto a row
-    // already in memory.db, not just against a sibling candidate. Tags/files
-    // are outside the key, so without the merge the losing copy's metadata is
-    // discarded silently — the row is "already present" and simply skipped.
+    // Tags/files are outside the key, so without the merge the losing copy's metadata
+    // would be skipped silently as "already present".
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -809,7 +687,6 @@ fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
     let slug = "stored-union-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
-    // Pass 1: import the entry carrying only `alpha` / `a.rs`.
     let conn = Connection::open(&server_db).unwrap();
     let first_id = insert_server_note(
         &conn,
@@ -830,8 +707,6 @@ fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
         .success();
     assert_eq!(count_memory_notes(&mem_path), 1, "pass 1 imports the entry");
 
-    // Pass 2: the same text reappears with different tags/files. Same entity,
-    // so it will not re-import — its metadata has to merge into the stored row.
     let conn = Connection::open(&server_db).unwrap();
     conn.execute(
         "DELETE FROM notes WHERE id = ?1",
@@ -879,8 +754,6 @@ fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
 
 #[test]
 fn dry_run_does_not_union_tags_into_a_stored_row() {
-    // The tag merge is a write. `--dry-run` must stop before it, not just
-    // before the insert.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -907,7 +780,6 @@ fn dry_run_does_not_union_tags_into_a_stored_row() {
         .assert()
         .success();
 
-    // Same entity, new tag — a live run would merge `beta` in.
     let conn = Connection::open(&server_db).unwrap();
     conn.execute(
         "DELETE FROM notes WHERE id = ?1",
@@ -943,8 +815,6 @@ fn dry_run_does_not_union_tags_into_a_stored_row() {
 
 #[test]
 fn json_counts_partition_the_source_rows() {
-    // The summary must account for every source row exactly once:
-    // candidates == already_present + collapsed_duplicates + imported.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -952,7 +822,6 @@ fn json_counts_partition_the_source_rows() {
     let slug = "partition-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
-    // Pass 1: one row, imported — it becomes the "already present" copy.
     let conn = Connection::open(&server_db).unwrap();
     insert_server_note(
         &conn,
@@ -973,8 +842,6 @@ fn json_counts_partition_the_source_rows() {
         .success();
     assert_eq!(count_memory_notes(&mem_path), 1);
 
-    // Pass 2: the stored row again (already_present=1), plus two rows sharing
-    // one entity_id (imported=1, collapsed_duplicates=1). 4 candidates total.
     let conn = Connection::open(&server_db).unwrap();
     for created_at in [1_700_000_010_i64, 1_700_000_011] {
         insert_server_note(
@@ -1037,8 +904,6 @@ fn json_counts_partition_the_source_rows() {
 
 #[test]
 fn tag_reorder_does_not_reimport() {
-    // Tags are excluded from the key outright (they were formerly sorted and
-    // hashed), so reordering them cannot produce a second copy.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -1046,7 +911,6 @@ fn tag_reorder_does_not_reimport() {
     let slug = "normalize-tags";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
-    // Unsorted tags in server.db.
     let conn = Connection::open(&server_db).unwrap();
     insert_server_note(
         &conn,
@@ -1062,14 +926,12 @@ fn tag_reorder_does_not_reimport() {
     );
     drop(conn);
 
-    // Import once.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
         .success();
     assert_eq!(count_memory_notes(&mem_path), 1);
 
-    // Update the server note to have sorted tags (same logical content).
     let conn = Connection::open(&server_db).unwrap();
     conn.execute(
         "UPDATE notes SET tags = 'alpha,beta' WHERE project_id = ?1",
@@ -1078,7 +940,6 @@ fn tag_reorder_does_not_reimport() {
     .unwrap();
     drop(conn);
 
-    // Second run: same entity_id — no re-import.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -1090,12 +951,8 @@ fn tag_reorder_does_not_reimport() {
     );
 }
 
-// ── AC-3: Read-only guarantee on server.db ────────────────────────────────────
-
 #[test]
 fn server_db_not_modified_after_reconcile() {
-    // Criteria #3: after reconcile, server.db must contain exactly the same
-    // notes as before (no writes occurred).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -1118,7 +975,6 @@ fn server_db_not_modified_after_reconcile() {
     );
     drop(conn);
 
-    // Record server.db note count before.
     let count_before: i64 = {
         let conn = Connection::open(&server_db).unwrap();
         conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
@@ -1130,7 +986,6 @@ fn server_db_not_modified_after_reconcile() {
         .assert()
         .success();
 
-    // Record server.db note count after.
     let count_after: i64 = {
         let conn = Connection::open(&server_db).unwrap();
         conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
@@ -1145,9 +1000,6 @@ fn server_db_not_modified_after_reconcile() {
 
 #[test]
 fn server_db_opened_read_only_flag() {
-    // Criteria #3: verify that reconcile opens server.db with SQLITE_OPEN_READ_ONLY
-    // by making server.db read-only at the filesystem level and confirming the
-    // import still succeeds (the write target is memory.db, not server.db).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -1170,19 +1022,17 @@ fn server_db_opened_read_only_flag() {
     );
     drop(conn);
 
-    // Make server.db read-only at the filesystem level.
     let mut perms = std::fs::metadata(&server_db).unwrap().permissions();
     perms.set_readonly(true);
     std::fs::set_permissions(&server_db, perms).unwrap();
 
-    // Reconcile should still succeed because server.db is opened read-only.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
         .success();
 
-    // Restore permissions so the temp dir cleanup can remove the file.
-    // Use PermissionsExt to avoid the clippy::permissions_set_readonly_false lint.
+    // Restore permissions so temp dir cleanup can remove the file; PermissionsExt
+    // avoids clippy::permissions_set_readonly_false.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1197,16 +1047,11 @@ fn server_db_opened_read_only_flag() {
         std::fs::set_permissions(&server_db, perms).unwrap();
     }
 
-    // The import should have succeeded.
     assert_eq!(count_memory_notes(&mem_path), 1);
 }
 
-// ── AC-4: Archived rows stay archived ────────────────────────────────────────
-
 #[test]
 fn archived_rows_import_as_archived() {
-    // Criteria #4: a note with status='archived' in server.db must land in
-    // memory.db with status='archived'.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -1269,12 +1114,8 @@ fn archived_rows_import_as_archived() {
     );
 }
 
-// ── AC-5: --dry-run flag ──────────────────────────────────────────────────────
-
 #[test]
 fn dry_run_does_not_write_to_memory_db() {
-    // Criteria #5: --dry-run must report would_import > 0 but write nothing
-    // to memory.db.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -1303,7 +1144,6 @@ fn dry_run_does_not_write_to_memory_db() {
         .assert()
         .success();
 
-    // memory.db either doesn't exist or has no notes.
     let written = if mem_path.exists() {
         count_memory_notes(&mem_path)
     } else {
@@ -1317,8 +1157,6 @@ fn dry_run_does_not_write_to_memory_db() {
 
 #[test]
 fn dry_run_json_reports_would_import() {
-    // Criteria #5: --dry-run --format json must emit a summary with
-    // would_import > 0 and imported == 0.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -1369,34 +1207,23 @@ fn dry_run_json_reports_would_import() {
 
 #[test]
 fn dry_run_on_empty_server_db_exits_zero() {
-    // Criteria #5 + #8: --dry-run with nothing to import exits 0.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
-    // server.db exists but has no notes.
     let (server_db, _project_id) = create_server_db(tmp.path(), "empty-slug");
 
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .arg("--dry-run")
         .assert()
-        .success(); // exit 0
+        .success();
 }
-
-// ── AC-7: Mid-run rollback on import failure ──────────────────────────────────
 
 #[test]
 fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
-    // Criteria #7: if the batch import transaction fails mid-way, no rows
-    // should persist in memory.db.
-    //
-    // Strategy:
-    //  1. Bootstrap memory.db via a preliminary reconcile so schema is in place.
-    //  2. Reset memory.db to empty, then install a BEFORE INSERT trigger that
-    //     raises ABORT when title = 'Rollback note 2' (the 3rd note in batch).
-    //  3. Run reconcile - the 3rd insert fails, the BEGIN IMMEDIATE transaction
-    //     is rolled back, and the table stays empty.
+    // A BEFORE INSERT trigger aborts the 3rd note, so the batch fails mid-transaction
+    // and must roll back.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -1404,7 +1231,6 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
     let slug = "rollback-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
 
-    // Put 3 notes in server.db.
     let conn = Connection::open(&server_db).unwrap();
     for i in 0..3i64 {
         insert_server_note(
@@ -1422,11 +1248,8 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
     }
     drop(conn);
 
-    // Bootstrap memory.db: import one unrelated note from an isolated server.db
-    // so the full schema (including note_embeddings vec0 virtual table) is
-    // created.  We use a SEPARATE subdirectory to avoid overwriting the
-    // rollback-test server.db (create_server_db always writes "server.db" in
-    // the given dir).
+    // Bootstrap memory.db (full schema incl. `note_embeddings`) from a separate dir:
+    // `create_server_db` always writes `server.db` and would overwrite the rollback one.
     {
         let boot_dir = tmp.path().join("boot");
         std::fs::create_dir_all(&boot_dir).unwrap();
@@ -1440,9 +1263,6 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
             ),
         )
         .unwrap();
-        // Write the boot config's mem_path to the SAME mem_path as the main test.
-        // We do this by pointing boot_config's db_path to the same parent dir as
-        // main config, so memory.db resolves to tmp.path()/memory.db.
         let boot_config_content = format!(
             "db_path = {:?}\nllm_model = \"test-model\"\n",
             tmp.path().join("inkentry.db").display().to_string()
@@ -1465,8 +1285,6 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
         );
         drop(bc);
 
-        // Bootstrap reconcile: run from boot_dir so config resolves correctly.
-        // Use --all-projects (only boot-for-rollback slug exists in bootstrap_db).
         let mut boot_cmd = inkentry_bin();
         boot_cmd
             .current_dir(&boot_dir)
@@ -1482,22 +1300,17 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
             .assert()
             .success();
 
-        // Confirm memory.db exists now (at tmp.path()/memory.db).
         assert!(
             mem_path.exists(),
             "memory.db must exist after bootstrap reconcile"
         );
     }
 
-    // Reset memory.db: delete the bootstrap note and install a sabotage trigger
-    // that rejects the 3rd "Rollback note" to force a mid-transaction failure.
     {
         ensure_sqlite_vec();
         let mc = Connection::open(&mem_path).unwrap();
-        // Remove the bootstrap note.
         mc.execute("DELETE FROM notes WHERE title = 'Bootstrap note'", [])
             .unwrap();
-        // Install trigger: reject the 3rd note (title = 'Rollback note 2').
         mc.execute_batch(
             "CREATE TRIGGER IF NOT EXISTS sabotage_third_note \
              BEFORE INSERT ON notes \
@@ -1509,13 +1322,11 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
         .expect("install sabotage trigger");
     }
 
-    // reconcile must fail because the 3rd insert is rejected mid-transaction.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
-        .failure(); // non-zero exit per AC-8
+        .failure();
 
-    // The transaction was rolled back: memory.db still has 0 notes.
     assert_eq!(
         count_memory_notes(&mem_path),
         0,
@@ -1523,11 +1334,8 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
     );
 }
 
-// ── AC-8: Exit codes ─────────────────────────────────────────────────────────
-
 #[test]
 fn exit_0_on_success_import() {
-    // Criteria #8: exit 0 when rows are successfully imported.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -1552,12 +1360,11 @@ fn exit_0_on_success_import() {
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
-        .success(); // exit 0
+        .success();
 }
 
 #[test]
 fn exit_0_on_noop_already_imported() {
-    // Criteria #8: exit 0 when all rows are already present (nothing to import).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -1579,13 +1386,11 @@ fn exit_0_on_noop_already_imported() {
     );
     drop(conn);
 
-    // First import.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
         .success();
 
-    // Second import - should be a no-op, still exit 0.
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
@@ -1594,24 +1399,20 @@ fn exit_0_on_noop_already_imported() {
 
 #[test]
 fn exit_0_on_no_rows_to_import() {
-    // Criteria #8: exit 0 when server.db exists but has no notes (empty project).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
 
-    // server.db with a project but no notes.
     let (server_db, _project_id) = create_server_db(tmp.path(), "empty-project");
 
     reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .assert()
-        .success(); // exit 0
+        .success();
 }
 
 #[test]
 fn exit_nonzero_on_corrupt_server_db() {
-    // Criteria #8: exit non-zero when server.db is present but corrupt / not a
-    // valid SQLite file (real fault).
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -1623,14 +1424,11 @@ fn exit_nonzero_on_corrupt_server_db() {
     reconcile_cmd(&config_path, &corrupt_db)
         .arg("--all-projects")
         .assert()
-        .failure(); // non-zero exit on real fault
+        .failure();
 }
-
-// ── Bonus: JSON summary shape ─────────────────────────────────────────────────
 
 #[test]
 fn json_summary_contains_expected_fields() {
-    // Verify the NDJSON summary object has all documented fields.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -1686,7 +1484,6 @@ fn json_summary_contains_expected_fields() {
 
 #[test]
 fn import_increments_count_correctly() {
-    // Verify the JSON summary reports accurate candidate / imported / already_present counts.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
@@ -1710,7 +1507,6 @@ fn import_increments_count_correctly() {
     }
     drop(conn);
 
-    // First run: import all 3.
     let output = reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .arg("--format")
@@ -1727,7 +1523,6 @@ fn import_increments_count_correctly() {
     assert_eq!(v1["imported"].as_i64(), Some(3));
     assert_eq!(v1["already_present"].as_i64(), Some(0));
 
-    // Second run: all already present.
     let output2 = reconcile_cmd(&config_path, &server_db)
         .arg("--all-projects")
         .arg("--format")
@@ -1745,12 +1540,8 @@ fn import_increments_count_correctly() {
     assert_eq!(v2["already_present"].as_i64(), Some(3));
 }
 
-// ── Security: SQL injection payload in note content ───────────────────────────
-
 #[test]
 fn sql_injection_payload_in_body_does_not_break_import() {
-    // Security: a note body containing SQL injection payload characters must
-    // be stored verbatim, not alter query structure.
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(tmp.path(), &db_path);
@@ -1760,7 +1551,6 @@ fn sql_injection_payload_in_body_does_not_break_import() {
 
     let injection_body = "'); DROP TABLE notes; --";
     let injection_title = "<script>alert('xss')</script>";
-    // Tags field also contains SQL injection payload.
     let injection_tags = "tag1'; DELETE FROM notes; --";
 
     let conn = Connection::open(&server_db).unwrap();
@@ -1783,7 +1573,6 @@ fn sql_injection_payload_in_body_does_not_break_import() {
         .assert()
         .success();
 
-    // Table must still exist and contain the imported note with the verbatim content.
     ensure_sqlite_vec();
     let mem_conn = Connection::open(&mem_path).unwrap();
     let (title, body): (String, String) = mem_conn
@@ -1798,15 +1587,9 @@ fn sql_injection_payload_in_body_does_not_break_import() {
     assert_eq!(body, injection_body, "body stored verbatim");
 }
 
-// ── Regression: default source path must honor INKENTRY_STATE_DIR ────────────
-
-/// `inkentry server start` writes `server.db` through the shared
-/// `capability::inkentry_state_dir` resolver, which honors `INKENTRY_STATE_DIR`.
-/// Reconcile's default source path (used whenever `--source-db` is omitted)
-/// must resolve through that same function rather than reconstructing
-/// `~/.local/state/inkentry/` from `dirs::home_dir()` on its own. Otherwise a
-/// daemon run under a `INKENTRY_STATE_DIR` override is invisible to reconcile:
-/// it hits the "server.db absent" no-op branch instead of importing.
+// The default source path must resolve through the same state-dir resolver that
+// `server start` writes with; otherwise a daemon under an `INKENTRY_STATE_DIR` override
+// is invisible and reconcile hits the "server.db absent" no-op instead of importing.
 #[test]
 fn default_source_db_honors_state_dir_override() {
     let home = TempDir::new().unwrap();
@@ -1815,8 +1598,6 @@ fn default_source_db_honors_state_dir_override() {
     let db_path = project.path().join("inkentry.db");
     let (config_path, mem_path) = write_config(project.path(), &db_path);
 
-    // Write server.db directly into the override dir, NOT under
-    // `<home>/.local/state/inkentry/`.
     let (server_db, project_id) = create_server_db(state_override.path(), "override-project");
     let conn = Connection::open(&server_db).unwrap();
     insert_server_note(
@@ -1833,7 +1614,6 @@ fn default_source_db_honors_state_dir_override() {
     );
     drop(conn);
 
-    // Sanity: nothing exists under HOME's default location.
     let home_default = home
         .path()
         .join(".local")
@@ -1845,7 +1625,6 @@ fn default_source_db_honors_state_dir_override() {
         "fixture bug: server.db must only exist under the override"
     );
 
-    // No --source-db: exercises default_server_db_path().
     let mut cmd = inkentry_bin_in(home.path());
     cmd.current_dir(project.path())
         .env("INKENTRY_NO_SERVER", "1")

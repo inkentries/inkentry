@@ -1,11 +1,6 @@
-// `cloud_first` against a server that is not there.
-//
-// The guarantee under test elsewhere in this directory is that reads and
-// writes fail loudly rather than falling back to the local store. These tests
-// pin what that failure costs and what it says: it arrives in about the time a
-// connection attempt is allowed to take, not the time a whole request is
-// allowed to take, and it names the server as unreachable rather than handing
-// the reader a raw transport error under a URL.
+// `cloud_first` against an absent server must fail in about one connect timeout, not a
+// whole request budget, and name the server as unreachable rather than show a raw
+// transport error.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
@@ -14,24 +9,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-// A command asks several independent subsystems to reach the same server: a
-// capability probe, an embed, a dialect probe, then the request itself. The
-// first to try records that the origin did not answer, and the rest skip
-// straight to that conclusion instead of each spending its own connect budget,
-// so the whole command costs about one connect timeout. Measured here: 2.9s for
-// a write, 2.0s for a read, against 81s and 33s before any of this.
-//
-// Five seconds leaves room for a loaded machine without leaving room for a
-// regression: losing the memo puts a write back at roughly 9s, and losing the
-// connect bound puts it in the tens of seconds. Either is red here.
+// Several subsystems reach the same server (probe, embed, dialect probe, request); the
+// first failure is memoised so the command costs about one connect timeout. 5s tolerates a
+// loaded machine, but a lost memo (~9s) or lost connect bound (tens of seconds) still fails.
 const FAIL_FAST_CEILING: Duration = Duration::from_secs(5);
 
-// TEST-NET-1, reserved for documentation and guaranteed not to be routed, so a
-// connection attempt gets no answer at all rather than a refusal. That is the
-// shape of the failure this fix exists for: without a connect bound there is
-// nothing for the attempt to fail on until the request budget runs out.
-// Plaintext http to a non-loopback host is refused by the transport guard, so
-// the scheme has to be https.
+// TEST-NET-1 is never routed, so a connect gets no answer rather than a refusal: without a
+// connect bound nothing ends the attempt. Must be https: plaintext http to a non-loopback
+// host is refused by the transport guard.
 const UNROUTABLE_SERVER: &str = "https://192.0.2.1:4655";
 
 const LOCAL_TITLE: &str = "seeded local entry";
@@ -48,9 +33,7 @@ fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
     path
 }
 
-// A loopback address with nothing listening: bind an ephemeral port, read it
-// back, then drop the listener. Connecting there is refused outright, which is
-// the other half of "the server is not there" and must read the same way.
+// Binds an ephemeral port then drops the listener, so connecting is refused outright.
 fn closed_loopback_url() -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
     let port = listener.local_addr().expect("read the bound port").port();
@@ -58,10 +41,8 @@ fn closed_loopback_url() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-// A project whose local memory.db holds one entry, plus a `cloud_first` config
-// pointing at `server_url`. The seeded entry exists so a later local read
-// proves the store is present and readable, which is what makes the absence of
-// a failed write meaningful rather than vacuous.
+// Seeds one local entry so the later local read proves the store is readable, which makes
+// the absence of a failed write meaningful.
 struct Project {
     tmp: TempDir,
     mem_path: PathBuf,
@@ -73,9 +54,7 @@ fn cloud_first_project(server_url: &str) -> Project {
     let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
 
-    // Seeded with no server configured, so this write takes the plain local
-    // path. Not a git repo, so the git-notes write-through is a no-op and the
-    // entry lands only in memory.db.
+    // Not a git repo, so the git-notes write-through is a no-op and the entry lands only in memory.db.
     let seed_cfg = write_cfg(tmp.path(), "config-seed.toml", &db_path, "");
     let out = inkentry_bin()
         .current_dir(tmp.path())
@@ -100,10 +79,9 @@ fn cloud_first_project(server_url: &str) -> Project {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // `mode` is not a project-config field, so it stays in the global file,
-    // while `server_url`/`project_id` only take effect from the project-level
-    // `.inkentry/config.toml`. A raw-UUID project_id skips slug resolution, so
-    // the failure under test is the memory request itself.
+    // `mode` is not a project-config field, so it stays in the global file; `server_url`/
+    // `project_id` only apply from `.inkentry/config.toml`. A raw-UUID project_id skips slug
+    // resolution, so the failure under test is the memory request itself.
     let cfg = write_cfg(
         tmp.path(),
         "config-cloud-first.toml",
@@ -134,8 +112,6 @@ impl Project {
         (out, started.elapsed())
     }
 
-    // Read the local store directly, with no project config in scope and no
-    // server contact, to see what the failed write did or did not leave behind.
     fn local_titles(&self) -> String {
         let elsewhere = TempDir::new().unwrap();
         let cfg = write_cfg(
@@ -185,8 +161,6 @@ fn assert_fails_fast(elapsed: Duration, label: &str) {
     );
 }
 
-// ── an unroutable server: no answer at all, so only a connect bound ends it ───
-
 #[test]
 fn cloud_first_write_to_an_unroutable_server_fails_fast() {
     let project = cloud_first_project(UNROUTABLE_SERVER);
@@ -222,8 +196,6 @@ fn cloud_first_read_from_an_unroutable_server_fails_fast() {
     );
 }
 
-// ── a closed port: refused outright, and the write leaves nothing behind ──────
-
 #[test]
 fn cloud_first_write_to_a_closed_port_is_refused_and_stores_nothing_locally() {
     let server_url = closed_loopback_url();
@@ -243,8 +215,6 @@ fn cloud_first_write_to_a_closed_port_is_refused_and_stores_nothing_locally() {
     assert_fails_fast(elapsed, "a write to a closed port");
     assert_names_the_server_unreachable(&stderr, &server_url);
 
-    // The guarantee this mode is built on: a write the server never accepted is
-    // not quietly kept locally either.
     let titles = project.local_titles();
     assert!(
         titles.contains(LOCAL_TITLE),
@@ -256,19 +226,9 @@ fn cloud_first_write_to_a_closed_port_is_refused_and_stores_nothing_locally() {
     );
 }
 
-// ── a loopback server that accepts and then says nothing ─────────────────────
-
-// Accept TCP on loopback and hold every connection open without speaking. A
-// client that does not bound connecting waits out its whole request budget
-// here: the TCP connect succeeds, and the TLS handshake it then waits for never
-// comes.
-//
-// This is the portable stand-in for the originating report, a loopback team
-// server whose SYN was dropped by a firewall rather than refused. A dropped SYN
-// cannot be simulated in a test, but it costs a client the same thing, an
-// attempt with nothing to fail on, and the connect bound covers the handshake
-// as well as the TCP connect. It is also the case an exemption for loopback
-// would silently reintroduce, which has already happened once.
+// Accepts TCP and holds connections open without speaking: the connect succeeds and the TLS
+// handshake never completes, so only a bound covering the handshake ends it. Stand-in for a
+// dropped SYN, and the case a loopback exemption would reintroduce.
 fn spawn_stalling_loopback_listener() -> u16 {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stall listener");
     let port = listener.local_addr().expect("local_addr").port();

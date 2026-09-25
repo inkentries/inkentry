@@ -1,18 +1,14 @@
-//! Component tests for `inkentry plumbing cat-chunks`.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{index_fixture_project, inkentry_bin, inkentry_cmd, parse_jsonl};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-// ── happy path ────────────────────────────────────────────────────────────────
-
 #[test]
 fn cat_chunks_emits_jsonl_for_indexed_file() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // Use path suffix matching — the DB stores absolute paths.
+    // The DB stores absolute paths, so match by suffix.
     let output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src/lib.rs")
@@ -64,9 +60,7 @@ fn cat_chunks_output_includes_function_name() {
     );
 }
 
-// Indexed paths are stored with forward slashes; a backslash-style query path
-// (as a Windows user might type) must still match. Runs on all OSes — the
-// normalization converts `\` to `/` regardless of host.
+// Runs on all OSes: `\` normalises to `/` regardless of host.
 #[test]
 fn cat_chunks_matches_backslash_query_path() {
     let (_tmp, db_path, config_path) = index_fixture_project();
@@ -87,8 +81,6 @@ fn cat_chunks_matches_backslash_query_path() {
     );
 }
 
-// ── no results (exit 1) ───────────────────────────────────────────────────────
-
 #[test]
 fn cat_chunks_exits_1_for_unknown_file() {
     let (_tmp, db_path, config_path) = index_fixture_project();
@@ -100,8 +92,6 @@ fn cat_chunks_exits_1_for_unknown_file() {
         .code(1)
         .stderr(predicate::str::contains("No indexed chunks"));
 }
-
-// ── error path: missing DB ────────────────────────────────────────────────────
 
 #[test]
 fn cat_chunks_exits_nonzero_when_db_missing() {
@@ -127,8 +117,6 @@ fn cat_chunks_exits_nonzero_when_db_missing() {
         .failure()
         .stderr(predicate::str::contains("No index found"));
 }
-
-// ── error path: missing argument ──────────────────────────────────────────────
 
 #[test]
 fn cat_chunks_exits_nonzero_missing_argument() {

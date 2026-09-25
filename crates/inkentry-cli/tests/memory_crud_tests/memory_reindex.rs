@@ -1,22 +1,7 @@
-// End-to-end tests for `inkentry memory reindex` against the built CLI binary.
-//
-// The command re-embeds memory notes left without a local vector (the 768→896
-// store upgrade dropped them, or no embedder was reachable at add time). These
-// tests drive the real binary with the embed endpoint mocked via wiremock, so
-// none of them depend on the in-process native embedder (the `--no-default-
-// features` gate stays valid). The no-embedder case uses `INKENTRY_NO_SERVER=1`.
-//
-// The mock embedder is wired in via **loopback auto-discovery**, not
-// `server_url`, since the
-// 2026-07-23 ADR-004 revision: `reindex` runs in the
-// default `local_first` mode here (no explicit `mode` is set), and
-// `local_first` never routes inference through an explicit `server_url` —
-// only the local loopback embedder. Using the real discovery mechanism (a
-// per-fixture, isolated state dir) rather than `mode = "cloud_first"` also
-// sidesteps a real hazard: a `cloud_first` fixture would still fall back to
-// hard-coded port 4655 if the state dir ever went unset, which could hit a
-// developer's own long-running `inkentry-server` instead of this fixture's
-// mock.
+// The mock embedder is reached via loopback auto-discovery, not `server_url`:
+// `local_first` never routes inference through `server_url`, and an isolated state
+// dir keeps a `cloud_first` fallback to port 4655 from hitting a developer's
+// real inkentry-server.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{
@@ -32,8 +17,6 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// ── sqlite-vec registration for direct memory.db inspection ──────────────────
-
 fn ensure_sqlite_vec() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
@@ -46,12 +29,6 @@ fn ensure_sqlite_vec() {
     });
 }
 
-// ── mock embed endpoint (records request bodies; can inject a failure) ────────
-
-// Custom responder for `POST /v1/projects/{id}/index/embed`. Returns the server
-// wire format (raw little-endian f32 bytes, one `value`-filled 896-dim vector
-// per request chunk), records each request body for parity assertions, and can
-// start returning 503 once `calls >= fail_after` to simulate a mid-run outage.
 #[derive(Clone)]
 struct EmbedResponder {
     value: f32,
@@ -120,9 +97,6 @@ impl wiremock::Respond for EmbedResponder {
     }
 }
 
-// A running mock inkentry-server with the health probe and embed endpoint
-// mounted. `rt` and `server` are kept alive by the returned struct for the
-// duration of a `.assert()` against the child process.
 struct MockServerHandle {
     _rt: tokio::runtime::Runtime,
     server: MockServer,
@@ -154,24 +128,17 @@ fn start_mock(embed: EmbedResponder) -> MockServerHandle {
     }
 }
 
-// ── test project fixture ─────────────────────────────────────────────────────
-
 struct Fixture {
     _tmp: TempDir,
     project_dir: PathBuf,
     mem_path: PathBuf,
     global_config: PathBuf,
-    // Isolated `INKENTRY_STATE_DIR`, so nothing here reads or writes the
-    // developer's own daemon state.
+    // Isolated so nothing reads or writes the developer's daemon state.
     state_dir: PathBuf,
-    // The port loopback auto-discovery's fixed-port fallback is pointed at,
-    // or "0" while no mock is configured. Never the real default port.
+    // "0" while no mock is configured, never the real default port.
     discovery_port: std::cell::RefCell<String>,
 }
 
-// A temp project with a global `--config` (no server_url; `store_in_git_notes =
-// false` so seeding never touches git notes) and a `.inkentry/` dir where memory
-// lives.
 fn fixture() -> Fixture {
     let tmp = TempDir::new().expect("tempdir");
     let project_dir = tmp.path().to_path_buf();
@@ -200,8 +167,6 @@ fn fixture() -> Fixture {
     }
 }
 
-// Seed one unembedded note via the real `memory add`. `INKENTRY_NO_SERVER=1` plus
-// the absence of a project server config means the add path stores no vector.
 fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
     inkentry_bin()
         .current_dir(&f.project_dir)
@@ -223,15 +188,8 @@ fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
         .success();
 }
 
-// Point loopback auto-discovery's fixed-port fallback (step 3b) at the mock
-// embedder on `url`. `local_first` (the mode every test in this file runs
-// under) never routes inference through `server_url`, only the local loopback
-// embedder.
-//
-// Not step 3a's `server.port` file: that step now uses a responder only when
-// the pid recorded beside the port is a live `inkentry-server` process and the
-// instance id it reports is the recorded one, and a wiremock stand-in is
-// neither.
+// Uses the fixed-port fallback, not the `server.port` file: that path only trusts
+// a live `inkentry-server` process, which a wiremock stand-in is not.
 fn set_server(f: &Fixture, url: &str) {
     let port = url
         .rsplit(':')
@@ -242,16 +200,10 @@ fn set_server(f: &Fixture, url: &str) {
     *f.discovery_port.borrow_mut() = port;
 }
 
-// Take the mock away again so `seed` stores notes unembedded: discovery is
-// honored even under `INKENTRY_NO_SERVER=0` (unset), so seeding an unembedded
-// note after a server has been configured requires clearing it.
-// `seed`/`archive_note` set `INKENTRY_NO_SERVER=1` themselves, so in practice
-// this is defensive; kept for symmetry with `set_server`.
 fn clear_server(f: &Fixture) {
     *f.discovery_port.borrow_mut() = "0".to_string();
 }
 
-// Build a `inkentry memory reindex` command against the fixture.
 fn reindex_cmd(f: &Fixture) -> Command {
     let mut cmd = inkentry_bin();
     cmd.current_dir(&f.project_dir)
@@ -269,9 +221,6 @@ fn reindex_cmd(f: &Fixture) -> Command {
     cmd
 }
 
-// Archive a seeded note via the real `memory archive`. Runs with no server so
-// it stays a purely local status change (no git-notes carry: global config
-// pins store_in_git_notes = false).
 fn archive_note(f: &Fixture, id: &str) {
     inkentry_bin()
         .current_dir(&f.project_dir)
@@ -288,7 +237,6 @@ fn archive_note(f: &Fixture, id: &str) {
         .success();
 }
 
-// Extract the embed document string a recorded `/index/embed` body carried.
 fn embed_content(body: &str) -> String {
     let sent: serde_json::Value = serde_json::from_str(body).expect("embed body is json");
     sent["chunks"][0]["content"]
@@ -297,8 +245,7 @@ fn embed_content(body: &str) -> String {
         .to_string()
 }
 
-// The storage rowid, which is what `note_embeddings` is keyed on. Use
-// `note_uuid_by_title` for anything handed back to the CLI.
+// Storage rowid, which `note_embeddings` is keyed on; not the id the CLI accepts.
 fn note_id_by_title(mem_path: &Path, title: &str) -> i64 {
     let conn = Connection::open(mem_path).expect("open memory.db");
     conn.query_row(
@@ -342,11 +289,6 @@ fn embedding_blob(mem_path: &Path, note_id: i64) -> Vec<u8> {
     .expect("embedding blob")
 }
 
-// ── tests ────────────────────────────────────────────────────────────────────
-
-// A store with missing embeddings is fully backfilled: every note gains an
-// 896-dim vector, the run exits 0 and reports counts, and a second run embeds
-// nothing (idempotent).
 #[test]
 fn reindex_embeds_missing_and_is_idempotent() {
     let f = fixture();
@@ -378,7 +320,6 @@ fn reindex_embeds_missing_and_is_idempotent() {
         );
     }
 
-    // Second run: nothing missing, no vectors written, exit 0.
     let before = mock.embed.call_count();
     reindex_cmd(&f)
         .assert()
@@ -396,9 +337,7 @@ fn reindex_embeds_missing_and_is_idempotent() {
     );
 }
 
-// The embed request carries the exact add-time document string
-// (`title: {t} | text: {b}`) and is NOT wrapped in the F2LLM `Instruct:/Query:`
-// query prefix, so a backfilled vector matches an add-time one.
+// Must equal the add-time document string, with no F2LLM query prefix.
 #[test]
 fn reindex_embed_text_matches_add_time_document() {
     let f = fixture();
@@ -425,8 +364,6 @@ fn reindex_embed_text_matches_add_time_document() {
     );
 }
 
-// An interrupted run is resumable: after embedding J of K, a re-run embeds only
-// the remaining K−J with no duplicate rows and a final count of K.
 #[test]
 fn reindex_resumes_after_midrun_failure() {
     let f = fixture();
@@ -434,10 +371,8 @@ fn reindex_resumes_after_midrun_failure() {
         seed(&f, "note", &format!("n{i}"), &format!("body {i}"));
     }
 
-    // Run 1: the embedder serves two notes then fails; reindex stops and exits
-    // non-zero with two durably-committed vectors. The failure must report the
-    // honest partial count (not just fail silently) and point at a re-run, so a
-    // user knows work was saved and how to finish it.
+    // Run 1: the embedder fails after two notes; the failure must report the partial
+    // count and point at a re-run.
     let mock_a = start_mock(EmbedResponder::failing_after(0.1, 2));
     set_server(&f, &mock_a.uri());
     reindex_cmd(&f)
@@ -453,7 +388,6 @@ fn reindex_resumes_after_midrun_failure() {
         "the two notes embedded before the failure must be durable"
     );
 
-    // Run 2: a healthy embedder; reindex embeds only the remaining two.
     let mock_b = start_mock(EmbedResponder::new(0.1));
     set_server(&f, &mock_b.uri());
     reindex_cmd(&f).assert().success();
@@ -470,14 +404,11 @@ fn reindex_resumes_after_midrun_failure() {
     );
 }
 
-// No embedder reachable: reindex fails with the actionable inference-server
-// message, exits non-zero, and writes no vectors (no partial success).
 #[test]
 fn reindex_without_embedder_errors_and_writes_nothing() {
     let f = fixture();
     seed(&f, "decision", "one", "body one");
     seed(&f, "note", "two", "body two");
-    // No project server config set: no server_url anywhere.
 
     reindex_cmd(&f)
         .env("INKENTRY_NO_SERVER", "1")
@@ -492,21 +423,17 @@ fn reindex_without_embedder_errors_and_writes_nothing() {
     );
 }
 
-// `--force` re-embeds already-embedded notes, replacing the stored vector in
-// place (no duplicate rows).
 #[test]
 fn reindex_force_replaces_existing_vectors() {
     let f = fixture();
     seed(&f, "decision", "only", "the body");
     let id = note_id_by_title(&f.mem_path, "only");
 
-    // First embed with a distinguishable constant vector.
     let mock1 = start_mock(EmbedResponder::new(0.1));
     set_server(&f, &mock1.uri());
     reindex_cmd(&f).assert().success();
     let blob_before = embedding_blob(&f.mem_path, id);
 
-    // --force with a different vector must overwrite the existing row.
     let mock2 = start_mock(EmbedResponder::new(0.5));
     set_server(&f, &mock2.uri());
     reindex_cmd(&f).arg("--force").assert().success();
@@ -523,9 +450,6 @@ fn reindex_force_replaces_existing_vectors() {
     );
 }
 
-// The `--format json` summary partitions the store honestly: total_active ==
-// embedded + already_embedded, embedded == missing_before, no count exceeds the
-// total.
 #[test]
 fn reindex_json_summary_partitions_counts() {
     let f = fixture();
@@ -535,11 +459,8 @@ fn reindex_json_summary_partitions_counts() {
 
     let mock = start_mock(EmbedResponder::new(0.1));
     set_server(&f, &mock.uri());
-    // Embed the first three.
     reindex_cmd(&f).assert().success();
 
-    // Two more unembedded notes (seeded with the server config cleared so add
-    // stores no vector), then a JSON reindex over the mixed store.
     clear_server(&f);
     seed(&f, "note", "later0", "later b0");
     seed(&f, "note", "later1", "later b1");
@@ -583,8 +504,6 @@ fn reindex_json_summary_partitions_counts() {
     );
 }
 
-// `--dry-run` reports the would-embed count, contacts the embedder zero times,
-// writes no vectors, and exits 0.
 #[test]
 fn reindex_dry_run_counts_and_writes_nothing() {
     let f = fixture();
@@ -611,9 +530,7 @@ fn reindex_dry_run_counts_and_writes_nothing() {
     );
 }
 
-// Every note (not just the first) is embedded via its own add-time document
-// string, in id order, with no F2LLM query prefix. Guards against a partial
-// wrong-format bug that a single-note parity check would miss.
+// A single-note parity check would miss a wrong-format bug on later notes.
 #[test]
 fn reindex_embeds_every_note_with_its_own_document() {
     let f = fixture();
@@ -627,7 +544,7 @@ fn reindex_embeds_every_note_with_its_own_document() {
     let bodies = mock.embed.recorded_bodies();
     assert_eq!(bodies.len(), 2, "one embed call per note");
     let contents: Vec<String> = bodies.iter().map(|b| embed_content(b)).collect();
-    // Candidate order is `ORDER BY note id`, which is the seed order here.
+    // Candidates are ordered by note id, i.e. seed order.
     assert_eq!(
         contents,
         vec![
@@ -644,9 +561,6 @@ fn reindex_embeds_every_note_with_its_own_document() {
     }
 }
 
-// `--include-archived` is load-bearing: a default run skips archived notes, and
-// only `--include-archived` backfills them. Without the flag an archived note
-// stays vectorless (missing from timeline semantic recall).
 #[test]
 fn reindex_include_archived_covers_archived_only_with_the_flag() {
     let f = fixture();
@@ -659,7 +573,6 @@ fn reindex_include_archived_covers_archived_only_with_the_flag() {
     let mock = start_mock(EmbedResponder::new(0.1));
     set_server(&f, &mock.uri());
 
-    // Default: only the active note is embedded; the archived one is skipped.
     reindex_cmd(&f).assert().success();
     assert_eq!(
         embedded_note_ids(&f.mem_path),
@@ -667,7 +580,6 @@ fn reindex_include_archived_covers_archived_only_with_the_flag() {
         "default reindex must not touch archived notes"
     );
 
-    // With the flag the archived note gets its vector too.
     reindex_cmd(&f).arg("--include-archived").assert().success();
     let mut ids = embedded_note_ids(&f.mem_path);
     ids.sort();
@@ -679,14 +591,9 @@ fn reindex_include_archived_covers_archived_only_with_the_flag() {
     );
 }
 
-// `cloud_first` WITH `server_url` set: `memory.db` is not the store of record
-// there (`server_url` is, via `RemoteMemoryBackend`), so `reindex` has
-// nothing local to re-embed. It must fail with an actionable "not
-// applicable" message rather than silently no-op'ing or (worse) reindexing a
-// store nothing reads (2026-07-23 founder decision). No
-// mock embedder is set up at all: a real embed attempt would also fail this
-// test, just for the wrong reason (proving the bail happens before any embed
-// call, not after one fails).
+// memory.db is not the store of record here, so reindex must bail before any embed
+// call. No mock embedder is set up: an embed attempt would fail the test for the
+// wrong reason.
 #[test]
 fn reindex_in_cloud_first_with_server_url_is_not_applicable() {
     let f = fixture();
@@ -714,12 +621,8 @@ fn reindex_in_cloud_first_with_server_url_is_not_applicable() {
     );
 }
 
-// `cloud_first` with NO `server_url` set: nothing routes memory remotely, so
-// `open_memory_backend` itself falls back to `memory.db` (`storage/mod.rs`'s
-// `route_remote` requires BOTH `cloud_first` AND a configured `server_url`).
-// `memory.db` genuinely is the store of record here, so `reindex` must
-// proceed and embed normally, not bail. Regression guard: an earlier version
-// of this check gated on `mode` alone and rejected this valid case too.
+// Without a `server_url` nothing routes memory remotely, so memory.db is still the
+// store of record and reindex must proceed.
 #[test]
 fn reindex_in_cloud_first_without_server_url_proceeds() {
     let f = fixture();

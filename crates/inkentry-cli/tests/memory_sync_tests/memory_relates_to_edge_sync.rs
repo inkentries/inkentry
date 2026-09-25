@@ -1,15 +1,5 @@
-// Subprocess-level coverage for `relates_to` edge propagation on `inkentry
-// sync`. `memory add --relates-to` writes a LOCAL `relates_to` edge; this pins
-// that the edge now also travels UP to the cloud on sync, via an edge-only
-// `POST /memory/batch` keyed by each endpoint's external_id.
-//
-// The real compiled `inkentry` binary (`assert_cmd`) drives `memory add
-// --relates-to` to build the local edge, then `sync` against a mock team
-// server. The mock echoes the entry push (so both endpoints get stamped and
-// enter this round's just-synced set) and captures the edge-only batch, which
-// this test asserts carries `kind: "relates_to"` and the two entries' uuids.
-// Following `memory_push_sync_partial_failure.rs` for the mock-server + config
-// harness, and `memory_relates_to_edge.rs` for the `memory add` driving.
+// `memory add --relates-to` writes a local edge; on `sync` it must also travel to the cloud
+// in an edge-only `POST /memory/batch` keyed by each endpoint's external_id.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, write_project_server_config};
@@ -19,13 +9,11 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-// A slug with no characters `encode_project_id` would percent-encode, so the
-// mocked route paths match literally.
+// No characters `encode_project_id` would percent-encode, so mocked routes match literally.
 const PROJECT_SLUG: &str = "acme-widget";
 
-// Stand-in for the cloud batch route: echoes each pushed entry as `created`
-// (with a cloud id, so the local row is stamped and its edges become
-// pushable), and acknowledges an edge-only batch as one `created` edge each.
+// Echoes each pushed entry as `created` with a cloud id, so the local row is stamped and its
+// edges become pushable; acks an edge-only batch as one created edge each.
 struct BatchEcho;
 impl Respond for BatchEcho {
     fn respond(&self, request: &Request) -> ResponseTemplate {
@@ -74,7 +62,6 @@ async fn mount_batch(server: &MockServer) {
         .await;
 }
 
-// The post-push pull half of `sync` must have something to talk to.
 async fn mount_since_empty(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -87,7 +74,6 @@ async fn mount_since_empty(server: &MockServer) {
         .await;
 }
 
-// Global personal config: local memory writes, git-notes carrier off.
 fn write_global_config(dir: &Path) -> std::path::PathBuf {
     let db_path = dir.join(".inkentry").join("index.db");
     let config_path = dir.join("config.toml");
@@ -103,9 +89,7 @@ fn write_global_config(dir: &Path) -> std::path::PathBuf {
     config_path
 }
 
-// Run `memory add --kind note --title <title> --body … <extra…>` against a
-// local memory.db, from a neutral CWD (no project `.inkentry`, so `add` stays
-// local and never sees the team server_url). Returns the printed entry id.
+// Runs from a neutral cwd (no project `.inkentry`), so `add` stays local and never sees the team server_url.
 fn add_note(
     home: &Path,
     cwd: &Path,
@@ -141,8 +125,7 @@ fn add_note(
     parse_stored_id(&String::from_utf8_lossy(&out.stdout))
 }
 
-// The per-machine id from `memory add` output. The lead line now shows the
-// portable handle; the full row id is on its own `id:` line below it.
+// The lead line shows the portable handle; the row id is on its own `id:` line.
 fn parse_stored_id(stdout: &str) -> String {
     let id = stdout
         .lines()
@@ -171,8 +154,6 @@ async fn sync_pushes_a_local_relates_to_edge_to_the_cloud() {
     let cfg = write_global_config(proj.path());
     write_project_server_config(proj.path(), &server.uri(), PROJECT_SLUG);
 
-    // Build the local edge exactly as a user would: a target entry, then a
-    // linker entry that `--relates-to` it (records linker -> target).
     let target = add_note(
         home.path(),
         mem_dir.path(),
@@ -190,8 +171,6 @@ async fn sync_pushes_a_local_relates_to_edge_to_the_cloud() {
         &["--relates-to", &target],
     );
 
-    // Sync from the project dir, so `server_url` + `project_id` are discovered
-    // from its `.inkentry/config.toml`.
     let assert = inkentry_bin_in(home.path())
         .current_dir(proj.path())
         .arg("--config")
@@ -206,11 +185,9 @@ async fn sync_pushes_a_local_relates_to_edge_to_the_cloud() {
         "sync must succeed: {stdout:?}"
     );
 
-    // The two entries' cloud external_ids are their own ids.
     let from_ext = linker;
     let to_ext = target;
 
-    // Exactly one edge-only `/memory/batch` was posted, keyed by external_id.
     let reqs = server.received_requests().await.unwrap();
     let edge_bodies: Vec<serde_json::Value> = reqs
         .iter()

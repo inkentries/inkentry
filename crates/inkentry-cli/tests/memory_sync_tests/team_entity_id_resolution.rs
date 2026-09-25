@@ -1,9 +1,5 @@
-// Resolving a memory handle against a self-hosted team server.
-//
-// The team listing pages by offset, so the CLI walks the whole project to
-// resolve a quoted handle: it reads every entry, however old, not just one
-// page. A handle held anywhere resolves to its entry; one held nowhere is a
-// plain not-found, never the old "looked only so far" hedge.
+// The team listing pages by offset, so resolving a handle must walk the whole project,
+// however old the entry; a handle held nowhere is a plain not-found.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{TEAM_PROJECT_SLUG, inkentry_bin_in, mount_team_health, write_team_config};
@@ -31,11 +27,8 @@ fn entity_id_of(title: &str) -> String {
     inkentry_core::storage::entity_id("decision", title, "b")
 }
 
-// A team memory store the CLI can walk. The list route honours `limit`/`offset`
-// and caps a page at 500 as the real server does, so the walk sees the same
-// short-page arithmetic and a page past the end is empty; the per-entry route
-// serves an entry by its `id`, or 404s. One responder, so there is no
-// mock-ordering to reason about.
+// Honours `limit`/`offset` and caps a page at 500 like the real server; a single responder
+// avoids mock-ordering concerns.
 struct TeamStore {
     entries: Vec<serde_json::Value>,
 }
@@ -92,8 +85,6 @@ async fn show_against(entries: Vec<serde_json::Value>, token: &str) -> std::proc
         .expect("run memory show")
 }
 
-// More entries than one 500-entry page, so a handle only on a later page proves
-// the walk pages past the first.
 const PAGES_WORTH: usize = 1_200;
 
 fn filler(count: usize) -> Vec<serde_json::Value> {
@@ -106,12 +97,10 @@ fn filler(count: usize) -> Vec<serde_json::Value> {
 async fn a_handle_on_a_later_page_resolves() {
     let target = "the entry to find";
     let mut entries = filler(PAGES_WORTH);
-    // Index 900 sits past the first page (0..500), so only a walk that requested
-    // a non-zero offset ever reads it.
+    // Index 900 is past the first page, so only a walk with a non-zero offset reads it.
     entries[900] = team_note(900, target);
 
-    // Resolve by the 12-character handle, not the full id, so a truncated prefix
-    // is exercised against a store that spans pages.
+    // The 12-character handle, not the full id, exercises a truncated prefix across pages.
     let handle = entity_id_of(target);
     let out = show_against(entries, &handle[..12]).await;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -145,8 +134,7 @@ async fn an_absent_handle_on_a_large_store_is_a_plain_not_found() {
 
 #[tokio::test]
 async fn an_ambiguous_handle_across_pages_is_refused() {
-    // Two entries with identical content share one entity id; seeded on
-    // different pages, so catching the clash requires having walked both.
+    // Identical content shares one entity id; seeded on different pages, so catching the clash requires walking both.
     let twin = "same content twice";
     let mut entries = filler(PAGES_WORTH);
     entries[100] = team_note(100, twin);

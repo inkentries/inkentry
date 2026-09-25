@@ -1,16 +1,7 @@
-// The v1 team-sharing surface trim removes four porcelain memory subcommands
-// outright — no hidden aliases, no tombstones. Invoking any of them now yields
-// clap's standard unknown-subcommand error (exit 2), and none appear in help.
-// The capability they carried lives on elsewhere: one-way transfer moved to
-// `inkentry plumbing push` / `inkentry plumbing pull`, and two-way convergence
-// stays `inkentry sync`.
-
 use crate::plumbing_helpers;
 
 use plumbing_helpers::inkentry_bin;
 
-// A removed command is clap's unknown-subcommand error: exit 2, the offending
-// name on stderr, nothing on stdout.
 fn assert_unknown_subcommand(args: &[&str], name: &str) {
     let out = inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
@@ -54,12 +45,9 @@ fn memory_watch_is_removed() {
 
 #[test]
 fn memory_since_is_removed() {
-    // A trailing timestamp argument is still a removed command, not a valid call.
     assert_unknown_subcommand(&["memory", "since", "123"], "since");
 }
 
-// Extract the subcommand names clap lists under `Commands:` in a `--help` dump
-// (the first whitespace-delimited token of each indented row).
 fn help_subcommands(help: &str) -> Vec<String> {
     let section = match help.split_once("Commands:") {
         Some((_, rest)) => rest,

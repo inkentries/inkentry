@@ -1,5 +1,3 @@
-// Consolidated memory sync/replication test binary: groups the previously separate push-sync, relates-to-edge, and team-memory test files into one integration test crate to cut per-binary link overhead.
-
 mod plumbing_helpers;
 
 #[path = "memory_sync_tests/absent_memory_store.rs"]

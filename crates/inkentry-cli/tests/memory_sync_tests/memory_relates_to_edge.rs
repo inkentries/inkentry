@@ -1,15 +1,6 @@
-// Integration tests for `inkentry memory add --relates-to <id>`.
-//
-// Regression: `--relates-to` was accepted and the entry stored (`Stored
-// [...]` printed), but the flag was never wired to the edge API, so NO
-// `relates_to` edge was recorded on either side — `memory graph`/`memory
-// show` showed no relationship from either entry. `--supersedes` in the same
-// command writes its edge correctly; these tests pin that `--relates-to` now
-// writes a `relates_to` edge too, visible from BOTH endpoints, while
-// archiving neither entry (a relates_to link is non-superseding).
-//
-// The edge lives in the local SQLite graph (`memory_edges`), so these tests
-// use `store_in_git_notes = false` and need no git repo.
+// `--relates-to` must record a `relates_to` edge visible from both endpoints while
+// archiving neither entry (unlike `--supersedes`). `store_in_git_notes = false`, so no git
+// repo is needed.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
@@ -20,9 +11,6 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-// Minimal config pointing at a fresh memory DB, git-notes carry disabled.
 fn write_config(dir: &Path, mem_db: &Path) -> PathBuf {
     let content = format!(
         "db_path = {:?}\nllm_model = \"x\"\nstore_in_git_notes = false\n",
@@ -33,7 +21,6 @@ fn write_config(dir: &Path, mem_db: &Path) -> PathBuf {
     cfg
 }
 
-// `inkentry --config <cfg> memory --db <mem_db> …`
 fn memory_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
     let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
@@ -46,8 +33,6 @@ fn memory_cmd(dir: &Path, cfg: &Path, mem_db: &Path) -> Command {
     cmd
 }
 
-// Run `memory add --kind note --title <title> --body … <extra…>`; assert
-// success and return the per-machine id from its output.
 fn add_note(dir: &Path, cfg: &Path, mem_db: &Path, title: &str, extra: &[&str]) -> String {
     let mut cmd = memory_cmd(dir, cfg, mem_db);
     cmd.arg("add")
@@ -70,8 +55,7 @@ fn add_note(dir: &Path, cfg: &Path, mem_db: &Path, title: &str, extra: &[&str]) 
     parse_stored_id(&stdout)
 }
 
-// The per-machine id from `memory add` output. The lead line now shows the
-// portable handle; the full row id is on its own `id:` line below it.
+// The lead line shows the portable handle; the row id is on its own `id:` line.
 fn parse_stored_id(stdout: &str) -> String {
     let id = stdout
         .lines()
@@ -85,7 +69,6 @@ fn parse_stored_id(stdout: &str) -> String {
     id.to_string()
 }
 
-// Count notes rows; 0 if the DB doesn't exist yet.
 fn note_row_count(mem_db: &Path) -> i64 {
     if !mem_db.exists() {
         return 0;
@@ -134,7 +117,6 @@ fn total_edges(mem_db: &Path) -> i64 {
     .unwrap_or(0)
 }
 
-// `memory graph <id> --format json` parsed into a serde_json Value.
 fn graph_json(dir: &Path, cfg: &Path, mem_db: &Path, id: &str) -> Value {
     let out = memory_cmd(dir, cfg, mem_db)
         .arg("graph")
@@ -161,8 +143,6 @@ fn has_edge(edges: &Value, endpoint_field: &str, other: &str, kind: &str) -> boo
         .unwrap_or(false)
 }
 
-// ── (1) relates_to writes a bidirectional edge and archives nothing ───────────
-
 #[test]
 fn relates_to_writes_a_bidirectional_edge_and_archives_neither_entry() {
     let tmp = TempDir::new().unwrap();
@@ -178,7 +158,6 @@ fn relates_to_writes_a_bidirectional_edge_and_archives_neither_entry() {
         &["--relates-to", &target],
     );
 
-    // Exactly one edge: directed linker -> target, kind relates_to.
     assert_eq!(
         total_edges(&mem_db),
         1,
@@ -190,7 +169,6 @@ fn relates_to_writes_a_bidirectional_edge_and_archives_neither_entry() {
         "expected a relates_to edge #{linker} -> #{target}"
     );
 
-    // Non-superseding: neither entry archived, neither superseded_by set.
     assert_eq!(
         note_status(&mem_db, &target),
         "active",
@@ -204,22 +182,18 @@ fn relates_to_writes_a_bidirectional_edge_and_archives_neither_entry() {
     assert_eq!(superseded_by(&mem_db, &target), None);
     assert_eq!(superseded_by(&mem_db, &linker), None);
 
-    // Visible from the linker: an outgoing relates_to -> target.
     let from_linker = graph_json(tmp.path(), &cfg, &mem_db, &linker);
     assert!(
         has_edge(&from_linker["outgoing"], "to_id", &target, "relates_to"),
         "graph from #{linker} must show outgoing relates_to -> #{target}: {from_linker}"
     );
 
-    // Visible from the target: an incoming relates_to from the linker.
     let from_target = graph_json(tmp.path(), &cfg, &mem_db, &target);
     assert!(
         has_edge(&from_target["incoming"], "from_id", &linker, "relates_to"),
         "graph from #{target} must show incoming relates_to from #{linker}: {from_target}"
     );
 }
-
-// ── (2) a missing target is rejected before any write ─────────────────────────
 
 #[test]
 fn relates_to_a_missing_target_is_rejected_and_stores_nothing() {
@@ -241,7 +215,6 @@ fn relates_to_a_missing_target_is_rejected_and_stores_nothing() {
         .failure()
         .stderr(predicate::str::contains("'999' is not a memory entry id"));
 
-    // The new entry must not be written (no orphan) and no edge created.
     assert_eq!(
         note_row_count(&mem_db),
         0,
@@ -254,15 +227,12 @@ fn relates_to_a_missing_target_is_rejected_and_stores_nothing() {
     );
 }
 
-// ── (3) contrast guard: --supersedes still archives, --relates-to does not ────
-
 #[test]
 fn supersedes_still_archives_while_relates_to_does_not() {
     let tmp = TempDir::new().unwrap();
     let mem_db = tmp.path().join("memory.db");
     let cfg = write_config(tmp.path(), &mem_db);
 
-    // --supersedes: OLD archived + a supersedes edge NEW -> OLD (unchanged).
     let old = add_note(tmp.path(), &cfg, &mem_db, "Old decision", &[]);
     let new = add_note(
         tmp.path(),
@@ -279,8 +249,6 @@ fn supersedes_still_archives_while_relates_to_does_not() {
     assert_eq!(superseded_by(&mem_db, &old), Some(new.clone()));
     assert_eq!(edge_count(&mem_db, &new, &old, "supersedes"), 1);
 
-    // --relates-to on the same store: no archiving, a relates_to edge, and NOT
-    // a supersedes edge.
     let a = add_note(tmp.path(), &cfg, &mem_db, "Note A", &[]);
     let b = add_note(tmp.path(), &cfg, &mem_db, "Note B", &["--relates-to", &a]);
     assert_eq!(

@@ -1,17 +1,5 @@
-// Subprocess-level regression coverage: a total-failure `inkentry sync` batch
-// must exit non-zero and never print success framing.
-//
-// `memory_sync` (`crates/inkentry-cli/src/cli/cmd/memory/sync/mod.rs`) treats
-// `attempted > 0 && created == 0 && skipped == 0` as a hard failure: the message
-// leads with "Sync failed" and the command returns `Err`, which `main`'s
-// `#[tokio::main] fn -> Result<()>` maps to a non-zero exit. A prior version of
-// this coverage exercised that predicate as a tautology, or called `push_local`
-// (a function this behaviour doesn't live in) directly: neither would fail if
-// the `bail!` blocks driving the actual exit code were reverted. These tests
-// spawn the real compiled `inkentry` binary (`assert_cmd`, following
-// `fail_closed_no_project.rs`'s pattern) against a mock team server that returns
-// an all-failed batch result, so a regression in the command-layer `bail!`
-// itself is what fails here.
+// A total-failure `sync` batch (nothing landed) must exit non-zero and never print success
+// framing. Spawns the real binary so reverting the command layer's `bail!` fails here.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
@@ -22,13 +10,10 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Project slug with no characters `encode_project_id` would percent-encode,
-/// so the mocked route paths below can be matched literally.
+// No characters `encode_project_id` would percent-encode, so mocked routes match literally.
 const PROJECT_SLUG: &str = "acme-widget";
 
-// Mount `GET /v1/health` advertising a minimal Tier 1 server. `require_tier1`
-// only checks `tier.is_server()` (any 200 response), so a bare `memory`
-// capability is enough to unlock `sync`.
+// A bare `memory` capability is enough for `require_tier1` to unlock `sync`.
 async fn mount_health(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/v1/health"))
@@ -40,12 +25,8 @@ async fn mount_health(server: &MockServer) {
         .await;
 }
 
-/// Mount `POST /v1/projects/{slug}/memory/batch` returning a batch result
-/// where nothing durably landed: `created: 0, skipped: 0`, and an empty
-/// `results[]` so `push_local` falls back to the aggregate ints instead of
-/// per-item reconciliation (see `sync.rs`'s `res.results.is_empty()` branch).
-/// This is the exact wire shape the command layer must read as a hard
-/// failure rather than success.
+// `created: 0, skipped: 0` with an empty `results[]`, so push falls back to the aggregate
+// counts: the wire shape the command layer must read as a hard failure.
 async fn mount_batch_total_failure(server: &MockServer, failed: u32) {
     Mock::given(method("POST"))
         .and(path(format!("/v1/projects/{PROJECT_SLUG}/memory/batch")))
@@ -56,8 +37,6 @@ async fn mount_batch_total_failure(server: &MockServer, failed: u32) {
         .await;
 }
 
-/// Mount `GET /v1/projects/{slug}/memory/since` returning no entries, for the
-/// pull half of `inkentry sync` (which runs independently of the push outcome).
 async fn mount_since_empty(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -70,13 +49,9 @@ async fn mount_since_empty(server: &MockServer) {
         .await;
 }
 
-// Write a config with no `server_key`/`[auth]`, so `ensure_fresh_server_key`
-// takes its no-op path (`auth_api.rs`) and push/sync never needs a real
-// WorkOS login against a keyless plaintext loopback server. `server_url`/
-// `project_id` point at the mock server via `<dir>/.inkentry/config.toml`
-// instead of this global file: `Config::load` only honors those two fields
-// from a project-level config (or env). Every caller already sets
-// `.current_dir(dir)`.
+// No `server_key`/`[auth]`, so `ensure_fresh_server_key` is a no-op and no WorkOS login is
+// needed. `server_url`/`project_id` go in `<dir>/.inkentry/config.toml`: `Config::load` honors
+// them only from project config or env.
 fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
     let db_path = dir.join(".inkentry").join("index.db");
     let config_path = dir.join("config.toml");
@@ -92,15 +67,11 @@ fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
     config_path
 }
 
-/// Create a `.inkentry/` marker dir so ADR-067's fail-closed project gate
-/// resolves `proj` as a real local project, mirroring
-/// `fail_closed_no_project.rs::memory_add_works_with_local_dot_inkentry`.
+// The `.inkentry/` marker makes the fail-closed project gate treat `proj` as a project.
 fn init_project(proj: &Path) {
     std::fs::create_dir_all(proj.join(".inkentry")).expect("create .inkentry");
 }
 
-/// Seed one local memory entry via a real `inkentry memory add` subprocess run,
-/// so the subsequent push/sync has something `attempted > 0` to push.
 fn seed_one_note(home: &Path, proj: &Path, config_path: &Path) {
     inkentry_bin_in(home)
         .current_dir(proj)
@@ -147,16 +118,9 @@ async fn memory_sync_total_failure_exits_nonzero_and_does_not_print_sync_complet
     );
 }
 
-/// A total push failure still runs the full two-phase pull reconciliation
-/// (`sync_round`'s pull, push, pull-again sequence), and the failure
-/// message's pull count is the honest combined total across both passes,
-/// not just the first pass or zero.
-///
-/// Both pull calls in `sync_round` reuse the same pre-round cursor, so a
-/// stateless mock returning one remote entry for `/since` regardless of
-/// `since_id` is hit identically by both passes: the first applies it (new),
-/// the second re-fetches it but it's already known locally (dedup on
-/// `remote_id`), so the reported total is the true, non-doubled count.
+// Both pulls reuse the pre-round cursor, so a stateless `/since` mock returns the entry
+// twice; the second is deduped on `remote_id`, so the reported total must be the true
+// count, not doubled.
 #[tokio::test]
 async fn memory_sync_total_failure_reports_the_full_two_pass_pull_count() {
     let server = MockServer::start().await;
@@ -206,10 +170,7 @@ async fn memory_sync_total_failure_reports_the_full_two_pass_pull_count() {
     );
 }
 
-// Regression guard for the fix's OTHER side: a real success must still exit
-// zero and print the "Sync complete." success framing. Without this, a broken
-// change that made every sync exit non-zero unconditionally would still pass
-// the total-failure tests above.
+// Guards the other side: a real success must still exit zero with `Sync complete.`.
 #[tokio::test]
 async fn memory_sync_success_still_exits_zero_and_prints_sync_complete() {
     let server = MockServer::start().await;

@@ -1,5 +1,3 @@
-// Consolidated parsing/plumbing-utility test binary: groups the previously separate chunk/context/embed/hash/knn/parse test files into one integration test crate to cut per-binary link overhead.
-
 mod plumbing_helpers;
 
 #[path = "parsing_utils_tests/cat_chunks.rs"]
