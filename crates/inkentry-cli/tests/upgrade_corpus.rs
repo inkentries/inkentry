@@ -537,6 +537,15 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
         "no edge may be lost"
     );
     assert_eq!(unresolved, edges, "every existing edge starts unresolved");
+
+    // Step 19 rebuilds the code full-text index from the chunks it finds.
+    let fts_rows: i64 = conn
+        .query_row("SELECT count(*) FROM chunks_fts", [], |r| r.get(0))
+        .expect("chunks_fts exists after migrating");
+    assert_eq!(
+        fts_rows as usize, wing.expect.chunk_count,
+        "every chunk must be in the rebuilt full-text index"
+    );
 }
 
 // ── The corpus has to start collecting again when there is something to collect
@@ -567,6 +576,9 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
 // `an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema` are the
 // answer.
 //
+// Index 18 -> 19: no. No release wrote 18; the same 1.1.0 wing climbs through
+// both steps, and the test above checks what step 19 rebuilds.
+//
 // Memory 12 -> 13: no. Schema 12 (tags and linked files as rows) has not
 // shipped in a release; no user holds a released binary's memory.db stamped
 // 12, so there is nothing a released store needs to survive moving to 13 that
@@ -575,7 +587,7 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
 // `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
 // assertions for what step 13 adds (events exists and is empty; origin reads
 // as absent) rather than a new wing.
-const CORPUS_COVERS_INDEX_SCHEMA: i32 = 18;
+const CORPUS_COVERS_INDEX_SCHEMA: i32 = 19;
 const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 13;
 
 #[test]

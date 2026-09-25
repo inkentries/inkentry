@@ -215,13 +215,6 @@ async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_w
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let store = MemoryStore::open(tmp.path()).expect("open memory store");
     let dir = non_git_dir();
-    // Anchors the window end near "now" (`add_note` stamps `created_at` from
-    // the wall clock), so the events recorded below — also stamped from the
-    // wall clock — fall inside the events block's own 7-day window.
-    store
-        .add_note("decision", "Use X", "because Y", &[], &[], None, None)
-        .unwrap();
-
     let fields = |command: &'static str, trigger: &'static str| EventFields {
         command,
         surface: "cli",
@@ -237,6 +230,12 @@ async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_w
     };
     record_event_at(tmp.path(), fields("search", "explicit"));
     record_event_at(tmp.path(), fields("search", "hook"));
+    // The window ends at the newest entry's `created_at`, in whole seconds.
+    // Added after the events, the entry cannot close the window before them;
+    // added first, a second boundary crossed in between left both outside it.
+    store
+        .add_note("decision", "Use X", "because Y", &[], &[], None, None)
+        .unwrap();
 
     let snap = build_snapshot(&store, dir.path(), "proj".into(), "0.0.0-test".into(), 30)
         .await

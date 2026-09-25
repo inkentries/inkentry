@@ -92,6 +92,18 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   which only the re-rank read; an existing index keeps them, unused, until its
   files are re-indexed. See
   [ADR-102](docs/adr/102-remove-linearrag-from-code-search.md).
+- **Full-text code search finds far more.** The code index now also holds
+  each chunk's file path, docstring and structural summary, stems words
+  (`burst` finds `bursts`), matches camelCase identifiers by their parts
+  (`linear rag` finds `LinearRag`), drops question words such as `how` and
+  `the` from the query, and ranks a hit in a symbol's name above one in its
+  body. On the same evaluation, `--only-text` Recall@10 rose from 0.52 to
+  0.60 (this repository) and from 0.46 to 0.70 (Lago), and default search
+  gained 3-7 points on top of the change above. An existing index is
+  re-indexed in place on first open, in seconds, with no re-embedding.
+  `--only-text` JSON now reports `distance` as the raw BM25 score, lower
+  being better, as for vector results. See
+  [ADR-103](docs/adr/103-code-full-text-index-for-retrieval.md).
 
 ### Security
 

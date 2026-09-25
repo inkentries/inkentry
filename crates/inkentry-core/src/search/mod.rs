@@ -1,3 +1,4 @@
+pub mod lexical;
 pub mod tokens;
 
 use serde::{Deserialize, Serialize};

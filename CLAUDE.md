@@ -228,6 +228,8 @@ search/
   mod.rs         — SearchResult struct; RRF_K, the one reciprocal-rank-fusion
                    constant shared by both within-corpus hybrid fusions and the
                    cross-corpus code+memory fusion (ADR-081)
+  lexical.rs     — identifier splitting (camelCase/snake_case) and the code
+                   FTS5 query builder, shared by indexing and search (ADR-103)
   tokens.rs      — token-budget helpers
 
 migrations/  (crates/inkentry-core/migrations/)
@@ -235,6 +237,9 @@ migrations/  (crates/inkentry-core/migrations/)
                            is created from it and climbs the registry in
                            storage/index_migrate.rs (see storage/db.rs)
   index_018.sql          — step 18 (ADR-097): graph_edges.target_file
+  index_019.sql          — step 19 (ADR-103): code full-text index rebuilt for
+                           retrieval: stemmed, contentless, over name/path/
+                           docstring/summary/content plus identifier sub-words
   memory_001_initial.sql — memory.db at schema version 11, frozen; a fresh
                            store is created from it and climbs the ladder
   memory_012.sql, memory_012_drop_legacy_columns.sql — step 12 (ADR-101):

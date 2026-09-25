@@ -21,6 +21,7 @@ mod sql;
 mod stats;
 
 pub use backend::{EntityIdLookup, LocalMemoryBackend, MemoryBackend, NoteInput};
+pub(crate) use chunks::chunk_subwords;
 pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
 pub use db::{Database, GRAPH_EDGES_REEXTRACT};
 pub use entity_id::{

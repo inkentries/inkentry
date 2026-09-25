@@ -2,6 +2,29 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 
 use super::Database;
+use crate::search::lexical::identifier_subwords;
+
+/// The identifier sub-words the code full-text index holds beside a chunk's
+/// own text: `(name_words, body_words)`, the latter drawn from the docstring
+/// (inside the `metadata` JSON) and the content. `None` when nothing splits.
+pub(crate) fn chunk_subwords(
+    name: Option<&str>,
+    content: &str,
+    metadata: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let docstring = metadata
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get("docstring")?.as_str().map(str::to_owned));
+    let name_words = identifier_subwords(name.unwrap_or(""));
+    let mut body_words = identifier_subwords(docstring.as_deref().unwrap_or(""));
+    let content_words = identifier_subwords(content);
+    if !body_words.is_empty() && !content_words.is_empty() {
+        body_words.push(' ');
+    }
+    body_words.push_str(&content_words);
+    let non_empty = |s: String| (!s.is_empty()).then_some(s);
+    (non_empty(name_words), non_empty(body_words))
+}
 
 impl Database {
     #[allow(clippy::too_many_arguments)]
@@ -16,9 +39,11 @@ impl Database {
         metadata: Option<&str>,
         token_count: usize,
     ) -> Result<i64> {
+        let (name_words, body_words) = chunk_subwords(name, content, metadata);
         self.conn.execute(
-            "INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content, metadata, token_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content, metadata,
+                                 token_count, name_words, body_words)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 file_id,
                 node_type,
@@ -28,6 +53,8 @@ impl Database {
                 content,
                 metadata,
                 token_count as i64,
+                name_words,
+                body_words,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
