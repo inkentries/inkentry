@@ -1,13 +1,3 @@
-// Regression coverage for the reported bug: `inkentry memory list --source-ref
-// <sha>` returned ZERO results for a commit that carries `refs/notes/inkentry`
-// notes, even though `memory add` had written entries anchored to that commit.
-//
-// A `memory add` entry records which commit it belongs to only as the git-notes
-// attachment (commit -> note object). Its SQLite `source_ref` column stays NULL
-// (that column is harvest provenance), so a `source_ref` column query can never
-// surface it. `--source-ref <sha>` must resolve the entries anchored to that
-// commit from the notes ref and return them.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin_in};
 
@@ -15,7 +5,6 @@ use assert_cmd::Command;
 use std::path::Path;
 use tempfile::TempDir;
 
-// A `inkentry` command with an isolated HOME and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
@@ -40,8 +29,6 @@ fn head_sha(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-// Make an empty commit so a second entry anchors to a different commit than the
-// first, letting the test prove `--source-ref` filters by commit.
 fn empty_commit(dir: &Path, msg: &str) {
     let out = git_out(dir, &["commit", "--allow-empty", "-q", "-m", msg]);
     assert!(out.status.success(), "git commit --allow-empty failed");
@@ -79,9 +66,8 @@ fn list_source_ref(home: &Path, repo: &Path, db: &Path, sha: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// The core repro: an entry whose git note is anchored to a commit must be
-// returned by `memory list --source-ref <that commit>`. Pre-fix this printed
-// "No memory entries found." because the SQLite `source_ref` column is NULL.
+// `memory add` entries are anchored only by the git-notes attachment; their SQLite `source_ref` is NULL
+// (harvest provenance), so `--source-ref` must resolve from the notes ref.
 #[test]
 fn source_ref_finds_note_anchored_entry() {
     let tmp = TempDir::new().unwrap();
@@ -102,7 +88,6 @@ fn source_ref_finds_note_anchored_entry() {
     );
 }
 
-// A short sha prefix must match too (docs promise "exact or prefix").
 #[test]
 fn source_ref_matches_a_prefix() {
     let tmp = TempDir::new().unwrap();
@@ -124,8 +109,6 @@ fn source_ref_matches_a_prefix() {
     );
 }
 
-// No false positives: a commit that carries no entries returns nothing, and an
-// entry anchored to one commit is not returned for a different commit.
 #[test]
 fn source_ref_does_not_match_the_wrong_commit() {
     let tmp = TempDir::new().unwrap();
@@ -136,11 +119,9 @@ fn source_ref_does_not_match_the_wrong_commit() {
     init_git_repo(&repo);
     let db = repo.join("memory.db");
 
-    // Entry one anchors to commit A.
     add_note(home.path(), &repo, &db, "entry-on-A", "ba");
     let sha_a = head_sha(&repo);
 
-    // Move HEAD, then entry two anchors to commit B.
     empty_commit(&repo, "second");
     let sha_b = head_sha(&repo);
     add_note(home.path(), &repo, &db, "entry-on-B", "bb");
@@ -170,7 +151,6 @@ fn source_ref_does_not_match_the_wrong_commit() {
         "A's entry must NOT show for B (false positive):\n{on_b}"
     );
 
-    // A commit sha that carries no note at all returns nothing.
     let unrelated = "0000000000000000000000000000000000000000";
     let none = list_source_ref(home.path(), &repo, &db, unrelated);
     assert!(

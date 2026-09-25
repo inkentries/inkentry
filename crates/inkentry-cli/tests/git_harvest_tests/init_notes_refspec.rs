@@ -1,34 +1,3 @@
-//! Integration tests for `inkentry init` configuring the `origin` git-notes
-//! fetch refspec so teammates' `refs/notes/inkentry` (inkentry's memory) travels
-//! on clone/fetch (ADR-068, corrected by ADR-069 D4/D5).
-//!
-//! The refspec fetches into a **tracking** ref (`refs/notes/origin/inkentry`),
-//! never over the working ref. Fetching straight onto `refs/notes/inkentry`
-//! force-updates it and silently destroys local unpushed notes, and the
-//! non-glob form makes plain `git fetch` exit 128 until someone pushes notes.
-//! Travel is therefore fetch + merge: inkentry merges the tracking ref on its
-//! own read paths (D5).
-//!
-//! Covered:
-//! - origin present: `remote.origin.fetch` gains the tracking refspec and
-//!   init announces the configured line.
-//! - origin absent: init still exits 0 and prints the exact manual hint.
-//! - idempotent: two inits leave exactly ONE notes refspec + "already
-//!   configured" announce on the second run.
-//! - push preserved: `remote.origin.push` stays unset (branch-push default).
-//! - plain git preserved: `git fetch`/`git pull` exit 0 with no notes on the
-//!   remote (D4 regression).
-//! - no clobber: a local unpushed note survives a fetch when the remote has
-//!   notes (D4 regression).
-//! - round-trip: notes pushed to a bare origin reach a fresh clone's tracking
-//!   ref on fetch, and the read-path merge makes them visible (D5).
-//! - call sites: `context` and `init` merge the tracking ref too, not just
-//!   `memory list` (D5).
-//! - non-TTY: piped-stdin init completes without prompting/hanging.
-//!
-//! Every spawned `inkentry` uses `inkentry_bin` (pins `INKENTRY_SECRET_STORE=file`),
-//! `INKENTRY_NO_SERVER=1`, and `init --no-index` for an offline, fast run.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
 
@@ -39,11 +8,10 @@ use tempfile::tempdir;
 
 const NOTES_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
 
-/// The ref a fetch lands teammates' notes on, per [`NOTES_REFSPEC`].
+// A fetch lands on a tracking ref, never the working ref: fetching straight onto `refs/notes/inkentry`
+// would force-update it and destroy local unpushed notes.
 const TRACKING_REF: &str = "refs/notes/origin/inkentry";
 
-/// Run `git args` in `dir`, asserting success. Isolated identity + config so it
-/// works hermetically on a machine with (or without) a global git config.
 fn git(dir: &Path, args: &[&str]) {
     let out = git_out(dir, args);
     assert!(
@@ -53,7 +21,6 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-/// Like [`git`] but returns the captured `Output` without asserting success.
 fn git_out(dir: &Path, args: &[&str]) -> Output {
     std::process::Command::new("git")
         .current_dir(dir)
@@ -68,16 +35,13 @@ fn git_out(dir: &Path, args: &[&str]) -> Output {
         .expect("spawn git")
 }
 
-/// `stdout` of `git args` as a trimmed `String`.
 fn git_stdout(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&git_out(dir, args).stdout)
         .trim()
         .to_string()
 }
 
-/// A git repo with a real identity + one commit. Returns nothing; caller owns
-/// the dir. Local identity is set so spawned `git` (and inkentry's inner git)
-/// can commit without inheriting the test-runner's global config.
+// Local identity so spawned `git` (and inkentry's inner git) can commit without the runner's global config.
 fn init_repo_with_commit(dir: &Path) {
     git(dir, &["init", "-q", "-b", "main"]);
     git(dir, &["config", "user.email", "test@example.com"]);
@@ -87,14 +51,12 @@ fn init_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-/// Write an empty inkentry config (init needs `--config` but no values here).
 fn empty_config(dir: &Path) -> std::path::PathBuf {
     let cfg = dir.join("config.toml");
     std::fs::write(&cfg, "").unwrap();
     cfg
 }
 
-/// Run `inkentry init --no-index` in `dir` (offline, non-TTY) and return stdout.
 fn run_init(dir: &Path) -> String {
     let cfg = empty_config(dir);
     let out = inkentry_bin()
@@ -114,7 +76,6 @@ fn run_init(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-/// (1) With an `origin` remote: init adds the notes fetch refspec and announces it.
 #[test]
 fn init_configures_notes_refspec_when_origin_present() {
     let tmp = tempdir().unwrap();
@@ -152,13 +113,12 @@ fn init_configures_notes_refspec_when_origin_present() {
     );
 }
 
-/// (2) No `origin` remote: init still succeeds and prints the exact manual hint.
 #[test]
 fn init_no_origin_prints_hint_and_succeeds() {
     let tmp = tempdir().unwrap();
     init_repo_with_commit(tmp.path());
 
-    let stdout = run_init(tmp.path()); // asserts exit 0 internally
+    let stdout = run_init(tmp.path());
 
     assert!(
         stdout.contains(&format!(
@@ -166,20 +126,17 @@ fn init_no_origin_prints_hint_and_succeeds() {
         )),
         "no-origin init should print the exact refspec hint, got:\n{stdout}"
     );
-    // Publishing is opt-in, so init has to name the step unprompted: a user who
-    // never reads the docs must still learn their memory stays local.
+    // Publishing is opt-in, so init must name the step unprompted.
     assert!(
         stdout.contains("your memory stays local until you install the pre-push hook")
             && stdout.contains("inkentry hooks install --pre-push"),
         "no-origin init should name the pre-push hook as the publishing step, got:\n{stdout}"
     );
-    // The retired hint told users to push notes after each memory change, which
-    // orphans every entry recorded before its commit is pushed. Never restore it.
+    // Pushing notes after each change orphans entries recorded before their commit is pushed.
     assert!(
         !stdout.contains("push notes after each memory change"),
         "init must not advertise the orphan-prone per-change notes push, got:\n{stdout}"
     );
-    // And it must not have invented an `origin` remote.
     assert!(
         !git_out(tmp.path(), &["remote", "get-url", "origin"])
             .status
@@ -188,10 +145,6 @@ fn init_no_origin_prints_hint_and_succeeds() {
     );
 }
 
-/// (2a) The publishing announce reads the hook's actual state rather than
-/// asserting a fixed one: once the pre-push hook is installed, telling the user
-/// their memory stays local is simply false, and a stale nag trains them to
-/// ignore the line that matters.
 #[test]
 fn init_announce_reflects_the_installed_pre_push_hook() {
     let tmp = tempdir().unwrap();
@@ -224,13 +177,6 @@ fn init_announce_reflects_the_installed_pre_push_hook() {
     );
 }
 
-/// (2b) No `origin` remote: init still configures `notes.rewriteRef`, so memory
-/// survives `git commit --amend` and `git rebase`. The carry is purely local and
-/// must not be gated on having a remote: a remote-less repo is exactly where the
-/// note is the only copy of an entry.
-///
-/// Read `--local` so the assertion is about what init wrote to this repo, not
-/// about an ambient global value on the machine running the test.
 #[test]
 fn init_configures_notes_rewrite_ref_without_an_origin_remote() {
     let tmp = tempdir().unwrap();
@@ -244,6 +190,7 @@ fn init_configures_notes_rewrite_ref_without_an_origin_remote() {
 
     let stdout = run_init(tmp.path());
 
+    // Read with `--local` so the assertion covers what init wrote, not an ambient global value.
     assert_eq!(
         git_stdout(
             tmp.path(),
@@ -259,8 +206,6 @@ fn init_configures_notes_rewrite_ref_without_an_origin_remote() {
     );
 }
 
-/// (3) Idempotent: two inits leave exactly one notes refspec + "already
-/// configured" announce on the second run.
 #[test]
 fn init_notes_refspec_is_idempotent() {
     let tmp = tempdir().unwrap();
@@ -302,8 +247,6 @@ fn init_notes_refspec_is_idempotent() {
     );
 }
 
-/// (4) Push default preserved: `remote.origin.push` stays unset so a normal
-/// `git push` keeps pushing the current branch (the engineer set no push refspec).
 #[test]
 fn init_does_not_set_origin_push_refspec() {
     let tmp = tempdir().unwrap();
@@ -338,18 +281,6 @@ fn init_does_not_set_origin_push_refspec() {
     );
 }
 
-/// (5) Round-trip (the promise): a note pushed to the bare origin reaches a
-/// fresh clone's tracking ref on a plain `git fetch`, and inkentry's read-path
-/// merge is what makes it visible.
-///
-/// A. init in repo (configures the refspec) → add a decision (git note on
-///    refs/notes/inkentry) → push the branch + notes ref to the bare origin.
-/// B. clone origin → run init in the clone (adds the same fetch refspec) →
-///    plain `git fetch origin` lands the notes on `refs/notes/origin/inkentry`
-///    and deliberately NOT on the working ref → `inkentry memory list` merges
-///    the tracking ref and surfaces the decision. This proves the ref is
-///    publishable, that the init-configured refspec fetches it, and that
-///    travel is fetch + merge rather than fetch alone.
 #[test]
 fn notes_round_trip_through_bare_origin() {
     let tmp = tempdir().unwrap();
@@ -375,8 +306,6 @@ fn notes_round_trip_through_bare_origin() {
         &["remote", "add", "origin", origin.to_str().unwrap()],
     );
 
-    // A. Configure the refspec, then add a decision via `inkentry memory add`
-    //    (store_in_git_notes = true → writes refs/notes/inkentry).
     run_init(&repo);
 
     let mem_db = repo.join(".inkentry").join("memory.db");
@@ -412,17 +341,14 @@ fn notes_round_trip_through_bare_origin() {
         .success()
         .stdout(predicate::str::contains("Stored [decision]"));
 
-    // Sanity: the note exists locally on refs/notes/inkentry.
     assert!(
         !git_stdout(&repo, &["notes", "--ref=inkentry", "list"]).is_empty(),
         "expected a local inkentry note after memory add"
     );
 
-    // Publish branch + notes to the bare origin.
     git(&repo, &["push", "-q", "origin", "main"]);
     git(&repo, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
-    // B. Fresh clone gets the branch but NOT notes by default…
     git(
         tmp.path(),
         &[
@@ -432,7 +358,7 @@ fn notes_round_trip_through_bare_origin() {
             clone.to_str().unwrap(),
         ],
     );
-    // clone identity for its own inner git (init announces, no commit needed).
+    // Identity for the inner git that inkentry runs in the clone.
     git(&clone, &["config", "user.email", "clone@example.com"]);
     git(&clone, &["config", "user.name", "Clone"]);
     assert!(
@@ -440,12 +366,8 @@ fn notes_round_trip_through_bare_origin() {
         "a fresh clone should not have inkentry notes before fetch"
     );
 
-    // …init in the clone configures the notes fetch refspec, and a plain fetch
-    // then lands the notes ref — on the TRACKING ref, not the working one.
-    //
-    // `run_init` here also performs the first read-path merge, so drop the
-    // tracking ref's content out of the working ref afterwards to observe the
-    // fetch in isolation: assert on the tracking ref directly.
+    // `run_init` also performs the first read-path merge, so assert on the tracking ref directly to
+    // observe the fetch in isolation.
     run_init(&clone);
     git(&clone, &["fetch", "-q", "origin"]);
 
@@ -456,7 +378,6 @@ fn notes_round_trip_through_bare_origin() {
         "a plain fetch must populate {TRACKING_REF} via the init-configured refspec"
     );
 
-    // The decision content travelled, not just an empty ref.
     let tracking_notes = git_stdout(&clone, &["notes", &format!("--ref={TRACKING_REF}"), "list"]);
     let annotated = tracking_notes
         .lines()
@@ -478,7 +399,6 @@ fn notes_round_trip_through_bare_origin() {
         "fetched note should contain the decision title, got:\n{shown}"
     );
 
-    // And the read path surfaces it: `memory list` merges the tracking ref.
     let listed = inkentry_bin()
         .current_dir(&clone)
         .env("HOME", &clone)
@@ -497,16 +417,13 @@ fn notes_round_trip_through_bare_origin() {
         "the read-path merge should surface the fetched decision, got:\n{}",
         String::from_utf8_lossy(&listed.stdout)
     );
-    // The merge is what moved it onto the working ref.
     assert!(
         git_stdout(&clone, &["notes", "--ref=inkentry", "show", &annotated]).contains(unique),
         "the read-path merge should have folded the tracking ref into refs/notes/inkentry"
     );
 }
 
-/// Write `body` as HEAD's note on `git_ref`, standing in for a `git fetch` that
-/// landed a teammate's note on the tracking ref. No network, and no dependence
-/// on the refspec under test in the tests that use it to set up.
+// Stands in for a `git fetch` that landed a teammate's note on the tracking ref, without network access.
 fn add_note_on_ref(dir: &Path, git_ref: &str, body: &str) {
     git(
         dir,
@@ -522,7 +439,6 @@ fn add_note_on_ref(dir: &Path, git_ref: &str, body: &str) {
     );
 }
 
-/// The `refs/notes/inkentry` blob for HEAD, or `""` when there is no note.
 fn working_note(dir: &Path) -> String {
     let out = git_out(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     if out.status.success() {
@@ -532,12 +448,6 @@ fn working_note(dir: &Path) -> String {
     }
 }
 
-/// (5b) Call site: `inkentry context` merges the tracking ref (ADR-069 D5).
-///
-/// `memory list` is covered by the round-trip above; `context` is a separate
-/// call site with its own read path, and a fetched entry is invisible on it
-/// unless it merges too. Asserted on a genuinely diverged pair, so the entry
-/// arriving proves a union rather than a fast-forward.
 #[test]
 fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     let tmp = tempdir().unwrap();
@@ -554,8 +464,6 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     add_note_on_ref(&repo, TRACKING_REF, THEIRS);
     add_note_on_ref(&repo, "refs/notes/inkentry", MINE);
 
-    // Setup control: the fetched entry is not on the working ref yet, so
-    // surfacing it below can only be the merge's doing.
     assert!(
         !working_note(&repo).contains("their fetched decision"),
         "setup: the fetched entry must start out on the tracking ref only"
@@ -593,13 +501,6 @@ fn context_merges_the_tracking_ref_and_surfaces_a_fetched_entry() {
     );
 }
 
-/// (5c) Call site: `inkentry init` merges the tracking ref before importing
-/// (ADR-069 D5).
-///
-/// init hydrates `memory.db` from git notes, so an entry still parked on the
-/// tracking ref would be skipped by the import and stay missing from the
-/// project's memory until some later read merged it. Nothing else in init
-/// writes the working ref, so the entry landing there isolates init's merge.
 #[test]
 fn init_merges_the_tracking_ref_before_importing_git_notes() {
     let tmp = tempdir().unwrap();
@@ -607,8 +508,7 @@ fn init_merges_the_tracking_ref_before_importing_git_notes() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo_with_commit(&repo);
 
-    // A teammate's entry arrives on the tracking ref before this repo is ever
-    // init'd: the fresh-clone case.
+    // Arrives before this repo is ever init'd: the fresh-clone case.
     const THEIRS: &str = r#"{"schema_version":1,"id":1,"kind":"decision","title":"their fetched decision","body":"b","tags":[],"linked_files":[],"created_at":100,"status":"active"}"#;
     add_note_on_ref(&repo, TRACKING_REF, THEIRS);
     assert!(
@@ -622,24 +522,18 @@ fn init_merges_the_tracking_ref_before_importing_git_notes() {
         working_note(&repo).contains("their fetched decision"),
         "init must merge the tracking ref onto refs/notes/inkentry"
     );
-    // The payoff: the merge fed the import, so the entry is in the project's
-    // memory. Without the merge the import sees an empty working ref and
-    // announces nothing.
+    // The merge fed the import; without it the import sees an empty working ref.
     assert!(
         stdout.contains("imported 1 entries from git notes"),
         "init must import the fetched entry it merged, got:\n{stdout}"
     );
 }
 
-/// (6) Non-TTY: init run with piped stdin (as assert_cmd/Output does) must not
-/// prompt or hang — it returns and exits 0. Explicit guard for the hook/CI path.
 #[test]
 fn init_non_tty_does_not_prompt_or_hang() {
     let tmp = tempdir().unwrap();
     init_repo_with_commit(tmp.path());
 
-    // run_init spawns with piped (non-TTY) stdin and asserts exit 0; reaching
-    // this line at all means init completed without blocking on input.
     let stdout = run_init(tmp.path());
     assert!(
         stdout.contains("inkentry initialised for"),
@@ -647,13 +541,7 @@ fn init_non_tty_does_not_prompt_or_hang() {
     );
 }
 
-/// (7) D4 regression: `inkentry init` must not break plain git.
-///
-/// The shipped non-glob refspec (`+refs/notes/inkentry:refs/notes/inkentry`)
-/// requires the remote ref to exist, so with no notes pushed yet — every repo
-/// until someone shares memory — `git fetch origin` exited 128 and `git pull`
-/// exited 1 with `fatal: couldn't find remote ref refs/notes/inkentry`. The glob
-/// tolerates the missing remote ref.
+// The non-glob refspec makes `git fetch` exit 128 when the remote has no notes ref; the glob tolerates it.
 #[test]
 fn init_leaves_plain_fetch_and_pull_working_with_no_notes_on_the_remote() {
     let tmp = tempdir().unwrap();
@@ -677,11 +565,9 @@ fn init_leaves_plain_fetch_and_pull_working_with_no_notes_on_the_remote() {
         &repo,
         &["remote", "add", "origin", origin.to_str().unwrap()],
     );
-    // `-u` sets upstream so `git pull` has something to track; without it pull
-    // exits 1 for an unrelated reason and the assertion would be meaningless.
+    // `-u` sets the upstream `git pull` needs; without it pull exits 1 for an unrelated reason.
     git(&repo, &["push", "-q", "-u", "origin", "main"]);
 
-    // The origin deliberately has NO notes: the state that broke.
     run_init(&repo);
 
     let fetch = git_out(&repo, &["fetch", "origin"]);
@@ -701,13 +587,8 @@ fn init_leaves_plain_fetch_and_pull_working_with_no_notes_on_the_remote() {
     );
 }
 
-/// (8) D4 regression: a local unpushed note survives a fetch.
-///
-/// The shipped refspec fetched with a leading `+` straight onto the working
-/// ref, so a plain `git fetch` force-updated it and silently replaced a local
-/// unpushed note with the remote's — reported only as `(forced update)`, and
-/// recoverable only via reflog. That is data loss of the product's core asset.
-/// A glob alone does not fix it; only the tracking destination does.
+// A leading `+` refspec straight onto the working ref force-updates it and silently replaces a local
+// unpushed note; a glob alone does not fix that, only the tracking destination does.
 #[test]
 fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
     let tmp = tempdir().unwrap();
@@ -734,7 +615,6 @@ fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
     );
     git(&teammate, &["push", "-q", "origin", "main"]);
 
-    // A teammate publishes their note, so the remote ref exists and diverges.
     const THEIRS: &str = r#"{"schema_version":1,"id":1,"kind":"decision","title":"theirs"}"#;
     git(
         &teammate,
@@ -742,7 +622,6 @@ fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
     );
     git(&teammate, &["push", "-q", "origin", "refs/notes/inkentry"]);
 
-    // I clone and record my own note locally, without pushing it.
     git(
         tmp.path(),
         &[
@@ -764,13 +643,11 @@ fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
 
     git(&mine, &["fetch", "-q", "origin"]);
 
-    // The fetch must not have touched my working ref.
     let after = git_stdout(&mine, &["notes", "--ref=inkentry", "show", "HEAD"]);
     assert!(
         after.contains("mine unpushed"),
         "a plain fetch must not clobber a local unpushed note, got:\n{after}"
     );
-    // Their note is fetched, but parked on the tracking ref until inkentry merges.
     assert!(
         git_out(&mine, &["rev-parse", "--verify", TRACKING_REF])
             .status

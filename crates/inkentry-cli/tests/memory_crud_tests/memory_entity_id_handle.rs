@@ -1,6 +1,3 @@
-// The portable handle on the command surface: what `memory list`, `memory show`
-// and `context` display, and what `show`, `archive` and `supersede` accept.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin_in, write_config};
 
@@ -17,8 +14,7 @@ struct Project {
     cfg: PathBuf,
 }
 
-// A git repo with its own memory store, so the git-notes carrier writes into
-// the fixture's repo and never the checkout the test runs from.
+// Own git repo and memory store, so the carrier writes into the fixture's repo, not the checkout the test runs from.
 fn project() -> Project {
     let tmp = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
@@ -55,8 +51,7 @@ impl Project {
         cmd
     }
 
-    // Returns the entry's entity id, computed here from the text rather than
-    // read back from the command under test.
+    // Computed here from the text, not read back from the command under test.
     fn add(&self, title: &str, body: &str) -> String {
         self.memory()
             .args([
@@ -103,8 +98,7 @@ impl Project {
     }
 }
 
-// Two entries sharing eight leading hex characters is a 32-bit coincidence no
-// fixture can hash its way to, so the ambiguous pair is crafted in the store.
+// A collision on eight leading hex characters can't be hashed into a fixture, so the ambiguous pair is crafted in the store.
 const CRAFT_COLLIDING_ENTITY_IDS: &str = "\
     UPDATE notes SET entity_id = \
       'aaaaaaaa11111111111111111111111111111111111111111111111111111111' \
@@ -139,8 +133,6 @@ fn handle(entity_id: &str) -> &str {
 fn stdout(assert: assert_cmd::assert::Assert) -> String {
     String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout")
 }
-
-// ── display ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn list_leads_each_line_with_the_handle_and_not_the_local_id() {
@@ -257,8 +249,7 @@ fn the_same_entry_shows_the_same_handle_on_both_backends() {
         carried.contains(handle(&eid)),
         "the carrier listing should show the same handle, got:\n{carried}"
     );
-    // The carrier's own record token is a small integer; it must not be
-    // displayed where an id is expected.
+    // The carrier's own record token is a small integer; it must not be displayed where an id is expected.
     for token in 0..4 {
         let rendered = format!("#{token} ");
         assert!(
@@ -267,8 +258,6 @@ fn the_same_entry_shows_the_same_handle_on_both_backends() {
         );
     }
 }
-
-// ── lookup ──────────────────────────────────────────────────────────────────
 
 #[test]
 fn show_resolves_the_local_id_the_full_entity_id_and_a_prefix_of_it() {
@@ -400,7 +389,6 @@ fn an_ambiguous_handle_resolves_nothing_and_names_the_count() {
     assert_eq!(p.status_of("Twin one"), "active");
     assert_eq!(p.status_of("Twin two"), "active");
 
-    // A longer prefix separates them again.
     let out = stdout(p.show("aaaaaaaa1111").success());
     assert!(out.contains("Twin one"), "got:\n{out}");
 }
@@ -414,8 +402,6 @@ fn a_numeric_token_still_says_entries_are_identified_by_uuid() {
     let err = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     assert!(err.contains("identified by UUID"), "got: {err}");
 }
-
-// ── across machines ─────────────────────────────────────────────────────────
 
 fn git(dir: &Path, args: &[&str]) {
     let status = std::process::Command::new("git")
@@ -518,12 +504,8 @@ fn a_clone_remints_the_local_id_and_keeps_the_entity_id() {
     }
 }
 
-// ── an entry cannot supersede itself ────────────────────────────────────────
-
-// Handles widened this: a 12-character handle and an 8-character prefix are two
-// different-looking tokens for one entry, so a user can name the same entry
-// twice without noticing. Letting it through archives the entry and points its
-// successor link at itself.
+// A 12-character handle and an 8-character prefix name one entry twice without looking alike; letting it
+// through would archive the entry and point its successor link at itself.
 #[test]
 fn an_entry_cannot_supersede_itself_however_it_is_named() {
     let p = project();
@@ -555,11 +537,8 @@ fn an_entry_cannot_supersede_itself_however_it_is_named() {
     );
 }
 
-// ── add surfaces the portable handle, the first place an id is met ────────────
-
 impl Project {
-    // Runs `memory add` (text) and returns its stdout alongside the entity id
-    // derived here from the text, never read back from the command under test.
+    // Entity id derived here from the text, not read back from the command under test.
     fn add_capturing(&self, kind: &str, title: &str, body: &str) -> (String, String) {
         let out = stdout(
             self.memory()
@@ -582,8 +561,7 @@ impl Project {
     }
 }
 
-// The handle out of the "Stored [kind] #<handle>: title" (or "Already recorded
-// as …") lead line.
+// The handle from the `Stored [kind] #<handle>: title` (or `Already recorded as`) lead line.
 fn stored_handle(out: &str) -> String {
     let line = out
         .lines()
@@ -645,8 +623,7 @@ fn add_format_json_emits_one_object_carrying_both_ids() {
         "a fresh add reports created"
     );
 
-    // The per-machine id add reports is the row `show` resolves the handle to —
-    // cross-checked, not trusted from add's own output.
+    // Cross-checked via `show`, not trusted from add's own output.
     let uuid = obj["id"].as_str().expect("json carries the local id");
     let shown = stdout(
         p.memory()

@@ -1,29 +1,18 @@
-//! Component tests for `inkentry memory list --format` output shapes.
-//!
-//! Regression coverage for the bug where `--format jsonl` fell through to the
-//! colored text summary instead of emitting one JSON object per line.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin, parse_jsonl, write_config};
 
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-/// Create a temp project with a single memory note and return
-/// `(TempDir, mem_path, config_path)`.  The `TempDir` must be kept alive for
-/// the duration of the test.
 fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
 
-    // No server needed for `memory add`/`memory list` on the local backend.
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
 
     inkentry_bin()
-        // The git-notes carrier follows the process CWD and ignores `--db`, so
-        // seeding from the repo under test would write the fixture into its
-        // real notes ref.
+        // Runs from the temp dir so seeding never touches the notes ref of the repo under test.
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config_path)
@@ -43,7 +32,6 @@ fn project_with_memory_note() -> (TempDir, std::path::PathBuf, std::path::PathBu
     (tmp, mem_path, config_path)
 }
 
-/// Build a `inkentry --config <cfg> memory --db <mem> list` Command.
 fn memory_list_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) -> Command {
     let mut cmd = inkentry_bin();
     cmd.arg("--config")
@@ -54,8 +42,6 @@ fn memory_list_cmd(mem_path: &std::path::Path, config_path: &std::path::Path) ->
         .arg("list");
     cmd
 }
-
-// ── --format jsonl emits one JSON object per line ───────────────────────────────
 
 #[test]
 fn memory_list_jsonl_emits_one_object_per_line() {
@@ -70,7 +56,6 @@ fn memory_list_jsonl_emits_one_object_per_line() {
         .stdout
         .clone();
 
-    // Every non-empty line must be a standalone JSON object with the note fields.
     let rows = parse_jsonl(&output);
     assert!(
         !rows.is_empty(),
@@ -83,16 +68,12 @@ fn memory_list_jsonl_emits_one_object_per_line() {
         assert!(row.get("body").is_some(), "missing 'body': {row}");
     }
 
-    // Must NOT fall back to the colored text summary, which carries ANSI escape
-    // codes and is not valid JSON on a per-line basis.
     let text = std::str::from_utf8(&output).expect("stdout is utf-8");
     assert!(
         !text.contains('\u{1b}'),
         "jsonl output must not contain ANSI escapes (text-summary fallback): {text:?}"
     );
 }
-
-// ── --format json still emits a single pretty-printed array ─────────────────────
 
 #[test]
 fn memory_list_json_emits_pretty_array() {

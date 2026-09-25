@@ -1,14 +1,3 @@
-// Coverage for the graph edges the git-notes carrier records (ADR-086).
-//
-// Counting edges in the writing repo proves nothing about what travels: that
-// is exactly the state the defect describes, where the graph was complete
-// locally and arrived at a clone with two of its three kinds missing. So the
-// round trip here is a real one, and it runs across two clones of a shared
-// origin with a divergent local note on the receiving side. A single clone
-// that only ever fast-forwards would pass while proving nothing: the notes
-// merge has to genuinely union two histories for the carried edges to be
-// tested at all.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
@@ -46,8 +35,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&git_out(dir, args).stdout).into_owned()
 }
 
-// Explicit rather than relying on the refspec `init` configures, so each test
-// controls exactly when a fetch happens.
+// Explicit, so each test controls when a fetch happens.
 fn fetch_notes(dir: &Path) {
     git(
         dir,
@@ -69,7 +57,6 @@ fn init_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-// An `inkentry` command with an isolated HOME and no server contact.
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
@@ -88,9 +75,7 @@ fn empty_config(dir: &Path) -> PathBuf {
     write_config(dir, "")
 }
 
-// Run `inkentry init --no-index`, using `dir` itself as HOME so the import
-// writes `dir/.inkentry/memory.db`. Returns stdout, which carries the
-// `Memory:` line the import reports through.
+// `dir` doubles as HOME so the import writes `dir/.inkentry/memory.db`.
 fn run_init(dir: &Path) -> String {
     let cfg = empty_config(dir);
     let out = inkentry_bin_in(dir)
@@ -161,9 +146,7 @@ fn str_field(v: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
-// The id this repo minted locally for `title`. Two clones number the same
-// entity independently, which is why every cross-clone comparison below is by
-// title rather than by id.
+// Clones number entities independently, so cross-clone comparisons go by title.
 fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> String {
     let entries = memory_list(home, dir);
     entries
@@ -173,7 +156,6 @@ fn local_id_for_title(home: &Path, dir: &Path, title: &str) -> String {
         .unwrap_or_else(|| panic!("no local entry titled {title:?} in {entries:#?}"))
 }
 
-// Every edge in this repo's own store as `(from title, kind, to title)`.
 fn edge_triples(home: &Path, dir: &Path) -> Vec<(String, String, String)> {
     let entries = memory_list(home, dir);
     let title_of: std::collections::HashMap<String, String> = entries
@@ -218,9 +200,7 @@ fn triples_of_kinds(
         .collect()
 }
 
-// Every inkentry record on the notes ref, across all reachable commits, raw
-// and unfolded: a duplicate append is invisible once a reader folds by
-// `entity_id`, and duplication is part of what is under test.
+// Raw, unfolded records: folding by `entity_id` would hide duplicate appends.
 fn carrier_records(dir: &Path) -> Vec<serde_json::Value> {
     let listing = git_stdout(dir, &["notes", "--ref=inkentry", "list"]);
     let mut out = Vec::new();
@@ -239,7 +219,6 @@ fn carrier_records(dir: &Path) -> Vec<serde_json::Value> {
     out
 }
 
-// The `edges` lists of every record for `title`, as `(kind, to_entity_id)`.
 fn carried_edges_for_title(dir: &Path, title: &str) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = carrier_records(dir)
         .iter()
@@ -265,7 +244,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// A well-formed dump, footer computed as `docs/dump-format.md` specifies.
 fn dump(body: &[&str], counts: &str) -> String {
     let header = r#"{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"test/1.0.0"}"#;
     let mut lines = vec![header.to_string()];
@@ -284,9 +262,7 @@ fn dump(body: &[&str], counts: &str) -> String {
     out
 }
 
-// `contradicts` is server-generated, so a dump is how a local store comes to
-// hold one without a server in the test. The import is also the path ADR-086
-// names as prior art, so this exercises the projection it describes.
+// `contradicts` is server-generated; a dump is the only way to seed one without a server.
 fn contradiction_dump(from: &str, to: &str) -> String {
     let entry = |dump_ref: &str, title: &str, created_at: i64| {
         format!(
@@ -324,9 +300,7 @@ fn run_import(home: &Path, dir: &Path, contents: &str) {
     );
 }
 
-// A bare origin plus two clones that both hold the same single-commit history.
-// Both get a `.inkentry/` dir so a plain `memory add` resolves to the
-// SQLite-primary-plus-carrier path, not the pre-init fallback.
+// Both clones get `.inkentry/` so `memory add` takes the SQLite-plus-carrier path, not the pre-init fallback.
 fn setup_origin_with_two_clones(tmp: &Path) -> (PathBuf, PathBuf) {
     let origin = tmp.join("origin.git");
     git(
@@ -364,24 +338,17 @@ fn push_notes(dir: &Path) {
     git(dir, &["push", "-q", "origin", "refs/notes/inkentry"]);
 }
 
-// The acceptance test. Clone A records both carried edge kinds and a
-// supersede; clone B adopts A's first push, writes a note of its own so its
-// working ref diverges, then fetches the rest. After hydrating, B's graph
-// must equal A's for `relates_to` and `contradicts`, B must keep its own
-// entry, and a second import must add nothing.
+// B adopts A's first push, then diverges, so the later notes merge must union two histories rather than fast-forward.
 #[test]
 fn two_clone_round_trip_reconstructs_both_carried_kinds_despite_a_divergent_note() {
     let tmp = TempDir::new().unwrap();
     let home_a = TempDir::new().unwrap();
     let (a, b) = setup_origin_with_two_clones(tmp.path());
 
-    // A's first push: the entries B adopts before diverging.
     memory_add(home_a.path(), &a, "the first claim", &[]);
     memory_add(home_a.path(), &a, "the old plan", &[]);
     push_notes(&a);
 
-    // B adopts them onto its own working ref. Without this the later merge is
-    // a plain fast-forward and unions nothing.
     fetch_notes(&b);
     run_init(&b);
     assert!(
@@ -391,11 +358,8 @@ fn two_clone_round_trip_reconstructs_both_carried_kinds_despite_a_divergent_note
         "setup: B must hold A's first push before diverging"
     );
 
-    // B's own entry: the divergence that forces a real notes merge.
     memory_add(&b, &b, "clone b local only", &[]);
 
-    // A's second push: a `--relates-to` link, a dump-imported contradiction,
-    // and a supersede, all after B diverged.
     let first_claim = local_id_for_title(home_a.path(), &a, "the first claim");
     memory_add(
         home_a.path(),
@@ -420,8 +384,6 @@ fn two_clone_round_trip_reconstructs_both_carried_kinds_despite_a_divergent_note
     fetch_notes(&b);
     run_init(&b);
 
-    // The graph itself: equal for both carried kinds, across two clones that
-    // number their own entries.
     let carried = ["relates_to", "contradicts"];
     let a_edges = triples_of_kinds(&edge_triples(home_a.path(), &a), &carried);
     let b_edges = triples_of_kinds(&edge_triples(&b, &b), &carried);
@@ -446,7 +408,6 @@ fn two_clone_round_trip_reconstructs_both_carried_kinds_despite_a_divergent_note
         "the clone's graph must equal the writer's for both carried kinds"
     );
 
-    // The union held: B's own divergent entry is still here.
     assert!(
         memory_list(&b, &b)
             .iter()
@@ -454,8 +415,6 @@ fn two_clone_round_trip_reconstructs_both_carried_kinds_despite_a_divergent_note
         "the notes merge must not drop B's own entry"
     );
 
-    // D2: supersede travels on its own field and is never written into an
-    // edge list, so import keeps exactly one path to that row.
     for record in carrier_records(&b) {
         let kinds: Vec<String> = record
             .get("edges")
@@ -482,8 +441,6 @@ fn two_clone_round_trip_reconstructs_both_carried_kinds_despite_a_divergent_note
         "the supersede must have travelled on `superseded_by_entity_id`"
     );
 
-    // Re-importing the same carrier is idempotent: no second row for an edge
-    // that is already here.
     run_init(&b);
     assert_eq!(
         triples_of_kinds(&edge_triples(&b, &b), &carried),
@@ -492,8 +449,6 @@ fn two_clone_round_trip_reconstructs_both_carried_kinds_despite_a_divergent_note
     );
 }
 
-// The write side in isolation: `memory add --relates-to` puts the edge on the
-// new entry's own record, naming the target by its `entity_id`.
 #[test]
 fn memory_add_relates_to_carries_the_edge_on_the_new_record() {
     let tmp = TempDir::new().unwrap();
@@ -520,17 +475,13 @@ fn memory_add_relates_to_carries_the_edge_on_the_new_record() {
     );
 }
 
-// D4: an edge whose target never reached the ref is skipped, counted, and
-// said out loud, rather than failing the import or leaving a dangling row.
 #[test]
 fn an_edge_whose_target_is_absent_on_the_clone_is_skipped_and_reported() {
     let tmp = TempDir::new().unwrap();
     let home_a = TempDir::new().unwrap();
     let (a, b) = setup_origin_with_two_clones(tmp.path());
 
-    // The target is written with the carrier switched off, so it exists in A's
-    // store and never reaches the ref: the same shape as an entry excluded
-    // from sharing, or one deleted on the writing machine.
+    // Carrier off: the target exists in A's store but never reaches the ref.
     let off = write_config(&a, "store_in_git_notes = false\n");
     let out = bin(home_a.path(), &a)
         .arg("--config")
