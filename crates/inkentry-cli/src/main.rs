@@ -24,6 +24,12 @@ async fn main() -> Result<()> {
         )));
     }
 
+    // Before any command can open a remote memory backend: a cloud session's
+    // access token outlives only a few minutes of its login.
+    storage::install_session_refresher(std::sync::Arc::new(
+        cli::cmd::auth_api::CloudSessionRefresher,
+    ));
+
     let cli = Cli::parse_or_exit();
     cli::cmd::set_color_choice(cli.color);
     // Recorded before any command runs, because notices are printed from the

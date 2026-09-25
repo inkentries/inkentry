@@ -15,7 +15,7 @@ fn backend(server: &MockServer) -> CloudApiMemoryBackend {
         client: reqwest::Client::builder().build().unwrap(),
         base_url: server.uri(),
         project_id: PROJECT.to_string(),
-        api_key: Some("token".to_string()),
+        bearer: Bearer::fixed(Some("token".to_string())),
     }
 }
 
@@ -477,7 +477,7 @@ fn slug_backend(server: &MockServer) -> CloudApiMemoryBackend {
         client: reqwest::Client::builder().build().unwrap(),
         base_url: server.uri(),
         project_id: "my-project".to_string(),
-        api_key: None,
+        bearer: Bearer::fixed(None),
     }
 }
 

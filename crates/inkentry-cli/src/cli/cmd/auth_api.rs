@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use inkentry_core::config::{AuthTokens, Config};
+use inkentry_core::storage::SessionRefresher;
 
 pub use inkentry_core::config::server_keys::DEFAULT_CLOUD_URL;
 
@@ -314,7 +315,18 @@ pub async fn ensure_fresh_token(
     if !auth.is_expired() {
         return Ok(auth.clone());
     }
+    rotate_token(client, workos_url, client_id, auth, persist).await
+}
 
+// Rotates whatever the expiry says: for a caller holding evidence (a 401) that
+// the access token is already dead.
+pub async fn rotate_token(
+    client: &reqwest::Client,
+    workos_url: &str,
+    client_id: &str,
+    auth: &AuthTokens,
+    persist: impl FnOnce(&AuthTokens) -> Result<()>,
+) -> Result<AuthTokens> {
     let rotated = refresh_token(
         client,
         workos_url,
@@ -334,32 +346,70 @@ pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
     (!org_id.is_empty()).then_some(org_id)
 }
 
-pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<Option<String>> {
-    let resolved = cfg.bearer_for(server_url)?;
-
-    // Only the WorkOS-login bearer is refreshable; a self-hosted server-key is returned as-is.
-    let Some(auth) = cfg
+// Only the WorkOS-login bearer is refreshable; a self-hosted server key or an
+// `INKENTRY_SERVER_KEY` override resolves to no session here.
+fn cloud_session_behind(cfg: &Config, resolved: Option<&str>) -> Result<Option<AuthTokens>> {
+    Ok(cfg
         .cloud_session()?
-        .filter(|a| Some(a.access_token.as_str()) == resolved.as_deref())
-    else {
-        return Ok(resolved);
-    };
+        .filter(|a| Some(a.access_token.as_str()) == resolved))
+}
 
-    if !auth.is_expired() {
-        return Ok(resolved);
-    }
-
-    let client = build_client()?;
-    let client_id = workos_client_id(DEFAULT_CLOUD_URL);
-    let fresh = ensure_fresh_token(
-        &client,
+async fn rotate_cloud_session(auth: &AuthTokens) -> Result<String> {
+    let rotated = rotate_token(
+        &build_client()?,
         &workos_url(),
-        &client_id,
-        &auth,
+        &workos_client_id(DEFAULT_CLOUD_URL),
+        auth,
         inkentry_core::config::update_org_session,
     )
     .await?;
-    Ok(Some(fresh.access_token))
+    Ok(rotated.access_token)
+}
+
+pub async fn ensure_fresh_server_key(cfg: &Config, server_url: &str) -> Result<Option<String>> {
+    let resolved = cfg.bearer_for(server_url)?;
+    match cloud_session_behind(cfg, resolved.as_deref())? {
+        Some(auth) if auth.is_expired() => Ok(Some(rotate_cloud_session(&auth).await?)),
+        _ => Ok(resolved),
+    }
+}
+
+/// A replacement for `rejected`, which `server_url` answered `401` to, or
+/// `None` when `rejected` is not the cloud session issued for that origin.
+pub async fn replace_rejected_server_key(
+    cfg: &Config,
+    server_url: &str,
+    rejected: &str,
+) -> Result<Option<String>> {
+    let resolved = cfg.bearer_for(server_url)?;
+    let Some(auth) = cloud_session_behind(cfg, resolved.as_deref())? else {
+        return Ok(None);
+    };
+    if auth.access_token != rejected {
+        // Another process rotated the stored session after this one read it.
+        return Ok(Some(auth.access_token));
+    }
+    Ok(Some(rotate_cloud_session(&auth).await?))
+}
+
+/// The [`SessionRefresher`] the CLI installs so every remote memory backend
+/// renews a cloud session itself (inkentry-core cannot reach WorkOS).
+pub struct CloudSessionRefresher;
+
+#[async_trait::async_trait]
+impl SessionRefresher for CloudSessionRefresher {
+    async fn current(&self, cfg: &Config, server_url: &str) -> Result<Option<String>> {
+        ensure_fresh_server_key(cfg, server_url).await
+    }
+
+    async fn replace_rejected(
+        &self,
+        cfg: &Config,
+        server_url: &str,
+        rejected: &str,
+    ) -> Result<Option<String>> {
+        replace_rejected_server_key(cfg, server_url, rejected).await
+    }
 }
 
 pub async fn fetch_me(

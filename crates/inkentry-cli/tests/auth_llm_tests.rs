@@ -14,6 +14,8 @@ mod auth_server_keys;
 mod backend_kind_diagnostic;
 #[path = "auth_llm_tests/cloud_first_slug_passthrough.rs"]
 mod cloud_first_slug_passthrough;
+#[path = "auth_llm_tests/cloud_session_refresh.rs"]
+mod cloud_session_refresh;
 #[path = "auth_llm_tests/command_llm_routing.rs"]
 mod command_llm_routing;
 #[path = "auth_llm_tests/hooks_install_llm_truthfulness.rs"]

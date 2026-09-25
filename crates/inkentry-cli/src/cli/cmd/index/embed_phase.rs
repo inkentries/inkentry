@@ -298,7 +298,12 @@ async fn run_embed_phase_with_backoff(
     connect_failure_backoffs: &[Duration],
 ) -> Result<u64> {
     let (server_url, server_key) = match tier {
-        Tier::Server { url, .. } => (url.clone(), cfg.bearer_for(url)?),
+        // Rotated up front so a stale cloud session is not met with a 401 whose
+        // hint says to log in again.
+        Tier::Server { url, .. } => (
+            url.clone(),
+            crate::cli::cmd::auth_api::ensure_fresh_server_key(cfg, url).await?,
+        ),
         Tier::Offline(_) => return Ok(0),
     };
     // Bails on a model mismatch; stamps a fresh DB.
