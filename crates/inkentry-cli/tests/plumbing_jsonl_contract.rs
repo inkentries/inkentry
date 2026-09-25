@@ -1,11 +1,5 @@
-// Conformance tests for the plumbing JSONL stability contract (docs/stability.md).
-//
-// Each test runs a real plumbing command and checks its emitted JSONL against
-// the committed golden schema. Field presence and types only: a removal,
-// rename, or retype fails here; an added field passes.
-//
-// The checker's own accept/reject behaviour is pinned separately, in
-// `schema_contract_checker.rs`.
+// Runs each plumbing command and checks its JSONL against the committed golden schema.
+// Field presence and types only: a removal, rename or retype fails, an added field passes.
 
 mod plumbing_helpers;
 mod schema_contract;
@@ -20,8 +14,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use tempfile::TempDir;
 
-// The dimension the mock embedder in `plumbing_helpers` returns, and therefore
-// the width of every vector in a fixture-backed index.
+// Width of every vector the mock embedder in `plumbing_helpers` returns.
 const FIXTURE_EMBEDDING_DIM: usize = 896;
 
 fn schema_for(command: &str) -> CommandSchema {
@@ -45,12 +38,8 @@ fn sorted_keys(row: &serde_json::Value) -> BTreeSet<String> {
         .collect()
 }
 
-// `assert_conforms` proves the checker accepts what the command emits today. It
-// cannot prove the check would fail if the command stopped emitting a field,
-// and that is the guarantee the contract rests on. So replay the command's real
-// rows with one declared field broken at a time and require an objection each
-// time. Verifying this by hand on one field of one command says nothing about
-// the rest, which is why it runs per command, per field, on live output.
+// `assert_conforms` only shows the checker accepts today's output. Replaying real rows with
+// one declared field broken at a time proves it would fail if the command dropped or retyped it.
 fn assert_every_declared_field_is_load_bearing(
     command: &str,
     schema: &CommandSchema,
@@ -78,8 +67,7 @@ fn assert_every_declared_field_is_load_bearing(
         );
     }
 
-    // Optional fields are exempt from presence, never from type, and only the
-    // ones this run actually produced can be mutated.
+    // Optional fields are exempt from presence, never from type; only those this run produced can be mutated.
     let declared = schema.required.iter().chain(schema.optional.iter());
     for (field, ty) in declared {
         if !rows.iter().any(|row| row.get(field).is_some()) {
@@ -99,12 +87,8 @@ fn assert_every_declared_field_is_load_bearing(
     }
 }
 
-// ── the contract covers every command that exists ────────────────────────────
-
-// A new plumbing command that ships without a golden entry is an unguarded
-// stable surface, which is the failure this whole suite exists to prevent. The
-// command list comes from clap's own help rather than a second hand-maintained
-// list, so it cannot drift from the binary.
+// A plumbing command shipped without a golden entry is an unguarded stable surface. The list
+// comes from clap's help so it cannot drift from the binary.
 #[test]
 fn golden_schema_covers_every_plumbing_subcommand() {
     let help = inkentry_bin()
@@ -120,9 +104,7 @@ fn golden_schema_covers_every_plumbing_subcommand() {
 
     let mut shipped: Vec<String> = Vec::new();
     for line in commands_section.lines() {
-        // Subcommand rows are indented and start with the command name. The
-        // section ends at the blank line before `Options:`, but it also *opens*
-        // with one, so an empty line only terminates once a row has been seen.
+        // The section opens with a blank line too, so a blank terminates only once a row has been seen.
         if line.trim().is_empty() {
             if shipped.is_empty() {
                 continue;
@@ -153,8 +135,6 @@ fn golden_schema_covers_every_plumbing_subcommand() {
         schema_contract::GOLDEN_RELATIVE_PATH
     );
 }
-
-// ── index-backed commands ────────────────────────────────────────────────────
 
 #[test]
 fn cat_chunks_output_matches_the_contract() {
@@ -207,9 +187,8 @@ fn hash_file_output_matches_the_contract() {
 fn graph_edges_output_matches_the_contract() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // `main.rs` calls into `lib.rs`, so the edge table is non-empty for it.
-    // Asserting success (not "success or exit 1") keeps this from degrading
-    // into a test that passes by never checking anything.
+    // `main.rs` calls into `lib.rs`, so its edge table is non-empty; asserting success (not exit 1)
+    // keeps this from passing vacuously.
     let out = inkentry_cmd(&db_path, &config_path)
         .args(["graph-edges", "--file", "src/main.rs"])
         .assert()
@@ -225,9 +204,7 @@ fn graph_edges_output_matches_the_contract() {
 fn knn_output_matches_the_contract() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // The mock embedder gives every chunk the same vector, so any query of the
-    // right width matches everything. Ordering is meaningless here; the schema
-    // is not.
+    // Every chunk shares one mock vector, so ordering is meaningless; only the schema matters.
     let payload = serde_json::json!({
         "model": "test-model",
         "dimensions": FIXTURE_EMBEDDING_DIM,
@@ -246,13 +223,8 @@ fn knn_output_matches_the_contract() {
     check("knn", &out);
 }
 
-// `knn` has no Rust type matching its wire shape: it serialises `SearchResult`
-// to a `Value` and splices `score` into the map, so the compiler cannot keep it
-// in step with `cat-chunks`, which serialises the same struct directly. Two
-// hand-written golden entries can drift apart while both stay green. Comparing
-// the live key sets pins the relationship the golden only states in a comment,
-// and asserting the derivation gives the spliced field a meaning beyond "some
-// number".
+// `knn` splices `score` into a serialised `SearchResult` map, so the compiler cannot keep it in
+// step with `cat-chunks`, which serialises the struct directly; compare the live key sets.
 #[test]
 fn knn_is_the_cat_chunks_shape_plus_a_derived_score() {
     let (_tmp, db_path, config_path) = index_fixture_project();
@@ -302,8 +274,6 @@ fn knn_is_the_cat_chunks_shape_plus_a_derived_score() {
     }
 }
 
-// ── commands that need no index ──────────────────────────────────────────────
-
 #[test]
 fn parse_file_output_matches_the_contract() {
     let tmp = TempDir::new().unwrap();
@@ -311,8 +281,7 @@ fn parse_file_output_matches_the_contract() {
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
     let file = plumbing_helpers::fixture_path().join("src/lib.rs");
 
-    // `parse-file` returns before the index-exists check, so an absent DB here
-    // is deliberate: it proves the command really is index-free.
+    // `parse-file` returns before the index-exists check; the absent DB proves it is index-free.
     let out = inkentry_cmd(&db_path, &config_path)
         .arg("parse-file")
         .arg(&file)
@@ -367,13 +336,11 @@ async fn embed_output_matches_the_contract() {
 
 #[test]
 fn read_memory_output_matches_the_contract() {
-    // The shared fixture is reused only for its project dir and config; the
-    // memory path is `--db`'s sibling and this command never reads the index.
+    // The fixture is reused only for its project dir and config; this command never reads the index.
     let (tmp, db_path, config_path) = index_fixture_project();
     let mem_path = db_path.with_file_name("memory.db");
 
-    // The git-notes carrier follows the process CWD and ignores `--db`, so this
-    // runs in the temp dir rather than the repo under test.
+    // The git-notes carrier follows process CWD and ignores `--db`, so run in the temp dir, not the repo under test.
     inkentry_bin()
         .current_dir(tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -405,9 +372,7 @@ fn read_memory_output_matches_the_contract() {
     check("read-memory", &out);
 }
 
-// `publish-notes` emits three untyped `json!` shapes, so like `knn` it has no
-// Rust type the compiler can hold to the contract. Each shape is produced from
-// a real repository state rather than hand-built, and each returns its stdout.
+// `publish-notes` emits three untyped `json!` shapes; each is produced from a real repo state.
 
 fn seed_a_note(repo: &Path, title: &str) {
     inkentry_bin()
@@ -442,8 +407,8 @@ fn publish_notes_stdout(repo: &Path, extra: &[&str]) -> Vec<u8> {
         .clone()
 }
 
-// No `refs/notes/inkentry` in a fresh repo, so this takes the skip branch, which
-// is the outcome shape reachable without a remote.
+// A fresh repo has no `refs/notes/inkentry`, so this takes the skip branch, the only shape
+// reachable without a remote.
 fn skip_shape(tmp: &Path) -> Vec<u8> {
     let repo = tmp.join("skip-repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -451,8 +416,6 @@ fn skip_shape(tmp: &Path) -> Vec<u8> {
     publish_notes_stdout(&repo, &[])
 }
 
-// A real `memory add` writes the notes ref, so the published shape is reached
-// through the same path a user takes.
 fn published_shape(tmp: &Path) -> Vec<u8> {
     let repo = tmp.join("published-repo");
     let remote = tmp.join("published-remote.git");
@@ -467,8 +430,7 @@ fn published_shape(tmp: &Path) -> Vec<u8> {
     publish_notes_stdout(&repo, &[])
 }
 
-// A remote that resolves but cannot be pushed to, tolerated with
-// `--best-effort`: the only route to the error shape that still exits 0.
+// The only route to the error shape that still exits 0.
 fn best_effort_error_shape(tmp: &Path) -> Vec<u8> {
     let repo = tmp.join("error-repo");
     let broken = tmp.join("error-not-a-repo");
@@ -539,11 +501,8 @@ fn publish_notes_best_effort_error_output_matches_the_contract() {
     check("publish-notes", &out);
 }
 
-// A field the contract declares but no code path emits is a promise about
-// nothing, and the type-only checker cannot notice one: optional fields are
-// only inspected when present. `publish-notes` is the command where that
-// matters most, because its shapes are untyped `json!` literals and its three
-// outcomes are enumerable.
+// A field the contract declares but no outcome emits is a promise about nothing, and the
+// type-only checker cannot notice: optional fields are inspected only when present.
 #[test]
 fn every_declared_publish_notes_field_is_emitted_by_some_outcome() {
     let tmp = TempDir::new().unwrap();
@@ -569,12 +528,6 @@ fn every_declared_publish_notes_field_is_emitted_by_some_outcome() {
         );
     }
 }
-
-// ── push / pull (team-server transfer) ───────────────────────────────────────
-//
-// Both emit exactly one report object on a completed run. Driven against a mock
-// team server and a real seeded project, then checked against the golden schema
-// like every other command.
 
 #[tokio::test]
 async fn push_output_matches_the_contract() {

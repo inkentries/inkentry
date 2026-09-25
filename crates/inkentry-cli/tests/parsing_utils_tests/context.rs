@@ -1,9 +1,3 @@
-//! Component tests for `inkentry context` (#206).
-//!
-//! Tests the porcelain `context` command which serves as the agent session
-//! entry point, printing handoffs, open questions, decisions, and requirements
-//! in one shot.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin};
 
@@ -11,21 +5,13 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Set up a temp project with a mock embedding server, indexed fixture, and
-/// pre-seeded memory entries of multiple kinds.
-///
-/// Returns `(TempDir, db_path, config_path)`.  The TempDir must stay alive
-/// for the duration of the test.
 fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let tmp = TempDir::new().expect("create temp dir");
-    // ADR-067: `context` fails closed without a local `.inkentry/` project, so
-    // make the temp dir a real project. The memory store then resolves to
-    // `<tmp>/.inkentry/memory.db` (where the entries below are seeded).
+    // `context` fails closed without a local `.inkentry/` project; the memory store then resolves
+    // to `<tmp>/.inkentry/memory.db`, where the entries below are seeded.
     std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
     let db_path = tmp.path().join(".inkentry").join("index.db");
 
@@ -48,10 +34,8 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     let mock_url = mock_server.uri();
     let config_path = write_config_for_context(tmp.path(), &db_path, &mock_url);
 
-    // The memory DB lives next to the main DB.
     let mem_path = db_path.with_file_name("memory.db");
 
-    // Seed memory entries of different kinds.
     let entries: &[(&str, &str, &str)] = &[
         (
             "handoff",
@@ -107,9 +91,8 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
 
     for (kind, title, body) in entries {
         inkentry_bin()
-            // `memory add` carries every entry through to git notes in the
-            // *process CWD's* repo; `--db` does not redirect that carrier. Seed
-            // from the temp project or the entries land in the repo under test.
+            // The git-notes carrier follows the process CWD's repo and `--db` does not redirect it;
+            // seed from the temp project or the entries land in the repo under test.
             .current_dir(tmp.path())
             .arg("--config")
             .arg(&config_path)
@@ -130,7 +113,6 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     (tmp, db_path, config_path)
 }
 
-/// Write a minimal config.toml for the context tests.
 fn write_config_for_context(dir: &Path, db_path: &Path, api_base: &str) -> PathBuf {
     let cfg = format!(
         "db_path = {:?}\napi_base_url = {:?}\nllm_model = \"test-chat\"\n",
@@ -141,14 +123,11 @@ fn write_config_for_context(dir: &Path, db_path: &Path, api_base: &str) -> PathB
     config_path
 }
 
-/// Helper to invoke `inkentry context` with the given args and config.
-///
-/// Does NOT pass `--db`; the command derives `memory.db` from `db_path` in
-/// the config, which matches where `setup_context_project` seeds entries.
+// Passes no `--db`: the command derives memory.db from the config's db_path, which is where
+// `setup_context_project` seeds entries.
 fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
     let mut cmd = inkentry_bin();
-    // Run from the temp dir so find_project_db doesn't walk up and discover
-    // the real .inkentry/index.db in the project root.
+    // Run from the temp dir so find_project_db doesn't discover the real .inkentry/index.db above.
     if let Some(dir) = config_path.parent() {
         cmd.current_dir(dir);
     }
@@ -156,20 +135,17 @@ fn context_cmd(_db_path: &Path, config_path: &Path) -> Command {
     cmd
 }
 
-/// Seed a fresh project with fixed-size notes so `--budget` token math is
-/// deterministic (chars/4 heuristic): each note is a 4-char title (1 token) +
-/// 400-char body (100 tokens) = 101 tokens. 1 handoff, 3 questions, 2
-/// decisions, 2 requirements. Returns `(TempDir, config_path)`.
+// Fixed-size notes keep `--budget` math deterministic (chars/4): a 4-char title (1 token) plus
+// a 400-char body (100) is 101 tokens each. 1 handoff, 3 questions, 2 decisions, 2 requirements.
 fn setup_budget_project() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
     std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
     let db_path = tmp.path().join(".inkentry").join("index.db");
-    // No embed server needed: memory add stores without a vector when no server
-    // is configured, which is irrelevant to budget packing.
+    // No embed server: memory add stores without a vector, irrelevant to budget packing.
     let config_path = write_config_for_context(tmp.path(), &db_path, "http://127.0.0.1:19999");
     let mem_path = db_path.with_file_name("memory.db");
 
-    let body = "x".repeat(400); // 100 tokens; 4-char title => 101 tokens/note
+    let body = "x".repeat(400);
     let entries: &[(&str, &str)] = &[
         ("handoff", "hnd0"),
         ("question", "qst0"),
@@ -182,8 +158,7 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
     ];
     for (kind, title) in entries {
         inkentry_bin()
-            // See `setup_context_project`: the git-notes carrier follows the
-            // process CWD, not `--db`.
+            // The git-notes carrier follows process CWD, not `--db`.
             .current_dir(tmp.path())
             .arg("--config")
             .arg(&config_path)
@@ -203,14 +178,10 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
     (tmp, config_path)
 }
 
-// ── budget: durable priority end-to-end ───────────────────────────────────────
-
 #[test]
 fn context_budget_keeps_durable_drops_questions_e2e() {
-    // Drives the real `inkentry context --budget` CLI path. A 505-token budget
-    // fits every decision+requirement+handoff (5 * 101) with nothing left for
-    // the 3 questions, so questions must drop first while durable notes survive
-    // — regardless of question being displayed before decision/requirement.
+    // A 505-token budget fits every decision+requirement+handoff (5 * 101) with nothing left for
+    // the 3 questions, so questions drop first even though they display before decisions.
     let (_tmp, config_path) = setup_budget_project();
 
     let mut cmd = inkentry_bin();
@@ -235,9 +206,7 @@ fn context_budget_keeps_durable_drops_questions_e2e() {
     let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     let parsed = obj["sections"].as_array().expect("sections array");
 
-    // Display order is unchanged by budget packing. The intent section leads
-    // (empty here — no active sessions were seeded), followed by the durable
-    // sections in their fixed order.
+    // Display order is unchanged by packing; the intent section leads (empty: no sessions seeded).
     let kinds: Vec<&str> = parsed.iter().map(|s| s[0].as_str().unwrap()).collect();
     assert_eq!(
         kinds,
@@ -262,13 +231,10 @@ fn context_budget_keeps_durable_drops_questions_e2e() {
     assert_eq!(len_of("handoff"), 1, "handoff outranks question, survives");
     assert_eq!(len_of("question"), 0, "ephemeral questions drop first");
 
-    // Budget accounting is reported and never exceeds the cap.
     assert_eq!(obj["token_budget"].as_u64(), Some(505));
     assert_eq!(obj["tokens_used"].as_u64(), Some(505));
     assert_eq!(obj["tokens_remaining"].as_u64(), Some(0));
 }
-
-// ── happy path: default text output ───────────────────────────────────────────
 
 #[test]
 fn context_outputs_all_four_sections_by_default() {
@@ -283,7 +249,6 @@ fn context_outputs_all_four_sections_by_default() {
 
     let stdout = String::from_utf8_lossy(&output);
 
-    // All four default section headers should appear.
     assert!(stdout.contains("Handoffs"), "expected 'Handoffs' header");
     assert!(
         stdout.contains("Open questions"),
@@ -295,8 +260,6 @@ fn context_outputs_all_four_sections_by_default() {
         "expected 'Requirements' header"
     );
 }
-
-// ── happy path: JSON output ───────────────────────────────────────────────────
 
 #[test]
 fn context_json_output_is_valid_object() {
@@ -313,7 +276,6 @@ fn context_json_output_is_valid_object() {
 
     let stdout = String::from_utf8_lossy(&output);
 
-    // Should be valid JSON object: {"sections": [[kind, notes], ...], "conventions": [...]}
     let obj: serde_json::Value =
         serde_json::from_str(&stdout).expect("--format json should produce valid JSON");
     let parsed = obj["sections"]
@@ -366,8 +328,6 @@ fn context_json_includes_all_kinds() {
     );
 }
 
-// ── kind filter ───────────────────────────────────────────────────────────────
-
 #[test]
 fn context_kind_filter_shows_only_requested_kind() {
     let (_tmp, db_path, config_path) = setup_context_project();
@@ -383,7 +343,6 @@ fn context_kind_filter_shows_only_requested_kind() {
 
     let stdout = String::from_utf8_lossy(&output);
 
-    // Should show Decisions header but not Handoffs.
     assert!(
         stdout.contains("Decisions"),
         "should show Decisions when --kind decision"
@@ -425,8 +384,6 @@ fn context_kind_filter_json_returns_single_section() {
     assert_eq!(parsed[0][0].as_str().unwrap(), "question");
 }
 
-// ── limit flag ────────────────────────────────────────────────────────────────
-
 #[test]
 fn context_limit_flag_respects_count() {
     let (_tmp, db_path, config_path) = setup_context_project();
@@ -457,13 +414,11 @@ fn context_limit_flag_respects_count() {
     );
 }
 
-// ── default limits ────────────────────────────────────────────────────────────
-
 #[test]
 fn context_default_limits_respected() {
     let (_tmp, db_path, config_path) = setup_context_project();
 
-    // We have 2 handoffs. Default handoff limit is 3, so both should appear.
+    // 2 handoffs are seeded and the default handoff limit is 3, so both appear.
     let output = context_cmd(&db_path, &config_path)
         .arg("--kind")
         .arg("handoff")
@@ -487,24 +442,14 @@ fn context_default_limits_respected() {
     );
 }
 
-// ── empty memory / no results ─────────────────────────────────────────────────
-
 #[test]
 fn context_empty_memory_exits_zero_with_no_output() {
-    // Fresh project with no memory entries at all.
     let tmp = TempDir::new().expect("create temp dir");
-    // ADR-067: a local `.inkentry/` makes this a real (empty) project.
+    // A local `.inkentry/` makes this a real (empty) project.
     std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
     let db_path = tmp.path().join(".inkentry").join("index.db");
     let config_path = write_config_for_context(tmp.path(), &db_path, "http://127.0.0.1:19999");
 
-    // Write a valid but empty memory.db so the backend can open.
-    // MemoryStore::open creates the DB on demand, but context doesn't
-    // create the DB if it doesn't exist.  `inkentry memory add` will
-    // create it, then we delete the entries — but that's complex.
-    //
-    // Instead, just create a minimal config and let the backend handle
-    // the empty case.  The command should exit 0 with minimal output.
     let output = context_cmd(&db_path, &config_path)
         .arg("--format")
         .arg("json")
@@ -518,7 +463,6 @@ fn context_empty_memory_exits_zero_with_no_output() {
     let obj: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     let parsed = obj["sections"].as_array().expect("sections array");
 
-    // All sections should be present but empty.
     for item in parsed {
         let notes = item[1].as_array().expect("notes should be array");
         assert!(
@@ -527,8 +471,6 @@ fn context_empty_memory_exits_zero_with_no_output() {
         );
     }
 }
-
-// ── exit codes ────────────────────────────────────────────────────────────────
 
 #[test]
 fn context_exits_zero_on_success() {
@@ -550,8 +492,7 @@ fn context_exits_zero_with_kind_filter() {
 
 #[test]
 fn context_exits_zero_when_kind_has_no_entries() {
-    // We have no "intent" entries in the seed data, but the command
-    // should still exit 0 — empty results are not an error for porcelain.
+    // No `intent` entries are seeded, but empty results are not an error for porcelain.
     let (_tmp, db_path, config_path) = setup_context_project();
 
     context_cmd(&db_path, &config_path)
@@ -560,8 +501,6 @@ fn context_exits_zero_when_kind_has_no_entries() {
         .assert()
         .code(0);
 }
-
-// ── backend flag ──────────────────────────────────────────────────────────────
 
 #[test]
 fn context_explicit_sqlite_backend_works() {
@@ -575,8 +514,6 @@ fn context_explicit_sqlite_backend_works() {
         .assert()
         .success();
 }
-
-// ── JSON output structural assertions ─────────────────────────────────────────
 
 #[test]
 fn context_json_notes_have_required_fields() {
@@ -606,16 +543,10 @@ fn context_json_notes_have_required_fields() {
     }
 }
 
-// ── error path: bad config ────────────────────────────────────────────────────
-
 #[test]
 fn context_exits_nonzero_when_config_invalid() {
-    // A config whose db_path sits *under an existing regular file* cannot have
-    // its parent directory created (create_dir_all fails because a path component
-    // is a file), so MemoryStore errors and the command exits non-zero. Using a
-    // real file keeps this cross-platform — the previous `/dev/null` trick is
-    // Unix-only (on Windows that path is just a creatable directory chain, so the
-    // command would succeed and this assertion would fail).
+    // A db_path under an existing regular file cannot have its parent created, so MemoryStore
+    // errors. A real file (not `/dev/null`) keeps this cross-platform.
     let tmp = TempDir::new().expect("create temp dir");
     let config_path = tmp.path().join("config.toml");
     let blocker = tmp.path().join("blocker");
@@ -640,11 +571,8 @@ fn context_exits_nonzero_when_config_invalid() {
         .failure();
 }
 
-// ── format flag validation ────────────────────────────────────────────────────
-
 #[test]
 fn context_unknown_format_falls_back_to_text() {
-    // Unknown formats should fall back to text output (not crash).
     let (_tmp, db_path, config_path) = setup_context_project();
 
     context_cmd(&db_path, &config_path)
@@ -654,16 +582,11 @@ fn context_unknown_format_falls_back_to_text() {
         .success();
 }
 
-// ── active intents + file-overlap warnings ─────────────────────────────────────
-//
-// The "Active agent sessions" section surfaces `intent`-kind entries (the roster
-// of other live sessions) and warns when a file this worktree has already
-// modified is claimed by an active intent. The roster packs last under
-// `--budget`; the overlap warnings are budget-exempt and always emitted.
+// The "Active agent sessions" section lists `intent` entries and warns when a file this
+// worktree modified is claimed by an active intent. The roster packs last under `--budget`;
+// overlap warnings are budget-exempt.
 
-// Add a single memory entry of `kind` to the project, optionally with
-// comma-separated `--files`. Runs with `tmp` as CWD; call this while `tmp` is
-// NOT yet a git repo so the git-notes carrier stays a no-op.
+// Call while `tmp` is NOT yet a git repo so the git-notes carrier stays a no-op.
 fn add_note(
     tmp: &Path,
     config: &Path,
@@ -694,8 +617,6 @@ fn add_note(
     cmd.assert().success();
 }
 
-// Fresh (non-git) project seeded with the given intents `(title, files)`.
-// Returns `(TempDir, db_path, config_path)`.
 fn setup_intents_project(intents: &[(&str, Option<&str>)]) -> (TempDir, PathBuf, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
     std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
@@ -717,10 +638,8 @@ fn setup_intents_project(intents: &[(&str, Option<&str>)]) -> (TempDir, PathBuf,
     (tmp, db_path, config_path)
 }
 
-// After seeding, make `files` genuinely "modified" in a fresh git repo rooted
-// at `dir`: create + commit them, then dirty each. `worktree_modified_files()`
-// then reports exactly these paths (tracked-and-modified is unambiguous across
-// gix versions, unlike untracked-file defaults).
+// Creates and commits `files`, then dirties each: tracked-and-modified is unambiguous across
+// gix versions, unlike untracked-file defaults.
 fn make_files_modified(dir: &Path, files: &[&str]) {
     for f in files {
         let path = dir.join(f);
@@ -729,7 +648,7 @@ fn make_files_modified(dir: &Path, files: &[&str]) {
         }
         std::fs::write(&path, "orig\n").expect("write file");
     }
-    init_git_repo(dir); // git init + identity + `git add .` + initial commit
+    init_git_repo(dir);
     for f in files {
         use std::io::Write as _;
         let mut fh = std::fs::OpenOptions::new()
@@ -740,7 +659,6 @@ fn make_files_modified(dir: &Path, files: &[&str]) {
     }
 }
 
-// Run `inkentry context` from `dir` (its CWD) with the given config.
 fn context_in(dir: &Path, config: &Path) -> Command {
     let mut cmd = inkentry_bin();
     cmd.env("INKENTRY_NO_SERVER", "1")
@@ -750,8 +668,6 @@ fn context_in(dir: &Path, config: &Path) -> Command {
         .arg("context");
     cmd
 }
-
-// ── presence / collection ──────────────────────────────────────────────────────
 
 #[test]
 fn context_lists_active_intent_without_overlap() {
@@ -871,8 +787,6 @@ fn context_lists_multiple_active_intents() {
     );
 }
 
-// ── overlap ─────────────────────────────────────────────────────────────────────
-
 #[test]
 fn context_overlap_warning_has_exact_wording() {
     let (tmp, _db, config) = setup_intents_project(&[("touching x", Some("src/x.rs"))]);
@@ -919,7 +833,6 @@ fn context_overlap_one_line_per_overlapping_file() {
 
 #[test]
 fn context_no_overlap_when_modified_file_is_not_in_any_intent() {
-    // Intent claims src/x.rs, but the worktree change is to a different file.
     let (tmp, _db, config) = setup_intents_project(&[("touching x", Some("src/x.rs"))]);
     make_files_modified(tmp.path(), &["src/other.rs"]);
 
@@ -943,8 +856,6 @@ fn context_no_overlap_when_modified_file_is_not_in_any_intent() {
 
 #[test]
 fn context_no_overlap_in_non_git_worktree() {
-    // No git repo => worktree_modified_files() is empty => no overlap, but the
-    // roster is still listed.
     let (tmp, _db, config) = setup_intents_project(&[("touching x", Some("src/x.rs"))]);
 
     let out = context_in(tmp.path(), &config)
@@ -963,10 +874,7 @@ fn context_no_overlap_in_non_git_worktree() {
     assert!(text.contains("touching x"));
 }
 
-// ── budget / packing ────────────────────────────────────────────────────────────
-
-// Deterministic-token project (each note = 4-char title + 400-char body = 101
-// tokens): one decision, one handoff, one intent claiming a modified src/x.rs.
+// 101 tokens per note (4-char title + 400-char body).
 fn setup_budget_overlap_project() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
     std::fs::create_dir_all(tmp.path().join(".inkentry")).expect("create .inkentry");
@@ -993,8 +901,8 @@ fn setup_budget_overlap_project() -> (TempDir, PathBuf) {
 fn context_budget_drops_intent_roster_but_keeps_overlap_uncounted() {
     let (tmp, config) = setup_budget_overlap_project();
 
-    // 202 tokens fits decision + handoff (101 each); the intent roster packs
-    // last and is dropped. Overlaps are budget-exempt and not counted.
+    // 202 tokens fits decision + handoff (101 each); the roster packs last and is dropped.
+    // Overlaps are budget-exempt.
     let out = context_in(tmp.path(), &config)
         .arg("--budget")
         .arg("202")
@@ -1129,8 +1037,6 @@ fn context_json_overlaps_survive_budget_when_roster_emptied() {
     assert_eq!(obj["tokens_used"].as_u64(), Some(0));
 }
 
-// ── cross-project locality ──────────────────────────────────────────────────────
-
 #[test]
 fn context_local_only_matches_default_for_intents() {
     let (tmp, _db, config) = setup_intents_project(&[("local intent", Some("src/a.rs"))]);
@@ -1153,8 +1059,6 @@ fn context_local_only_matches_default_for_intents() {
     );
     assert_eq!(without["overlaps"], with_local_only["overlaps"]);
 }
-
-// ── filters ─────────────────────────────────────────────────────────────────────
 
 #[test]
 fn context_kind_intent_shows_only_active_sessions() {
@@ -1255,8 +1159,6 @@ fn context_limit_overrides_intent_default_cap() {
     );
 }
 
-// ── format / AGENT ──────────────────────────────────────────────────────────────
-
 #[test]
 fn context_json_has_intent_section_and_overlaps_array() {
     let (tmp, _db, config) = setup_intents_project(&[("touching x", Some("src/x.rs"))]);
@@ -1292,8 +1194,7 @@ fn context_agent_env_includes_intent_and_overlaps() {
     let (tmp, _db, config) = setup_intents_project(&[("touching x", Some("src/x.rs"))]);
     make_files_modified(tmp.path(), &["src/x.rs"]);
 
-    // AGENT=true and no --format => JSON, with the intent section + overlaps
-    // that `check` never exposed to agents.
+    // AGENT=true with no --format yields JSON.
     let out = context_in(tmp.path(), &config)
         .env("AGENT", "true")
         .assert()

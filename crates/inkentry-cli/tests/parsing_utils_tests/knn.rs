@@ -1,19 +1,8 @@
-//! Component tests for `inkentry plumbing knn`.
-//!
-//! `knn` reads an embedding vector from stdin (in the JSON format produced
-//! by `plumbing embed`) and returns the K nearest neighbours from the index.
-//!
-//! All tests that exercise real KNN search require an indexed DB with real
-//! embeddings — those need the embedding server and are marked `#[ignore]`.
-//! Error-path tests (bad JSON on stdin, missing DB) run without a server.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{index_fixture_project, inkentry_bin, inkentry_cmd, parse_jsonl};
 
 use predicates::prelude::*;
 use tempfile::TempDir;
-
-// ── error path: malformed JSON on stdin ───────────────────────────────────────
 
 #[test]
 fn knn_exits_nonzero_for_bad_json_stdin() {
@@ -38,8 +27,6 @@ fn knn_exits_nonzero_for_json_missing_vector_field() {
         .failure()
         .stderr(predicate::str::contains("vector"));
 }
-
-// ── error path: missing DB ────────────────────────────────────────────────────
 
 #[test]
 fn knn_exits_nonzero_when_db_missing() {
@@ -66,21 +53,17 @@ fn knn_exits_nonzero_when_db_missing() {
         .stderr(predicate::str::contains("No index found"));
 }
 
-// ── dimension mismatch: wrong-dim vector against 768-dim index ────────────────
-
 #[test]
 fn knn_exits_1_or_error_for_wrong_dimension_vector() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // The index uses 768-dim vectors. A 3-dim vector should produce an error
-    // or no results (sqlite-vec may reject the dimension mismatch).
+    // A 3-dim vector against the 896-dim index: sqlite-vec may error or return nothing.
     let result = inkentry_cmd(&db_path, &config_path)
         .arg("knn")
         .write_stdin(r#"{"model":"test","dimensions":3,"vector":[0.1,0.2,0.3]}"#)
         .output()
         .unwrap();
 
-    // Either failure (dimension mismatch error) or exit 1 (no results) is acceptable.
     assert!(
         !result.status.success() || result.status.code() == Some(1),
         "expected non-zero exit for wrong dimension; got: {:?}",
@@ -88,13 +71,10 @@ fn knn_exits_1_or_error_for_wrong_dimension_vector() {
     );
 }
 
-// ── happy path (needs embedding server + indexed embeddings) ──────────────────
-
 #[test]
 #[ignore] // requires embedding server at 127.0.0.1:1234 AND an indexed project with real embeddings
 fn knn_returns_jsonl_results_for_valid_vector() {
-    // Run manually: cargo test knn_returns_jsonl -- --ignored
-    // Expected: a inkentry.db in the current directory with 768-dim embeddings.
+    // Run manually with --ignored; needs an inkentry.db in the CWD with 896-dim embeddings.
 
     let tmp = TempDir::new().unwrap();
     let config = tmp.path().join("config.toml");
@@ -106,7 +86,6 @@ fn knn_returns_jsonl_results_for_valid_vector() {
     )
     .unwrap();
 
-    // Construct a unit vector of 768 dimensions.
     let vec: Vec<f32> = {
         let mut v = vec![0.0f32; 896];
         v[0] = 1.0;
@@ -224,7 +203,7 @@ fn knn_min_score_filter_respects_threshold() {
         .arg(&db_path)
         .arg("knn")
         .arg("--min-score")
-        .arg("0.99") // very high threshold → likely exit 1
+        .arg("0.99")
         .write_stdin(payload.to_string())
         .output()
         .unwrap();

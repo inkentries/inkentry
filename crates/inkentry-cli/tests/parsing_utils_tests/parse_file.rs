@@ -1,8 +1,3 @@
-//! Component tests for `inkentry plumbing parse-file`.
-//!
-//! `parse-file` does not require an indexed DB — it just parses a file
-//! on disk and emits JSONL chunks.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin, parse_jsonl};
 
@@ -10,9 +5,6 @@ use predicates::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Absolute path to the fixture Rust source file.
 fn fixture_main() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project/src/main.rs")
 }
@@ -21,15 +13,12 @@ fn fixture_lib() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple-project/src/lib.rs")
 }
 
-/// Write a minimal config file (parse-file doesn't use DB but the binary
-/// requires the global --config path to exist when certain env vars are absent).
+// parse-file does not use the DB, but the binary needs the global `--config` path to exist.
 fn dummy_config(tmp: &TempDir) -> std::path::PathBuf {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(&cfg, "llm_model = \"x\"\n").unwrap();
     cfg
 }
-
-// ── happy path ────────────────────────────────────────────────────────────────
 
 #[test]
 fn parse_file_emits_jsonl_for_rust_file() {
@@ -51,7 +40,6 @@ fn parse_file_emits_jsonl_for_rust_file() {
     let rows = parse_jsonl(&output);
     assert!(!rows.is_empty(), "expected at least one parsed chunk");
 
-    // Every row must have the required fields.
     for row in &rows {
         assert!(row.get("kind").is_some(), "missing 'kind': {row}");
         assert!(
@@ -88,7 +76,6 @@ fn parse_file_finds_function_and_struct_chunks() {
 
     let rows = parse_jsonl(&output);
 
-    // lib.rs has functions AND a struct; both should appear.
     let kinds: Vec<&str> = rows.iter().filter_map(|r| r["kind"].as_str()).collect();
     assert!(
         kinds.contains(&"function"),
@@ -100,14 +87,11 @@ fn parse_file_finds_function_and_struct_chunks() {
     );
 }
 
-// ── no results (exit 1) ───────────────────────────────────────────────────────
-
 #[test]
 fn parse_file_exits_1_for_unsupported_file_type() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    // Write a file with an extension inkentry doesn't recognise.
     let unknown = tmp.path().join("file.xyz123");
     std::fs::write(&unknown, "some content").unwrap();
 
@@ -120,8 +104,6 @@ fn parse_file_exits_1_for_unsupported_file_type() {
         .assert()
         .code(1);
 }
-
-// ── error path (exit 2) ───────────────────────────────────────────────────────
 
 #[test]
 fn parse_file_exits_nonzero_for_missing_file() {
@@ -144,7 +126,6 @@ fn parse_file_exits_nonzero_missing_argument() {
     let tmp = TempDir::new().unwrap();
     let config = dummy_config(&tmp);
 
-    // Missing required positional argument → clap error.
     inkentry_bin()
         .arg("--config")
         .arg(&config)
