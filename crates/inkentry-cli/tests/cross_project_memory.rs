@@ -1,24 +1,5 @@
-//! Integration tests for ADR-003: cross-project memory visibility in
-//! `inkentry memory search`, `inkentry memory list`, and `inkentry context`.
-//!
-//! Coverage:
-//!   1. Multi-project search aggregation: `memory list` returns results from
-//!      both the local store AND linked project memory stores.
-//!   2. Source-project tagging: dep results carry `source_project` in JSON output.
-//!   3. Locked-decision propagation: a `locked` dep decision surfaces locally.
-//!   4. Privacy boundary: only `locked`/`cross-project`-tagged decisions/requirements
-//!      are surfaced — untagged dep decisions are NOT exposed.
-//!   5. Single-project path regression: no-deps projects behave exactly as before.
-//!   6. Context command cross-project merge for `decision`/`requirement` sections;
-//!      `handoff`/`question` sections remain strictly local.
-//!   7. `--local-only` flag suppresses the dep pass for `memory search`, `list`, `context`.
-//!   8. Archived dep entries are NOT surfaced.
-//!   9. `handoff`/`question` kinds are never surfaced cross-project.
-//!  10. Deduplication when two deps both point to the same grandparent.
-//!  11. Missing dep `memory.db` is skipped silently (no crash, no error output).
-//!  12. Security: SQL injection payload in a dep note title/body is inert.
-//!  13. MemoryStore unit assertions: source_project is None for local notes,
-//!      archived notes are excluded from list().
+// Linked projects' `locked`/`cross-project` decisions and requirements surface
+// in `memory list`, `search` and `context`; nothing else from them does.
 
 mod plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
@@ -29,42 +10,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-// ── test-registry helpers ─────────────────────────────────────────────────────
-
-/// The directory the CLI is pointed at via `INKENTRY_REGISTRY_DIR` during tests.
-///
-/// A fixed location under the isolated test `home` that every CLI invocation
-/// sets `INKENTRY_REGISTRY_DIR` to. The real `registry_path()` uses
-/// `dirs::config_dir()`, which is not `HOME`-redirectable on Windows
-/// (`%APPDATA%` via the Known Folder API), so an explicit override is the only
-/// way to isolate the registry across all platforms.
+// Explicit `INKENTRY_REGISTRY_DIR` override: `dirs::config_dir()` is not
+// `HOME`-redirectable on Windows (`%APPDATA%`).
 fn registry_dir(home: &Path) -> PathBuf {
     home.join(".config").join("inkentry")
 }
 
-/// Canonicalize a path for storage in the test registry the same way the product
-/// does — via `inkentry_core::utils::canonicalize` (backed by `dunce`), which
-/// de-UNCs the Windows `\\?\` prefix so registry entries match the plain `C:\…`
-/// paths the product's gix-based lookup derives. Without this the cross-project
-/// dep lookup silently finds nothing on Windows.
+// Canonicalize the way the product does (de-UNCs the Windows verbatim prefix);
+// otherwise the cross-project dep lookup finds nothing on Windows.
 fn canon(p: &Path) -> PathBuf {
     inkentry_core::utils::canonicalize(p)
 }
 
-/// A self-contained test registry backed by a file inside the test's HOME dir.
-///
-/// The registry is a `registry.db`-format SQLite file.  Every CLI invocation
-/// sets `INKENTRY_REGISTRY_DIR` to [`registry_dir`] so tests never touch the
-/// developer's real registry.
 struct TestRegistry {
     conn: Connection,
 }
 
 impl TestRegistry {
-    /// Create a fresh registry under `home_dir` at [`registry_dir`] — the same
-    /// location the CLI reads via `INKENTRY_REGISTRY_DIR`. Using an explicit
-    /// override keeps isolation working on every OS (on Windows the real
-    /// `dirs::config_dir()` is not `HOME`-redirectable).
     fn new(home_dir: &Path) -> Self {
         let config_dir = registry_dir(home_dir);
         fs::create_dir_all(&config_dir).expect("create registry dir");
@@ -89,12 +51,8 @@ impl TestRegistry {
         Self { conn }
     }
 
-    /// Register a project and return its id.
-    ///
-    /// Paths are canonicalized before insertion to resolve macOS symlinks
-    /// (`/var/folders` ↔ `/private/var/folders`) that would otherwise cause
-    /// mismatches between the registered path and the path the CLI sees when it
-    /// resolves `current_dir()`.
+    // Canonicalized to resolve macOS symlinks (`/var/folders` vs
+    // `/private/var/folders`) that would mismatch the CLI's `current_dir()`.
     fn register(&self, root: &Path, db: &Path) -> i64 {
         let root_c = canon(root);
         let db_c = canon(db);
@@ -115,7 +73,6 @@ impl TestRegistry {
             .expect("fetch project id")
     }
 
-    /// Add a `project_id` → `dep_id` edge (project_id depends on dep_id).
     fn add_dep(&self, project_id: i64, dep_id: i64) {
         self.conn
             .execute(
@@ -126,19 +83,14 @@ impl TestRegistry {
     }
 }
 
-// ── memory-db helpers ─────────────────────────────────────────────────────────
-
-// Create a `memory.db` at `path`, returning the raw `Connection` for direct
-// seeding of test data.
 fn open_memory_db(path: &Path) -> Connection {
     register_sqlite_vec();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create memory db parent");
     }
-    // Created through the store itself rather than by replaying the schema
-    // file and stamping a literal: a hand-written stamp is a claim about what
-    // this build writes, and a wrong one makes the store read as an older
-    // product's and be refused.
+    // Created through the store rather than by replaying the schema and
+    // stamping a literal: a wrong hand-written stamp makes the store read as an
+    // older product's and be refused.
     drop(inkentry_core::storage::MemoryStore::open(path).expect("create memory db"));
     let conn = Connection::open(path).expect("open memory db");
     conn.execute_batch("PRAGMA foreign_keys = ON")
@@ -146,10 +98,8 @@ fn open_memory_db(path: &Path) -> Connection {
     conn
 }
 
-// Insert a note directly into a `memory.db`. Returns its id. `tags` land in
-// `note_tags` (ADR-101), not a `notes.tags` column; every tag literal used by
-// this file is already in normalised form (lowercase, hyphenated), so this
-// helper does not re-normalise them.
+// `tags` land in `note_tags`; every tag literal in this file is already
+// normalised, so they are not re-normalised here.
 fn seed_note(
     conn: &Connection,
     kind: &str,
@@ -182,16 +132,6 @@ fn seed_note(
     uuid
 }
 
-// ── project setup helpers ─────────────────────────────────────────────────────
-
-/// Write a minimal config.toml pointing `db_path` at the primary index.db.
-///
-/// `memory search` / `memory list` derive `index_db_path` from `cfg.db_path`
-/// (via `config::resolve_db`), which is then passed to `collect_dep_cross_cutting`
-/// so the registry can look up the project and its deps.
-///
-/// The `db_path` is canonicalized to match what `Registry::register` stores
-/// (both must agree on `/private/var/...` vs `/var/...` on macOS).
 fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
     let index_db_c = canon(index_db);
     let cfg = format!(
@@ -207,10 +147,7 @@ fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
     config_path
 }
 
-/// Create `.inkentry/index.db` inside `project_root` and return the path.
-///
-/// The registry `db_path` column must point at this file.  An empty SQLite
-/// database is sufficient — the dep pass never opens the index DB itself.
+// An empty SQLite database suffices: the dep pass never opens the index DB.
 fn create_inkentry_dir(project_root: &Path) -> PathBuf {
     let inkentry_dir = project_root.join(".inkentry");
     fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
@@ -219,20 +156,9 @@ fn create_inkentry_dir(project_root: &Path) -> PathBuf {
     index_db
 }
 
-/// Full two-project setup: "primary" depends on "dep".
-///
-/// Returns `(TempDir, home, primary_root, primary_index_db, primary_config,
-///           dep_root, dep_memory_db)`.
-///
-/// All returned paths are canonicalized so that:
-/// - CLI subprocess `current_dir` matches registry `root_path` entries.
-/// - Config `db_path` matches what `find_project_for_path` looks up.
-///
-/// On macOS, `TempDir::new()` returns `/var/folders/...` which resolves to
-/// `/private/var/folders/...`; without canonicalization the registry lookup
-/// finds the wrong path and the dep pass returns nothing.
-///
-/// The caller must keep `_tmp` alive to prevent tempdir removal.
+// All returned paths are canonical so the subprocess `current_dir` matches
+// registry `root_path` entries (macOS `/var` vs `/private/var`). The caller must
+// keep the `TempDir` alive.
 #[allow(clippy::type_complexity)]
 fn setup_linked_projects() -> (
     TempDir, // keep alive
@@ -261,7 +187,6 @@ fn setup_linked_projects() -> (
     let dep_root = canon(&dep_root_raw);
     let dep_index = canon(&dep_index_raw);
 
-    // Config db_path uses the canonical index.db path.
     let primary_config = write_config(&primary_root, &primary_index);
     let dep_mem = dep_index.with_file_name("memory.db");
 
@@ -281,13 +206,6 @@ fn setup_linked_projects() -> (
     )
 }
 
-/// Build a base `inkentry memory` command for the primary project.
-///
-/// - `HOME` is set to the isolated home dir (registry isolation).
-/// - `INKENTRY_NO_SERVER=1` disables the loopback-server capability probe.
-/// - `current_dir` is `primary_root` so registry path lookup walks from there.
-/// - `--config` points to the primary config.toml (which has `db_path = <index.db>`).
-/// - `memory --db <primary_mem>` routes memory reads to the primary's memory.db.
 fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.env("HOME", home)
@@ -305,9 +223,8 @@ fn memory_cmd(home: &Path, primary_root: &Path, config: &Path, primary_mem: &Pat
     cmd
 }
 
-// Build a base `inkentry search` command for the primary project. Unified
-// search derives the memory store from the resolved index.db's sibling, so it
-// needs no explicit `--db`: cwd + `--config` (db_path = index.db) resolve both.
+// Unified search derives the memory store from the resolved index.db's
+// sibling, so cwd + `--config` resolve both without `--db`.
 fn search_cmd(home: &Path, primary_root: &Path, config: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.env("HOME", home)
@@ -321,7 +238,6 @@ fn search_cmd(home: &Path, primary_root: &Path, config: &Path) -> Command {
     cmd
 }
 
-/// Build a base `inkentry context` command for the primary project.
 fn context_cmd(
     home: &Path,
     primary_root: &Path,
@@ -346,9 +262,6 @@ fn context_cmd(
     cmd
 }
 
-// ── 1. Multi-project search aggregation ──────────────────────────────────────
-
-/// `memory list` includes a `locked` dep decision alongside local notes.
 #[test]
 fn memory_list_includes_locked_decision_from_linked_dep() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -396,10 +309,6 @@ fn memory_list_includes_locked_decision_from_linked_dep() {
     );
 }
 
-// ── 2. Source-project tagging ─────────────────────────────────────────────────
-
-/// A dep note in `memory list --format json` must have `source_project` set to
-/// the dep's directory name.
 #[test]
 fn dep_note_carries_source_project_tag_in_json() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -441,7 +350,6 @@ fn dep_note_carries_source_project_tag_in_json() {
     );
 }
 
-/// Local notes must NOT have `source_project` in JSON output.
 #[test]
 fn local_note_has_no_source_project_field() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, _dep_mem) =
@@ -478,13 +386,8 @@ fn local_note_has_no_source_project_field() {
     );
 }
 
-// ── 3. Locked-decision propagation ───────────────────────────────────────────
-
-/// `memory search --mode text` appends locked dep decisions in the results.
-///
-/// Text-mode search is used (not hybrid/semantic) so no embedding server is
-/// needed.  Per ADR-003 §3, the dep pass appends ALL cross-cutting entries
-/// regardless of the FTS search query.
+// Text mode needs no embedding server. The dep pass appends ALL cross-cutting
+// entries regardless of the FTS query.
 #[test]
 fn search_only_memory_text_appends_locked_dep_decisions() {
     let (_tmp, home, primary_root, _primary_index, primary_config, _dep_root, dep_mem) =
@@ -526,9 +429,6 @@ fn search_only_memory_text_appends_locked_dep_decisions() {
     );
 }
 
-// ── 4. Privacy boundary ───────────────────────────────────────────────────────
-
-/// A dep decision WITHOUT `locked` or `cross-project` tag must NOT be surfaced.
 #[test]
 fn untagged_dep_decision_is_not_surfaced() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -569,11 +469,9 @@ fn untagged_dep_decision_is_not_surfaced() {
             "untagged dep decision must NOT be surfaced; got: {titles:?}"
         );
     }
-    // "No memory entries found." → untagged note not surfaced; test passes.
+    // Non-JSON output ("No memory entries found.") also means it was not surfaced.
 }
 
-/// A dep `note` (kind=note) tagged `locked` must NOT cross project boundaries —
-/// only `decision` and `requirement` kinds are eligible per ADR-003 §1.
 #[test]
 fn dep_note_kind_is_not_surfaced_even_if_locked() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -616,7 +514,6 @@ fn dep_note_kind_is_not_surfaced_even_if_locked() {
     }
 }
 
-/// A dep `requirement` tagged `cross-project` IS surfaced (not just `locked`).
 #[test]
 fn dep_requirement_with_cross_project_tag_is_surfaced() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -649,9 +546,6 @@ fn dep_requirement_with_cross_project_tag_is_surfaced() {
     );
 }
 
-// ── 5. Single-project path regression ────────────────────────────────────────
-
-/// With no deps registered, `memory list` works exactly as before ADR-003.
 #[test]
 fn single_project_no_deps_works_unchanged() {
     let tmp = TempDir::new().expect("create temp dir");
@@ -666,7 +560,6 @@ fn single_project_no_deps_works_unchanged() {
     let config = write_config(&project_root, &index_db);
     let mem = index_db.with_file_name("memory.db");
 
-    // Register with NO deps.
     let reg = TestRegistry::new(&home);
     reg.register(&project_root, &index_db);
 
@@ -707,10 +600,6 @@ fn single_project_no_deps_works_unchanged() {
     assert_eq!(notes[0]["title"].as_str(), Some("Local-only note"));
 }
 
-// ── 6. Context command cross-project merge ────────────────────────────────────
-
-/// `inkentry context` (text mode) includes a locked dep decision and renders
-/// the `[from: dep]` badge.
 #[test]
 fn context_includes_locked_dep_decision_with_source_badge() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -751,7 +640,6 @@ fn context_includes_locked_dep_decision_with_source_badge() {
     );
 }
 
-/// `inkentry context --format json` includes dep decision with `source_project` field.
 #[test]
 fn context_json_includes_dep_decision_with_source_project() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -802,8 +690,6 @@ fn context_json_includes_dep_decision_with_source_project() {
     );
 }
 
-/// `inkentry context` does NOT include dep `requirement` notes in the `decision`
-/// section, but DOES include them in the `requirement` section.
 #[test]
 fn context_dep_requirement_appears_in_requirement_section() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -837,7 +723,6 @@ fn context_dep_requirement_appears_in_requirement_section() {
     let obj: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
     let sections = obj["sections"].as_array().expect("sections array");
 
-    // Must appear in the requirement section.
     let req_section = sections
         .iter()
         .find(|s| s[0].as_str() == Some("requirement"))
@@ -851,7 +736,6 @@ fn context_dep_requirement_appears_in_requirement_section() {
         "dep requirement must appear in requirement section of context"
     );
 
-    // Must NOT appear in the decision section (it's a requirement, not a decision).
     let dec_section = sections
         .iter()
         .find(|s| s[0].as_str() == Some("decision"))
@@ -866,9 +750,6 @@ fn context_dep_requirement_appears_in_requirement_section() {
     );
 }
 
-// ── 7. --local-only flag ──────────────────────────────────────────────────────
-
-/// `memory list --local-only` suppresses the dep pass entirely.
 #[test]
 fn memory_list_local_only_suppresses_dep_results() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -900,7 +781,6 @@ fn memory_list_local_only_suppresses_dep_results() {
     );
 }
 
-// `search --local-only` suppresses the memory dep pass.
 #[test]
 fn search_local_only_suppresses_dep_memory_results() {
     let (_tmp, home, primary_root, _primary_index, primary_config, _dep_root, dep_mem) =
@@ -936,7 +816,6 @@ fn search_local_only_suppresses_dep_memory_results() {
     );
 }
 
-/// `context --local-only` suppresses the dep pass.
 #[test]
 fn context_local_only_suppresses_dep_results() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -974,9 +853,6 @@ fn context_local_only_suppresses_dep_results() {
     );
 }
 
-// ── 8. Archived dep entries are not surfaced ──────────────────────────────────
-
-/// An archived dep decision (status='archived') must NOT appear even if tagged `locked`.
 #[test]
 fn archived_dep_decision_is_not_surfaced() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -990,7 +866,7 @@ fn archived_dep_decision_is_not_surfaced() {
         "Old locked decision now archived",
         "Superseded and archived — must not propagate.",
         &["locked"],
-        "archived", // <-- archived
+        "archived",
     );
 
     let raw = inkentry_bin_in(&home)
@@ -1017,12 +893,9 @@ fn archived_dep_decision_is_not_surfaced() {
             "archived dep note must not be surfaced; got: {titles:?}"
         );
     }
-    // "No memory entries found." → archived note was correctly suppressed.
+    // Non-JSON output ("No memory entries found.") also means it was suppressed.
 }
 
-// ── 9. handoff/question kinds are never cross-project ─────────────────────────
-
-/// `context` must NOT pull `handoff` entries from dep projects, even if tagged `locked`.
 #[test]
 fn context_never_pulls_dep_handoffs() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -1059,9 +932,8 @@ fn context_never_pulls_dep_handoffs() {
     );
 }
 
-// `context` must NOT pull `intent` entries from dep projects, even if tagged
-// `locked`/`cross-project`. The roster of who is working where is inherently
-// session/project-scoped, in the same locality class as handoff/question.
+// The intent roster is session/project-scoped, like handoff/question, so it
+// never crosses projects.
 #[test]
 fn context_never_pulls_dep_intents() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -1098,7 +970,6 @@ fn context_never_pulls_dep_intents() {
     );
 }
 
-/// `memory list` must NOT pull a `question` from a dep project.
 #[test]
 fn dep_question_is_never_surfaced_cross_project() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -1141,15 +1012,9 @@ fn dep_question_is_never_surfaced_cross_project() {
     }
 }
 
-// ── 10. Deduplication ─────────────────────────────────────────────────────────
-
-/// When primary has two direct deps (dep-a and dep-b), and both happen to have
-/// a note with the same (root_path, id) key, it must appear at most once.
-///
-/// In practice the dep-pass deduplication protects against diamond-shaped
-/// dependency graphs where two direct deps both link to a shared grandparent.
-/// Here we simulate the simpler scenario: two direct deps each with a unique
-/// entry to confirm no cross-dep pollution.
+// The dep pass deduplicates diamond-shaped dependency graphs; this covers the
+// simpler case of two direct deps with a unique entry each, to confirm no
+// cross-dep pollution.
 #[test]
 fn multiple_deps_results_are_aggregated_not_duplicated() {
     let tmp = TempDir::new().expect("create temp dir");
@@ -1178,7 +1043,6 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
     let dep_b_index = canon(&dep_b_index_raw);
     let dep_b_mem = dep_b_index.with_file_name("memory.db");
 
-    // Seed a locked decision in each dep.
     let conn_a = open_memory_db(&dep_a_mem);
     seed_note(
         &conn_a,
@@ -1226,7 +1090,6 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
     let notes: Vec<serde_json::Value> = serde_json::from_slice(&output).expect("valid JSON");
     let titles: Vec<&str> = notes.iter().filter_map(|n| n["title"].as_str()).collect();
 
-    // Both dep notes must appear exactly once each.
     assert_eq!(
         titles.iter().filter(|&&t| t == "Dep-A policy").count(),
         1,
@@ -1239,10 +1102,6 @@ fn multiple_deps_results_are_aggregated_not_duplicated() {
     );
 }
 
-// ── 11. Missing dep memory.db is silently skipped ────────────────────────────
-
-/// A dep with no `memory.db` is skipped silently — no crash, no error in stdout.
-/// Other deps with a `memory.db` still contribute their results.
 #[test]
 fn missing_dep_memory_db_is_skipped_silently() {
     let tmp = TempDir::new().expect("create temp dir");
@@ -1257,7 +1116,6 @@ fn missing_dep_memory_db_is_skipped_silently() {
     let primary_config = write_config(&primary_root, &primary_index);
     let primary_mem = primary_index.with_file_name("memory.db");
 
-    // dep-a: has a memory.db with a locked decision.
     let dep_a_root_raw = tmp.path().join("dep-a");
     fs::create_dir_all(&dep_a_root_raw).expect("dep-a dir");
     let dep_a_index_raw = create_inkentry_dir(&dep_a_root_raw);
@@ -1274,7 +1132,6 @@ fn missing_dep_memory_db_is_skipped_silently() {
         "active",
     );
 
-    // dep-b: exists in registry but has NO memory.db.
     let dep_b_root_raw = tmp.path().join("dep-b");
     fs::create_dir_all(&dep_b_root_raw).expect("dep-b dir");
     let dep_b_index_raw = create_inkentry_dir(&dep_b_root_raw);
@@ -1302,7 +1159,7 @@ fn missing_dep_memory_db_is_skipped_silently() {
         .arg(&primary_mem)
         .args(["list", "--format", "json"])
         .assert()
-        .success() // must NOT crash or fail even with a missing dep memory.db
+        .success()
         .get_output()
         .stdout
         .clone();
@@ -1315,11 +1172,6 @@ fn missing_dep_memory_db_is_skipped_silently() {
     );
 }
 
-// ── 12. Security: SQL injection payload in dep note is inert ─────────────────
-
-/// SQL injection payload in a dep note title / body must not alter the DB or
-/// crash the CLI — parameterised queries must be used throughout.
-/// (SAMM v2 Verification — Security Testing, level 1.)
 #[test]
 fn sql_injection_in_dep_note_is_inert() {
     let (_tmp, home, primary_root, primary_index, primary_config, _dep_root, dep_mem) =
@@ -1335,7 +1187,6 @@ fn sql_injection_in_dep_note_is_inert() {
         &["locked"],
         "active",
     );
-    // A benign note to verify the notes table survived the payload.
     seed_note(
         &dep_conn,
         "decision",
@@ -1348,7 +1199,7 @@ fn sql_injection_in_dep_note_is_inert() {
     let output = memory_cmd(&home, &primary_root, &primary_config, &primary_mem)
         .args(["list", "--format", "json"])
         .assert()
-        .success() // must not crash
+        .success()
         .get_output()
         .stdout
         .clone();
@@ -1362,13 +1213,6 @@ fn sql_injection_in_dep_note_is_inert() {
     );
 }
 
-// ── 13. MemoryStore unit assertions ───────────────────────────────────────────
-//
-// These exercise inkentry-core's MemoryStore directly (no CLI binary) to assert
-// the storage-layer preconditions that the dep-pass relies on.
-
-/// `MemoryStore::list` excludes archived notes when `include_archived=false`
-/// (the precondition for the dep-pass not surfacing archived entries).
 #[test]
 fn memory_store_list_excludes_archived_by_default() {
     register_sqlite_vec();
@@ -1395,8 +1239,6 @@ fn memory_store_list_excludes_archived_by_default() {
     );
 }
 
-/// `MemoryStore::list` returns `Note` instances with `source_project == None` —
-/// that field is populated exclusively by the CLI dep-pass, not by the store.
 #[test]
 fn memory_store_notes_have_no_source_project_by_default() {
     register_sqlite_vec();

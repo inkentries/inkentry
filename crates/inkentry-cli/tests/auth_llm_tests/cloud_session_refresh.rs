@@ -1,11 +1,3 @@
-// `cloud_first` memory CRUD against a cloud session: a WorkOS access token
-// lives ~5 minutes, so every memory command must rotate an expired (or
-// server-rejected) session itself rather than surfacing the server's 401.
-//
-// Drives the real binary against an isolated `HOME` with the file secret store.
-// Both peers are wiremock on loopback: the memory server (cloud dialect, the
-// session's own issuing origin) and WorkOS (`INKENTRY_WORKOS_URL`).
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
@@ -55,8 +47,6 @@ fn secrets_path(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("inkentry").join("secrets.toml")
 }
 
-// The post-login shape `inkentry login` leaves in the file store, issued for
-// `cloud_origin`.
 fn seed_session(home: &Path, cloud_origin: &str, expires_at: i64) {
     let dir = home.join(".config").join("inkentry");
     std::fs::create_dir_all(&dir).unwrap();
@@ -77,8 +67,6 @@ fn seed_session(home: &Path, cloud_origin: &str, expires_at: i64) {
     std::fs::write(&path, format!("org_tokens = '{payload}'\n{existing}")).unwrap();
 }
 
-// A cloud-dialect memory server that accepts `POST /memory` only with
-// `accepted_bearer`, and answers 401 to anything else.
 async fn memory_server(accepted_bearer: &str) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -190,9 +178,8 @@ fn memory_posts(requests: &[wiremock::Request]) -> Vec<Option<String>> {
         .collect()
 }
 
-// Exactly one rotation: the inference client (embedding the entry) and the
-// memory backend both see the expired session, and the second must pick up the
-// session the first persisted rather than spend the refresh token again.
+// Exactly one rotation: the inference client and the memory backend both see
+// the expired session, and the second must reuse the one the first persisted.
 #[tokio::test]
 async fn memory_add_refreshes_an_expired_cloud_session_before_its_first_request() {
     let fresh = fresh_jwt();
@@ -222,9 +209,9 @@ async fn memory_add_refreshes_an_expired_cloud_session_before_its_first_request(
     );
 }
 
-// `memory add` also embeds through the inference client, which refreshes on
-// its own; `list` reaches the server only through the memory backend, so this
-// is what pins the backend's own refresh.
+// `add` also embeds through the inference client, which refreshes itself;
+// `list` reaches the server only via the memory backend, so this pins that
+// backend's own refresh.
 #[tokio::test]
 async fn memory_list_refreshes_an_expired_cloud_session_before_its_first_request() {
     let fresh = fresh_jwt();
@@ -252,8 +239,7 @@ async fn memory_list_refreshes_an_expired_cloud_session_before_its_first_request
     assert!(!stale_sent, "the expired token must never reach the server");
 }
 
-// The local clock says the token is live, but the server rejects it (revoked,
-// or clock skew): rotate once and resend.
+// The token looks live locally but the server rejects it (revoked, clock skew).
 #[tokio::test]
 async fn memory_add_refreshes_and_retries_once_when_the_server_rejects_the_session() {
     let fresh = fresh_jwt();
@@ -276,9 +262,8 @@ async fn memory_add_refreshes_and_retries_once_when_the_server_rejects_the_sessi
     );
 }
 
-// ADR-071/ADR-095: a session issued for another origin is never sent to, or
-// refreshed on behalf of, a self-hosted server. Its 401 surfaces with the
-// set-key hint instead.
+// A session issued for another origin is never sent to, or refreshed for, a
+// self-hosted server; its 401 surfaces with the set-key hint.
 #[tokio::test]
 async fn a_self_hosted_rejection_never_refreshes_the_cloud_session() {
     let server = memory_server("never-matches").await;

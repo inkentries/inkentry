@@ -1,11 +1,7 @@
-// What a spawned daemon is actually handed, observed through the real CLI.
-//
-// The unit tests on either side of the process boundary pin what an already
-// resolved `LlmSpawn` renders to, and what `inkentry-server` parses. Neither
-// can see a call site that stops resolving, nor a variable the child inherits
-// behind the CLI's back: both live exactly at the boundary. These run
-// `inkentry server start` against a recording stand-in for the daemon binary
-// and assert on the argv and environment that stand-in received.
+// Runs `inkentry server start` against a recording stand-in for the daemon and
+// asserts on the argv and environment it received. Unit tests on either side
+// cannot see a call site that stops resolving, or a variable the child inherits
+// behind the CLI's back.
 
 #![cfg(unix)]
 
@@ -16,7 +12,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tempfile::TempDir;
 
-// argv (as one line) and environment of the process the CLI spawned.
 struct Spawned {
     argv: String,
     env: Vec<String>,
@@ -30,11 +25,8 @@ impl Spawned {
     }
 }
 
-// A stand-in for `inkentry-server` that records how it was invoked and exits.
-//
-// It never binds the port, so the CLI's start path sees the process end
-// without serving; that is the fast path and is what the exit-aware wait was
-// added for.
+// Never binds the port, so the CLI's start path sees the process end without
+// serving.
 fn recording_server(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let record = dir.join("record.txt");
     let bin = dir.join("recording-inkentry-server");
@@ -57,8 +49,6 @@ fn free_port() -> u16 {
     port
 }
 
-// Run `inkentry server start` with `config_toml` as the personal config, and
-// return what the daemon stand-in was handed.
 fn start_daemon(config_toml: &str, env: &[(&str, &str)], extra_args: &[&str]) -> Spawned {
     let home = TempDir::new().unwrap().keep();
     let (bin, record) = recording_server(&home);
@@ -102,8 +92,6 @@ fn start_daemon(config_toml: &str, env: &[(&str, &str)], extra_args: &[&str]) ->
     }
 }
 
-// The whole point of the story: a value in the personal config has to arrive
-// at a daemon this CLI starts. Nothing else in the suite crosses that gap.
 #[test]
 fn a_configured_endpoint_reaches_the_spawned_daemon() {
     let spawned = start_daemon(
@@ -151,7 +139,6 @@ fn an_environment_endpoint_reaches_the_spawned_daemon() {
     );
 }
 
-// The flags are documented as outranking both lower sources for one daemon.
 #[test]
 fn the_start_flags_outrank_both_the_environment_and_the_config() {
     let spawned = start_daemon(
@@ -193,12 +180,9 @@ fn the_start_flags_outrank_both_the_environment_and_the_config() {
     assert_eq!(spawned.env_value("INKENTRY_LLM_MODEL"), Some("from-flag"));
 }
 
-// An exported empty value is an override that blanks the configured endpoint,
-// so the daemon must start with no LLM at all. The CLI omitting the argument
-// is not enough: `inkentry-server` reads `INKENTRY_LLM_URL` through clap `env`,
-// so an inherited empty value arrives as a present-but-empty endpoint, which
-// is either a daemon advertising an LLM it cannot reach or, with a credential
-// configured, a daemon that refuses to start.
+// The CLI omitting the argument is not enough: `inkentry-server` reads
+// `INKENTRY_LLM_URL` through clap `env`, so an inherited empty value arrives as
+// a present-but-empty endpoint.
 #[test]
 fn an_exported_empty_endpoint_leaves_the_daemon_with_no_llm_at_all() {
     let spawned = start_daemon(
@@ -221,7 +205,6 @@ fn an_exported_empty_endpoint_leaves_the_daemon_with_no_llm_at_all() {
     assert_eq!(spawned.env_value("INKENTRY_LLM_MODEL"), None);
 }
 
-// A model with no endpoint is not a configuration, on either channel.
 #[test]
 fn a_model_without_an_endpoint_reaches_the_daemon_on_neither_channel() {
     let spawned = start_daemon("llm_model = \"orphan\"\n", &[], &[]);
@@ -235,8 +218,7 @@ fn a_model_without_an_endpoint_reaches_the_daemon_on_neither_channel() {
     assert_eq!(spawned.env_value("INKENTRY_LLM_URL"), None);
 }
 
-// The credential travels in the environment and only there, whatever else is
-// configured. Asserted on the whole argv, not on a flag name.
+// Asserted on the whole argv, not on a flag name.
 #[test]
 fn the_credential_reaches_the_child_environment_and_never_its_argv() {
     let spawned = start_daemon(
@@ -256,9 +238,8 @@ fn the_credential_reaches_the_child_environment_and_never_its_argv() {
     );
 }
 
-// A daemon that exits immediately rejected its own configuration. Blaming a
-// firewall for that sends the user to the wrong place, and waiting out the
-// full liveness timeout first makes it worse.
+// A daemon that exits immediately rejected its own configuration; blaming a
+// firewall, or waiting out the liveness timeout first, misleads the user.
 #[test]
 fn a_daemon_that_exits_immediately_is_not_reported_as_a_firewall_problem() {
     let home = TempDir::new().unwrap().keep();
