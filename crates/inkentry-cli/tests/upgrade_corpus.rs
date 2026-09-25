@@ -546,6 +546,33 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
         fts_rows as usize, wing.expect.chunk_count,
         "every chunk must be in the rebuilt full-text index"
     );
+
+    // Step 20 flags each chunk exactly as a fresh index would, and removes none.
+    let flags: Vec<(String, bool, bool)> = conn
+        .prepare(
+            "SELECT f.path, f.language, c.node_type, c.name, c.text_only
+             FROM chunks c JOIN files f ON f.id = c.file_id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                let path: String = r.get(0)?;
+                let language: Option<String> = r.get(1)?;
+                let name: Option<String> = r.get(3)?;
+                let expected = inkentry_core::indexer::embed_scope::is_text_only(
+                    &path,
+                    language.as_deref().unwrap_or(""),
+                    &r.get::<_, String>(2)?,
+                    name.as_deref(),
+                );
+                Ok((path, r.get(4)?, expected))
+            })?
+            .collect()
+        })
+        .expect("chunks has a text_only column after migrating");
+    assert_eq!(flags.len(), wing.expect.chunk_count);
+    for (path, stored, expected) in flags {
+        assert_eq!(stored, expected, "{path}");
+    }
 }
 
 // ── The corpus has to start collecting again when there is something to collect
@@ -579,6 +606,9 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
 // Index 18 -> 19: no. No release wrote 18; the same 1.1.0 wing climbs through
 // both steps, and the test above checks what step 19 rebuilds.
 //
+// Index 19 -> 20: no. No release wrote 19; the 1.1.0 wing climbs through
+// step 20 too, and the same test checks that it flags without discarding.
+//
 // Memory 12 -> 13: no. Schema 12 (tags and linked files as rows) has not
 // shipped in a release; no user holds a released binary's memory.db stamped
 // 12, so there is nothing a released store needs to survive moving to 13 that
@@ -587,7 +617,7 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
 // `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
 // assertions for what step 13 adds (events exists and is empty; origin reads
 // as absent) rather than a new wing.
-const CORPUS_COVERS_INDEX_SCHEMA: i32 = 19;
+const CORPUS_COVERS_INDEX_SCHEMA: i32 = 20;
 const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 13;
 
 #[test]

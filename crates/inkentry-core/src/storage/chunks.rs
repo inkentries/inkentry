@@ -40,10 +40,20 @@ impl Database {
         token_count: usize,
     ) -> Result<i64> {
         let (name_words, body_words) = chunk_subwords(name, content, metadata);
+        let (path, language): (String, Option<String>) = self
+            .conn
+            .prepare_cached("SELECT path, language FROM files WHERE id = ?1")?
+            .query_row([file_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let text_only = crate::indexer::embed_scope::is_text_only(
+            &path,
+            language.as_deref().unwrap_or(""),
+            node_type,
+            name,
+        );
         self.conn.execute(
             "INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content, metadata,
-                                 token_count, name_words, body_words)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                 token_count, name_words, body_words, text_only)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 file_id,
                 node_type,
@@ -55,6 +65,7 @@ impl Database {
                 token_count as i64,
                 name_words,
                 body_words,
+                text_only,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -85,7 +96,8 @@ impl Database {
     /// Return chunks the embed queue must (re-)process: those with **no** vector
     /// yet (never embedded) and those flagged `embed_pending = 1` (a stored
     /// vector that no longer reflects the chunk's current `embedding_text()` and
-    /// must be re-embedded in place). Returns the raw fields needed to
+    /// must be re-embedded in place), less the chunks flagged `text_only`
+    /// (ADR-104), which are never queued. Returns the raw fields needed to
     /// reconstruct the exact `Chunk::embedding_text()` document format plus the
     /// stored token estimate: `(chunk_id, name, metadata_json, summary, content,
     /// token_count)`. `token_count` may be 0 on a pre-backfill index.
@@ -124,7 +136,7 @@ impl Database {
              FROM chunks c
              LEFT JOIN embeddings e ON e.chunk_id = c.id
              JOIN files f ON f.id = c.file_id
-             WHERE e.chunk_id IS NULL OR c.embed_pending = 1
+             WHERE c.text_only = 0 AND (e.chunk_id IS NULL OR c.embed_pending = 1)
              ORDER BY (e.chunk_id IS NOT NULL) ASC, c.graph_rank DESC, f.mtime DESC, c.id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -275,7 +287,7 @@ impl Database {
             "SELECT c.id, c.node_type, c.content
              FROM chunks c
              JOIN embeddings e ON e.chunk_id = c.id
-             WHERE c.name IS NULL AND c.summary IS NULL
+             WHERE c.name IS NULL AND c.summary IS NULL AND c.text_only = 0
              ORDER BY c.id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -439,6 +451,45 @@ mod tests {
             .into_iter()
             .map(|(id, ..)| id)
             .collect()
+    }
+
+    #[test]
+    fn text_only_chunks_are_never_queued_and_do_not_count_as_pending() {
+        let db = open_db();
+        let product = seed_file_chunks(&db, "src/lib.rs", 100, &["parse"]);
+        let test = seed_file_chunks(&db, "tests/parse.rs", 100, &["parses"]);
+        let src = db
+            .upsert_file("src/lib.rs", Some("rust"), "h", 100)
+            .unwrap();
+        let window = db
+            .insert_chunk(src, "verbatim", None, 3, 9, "use std::fmt;", None, 100)
+            .unwrap();
+
+        assert_eq!(missing_ids(&db), product);
+
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.text_only_count, 2);
+        assert_eq!(stats.embeddable_count(), 1);
+        assert_eq!(stats.pending_embed_count(), 1);
+        let tokens = db.embed_token_stats().unwrap();
+        assert_eq!(
+            (tokens.total_tokens, tokens.pending_tokens),
+            (4, 4),
+            "progress is measured over the embeddable chunks only"
+        );
+
+        // A flagged chunk marked for re-embed stays out of the queue too.
+        for id in [window, test[0]] {
+            db.conn
+                .execute("UPDATE chunks SET embed_pending = 1 WHERE id = ?1", [id])
+                .unwrap();
+        }
+        assert_eq!(missing_ids(&db), product);
+        assert_eq!(db.refresh_pending_count().unwrap(), 0);
+
+        // Nor does tier 3 refine one that kept a vector from before the rule.
+        db.insert_embedding(window, &[0.2f32; 896]).unwrap();
+        assert!(db.titleless_chunks_needing_selection().unwrap().is_empty());
     }
 
     /// Cold index: every `graph_rank` is the 0.0 default, so the embed queue is
@@ -745,7 +796,8 @@ mod tests {
     #[test]
     fn titleless_selection_candidates_and_pending_writer() {
         let db = open_db();
-        let file_id = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
+        // Prose: an unnamed window of code is text-only and never a candidate.
+        let file_id = db.upsert_file("notes.txt", Some("text"), "h", 0).unwrap();
         let titleless = db
             .insert_chunk(file_id, "verbatim", None, 1, 4, "prose here", None, 4)
             .unwrap();

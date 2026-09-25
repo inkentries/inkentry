@@ -218,7 +218,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         // re-embed can be live while coverage reads 100%, so worker liveness
         // must consider both — otherwise `status` would say "not running" during
         // a real refresh drain.
-        let pending_chunks = stats.chunk_count - stats.embedding_count;
+        let pending_chunks = stats.pending_embed_count();
         let refresh_pending = db.refresh_pending_count().unwrap_or(0);
         let (embed_worker_alive_json, embed_tokens_json) =
             if pending_chunks > 0 || refresh_pending > 0 {
@@ -283,6 +283,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "embedder_state": embedder_state_json,
                 "embedding_count": stats.embedding_count,
                 "embedding_pending": pending_chunks,
+                "text_only_count": stats.text_only_count,
                 "embedding_refresh_pending": embedding_refresh_pending_json,
                 "summary_scheme": summary_scheme_json,
                 "index_rebuilt_from": rebuilt_unpopulated,
@@ -413,7 +414,14 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     println!("Index:      {}", db_path.display());
     println!("Files:      {}", s.file_count);
     println!("Chunks:     {}", s.chunk_count);
-    println!("Embeddings: {}", s.embedding_count);
+    if s.text_only_count > 0 {
+        println!(
+            "Embeddings: {} ({} chunks full-text only)",
+            s.embedding_count, s.text_only_count
+        );
+    } else {
+        println!("Embeddings: {}", s.embedding_count);
+    }
     if let Some(line) = rebuilt_line(db.unpopulated_since_rebuild().unwrap_or(None)) {
         cprintln!("{line}");
     }
@@ -422,7 +430,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
     // coverage, and the token-weighted work fraction. Coverage and progress
     // are two measures in two units under two names; on a real repo they
     // diverge by 2x and that divergence is the fact being reported.
-    if s.chunk_count > s.embedding_count {
+    if s.pending_embed_count() > 0 {
         let tokens = db.embed_token_stats().ok();
         let worker = super::embed_worker::worker_liveness(&db_path);
         let worker_alive = worker == super::embed_worker::WorkerLiveness::Alive;
@@ -437,7 +445,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         if let Some(line) = embedding_state_line(
             worker_alive,
             embedder_unavailable,
-            s.chunk_count,
+            s.embeddable_count(),
             s.embedding_count,
             tokens.as_ref().map(|t| t.total_tokens).unwrap_or(0),
             tokens.as_ref().map(|t| t.pending_tokens).unwrap_or(0),
@@ -837,17 +845,18 @@ fn rebuilt_line(rebuilt_from: Option<i32>) -> Option<String> {
 fn embedding_state_line(
     worker_alive: bool,
     embedder_unavailable: bool,
-    chunk_count: i64,
+    embeddable_count: i64,
     embedding_count: i64,
     total_tokens: i64,
     pending_tokens: i64,
     eta: Option<std::time::Duration>,
 ) -> Option<String> {
-    if chunk_count <= 0 || embedding_count >= chunk_count {
+    if embeddable_count <= 0 || embedding_count >= embeddable_count {
         return None;
     }
-    let coverage = labelled_pct(embedding_count, chunk_count).unwrap_or(0);
-    let searchable = format!("searchable {embedding_count}/{chunk_count} chunks ({coverage}%)");
+    let coverage = labelled_pct(embedding_count, embeddable_count).unwrap_or(0);
+    let searchable =
+        format!("searchable {embedding_count}/{embeddable_count} chunks ({coverage}%)");
 
     let mut progress = match labelled_pct(
         (total_tokens - pending_tokens).clamp(0, total_tokens),

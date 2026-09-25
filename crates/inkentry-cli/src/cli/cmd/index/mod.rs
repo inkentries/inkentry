@@ -280,7 +280,7 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
         } = continuation::spawn_embed_subprocess(&args, embed_log.as_deref())?
         {
             let stats = db.stats()?;
-            let pending = stats.chunk_count - stats.embedding_count;
+            let pending = stats.pending_embed_count();
             if run_lock::wait_for_holder_pid(
                 &inkentry_dir,
                 child_pid,

@@ -129,9 +129,9 @@ sample of output.
 
 `status --format json` also emits a set of richer fields for tooling (`tier`,
 `mode`, `sync_pending`, `sync_last_synced_at`, `server_url`, `capabilities`,
-`embedder_state`, `embedding_count`, `embedding_pending`, `embed_worker_alive`,
-`embed_tokens`, `drift_candidates`, `usage_7d`, `metrics`) that are explicitly
-**not** in the stable set and may change or disappear in a minor release.
+`embedder_state`, `embedding_count`, `embedding_pending`, `text_only_count`,
+`embed_worker_alive`, `embed_tokens`, `drift_candidates`, `usage_7d`, `metrics`)
+that are explicitly **not** in the stable set and may change or disappear in a minor release.
 
 If you need a surface with a test-enforced schema, use the plumbing commands.
 

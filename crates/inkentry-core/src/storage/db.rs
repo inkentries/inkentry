@@ -29,7 +29,7 @@ pub struct Database {
 ///
 /// It continues the old ladder's numbering rather than restarting at 1, for the
 /// reason [`LAST_LEGACY_SCHEMA_VERSION`] records.
-pub(super) const CURRENT_SCHEMA_VERSION: i32 = 19;
+pub(super) const CURRENT_SCHEMA_VERSION: i32 = 20;
 
 /// The highest `user_version` the old migration ladder ever stamped.
 ///
@@ -1002,6 +1002,56 @@ mod tests {
                 "{q:?} must reach the migrated chunk"
             );
         }
+    }
+
+    // An upgraded index flags what the embed queue now skips, but keeps the
+    // vector a flagged chunk already has.
+    #[test]
+    fn a_populated_schema_17_index_flags_text_only_chunks_and_keeps_their_vectors() {
+        register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
+                include_str!("../../migrations/index_001_initial.sql")
+            ))
+            .unwrap();
+            conn.execute_batch(
+                "INSERT INTO files (path, language, hash, indexed_at) VALUES
+                     ('src/lib.rs', 'rust', 'h', 0), ('tests/lib.rs', 'rust', 'h', 0);
+                 INSERT INTO chunks (file_id, node_type, name, start_line, end_line, content)
+                 VALUES (1, 'function', 'parse', 1, 3, 'fn parse() {}'),
+                        (1, 'verbatim', NULL, 4, 9, 'use std::fmt;'),
+                        (2, 'function', 'parses', 1, 3, 'fn parses() {}');",
+            )
+            .unwrap();
+        }
+        {
+            let db = Database::open(&path).expect("open must migrate, not rebuild");
+            db.insert_embedding(3, &vec![0.1f32; crate::embeddings::EMBEDDING_DIM])
+                .unwrap();
+        }
+
+        let db = Database::open(&path).unwrap();
+        let stats = db.stats().unwrap();
+        assert_eq!(
+            (
+                stats.chunk_count,
+                stats.embedding_count,
+                stats.text_only_count
+            ),
+            (3, 1, 1),
+            "the unnamed window is text-only; the embedded test chunk counts as embedded"
+        );
+        let queued: Vec<i64> = db
+            .chunks_missing_embeddings()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.0)
+            .collect();
+        assert_eq!(queued, vec![1], "only the named product code is queued");
     }
 
     // ── pass-owed marker ──────────────────────────────────────────────────────

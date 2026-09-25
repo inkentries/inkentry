@@ -29,6 +29,7 @@ pub const DEFAULT_EXCLUDES: &[&str] = &[
     "package-lock.json",
     "npm-shrinkwrap.json",
     "packages.lock.json",
+    "*-lock.json",
     // minified assets
     "*.min.js",
     "*.min.css",
@@ -246,6 +247,7 @@ mod tests {
         assert!(is_excluded(&f, "package-lock.json", false));
         assert!(is_excluded(&f, "npm-shrinkwrap.json", false));
         assert!(is_excluded(&f, "packages.lock.json", false));
+        assert!(is_excluded(&f, "front/skills-lock.json", false));
         // minified
         assert!(is_excluded(&f, "app.min.js", false));
         assert!(is_excluded(&f, "site.min.css", false));
