@@ -1,40 +1,23 @@
-//! Lifecycle lines for the detached continuation children (`--_embed-phases`,
-//! `--_background-phases`), whose stdout and stderr the parent points at
-//! `index-background.log`.
-//!
-//! Detached from a terminal, the child otherwise says nothing until it is
-//! done: indicatif hides the progress bar on a non-TTY, and the phase notices
-//! only fire after the embed pass. A user sent to the log by `inkentry init`
-//! then finds an empty file, which reads the same as a worker that never
-//! started. The lines here are what tell the two apart: a start line with the
-//! pid, throttled batch progress, and a finish line, or the reason the child
-//! stopped early, since that is exactly when someone opens the file.
-//!
-//! Every line goes to stderr as plain text with a UTC timestamp. Whenever a
-//! parent spawned this child that stderr is the log file, on every platform,
-//! so nothing here emits colour or cursor movement.
+// Lifecycle lines for the detached continuation children. Off a TTY indicatif
+// hides its bar, so without these an empty log looks like a worker that never
+// started. Their stderr is the log file: plain text, no colour or cursor movement.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::IndexArgs;
 
-/// Set once by [`activate`] in the continuation modes. Outside them [`emit`] is
-/// a no-op, so the embed loop can report progress unconditionally without
-/// changing what a foreground run prints.
+// Off outside the continuation children, so the embed loop can report
+// unconditionally without changing foreground output.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Least time between two progress lines. A slow embedder runs small batches
-/// for a long time, and one line per batch would let a multi-hour run write
-/// thousands of near-identical lines into a file meant to be read by eye.
+// A slow embedder runs small batches for hours; a line per batch would flood a
+// log meant to be read by eye.
 const PROGRESS_MIN_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Which continuation child this process is, for the lifecycle lines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Phase {
-    /// `--_embed-phases`: the embed pass and everything after it.
     Embed,
-    /// `--_background-phases`: title-less refinement and conventions only.
     Refinement,
 }
 
@@ -67,7 +50,6 @@ pub(super) fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-/// `[<utc rfc3339, seconds>] <msg>`.
 pub(super) fn stamp(msg: &str) -> String {
     format!(
         "[{}] {msg}",
@@ -75,15 +57,12 @@ pub(super) fn stamp(msg: &str) -> String {
     )
 }
 
-/// Write one stamped line to stderr when active; nothing otherwise.
 pub(super) fn emit(msg: impl AsRef<str>) {
     if is_active() {
         eprintln!("{}", stamp(msg.as_ref()));
     }
 }
 
-/// Decides which committed batches get a progress line: the first, the last,
-/// and otherwise at most one per [`PROGRESS_MIN_INTERVAL`].
 pub(super) struct ProgressThrottle {
     last_emit: Option<Instant>,
 }
