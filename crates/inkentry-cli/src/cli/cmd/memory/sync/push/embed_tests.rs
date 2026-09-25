@@ -1,6 +1,3 @@
-// Pre-batch local-embedding repair tests for `super::push_local`: a pushed
-// row must not be left invisible to semantic `memory search` locally.
-
 use super::super::test_support::{fresh_store, spawn_loopback_embedder, stub_vector};
 use super::*;
 use crate::config::{Config, SyncMode};
@@ -8,9 +5,8 @@ use crate::config::{Config, SyncMode};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// A team `server_url` that is deliberately never mocked: any accidental
-// routing of the local embed to it surfaces as a connection error rather than
-// a silent pass.
+// Deliberately never mocked: any routing of the local embed here surfaces as a
+// connection error, not a silent pass.
 fn team_cfg() -> Config {
     Config {
         server_url: Some("https://cloud.invalid.example:1".to_string()),
@@ -123,9 +119,8 @@ async fn push_embeds_the_same_document_string_reindex_does() {
     .unwrap();
 
     let docs = embed_docs(&loopback.server.received_requests().await.unwrap());
-    // `memory reindex` embeds exactly this string (reindex.rs), document-side.
-    // A query-side embed would carry F2LLM's `Instruct:/Query:` prefix and put
-    // the row in a different space from every other note in the store.
+    // `memory reindex` embeds exactly this string, document-side; a query-side
+    // embed would add the `Instruct:` prefix and put the row in a different space.
     assert_eq!(docs, vec!["title: Cache policy | text: we cache for 5m"]);
     drop(loopback);
 }
@@ -161,11 +156,9 @@ async fn push_does_not_re_embed_a_row_that_already_has_a_valid_vector() {
     .unwrap();
 
     assert_eq!(summary.embedded_locally, 0);
-    // Not just "no embed call": no traffic at all. Resolving the embedder is
-    // itself a discovery probe (`GET /v1/health`), so a push set that is
-    // already fully embedded must never reach the resolver in the first place.
-    // Asserting only on `/index/embed` would still pass if the client were
-    // resolved eagerly and then went unused.
+    // No traffic at all: resolving the embedder is itself a discovery probe
+    // (`GET /v1/health`), and asserting only on `/index/embed` would pass if the
+    // client were resolved eagerly and went unused.
     assert!(
         loopback
             .server
@@ -370,8 +363,7 @@ async fn vectors_minted_before_an_interrupted_chunk_stay_durable() {
     let (tmp, store) = fresh_store();
     let id = add_note(&store, "Unembedded", "first");
 
-    // The batch route is never mounted, so `push_batch` fails and the push
-    // reports itself interrupted after the repair has already run.
+    // The batch route is never mounted, so `push_batch` fails after the repair ran.
     let team = MockServer::start().await;
     let client = CloudSyncClient::new(&team.uri(), "proj", None, None).unwrap();
 

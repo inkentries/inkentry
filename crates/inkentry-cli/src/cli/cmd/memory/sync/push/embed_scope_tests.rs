@@ -1,6 +1,3 @@
-// What the pre-batch local-embedding repair deliberately does NOT touch: rows
-// outside the push set, and content handling it must leave alone.
-
 use super::super::test_support::{fresh_store, spawn_loopback_embedder};
 use super::*;
 use crate::config::Config;
@@ -63,9 +60,8 @@ async fn an_empty_push_set_makes_no_embed_calls() {
         (summary.embedded_locally, summary.without_local_vector),
         (0, 0)
     );
-    // Stronger than "no embed call": the discovery probe (`GET /v1/health`)
-    // that resolving an embedder performs must not happen either, or an empty
-    // push would pay for an embedder it never needed.
+    // Stronger than "no embed call": the discovery probe (`GET /v1/health`) must
+    // not happen either.
     assert!(
         loopback
             .server
@@ -92,9 +88,7 @@ async fn already_synced_rows_are_left_unembedded() {
         .unwrap();
     let rows = store.rows_for_sync(false).unwrap();
     let id = rows[0].id.clone();
-    // Outside the push set: the cloud already has it. Repairing these rows
-    // belongs to the pull pass, which claims `remote_id IS NOT NULL`, so no row
-    // is claimed by both (`pull_embed_tests`).
+    // Outside the push set; the pull pass repairs `remote_id IS NOT NULL` rows.
     store.set_remote_id(&id, "cloud-1").unwrap();
 
     let team = MockServer::start().await;
@@ -181,8 +175,7 @@ async fn archived_rows_are_not_embedded_but_still_tombstone() {
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn vectors_land_in_the_store_that_was_pushed_not_the_project_default() {
     let loopback = spawn_loopback_embedder("proj", None).await;
-    // Two stores in separate directories: only the one handed to the push (what
-    // `--source <path>` selects) may be written to.
+    // Only the store handed to the push (what `--source` selects) may be written to.
     let (source_tmp, source) = fresh_store();
     let (other_tmp, other) = fresh_store();
     source
@@ -221,10 +214,8 @@ async fn vectors_land_in_the_store_that_was_pushed_not_the_project_default() {
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn the_repair_does_not_alter_or_re_screen_entry_content() {
-    // The secret gate lives at `memory add` time. This repair reads the stored
-    // title/body to build an embed document and writes back only a vector, so
-    // the bytes on the wire are exactly what a pre-repair push sent. Regression
-    // guard: no new pre-persistence scan requirement is introduced here.
+    // The secret gate lives at `memory add` time; the repair only writes back a
+    // vector, so the wire bytes must be unchanged.
     let loopback = spawn_loopback_embedder("proj", None).await;
     let (tmp, store) = fresh_store();
     let body = "token AKIAIOSFODNN7EXAMPLE stored by the user";

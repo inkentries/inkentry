@@ -1,9 +1,3 @@
-// `plumbing push --force` recovery path (ADR-092): the force push re-offers
-// every active entry, hands each already-synced entry's existing `remote_id`
-// back to the server as the ingest `id`, and reports the outcomes as
-// created/skipped rather than already_synced. The normal (non-force) push
-// pushes only unstamped rows and never sends an `id`.
-
 use super::super::test_support::register_sqlite_vec;
 use super::*;
 
@@ -11,9 +5,8 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-// Echoes every received entry back with a fixed status, so a force push against
-// a reset server (`created`) or a healthy one (`skipped`) can be modelled while
-// echoing the per-entry ids a real 207 would carry.
+// Echoes each entry back with a fixed status and the per-entry ids a real 207
+// carries.
 struct EchoStatus(&'static str);
 impl Respond for EchoStatus {
     fn respond(&self, request: &Request) -> ResponseTemplate {
@@ -25,8 +18,7 @@ impl Respond for EchoStatus {
                     .iter()
                     .map(|e| {
                         let ext = e["external_id"].as_str().unwrap_or_default();
-                        // Echo the supplied id back when present (a --force
-                        // restore), otherwise a distinct minted-style id.
+                        // A --force restore supplies the id; echo it back.
                         let id = e["id"]
                             .as_str()
                             .map(str::to_string)
@@ -49,8 +41,6 @@ impl Respond for EchoStatus {
     }
 }
 
-// Seed two notes and mark them already-synced by stamping a `remote_id` on each
-// (as a prior sync would have). Returns the store and the two remote ids.
 fn store_with_two_synced_rows(tmp: &TempDir) -> (MemoryStore, String, String) {
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
     store
@@ -67,10 +57,6 @@ fn store_with_two_synced_rows(tmp: &TempDir) -> (MemoryStore, String, String) {
     (store, remote_a, remote_b)
 }
 
-// Against a server that lost its database, `--force` re-offers every already-
-// synced entry (a normal push would skip them as attempted:0), hands each
-// entry's own prior `remote_id` back as the ingest `id`, and reports them as
-// created rather than already_synced.
 #[tokio::test]
 async fn force_reoffers_synced_rows_and_sends_their_remote_id_as_id() {
     register_sqlite_vec();
@@ -85,7 +71,6 @@ async fn force_reoffers_synced_rows_and_sends_their_remote_id_as_id() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    // Baseline: a normal push has nothing to do — both rows are already synced.
     let normal = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
         .await
         .unwrap();
@@ -95,7 +80,6 @@ async fn force_reoffers_synced_rows_and_sends_their_remote_id_as_id() {
         "the normal push must treat both stamped rows as already-synced"
     );
 
-    // Force: re-offer both, report them as created, and never as already_synced.
     let forced = push_local_oneway(&store, &client, false, false, true, &LocalEmbedPolicy::Skip)
         .await
         .unwrap();
@@ -110,8 +94,6 @@ async fn force_reoffers_synced_rows_and_sends_their_remote_id_as_id() {
         "force re-offers every active entry and counts them as created against a reset server"
     );
 
-    // The force push (the only request made — the normal push sent none) must
-    // carry each entry's existing remote_id as the request `id`.
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 1, "only the force push makes a request");
     let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
@@ -127,9 +109,6 @@ async fn force_reoffers_synced_rows_and_sends_their_remote_id_as_id() {
     );
 }
 
-// Against a still-healthy server the same `--force` re-push is idempotent: every
-// entry comes back skipped (the server already holds it), and the report counts
-// them as skipped, never already_synced — no duplicates.
 #[tokio::test]
 async fn force_against_a_healthy_server_reports_skipped_not_already_synced() {
     register_sqlite_vec();
@@ -159,8 +138,6 @@ async fn force_against_a_healthy_server_reports_skipped_not_already_synced() {
     );
 }
 
-// The normal (non-force) push pushes only unstamped rows and its request never
-// carries an `id` field (the server mints).
 #[tokio::test]
 async fn normal_push_never_sends_an_id_field() {
     register_sqlite_vec();

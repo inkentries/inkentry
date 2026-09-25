@@ -1,30 +1,13 @@
-// Chunking, resumability, and progress-reporting tests for `super::push_local`.
-
 use super::super::test_support::register_sqlite_vec;
 use super::*;
-
-// ── push_local end-to-end: remote_id stamping + idempotent re-sync ─────
-// The local-first push path is where the server-minted
-// cross-machine id is PERSISTED — stamped onto `notes.remote_id` from the
-// 207 batch result — not the `RemoteMemoryBackend::add` debug-log path
-// (which is the cloud-first, remote-is-store-of-record case with no local
-// row). Locks in that a push stamps `remote_id` and a re-push sends nothing
-// (no duplicate cloud writes, no local dupes).
-
-// ── chunking, resumability, and progress (D1 / D4 / D5) ─────────────────
 
 use std::collections::{HashMap, HashSet};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-// Seed `n` distinct live notes: distinct titles give distinct entity_ids (no
-// dedupe collision), and each is unstamped so all `n` land in the push set.
-//
-// Wrapped in one transaction: `add_note` autocommits, and a per-row commit
-// barrier is ~0.26s on the Windows CI runner, which made these tests scale at
-// tens of seconds per hundred seeded notes. The seeding is arrange-phase setup,
-// so committing it as one unit changes nothing the tests assert on.
+// Distinct titles give distinct entity_ids. One transaction: `add_note`
+// autocommits, and a per-row commit is ~0.26s on the Windows CI runner.
 fn seed_notes(store: &MemoryStore, n: usize) {
     store.execute_batch("BEGIN").unwrap();
     for i in 0..n {
@@ -35,9 +18,8 @@ fn seed_notes(store: &MemoryStore, n: usize) {
     store.execute_batch("COMMIT").unwrap();
 }
 
-// Echoes every received entry back as `created` with a distinct cloud id, so
-// `push_local` tallies and stamps exactly as a real 207 would, for any chunk
-// size (a static body cannot, since the ids it must echo are minted per row).
+// A static body cannot echo the per-row ids, so this tallies and stamps as a
+// real 207 would.
 struct EchoCreated;
 impl Respond for EchoCreated {
     fn respond(&self, request: &Request) -> ResponseTemplate {
@@ -64,9 +46,7 @@ impl Respond for EchoCreated {
     }
 }
 
-// First request lands (echoed created), every later request 500s. Models a
-// server that accepts the first chunk then falls over. Keyed on call count so
-// it does not depend on wiremock's ordering of same-path mocks.
+// Keyed on call count, not wiremock's ordering of same-path mocks.
 struct FailAfterFirst {
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -81,10 +61,6 @@ impl Respond for FailAfterFirst {
     }
 }
 
-// Echoes `created` for the first `ok` requests, then 500s every later one.
-// Unlike `FailAfterFirst`, the failure can be placed on any chunk, so a test
-// can prove the interrupted summary counts every chunk that landed before the
-// failure and that the loop halts exactly at the failed chunk.
 struct FailAfterN {
     ok: usize,
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -184,9 +160,8 @@ async fn push_chunks_cover_every_entry_exactly_once() {
             seen.push(e["external_id"].as_str().unwrap().to_string());
         }
     }
-    // A `<= N` check alone would pass an implementation chunking on the wrong
-    // size (e.g. 40), so pin the exact per-request counts: full chunks up to
-    // the constant, then the remainder. Requests arrive in push order.
+    // `<= N` alone would pass a wrong chunk size (e.g. 40); pin the exact counts
+    // (requests arrive in push order).
     assert_eq!(sizes, vec![50, 50, 20], "exact per-request entry counts");
     assert_eq!(seen.len(), 120, "no entry is pushed more than once");
     assert_eq!(
@@ -210,9 +185,8 @@ async fn multi_chunk_push_threads_slug_into_every_request_path() {
         .map(|r| r.id.to_string())
         .collect();
 
-    // The mock ONLY matches the percent-encoded slug path, so an all-created
-    // push proves every chunk (the first included) carried the slug in the
-    // path, which is what lazily creates/reuses the project server-side.
+    // The mock only matches the percent-encoded slug path, so an all-created push
+    // proves every chunk carried the slug.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/projects/acme%2Fapp/memory/batch"))
@@ -251,7 +225,6 @@ async fn interrupted_push_stops_and_resumes_from_the_remainder() {
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
     seed_notes(&store, 120); // 3 chunks: 50, 50, 20
 
-    // ── Run 1: chunk 1 lands, chunk 2 fails (500), chunk 3 is never sent. ──
     let server1 = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/projects/proj/memory/batch"))
@@ -291,7 +264,6 @@ async fn interrupted_push_stops_and_resumes_from_the_remainder() {
         "the 50 landed rows are durably stamped"
     );
 
-    // ── Run 2: a healthy server pushes ONLY the remainder. ──
     let server2 = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/projects/proj/memory/batch"))
@@ -338,9 +310,6 @@ async fn interrupted_push_stops_and_resumes_from_the_remainder() {
 
 #[tokio::test]
 async fn interrupted_on_a_later_chunk_counts_only_the_chunks_that_landed() {
-    // The failure lands on chunk 3 of 7: `created` must equal exactly the two
-    // full chunks that landed before it (not one, not three), and the loop
-    // must issue no request past the failed chunk.
     register_sqlite_vec();
     let tmp = TempDir::new().unwrap();
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
@@ -382,17 +351,13 @@ async fn interrupted_on_a_later_chunk_counts_only_the_chunks_that_landed() {
 
 #[tokio::test]
 async fn interrupted_push_skips_the_tombstone_delete_pass() {
-    // Once a live chunk fails the connection is already failing, so the
-    // archived-entry DELETEs must not be issued either. `delete_remote` treats
-    // a 404 as success, so only a request-count check catches a regression
-    // that dropped the interrupted gate on the tombstone pass.
+    // `delete_remote` treats 404 as success, so only a request-count check catches
+    // a dropped interrupted gate on the tombstone pass.
     register_sqlite_vec();
     let tmp = TempDir::new().unwrap();
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
-    // Three live, unstamped rows form the single push chunk that will fail.
     seed_notes(&store, 3);
-    // Two archived rows that DO carry a remote_id: the tombstone pass would
-    // DELETE these if it were not skipped on an interrupted push.
+    // Archived rows carrying a remote_id: the tombstone pass would DELETE these.
     for tag in ["A0", "A1"] {
         let (id, _) = store
             .add_note("note", tag, "body", &[], &[], None, None)
@@ -429,19 +394,17 @@ async fn interrupted_push_skips_the_tombstone_delete_pass() {
 
 #[tokio::test]
 async fn overlapping_repush_tallies_skipped_and_leaves_no_duplicates() {
-    // Models the committed-but-unstamped overlap: a prior push persisted rows
-    // server-side but the client lost the response (no `remote_id` stamped).
-    // On re-push the server dedupes on external_id and returns 207 `skipped`
-    // for the overlap; the client must tally those as skipped (not created),
-    // stamp them, and add no local duplicates.
+    // A prior push persisted rows server-side but the client lost the response,
+    // so nothing is stamped; the server dedupes on external_id and returns
+    // `skipped`, which must not tally as created.
     register_sqlite_vec();
     let tmp = TempDir::new().unwrap();
     let store = MemoryStore::open(&tmp.path().join("memory.db")).unwrap();
     seed_notes(&store, 4);
 
     let rows = store.rows_for_sync(false).unwrap();
-    // First two rows are the overlap (already server-side → skipped); the last
-    // two are genuinely new (created). Keyed by id, so row order is irrelevant.
+    // First two rows are the already-server-side overlap; keyed by id, so order
+    // is irrelevant.
     let mut status: HashMap<String, &str> = HashMap::new();
     status.insert(rows[0].id.to_string(), "skipped");
     status.insert(rows[1].id.to_string(), "skipped");
@@ -607,8 +570,6 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
         .add_note("note", "Two", "second", &[], &[], None, None)
         .unwrap();
 
-    // Learn the external_ids up front so the mock can echo them back with
-    // distinct cloud ids.
     let rows = store.rows_for_sync(false).unwrap();
     assert_eq!(rows.len(), 2);
     let (ext_a, ext_b) = (rows[0].id.to_string(), rows[1].id.to_string());
@@ -629,7 +590,6 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
         .await;
     let client = CloudSyncClient::new(&server.uri(), "proj", None, None).unwrap();
 
-    // First push: creates both, persists the server-minted id on each row.
     let s1 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
         .await
         .unwrap();
@@ -642,13 +602,10 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
         store.note_id_for_remote_id(cloud_b).unwrap(),
         Some(rows[1].id.clone())
     );
-    // The pull cursor is now the newest stamped id.
     assert_eq!(store.max_remote_id().unwrap().as_deref(), Some(cloud_b));
 
-    // Second push: every row carries a `remote_id`, so the live set is empty
-    // and no batch request is sent — the re-sync is a no-op. `attempted` must
-    // reflect that (not the raw row count), so callers never report "Pushed
-    // N" when nothing was sent.
+    // `attempted` must be 0, not the raw row count, so callers never report
+    // "Pushed N" when nothing was sent.
     let s2 = push_local(&store, &client, false, false, &LocalEmbedPolicy::Skip)
         .await
         .unwrap();
@@ -658,6 +615,5 @@ async fn push_local_stamps_remote_id_and_repush_is_idempotent() {
         1,
         "re-push must not hit the batch endpoint again"
     );
-    // No duplicate local rows introduced by the round trip.
     assert_eq!(store.count().unwrap(), 2);
 }

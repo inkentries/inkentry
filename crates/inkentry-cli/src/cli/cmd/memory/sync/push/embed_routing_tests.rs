@@ -1,9 +1,6 @@
-// Where the pre-batch local embed is allowed to go, and what happens when it
-// cannot run at all.
-//
-// The load-bearing invariant here: the embed must reach the loopback embedder
-// and never the configured team `server_url`. Routing it there would re-create
-// the exact server-side re-embedding the repair exists to remove.
+// The embed must reach the loopback embedder, never the configured team
+// `server_url`: that would re-create the server-side re-embedding this repair
+// removes.
 
 use super::super::local_embed::{local_embed_summary, pending_embedding_warning};
 use super::super::test_support::{fresh_store, spawn_loopback_embedder};
@@ -40,8 +37,6 @@ fn paths(reqs: &[wiremock::Request]) -> Vec<String> {
     reqs.iter().map(|r| r.url.path().to_string()).collect()
 }
 
-// ── the never-route-to-server_url invariant ─────────────────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn embed_traffic_goes_to_loopback_and_never_to_the_team_server_url() {
@@ -53,7 +48,6 @@ async fn embed_traffic_goes_to_loopback_and_never_to_the_team_server_url() {
     mount_batch_created(&team, &uuid).await;
     let client = CloudSyncClient::new(&team.uri(), "proj", None, None).unwrap();
 
-    // A real team server_url, and a loopback embedder discovered alongside it.
     let cfg = Config {
         server_url: Some(team.uri()),
         project_id: Some("proj".to_string()),
@@ -131,12 +125,8 @@ async fn a_push_speaks_only_to_loopback_and_the_configured_team_server() {
     drop(loopback);
 }
 
-// ── no local embedder: degrade, never refuse ────────────────────────────────
-
-// `mode = "offline"` is the deterministic form of "no local embedder is
-// reachable": `get_inference_tier` short-circuits before any probe, so the
-// repair resolves no client at all, exactly as it would on a machine with no
-// `inkentry server` running.
+// Offline makes `get_inference_tier` short-circuit before any probe: no local
+// embedder is reachable.
 fn no_embedder_cfg(server_url: String) -> Config {
     Config {
         server_url: Some(server_url),
@@ -166,7 +156,6 @@ async fn push_completes_text_only_when_no_local_embedder_is_available() {
     .await
     .unwrap();
 
-    // Same success shape as before the repair existed: nothing refused.
     assert_eq!(
         (summary.attempted, summary.created, summary.failed),
         (1, 1, 0)
@@ -182,13 +171,11 @@ async fn push_completes_text_only_when_no_local_embedder_is_available() {
 
 #[test]
 fn a_failed_loopback_probe_leaves_no_embedder_rather_than_the_team_server() {
-    // The one case a live mock cannot pin without owning port 4655: loopback
-    // auto-discovery finding nothing while a team `server_url` IS configured.
-    // `probe_loopback` yields `Tier::Offline(capability::OfflineReason::NoLocalServer)` there, whose `effective_config`
-    // is a no-op, and outside `cloud_first` `resolve_inference_url` reads
-    // `inference_url` alone. So the config the embedder is resolved from
-    // produces no client at all rather than falling back to `server_url`:
-    // the repair degrades to text-only instead of embedding remotely.
+    // A live mock cannot pin this without owning port 4655: loopback discovery
+    // finds nothing while a team `server_url` is configured. `effective_config` is
+    // a no-op for `Offline(NoLocalServer)` and, outside `cloud_first`,
+    // `resolve_inference_url` reads `inference_url` alone, so no client is built
+    // rather than falling back to `server_url`.
     let cfg = Config {
         server_url: Some("https://cloud.invalid.example:1".to_string()),
         project_id: Some("proj".to_string()),
@@ -300,8 +287,6 @@ async fn one_row_embed_failure_leaves_the_rest_of_the_push_intact() {
     drop(loopback);
 }
 
-// ── applicability ───────────────────────────────────────────────────────────
-
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn cloud_first_with_server_url_skips_the_repair_entirely() {
@@ -356,11 +341,8 @@ async fn cloud_first_with_server_url_skips_the_repair_entirely() {
     drop(loopback);
 }
 
-// The repair and `memory reindex` must agree, config shape by config shape, on
-// when a local embedding is meaningful at all. They are two independent
-// expressions of the same condition today; without this they can drift apart
-// silently, leaving a push repairing a store `reindex` refuses to touch (or
-// vice versa).
+// The repair and `memory reindex` are two expressions of one condition; this
+// stops them drifting apart.
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn the_repair_applies_exactly_where_reindex_does() {
@@ -437,9 +419,8 @@ async fn the_repair_applies_exactly_where_reindex_does() {
 
 #[test]
 fn cloud_first_without_server_url_still_repairs() {
-    // `open_memory_backend` only relocates the store of record when a
-    // `server_url` actually exists, so memory.db is still local truth here.
-    // `memory reindex` applies under exactly this condition too.
+    // `open_memory_backend` only relocates the store with a `server_url`, so
+    // memory.db is still local truth here.
     let cfg = Config {
         server_url: None,
         mode: Some(SyncMode::CloudFirst),
@@ -451,23 +432,17 @@ fn cloud_first_without_server_url_still_repairs() {
     ));
 }
 
-// ── reporting ───────────────────────────────────────────────────────────────
-
 #[test]
 fn wrong_dimension_stored_vector_counts_as_missing() {
-    // `note_embeddings` is a vec0 `FLOAT[896]` column that refuses a
-    // wrong-dimension insert outright (see `vector_tests.rs`), so this state is
-    // only reachable through a blob torn independently of any write. Pinned on
-    // the shared predicate both the repair pass and the batch build consult:
-    // "not exactly 896 floats" must mean "unembedded", so the row is re-embedded
-    // and the corrected vector is what ships.
+    // `note_embeddings` refuses a wrong-dimension insert, so this state is only
+    // reachable via a torn blob. Not exactly 896 floats must mean "unembedded" for
+    // both the repair pass and the batch build.
     use inkentry_core::embeddings::{EMBEDDING_DIM, vec_to_blob};
 
     assert!(usable_vector(Some(vec_to_blob(&vec![1.0f32; 768]))).is_none());
     assert!(usable_vector(Some(Vec::new())).is_none());
     assert!(usable_vector(None).is_none());
-    // A torn write: a valid 896-dim blob with its tail cut off. Must filter
-    // out rather than panic or accept a garbage-padded length.
+    // Torn write: a valid blob with its tail cut off must filter out, not panic.
     let full = vec_to_blob(&vec![1.0f32; EMBEDDING_DIM]);
     assert!(usable_vector(Some(full[..full.len() - 10].to_vec())).is_none());
     assert_eq!(
@@ -476,9 +451,8 @@ fn wrong_dimension_stored_vector_counts_as_missing() {
     );
 }
 
-// One warning now covers both halves of a sync: the push stamps `remote_id`,
-// which moves its rows into the pull's repair scope, so a push-specific second
-// message would double-count the same entries.
+// One warning covers both halves of a sync: the push stamps `remote_id`, moving
+// its rows into the pull's repair scope.
 #[test]
 fn the_pending_embedding_warning_names_the_count_and_the_remedy() {
     let msg = pending_embedding_warning(3);
