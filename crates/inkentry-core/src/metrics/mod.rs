@@ -83,13 +83,19 @@ pub struct Snapshot {
 /// to (D7: both blocks describe one snapshot).
 pub const EVENTS_WINDOW_DAYS: u32 = 7;
 
-/// The window closes at the later of HEAD's committer time and the newest
-/// entry, never at the wall clock: the document stays a function of the
-/// repository and the store, and an entry recorded since the last commit is
-/// still counted.
+/// The window closes at the latest of HEAD's committer time, the newest entry
+/// and the newest event, never at the wall clock: the document stays a
+/// function of the repository and the store, and an entry or event recorded
+/// since the last commit is still counted.
 fn window_end(store: &MemoryStore, head_time: Option<i64>) -> Result<i64> {
     let newest_entry = store.newest_created_at()?;
-    Ok(head_time.into_iter().chain(newest_entry).max().unwrap_or(0))
+    let newest_event = store.newest_event_at()?;
+    Ok(head_time
+        .into_iter()
+        .chain(newest_entry)
+        .chain(newest_event)
+        .max()
+        .unwrap_or(0))
 }
 
 /// Assemble a full snapshot for the memory store at `mem_path`, rooted at

@@ -137,6 +137,14 @@ impl MemoryStore {
             .map_err(Into::into)
     }
 
+    /// The `at` of the most recently recorded event. `None` when no event has
+    /// been recorded.
+    pub fn newest_event_at(&self) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT MAX(at) FROM events", [], |r| r.get(0))?)
+    }
+
     /// `(command, count)` for every event since `cutoff` (inclusive), grouped
     /// by command and ordered by count descending — `inkentry status`'s 7-day
     /// usage summary, now read from `events` (D5) rather than `index.db`'s

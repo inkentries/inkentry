@@ -1395,9 +1395,10 @@ titles, paths, query text or raw session references — aggregates only.
 
 Deterministic means exactly that: given the same repository state and the
 same recorded `events` rows, two runs produce byte-identical output. There is
-no `generated_at` field, and the window closes at the later of HEAD's commit
-time and the newest memory entry's `created_at`, never at the wall clock, so
-an entry recorded since the last commit is still counted. A project that is
+no `generated_at` field, and the window closes at the latest of HEAD's commit
+time, the newest memory entry's `created_at` and the newest recorded event,
+never at the wall clock, so an entry or event recorded since the last commit
+is still counted. A project that is
 not a git repository (or has no commits yet) has every commit-based metric —
 `rec.commit_coverage`, `cmp.lines_per_decision` — **absent** from the
 document, not reported as zero.
