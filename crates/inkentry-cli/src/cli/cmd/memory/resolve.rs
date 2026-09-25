@@ -1,21 +1,10 @@
-//! Resolving the id token a user typed to the id the backend holds.
-//!
-//! A user quotes the handle `memory list` and `memory show` display, which is a
-//! prefix of the entry's portable `entity_id`; the backend's own token is a
-//! UUIDv7 minted on this machine. ADR-093 D4 fixes the order the two are tried
-//! in and requires an ambiguous handle to resolve nothing.
-
 use anyhow::Result;
 
 use crate::storage::memory::Note;
 use crate::storage::{MemoryBackend, NoteId, is_entity_id_lookup};
 
-/// The entry `token` names, or `None` when the store does not hold it.
-///
-/// `Err` covers the two cases where an answer would be a guess: a handle naming
-/// more than one entry, where picking one would show, archive or supersede an
-/// entry the user did not mean, and a backend that could not read far enough to
-/// know, where `None` would be a denial it never established.
+// `Err` rather than `None` wherever an answer would be a guess: a handle naming
+// several entries, or a backend that could not read far enough to know.
 pub(super) async fn resolve_note(
     backend: &dyn MemoryBackend,
     token: &NoteId,
@@ -26,8 +15,8 @@ pub(super) async fn resolve_note(
     if !is_entity_id_lookup(token.as_str()) {
         return Ok(None);
     }
-    // A full `entity_id` is the longest prefix of itself and the column is
-    // unique, so the exact match and the prefix match are the same read.
+    // A full `entity_id` is its own longest prefix and the column is unique,
+    // so exact and prefix match are the same read.
     let (mut matches, examined) = backend
         .note_ids_for_entity_id_prefix(token.as_str())
         .await?

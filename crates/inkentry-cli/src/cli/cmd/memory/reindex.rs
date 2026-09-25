@@ -1,12 +1,3 @@
-//! `inkentry memory reindex`: backfill missing local note embeddings.
-//!
-//! A note's vector is minted only at `memory add` time. When no embedder was
-//! reachable then, or the 768→896 store upgrade discarded every prior vector,
-//! the note stays present-but-unembedded and semantic `memory search` can no
-//! longer surface it, with no catch-up path. This command re-embeds those notes
-//! through the same LOCAL embed path `add` uses, committing each vector as it
-//! completes so an interrupted run resumes on re-run.
-
 use anyhow::{Context, Result};
 use serde::Serialize;
 
@@ -19,9 +10,8 @@ use crate::{
     storage::MemoryStore,
 };
 
-/// Counts partition the store: `total_active == already_embedded + missing_before`.
-/// `remaining` is how many of the targeted notes are still unembedded after the
-/// run (0 on full success). `would_embed` is populated under `--dry-run` only.
+// `total_active == already_embedded + missing_before`; `would_embed` is set
+// under `--dry-run` only.
 #[derive(Debug, Serialize)]
 struct ReindexSummary {
     total_active: usize,
@@ -40,11 +30,8 @@ enum Outcome {
     Done,
 }
 
-/// Whether this pass owns stdout.
-///
-/// `memory reindex` run as itself does; run as another command's finishing pass
-/// it does not, and printing anyway puts a second document on a stdout the
-/// caller has already written one JSON document to.
+// Suppressed when run as another command's finishing pass: printing would put a
+// second document on a stdout the caller already wrote JSON to.
 #[derive(PartialEq, Eq)]
 pub(crate) enum Summary {
     Printed,
@@ -58,7 +45,6 @@ pub(crate) async fn memory_reindex(
     backend_override: Option<&str>,
     summary_output: Summary,
 ) -> Result<()> {
-    // Embeddings are a sqlite-vec concern; git notes hold no vectors.
     if backend_override == Some("git-notes") {
         anyhow::bail!(
             "This operation requires the sqlite backend. \
@@ -66,16 +52,9 @@ pub(crate) async fn memory_reindex(
         );
     }
 
-    // `memory reindex` backfills vectors into the LOCAL `memory.db` (opened
-    // directly below, bypassing `open_memory_backend`'s mode-based routing).
-    // Mirror `open_memory_backend`'s exact `route_remote` condition
-    // (`storage/mod.rs`): `cloud_first` only relocates the store of record
-    // to `server_url` when one is actually configured. `cloud_first` with no
-    // `server_url` set has nothing to route to, so `open_memory_backend`
-    // itself falls back to `memory.db` there too, memory.db is the store of
-    // record and there IS something local to re-embed. Gating on `mode`
-    // alone (ignoring `server_url`) would reject that exact case, contrary
-    // to `open_memory_backend`'s own routing (2026-07-23 founder decision).
+    // Mirrors `open_memory_backend`'s `route_remote` condition: `cloud_first`
+    // with no `server_url` falls back to `memory.db`, so there is something
+    // local to re-embed. Gating on `mode` alone would reject that case.
     if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
         anyhow::bail!(
             "'inkentry memory reindex' is not applicable in cloud_first mode with \
@@ -90,9 +69,7 @@ pub(crate) async fn memory_reindex(
         .with_context(|| format!("opening memory.db at {}", mem_path.display()))?;
 
     let total_active = store.count().context("counting active notes")? as usize;
-    // `missing_before` is always the active-notes-missing count, independent of
-    // the flags, so the summary partitions cleanly regardless of --force /
-    // --include-archived.
+    // Independent of --force / --include-archived so the summary always partitions.
     let missing_before = store
         .notes_missing_embeddings(false)
         .context("finding notes missing embeddings")?
@@ -120,8 +97,7 @@ pub(crate) async fn memory_reindex(
         force: args.force,
     };
 
-    // Dry-run and nothing-to-do both exit 0 without touching the embedder, so a
-    // count/no-op never requires a running server.
+    // Neither path touches the embedder, so neither needs a running server.
     if args.dry_run {
         summary.would_embed = candidates.len();
         emit_summary(&summary, json, Outcome::DryRun, &summary_output);
@@ -132,35 +108,27 @@ pub(crate) async fn memory_reindex(
         return Ok(());
     }
 
-    // Reuse add's LOCAL embed path so reindex works with no explicit server_url:
-    // an auto-discovered loopback server sets the tier without populating
-    // `server_url`, so bridge it into an effective config first (ADR-004),
-    // exactly as `memory add` / `memory search` do (`project_root` is the store's
-    // parent).
+    // An auto-discovered loopback server sets the tier without populating
+    // `server_url`; bridge it into an effective config as `memory add` does.
     let project_root = mem_path.parent().unwrap_or(mem_path);
-    // `get_inference_tier` (not `get_tier`): local_first always prefers the
-    // local loopback embedder, even with an explicit server_url set.
+    // `get_inference_tier`, not `get_tier`: local_first prefers the loopback
+    // embedder even with an explicit server_url.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
-    // No embedder reachable → actionable error + non-zero exit, before any
-    // write. Deliberately unlike reconcile (which imports without embeddings):
-    // here embedding IS the point, so silence-and-succeed would recreate the bug.
+    // Unlike reconcile, fail before any write when no embedder is reachable:
+    // embedding is the point here, so a silent success would recreate the bug.
     let client = require_server_client(&eff_cfg, "memory reindex")?;
 
     let total = candidates.len();
     let mut embedded = 0usize;
     for (id, title, body) in &candidates {
-        // Byte-identical to add.rs's document string: a backfilled vector must
-        // match an add-time one, so this format must not drift. `embed_text`
-        // embeds the raw document (NOT `embed_query`, which prepends the F2LLM
-        // `Instruct:/Query:` prefix and would produce a query-side vector).
+        // Must match add.rs's document string so a backfilled vector equals an
+        // add-time one. `embed_text`, not `embed_query`, which would prepend the
+        // query instruction.
         let doc = format!("title: {title} | text: {body}");
         let vec = match client.embed_text(&doc).await {
             Ok(v) => v,
             Err(e) => {
-                // Every note embedded so far is already durably committed
-                // (`insert_embedding` commits per call), so a re-run resumes the
-                // remainder rather than starting over.
                 return Err(e.context(format!(
                     "embedding note {id} ({embedded} of {total} done and durably stored; \
                      re-run 'inkentry memory reindex' to resume the rest)"

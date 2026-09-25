@@ -23,10 +23,8 @@ pub(super) async fn memory_supersede(
     };
     let old_handle = crate::storage::entity_id_handle(&old_target.entity_id).to_string();
     let new_handle = crate::storage::entity_id_handle(&new_note.entity_id).to_string();
-    // Two tokens can name one entry without looking alike: a handle, a longer
-    // prefix of it and the local id are three spellings of the same entry.
-    // Letting that through archives the entry and points its successor link at
-    // itself, which is not a state any reader can act on.
+    // A handle, a longer prefix of it and the local id all name one entry;
+    // letting that through archives it and links its successor to itself.
     if old_target.id == new_note.id {
         anyhow::bail!(
             "'{old}' and '{new}' name the same memory entry (#{old_handle}), \
@@ -43,14 +41,9 @@ pub(super) async fn memory_supersede(
     {
         println!("Archived #{old_handle} → superseded by #{new_handle}.");
 
-        // ── Git-notes write-through carrier ──────────────────────────────────
-        // Best-effort and non-fatal, matching `memory add`'s contract: SQLite
-        // above already holds the authoritative archive + link, so a failed
-        // carry means only that the edge stays local for now, never that the
-        // command fails. `GitNotesBackend::supersede` stays unsupported
-        // (ADR-068 D3), so this is the sole path that carries the edge when
-        // git notes is the primary store (explicit `--backend git-notes`
-        // never reaches here: `supersede` above already returned `Err`).
+        // Best-effort: SQLite already holds the authoritative archive and link.
+        // `GitNotesBackend::supersede` is unsupported, so this is the only path
+        // that carries the edge to git notes.
         let write_through = cfg.store_in_git_notes && backend_override != Some("git-notes");
         if write_through {
             match backend.get(old_target.id.clone()).await {
@@ -91,8 +84,6 @@ pub(super) async fn memory_supersede(
         anyhow::bail!("No active memory entry with id {} (old).", args.old_id);
     }
 
-    // ADR-037 P2: best-effort, non-blocking nudge of the local relay so a
-    // `local_first` supersede's outbox drains promptly. See `outbox.rs`.
     super::outbox::nudge_after_write(cfg, mem_path).await;
 
     super::super::events::record(

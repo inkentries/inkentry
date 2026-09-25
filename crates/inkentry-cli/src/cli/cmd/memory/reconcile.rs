@@ -1,22 +1,3 @@
-//! `inkentry memory reconcile` — import unique notes from server.db into memory.db.
-//!
-//! Discovers notes that exist in the local daemon's `server.db` but are absent
-//! from `memory.db` for the active project, and imports them in a single
-//! all-or-nothing transaction.
-//!
-//! Dedup is by `entity_id` (ADR-068) — sha256 over the canonical JSON of
-//! {body, kind, title} — never by rowid, which server.db and memory.db number
-//! independently. This module and `init`'s git-notes import must key
-//! identically or a row imported by one path is re-imported by the other; the
-//! shared `entity_id` function is what enforces that.
-//!
-//! `created_at`, `tags`, and `linked_files` are deliberately out of the key:
-//! identity has to be reproducible by a second machine recording the same
-//! decision, and none of the three is. Entries differing only in those fields
-//! collapse, unioning tags/linked_files add-wins.
-//!
-//! See ADR-004 for the full interface contract.
-
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -32,13 +13,7 @@ use crate::{
     storage::{MemoryStore, NoteId, entity_id, note_entity_id},
 };
 
-// ── Candidate row from server.db ──────────────────────────────────────────────
-
-/// A row read from `server.db`.
-///
-/// `id` and `superseded_by` are server-local rowids: meaningful for resolving an
-/// edge *within* server.db, never across the boundary into memory.db. The edge
-/// crosses by `entity_id`.
+// `id` and `superseded_by` are server-local rowids: only valid within server.db.
 #[derive(Debug, Clone)]
 struct ServerNote {
     id: i64,
@@ -70,7 +45,6 @@ impl ServerNote {
     }
 }
 
-/// Split a raw server.db CSV field: trim members, drop empties.
 fn split_csv(csv: &str) -> Vec<String> {
     csv.split(',')
         .map(str::trim)
@@ -79,12 +53,9 @@ fn split_csv(csv: &str) -> Vec<String> {
         .collect()
 }
 
-// ── Candidate collapse ────────────────────────────────────────────────────────
-
-/// Candidate rows sharing one `entity_id`, folded into a single entry.
-///
-/// Several rows can share an id now that `created_at`/`tags`/`linked_files` are
-/// out of the key, so the fold has to decide what the survivor carries.
+// Candidate rows sharing one `entity_id` fold into one entry. `created_at`,
+// `tags` and `linked_files` are outside the key, so rows differing only there
+// collapse.
 #[derive(Debug)]
 struct MergedNote {
     entity_id: String,
@@ -95,7 +66,6 @@ struct MergedNote {
     linked_files: Vec<String>,
     created_at: i64,
     status: String,
-    /// How many candidate rows folded in — drives the summary counts.
     rows: usize,
 }
 
@@ -114,10 +84,9 @@ impl MergedNote {
         }
     }
 
-    /// `kind`/`title`/`body` are identical by construction — they are the id.
-    /// Everything else folds: tags/linked_files union (add-wins), an archive on
-    /// any row sticks, and the earliest `created_at` wins so supersede chains
-    /// keep importing in order.
+    // `kind`/`title`/`body` are the id, so only the rest folds: tags and files
+    // union, an archive on any row sticks, and the earliest `created_at` wins so
+    // supersede chains import in order.
     fn absorb(&mut self, c: &ServerNote) {
         for t in c.tags_vec() {
             if !self.tags.contains(&t) {
@@ -137,7 +106,6 @@ impl MergedNote {
     }
 }
 
-/// Fold `candidates` to one entry per `entity_id`, preserving first-seen order.
 fn collapse_candidates(candidates: &[ServerNote]) -> Vec<MergedNote> {
     let mut merged: Vec<MergedNote> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -154,11 +122,8 @@ fn collapse_candidates(candidates: &[ServerNote]) -> Vec<MergedNote> {
     merged
 }
 
-/// `entity_id` → successor's `entity_id`.
-///
-/// Resolved through the server-local rowids, which are valid inside server.db;
-/// the resulting edge is expressed entirely in content-addressed ids and so
-/// survives the crossing into a store whose rowids are numbered differently.
+// Resolved through server-local rowids, then expressed in `entity_id`s so the
+// edge survives the crossing into a store that numbers rows differently.
 fn build_supersede_edges(candidates: &[ServerNote]) -> HashMap<String, String> {
     let by_server_id: HashMap<i64, &ServerNote> = candidates.iter().map(|c| (c.id, c)).collect();
     let mut edges = HashMap::new();
@@ -174,24 +139,21 @@ fn build_supersede_edges(candidates: &[ServerNote]) -> HashMap<String, String> {
     edges
 }
 
-// ── Summary / NDJSON reporting ────────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 struct ReconcileError {
     stage: String,
     message: String,
 }
 
-/// Counts are over source *rows*, and partition them exactly:
-/// `candidates == already_present + collapsed_duplicates + imported`
-/// (`would_import` replaces `imported` under `--dry-run`).
+// Counts are over source rows and partition them:
+// `candidates == already_present + collapsed_duplicates + imported`
+// (`would_import` replaces `imported` under `--dry-run`).
 #[derive(Debug, Serialize)]
 struct ReconcileSummary {
     source_db: String,
     project_slug: String,
     candidates: usize,
     already_present: usize,
-    /// Rows folded into a sibling candidate sharing their `entity_id`.
     collapsed_duplicates: usize,
     imported: usize,
     would_import: usize,
@@ -200,8 +162,6 @@ struct ReconcileSummary {
     errors: Vec<ReconcileError>,
 }
 
-// ── Main entry point ──────────────────────────────────────────────────────────
-
 pub(super) async fn memory_reconcile(
     args: MemoryReconcileArgs,
     mem_path: &std::path::Path,
@@ -209,13 +169,11 @@ pub(super) async fn memory_reconcile(
 ) -> Result<()> {
     let json = crate::utils::effective_format(&args.format) == "json";
 
-    // Resolve source server.db path.
     let server_db_path = args
         .source_db
         .clone()
         .unwrap_or_else(default_server_db_path);
 
-    // If server.db doesn't exist — no-op success.
     if !server_db_path.exists() {
         let summary = ReconcileSummary {
             source_db: server_db_path.display().to_string(),
@@ -233,16 +191,12 @@ pub(super) async fn memory_reconcile(
         return Ok(());
     }
 
-    // Resolve project slug.
     let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let slug = cfg.resolve_project_id(&project_root);
 
-    // `get_inference_tier` (not `get_tier`): local_first always prefers the
-    // local loopback embedder for step 5's best-effort embed, even with an
-    // explicit server_url set (2026-07-23 founder decision).
-    // Without this, step 5 silently imports every note unembedded under a
-    // local_first + server_url config, exactly the silent-unembedded-write
-    // symptom this fix eliminates.
+    // `get_inference_tier`, not `get_tier`: local_first prefers the loopback
+    // embedder even with an explicit server_url; otherwise every note imports
+    // unembedded.
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, &project_root);
     let cfg = &eff_cfg;
@@ -251,7 +205,7 @@ pub(super) async fn memory_reconcile(
         run_all_projects(&server_db_path, mem_path, cfg, &args, json).await
     } else {
         let result = reconcile_project(&slug, &server_db_path, mem_path, cfg, &args, json).await;
-        // Non-zero exit on fault already handled inside reconcile_project via ?
+        // Errors already propagate out of reconcile_project.
         result
     }
 }
@@ -308,7 +262,6 @@ async fn reconcile_project(
         errors: vec![],
     };
 
-    // ── Step 1: open server.db read-only, look up project_id ────────────────
     let server_conn = match open_server_db_readonly(server_db_path) {
         Ok(c) => c,
         Err(e) => {
@@ -331,15 +284,13 @@ async fn reconcile_project(
         .context("querying projects table in server.db")?;
 
     let Some(project_id) = project_id else {
-        // Project not present in server.db — no-op.
         emit_summary(&summary, json, args.dry_run);
         return Ok(());
     };
 
-    // ── Step 2: read candidate rows from server.db ───────────────────────────
     let candidates =
         read_server_notes(&server_conn, project_id).context("reading notes from server.db")?;
-    drop(server_conn); // release read connection; we no longer need server.db
+    drop(server_conn);
 
     summary.candidates = candidates.len();
 
@@ -348,7 +299,6 @@ async fn reconcile_project(
         return Ok(());
     }
 
-    // ── Step 3: open memory.db, index existing entries by entity_id ──────────
     let mem_store = MemoryStore::open(mem_path)
         .with_context(|| format!("opening memory.db at {}", mem_path.display()))?;
 
@@ -356,9 +306,8 @@ async fn reconcile_project(
         .all_notes_for_dedup()
         .context("reading existing memory.db notes for dedup")?;
 
-    // A store can already hold several rows under one entity_id — the previous
-    // key folded in created_at, so same-text entries stayed distinct. They are
-    // left alone; the oldest is the stable edge target.
+    // A store can hold several rows under one entity_id; the oldest is the
+    // stable edge target.
     let mut entity_to_local: HashMap<String, NoteId> = HashMap::new();
     for n in &existing_notes {
         entity_to_local
@@ -366,29 +315,25 @@ async fn reconcile_project(
             .or_insert_with(|| n.id.clone());
     }
 
-    // ── Step 4: build reconcile set (source rows not in memory.db) ───────────
-    // Candidates sharing an entity_id collapse into one entry first.
     let (present, mut to_import): (Vec<MergedNote>, Vec<MergedNote>) =
         collapse_candidates(&candidates)
             .into_iter()
             .partition(|m| entity_to_local.contains_key(&m.entity_id));
 
-    // Sort by created_at ASC to preserve supersede chains.
+    // Oldest first so supersede chains import in order.
     to_import.sort_by_key(|n| n.created_at);
 
     summary.already_present = present.iter().map(|m| m.rows).sum();
     summary.collapsed_duplicates = to_import.iter().map(|m| m.rows - 1).sum();
 
-    // Dry-run: report and stop, before any write.
     if args.dry_run {
         summary.would_import = to_import.len();
         emit_summary(&summary, json, args.dry_run);
         return Ok(());
     }
 
-    // A candidate that collapsed onto a stored entry still carries tags and
-    // linked_files the stored copy may lack. Add-wins: merge them in rather than
-    // dropping them with the duplicate.
+    // Add-wins: a candidate matching a stored entry may carry tags and files
+    // the stored copy lacks.
     for m in &present {
         let Some(local_id) = entity_to_local.get(&m.entity_id) else {
             continue;
@@ -403,11 +348,9 @@ async fn reconcile_project(
         return Ok(());
     }
 
-    // ── Step 5: embed via server (best-effort) ───────────────────────────────
-    // Attempt to obtain an embedding for each candidate; missing = None.
     let embed_client = ServerInferenceClient::from_config(cfg);
 
-    // Build embeddings upfront so we don't embed inside the transaction.
+    // Embedded up front so the transaction is not held open across server calls.
     let mut embeddings: Vec<Option<Vec<u8>>> = Vec::with_capacity(to_import.len());
     for note in &to_import {
         let text = format!("title: {} | text: {}", note.title, note.body);
@@ -418,7 +361,6 @@ async fn reconcile_project(
         embeddings.push(blob);
     }
 
-    // ── Step 6: single all-or-nothing transaction per project ─────────────────
     let import_result =
         import_batch(&mem_store, &to_import, &embeddings).context("inserting notes into memory.db");
 
@@ -426,15 +368,11 @@ async fn reconcile_project(
         Ok(imported_ids) => {
             summary.imported = imported_ids.len();
 
-            // ── Step 7: resolve supersede links ──────────────────────────────
-            // Every entity now in the store, keyed by its content-addressed id:
-            // the successor may be a row we just imported or one already held.
+            // The successor may be a row just imported or one already held.
             for (note, local_id) in to_import.iter().zip(imported_ids.iter()) {
                 entity_to_local.insert(note.entity_id.clone(), local_id.clone());
             }
 
-            // The edge is content-addressed on both ends, so it resolves even
-            // though server.db and memory.db number their rows independently.
             let supersede_edges = build_supersede_edges(&candidates);
 
             let mut unresolved = 0usize;
@@ -449,8 +387,7 @@ async fn reconcile_project(
                     unresolved += 1;
                     continue;
                 };
-                // Collapse can point an entry at itself when a supersede pair
-                // shares its text; a self-edge is a cycle, not a chain.
+                // A supersede pair with identical text collapses to one entry.
                 if succ_local_id == local_id {
                     continue;
                 }
@@ -475,33 +412,22 @@ async fn reconcile_project(
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Default path for the daemon's server.db: `~/.local/state/inkentry/server.db`,
-/// or `INKENTRY_STATE_DIR` when set.
-///
-/// Must go through the shared `capability::inkentry_state_dir` resolver, not
-/// reconstruct the path from `dirs::home_dir()` independently: the daemon
-/// (`inkentry server start`) writes `server.db` via that same resolver, so a
-/// second, hardcoded reconstruction here would silently stop finding it
-/// under `INKENTRY_STATE_DIR` while still reporting reconcile as a no-op
-/// success (the "server.db doesn't exist" branch) instead of an error.
+// Must use the daemon's own `inkentry_state_dir` resolver: a reconstructed path
+// would miss server.db under `INKENTRY_STATE_DIR` and report a silent no-op.
 fn default_server_db_path() -> PathBuf {
     inkentry_state_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("server.db")
 }
 
-/// Open server.db in immutable read-only mode.  The daemon owns this file;
-/// we must never write to it.
+// The daemon owns server.db; never write to it.
 fn open_server_db_readonly(path: &std::path::Path) -> Result<Connection> {
-    // SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
     let conn = Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("opening server.db read-only at {}", path.display()))?;
-    // Use WAL read-mode so we don't block the daemon's writers.
+    // WAL read-mode so the daemon's writers are not blocked.
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     Ok(conn)
 }
@@ -533,7 +459,6 @@ fn read_server_notes(conn: &Connection, project_id: i64) -> Result<Vec<ServerNot
     Ok(notes)
 }
 
-/// Insert the batch in a single transaction. Returns the list of new local ids.
 fn import_batch(
     store: &MemoryStore,
     notes: &[MergedNote],
@@ -549,7 +474,6 @@ fn import_batch(
             let tag_parts: Vec<&str> = note.tags.iter().map(String::as_str).collect();
             let file_parts: Vec<&str> = note.linked_files.iter().map(String::as_str).collect();
 
-            // Determine import status: archived source rows stay archived.
             let status = if note.status == "archived" {
                 "archived"
             } else {
@@ -588,8 +512,6 @@ fn import_batch(
     }
 }
 
-/// Try to obtain an embedding blob for `text`.  Returns `None` without
-/// failing if the server is unavailable.
 async fn try_embed(client: &Option<ServerInferenceClient>, text: &str) -> Option<Vec<u8>> {
     use crate::embeddings::vec_to_blob;
     let client = client.as_ref()?;
@@ -635,48 +557,24 @@ fn print_human_summary(s: &ReconcileSummary, dry_run: bool) {
     }
 }
 
-// ── init-time git-notes import ────────────────────────────────────────────────
-
-/// source_ref stamped on entries imported from git notes during `init`.
 const INIT_GIT_NOTES_SOURCE: &str = "init:git-notes";
 
-/// Matches `GitNotesBackend`'s internal per-list cap; requesting more only logs
-/// a warning and is truncated anyway.
+// Matches `GitNotesBackend`'s per-list cap; asking for more is truncated with a
+// warning.
 const GIT_NOTES_IMPORT_LIMIT: usize = 500;
 
-/// What a git-notes import did: entries taken from the carrier, and what became
-/// of the graph edges the carrier records alongside them.
+// Edges naming an entry this store lacks are counted unresolved, not fatal; a
+// later import resolves them. Supersede edges are counted apart because they
+// ride their own carrier field.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GitNotesImport {
-    /// Entries this pass inserted into `memory.db`.
     pub imported: usize,
-    /// Carried `relates_to`/`contradicts` edges that became a new `memory_edges`
-    /// row here.
     pub edges_applied: usize,
-    /// Carried `relates_to`/`contradicts` edges naming an entry this store does
-    /// not hold, so they were skipped rather than failing the import. A later
-    /// import, after a fetch that brings the missing entry, resolves them.
     pub edges_unresolved: usize,
-    /// Supersede edges (carried on each subject's `superseded_by_entity_id`)
-    /// that became a new `memory_edges` row here. Counted apart from
-    /// `edges_applied` because supersede rides its own carrier field, not the
-    /// edge list, and so reconstructs through a separate projection.
     pub supersede_edges_applied: usize,
-    /// Supersede edges whose subject or successor is absent from this store, so
-    /// they were skipped. Resolves on a later import once the missing entry
-    /// arrives.
     pub supersede_edges_unresolved: usize,
 }
 
-/// Import git-notes memory entries into the project `memory.db` during `init`.
-///
-/// Reads every entry from the enclosing repo's git-notes backend
-/// (`refs/notes/inkentry`) and inserts those absent from `memory.db`, without
-/// embeddings (git-notes entries carry none). Dedup uses the same content hash
-/// as `memory reconcile`, so a re-run imports nothing. The `relates_to` and
-/// `contradicts` edges the records carry are applied afterwards, which is what
-/// reconstructs the graph on a clone (ADR-086). An empty/absent notes ref is a
-/// no-op.
 pub(crate) async fn import_git_notes_into_memory(
     git_root: &std::path::Path,
     mem_path: &std::path::Path,
@@ -684,23 +582,18 @@ pub(crate) async fn import_git_notes_into_memory(
     use crate::storage::{GitNotesBackend, MemoryBackend, NotesRefs};
 
     let backend = GitNotesBackend::with_root(git_root.to_path_buf());
-    // include_archived=true so archived git-notes entries import and participate
-    // in dedup, mirroring reconcile.
+    // include_archived so archived entries import and dedup.
     let notes = backend
         .list(None, GIT_NOTES_IMPORT_LIMIT, true, None)
         .await?;
 
-    // The working-ref OID this import reflects, read in process (ADR-077 D2).
-    // Stamped in the SAME transaction as the imported rows so a crash cannot
-    // leave the marker and the store disagreeing; the read-path gate then skips
-    // this walk until the ref moves again.
+    // Stamped in the same transaction as the imported rows so a crash cannot
+    // leave the marker and the store disagreeing.
     let working_oid = NotesRefs::discover(Some(git_root)).and_then(|r| r.working_oid());
 
     if notes.is_empty() {
-        // Nothing on the carrier. Never create a store just to stamp — an empty
-        // ref must leave no memory.db (no churn); only advance the marker when a
-        // store already exists, so a bare-but-present notes ref does not re-walk
-        // on every read.
+        // Advance the marker only if a store exists: an empty ref must not
+        // create memory.db.
         if mem_path.exists()
             && let Ok(store) = MemoryStore::open(mem_path)
         {
@@ -718,36 +611,29 @@ pub(crate) async fn import_git_notes_into_memory(
         .map(note_entity_id)
         .collect();
 
-    // `insert` returning false also drops duplicates *within* the notes ref —
-    // two entries with identical text are one entity now.
+    // `insert` returning false also drops duplicates within the notes ref:
+    // identical text is one entity.
     let to_import: Vec<&crate::storage::memory::Note> = notes
         .iter()
         .filter(|&n| existing.insert(note_entity_id(n)))
         .collect();
-    // Read the graph the records carry before opening the transaction, since
-    // this is a git read and the write below holds a lock. Edges name their
-    // endpoints by `entity_id` and `memory_edges` has foreign keys onto
-    // `notes`, so they can only be applied once every entry this pass adds is
-    // in the store (ADR-086 D4).
+    // A git read, so done before the transaction takes its lock.
     let carried = backend
         .carried_edges()
         .await
         .context("reading the edges carried on the notes ref")?;
-    // Supersede rides its own carrier field, so it is read (and applied below)
-    // separately from the `relates_to`/`contradicts` edge list.
+    // Supersede rides its own carrier field, apart from the edge list.
     let supersede_pairs = backend
         .carried_supersede_edges()
         .await
         .context("reading the supersede edges carried on the notes ref")?;
 
     if to_import.is_empty() && carried.is_empty() && supersede_pairs.is_empty() {
-        // Everything on the ref is already imported: advance the marker (so the
-        // gate stops re-walking) without inserting a row.
+        // Advance the marker so the read-path gate stops re-walking.
         let _ = store.set_notes_imported_working_oid(working_oid.as_deref());
         return Ok(GitNotesImport::default());
     }
 
-    // Single all-or-nothing transaction, mirroring reconcile's import_batch.
     store
         .execute_batch("BEGIN IMMEDIATE")
         .context("beginning git-notes import transaction")?;
@@ -777,7 +663,7 @@ pub(crate) async fn import_git_notes_into_memory(
         // Same ordering requirement: the foreign keys refuse a supersede row
         // until both its endpoints are in the store.
         let supersedes = store.import_supersede_edges(&supersede_pairs)?;
-        // Crash-atomic with the inserts above (ADR-077 D2).
+        // Crash-atomic with the inserts above.
         store.set_notes_imported_working_oid(working_oid.as_deref())?;
         Ok(GitNotesImport {
             imported: to_import.len(),
@@ -802,28 +688,10 @@ pub(crate) async fn import_git_notes_into_memory(
     }
 }
 
-// ── Read-path notes import (ADR-077 D1/D2), called by list/search/show/context ─
-
-/// Fold fetched teammate notes into `memory.db` on a read — but only when the
-/// notes refs moved since the last import (ADR-077 D1/D2).
-///
-/// Two in-process ref reads gate the work: the merge subprocess runs only when
-/// the tracking ref (`refs/notes/origin/inkentry`) moved, and the import walk
-/// runs only when the working ref (`refs/notes/inkentry`) moved. The steady
-/// state — nothing fetched since the last import — spawns zero git subprocesses
-/// and does no import walk. Does no network: it merges and imports only what the
-/// user's own `git fetch` already wrote.
-///
-/// Routing:
-/// - `--backend git-notes` (git notes as the primary store, incl. the pre-init
-///   carrier) reads the ref directly, so it only needs the merge; there is no
-///   `memory.db` marker to gate on, so the merge is unconditional, as before.
-/// - A `cloud_first` server owns the store remotely, so the local carrier is
-///   not consulted at all.
-/// - Otherwise (the default local SQLite path) the gated merge + import runs.
-///
-/// Never fails the caller: a read must not break because the refresh could not
-/// run.
+// The merge runs only when the tracking ref moved and the import only when the
+// working ref moved, so the steady state spawns no git subprocess. No network:
+// it folds in only what the user's own `git fetch` wrote. Never fails the
+// caller: a read must not break because the refresh could not run.
 pub(crate) async fn refresh_read_path_from_git_notes(
     cfg: &Config,
     mem_path: &std::path::Path,
@@ -832,23 +700,20 @@ pub(crate) async fn refresh_read_path_from_git_notes(
     use crate::config::SyncMode;
     use crate::storage::NotesRefs;
 
-    // Git notes is the primary store here: fold the tracking ref in so the
-    // direct read sees fetched entries. No marker store exists on this path
-    // (the pre-init carrier has no memory.db), so the merge stays unconditional,
-    // exactly as list/context did before ADR-077.
+    // Git notes is the primary store: fold the tracking ref in so the direct
+    // read sees fetched entries. No memory.db marker exists here, so the merge
+    // is unconditional.
     if backend_override == Some("git-notes") {
         crate::storage::merge_tracking_notes(None).await;
         return;
     }
-    // A cloud_first server is the store of record; the local notes carrier is
-    // not read, so make no merge and no import attempt.
+    // cloud_first: the server is the store of record; the local carrier is not read.
     if cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some() {
         return;
     }
 
-    // Default local SQLite path: gate on the notes-ref OIDs, read in process.
     let Some(refs) = NotesRefs::discover(None) else {
-        return; // not inside a git repo → nothing to import
+        return;
     };
     let tracking = refs.tracking_oid();
     let mut working = refs.working_oid();
@@ -856,9 +721,8 @@ pub(crate) async fn refresh_read_path_from_git_notes(
         return; // nothing on either notes ref → no store churn
     }
 
-    // Read the persisted markers. A store that does not exist yet has none, and
-    // opening one here just to read them would churn an empty memory.db, so
-    // treat "no store" as "no marker".
+    // Opening a missing store just to read markers would churn an empty
+    // memory.db, so no store means no marker.
     let marker = if mem_path.exists() {
         MemoryStore::open(mem_path)
             .ok()
@@ -870,15 +734,12 @@ pub(crate) async fn refresh_read_path_from_git_notes(
 
     let git_root = refs.workdir();
 
-    // Merge only when the tracking ref moved since the last merge.
     let tracking_moved = tracking != marker.last_merged_tracking_oid;
     if tracking_moved {
         crate::storage::merge_tracking_notes(git_root).await;
         working = refs.working_oid(); // the merge may have advanced the working ref
     }
 
-    // Import only when the working ref moved since the last import. The import
-    // stamps `last_imported_working_oid` in its own transaction.
     if working != marker.last_imported_working_oid
         && let Some(git_root) = git_root
         && let Err(e) = import_git_notes_into_memory(git_root, mem_path).await
@@ -886,19 +747,12 @@ pub(crate) async fn refresh_read_path_from_git_notes(
         tracing::warn!("read-path git-notes import skipped (non-fatal): {e}");
     }
 
-    // Persist the tracking marker (the import handled the working marker). Done
-    // after the merge/import established the store, and only when the ref moved.
+    // After the import, which may have created the store.
     if tracking_moved && let Ok(store) = MemoryStore::open(mem_path) {
         let _ = store.set_notes_merged_tracking_oid(tracking.as_deref());
     }
 }
 
-// ── Discovery nudge helpers (called by list/search/context) ──────────────────
-
-/// Return the number of notes in server.db for `slug` that are absent from
-/// `memory.db`.  Used to drive the one-time discovery nudge.
-///
-/// Returns `None` if server.db doesn't exist or is unreadable (silent).
 pub(super) fn count_reconcilable(
     server_db_path: &std::path::Path,
     mem_path: &std::path::Path,
@@ -925,8 +779,7 @@ pub(super) fn count_reconcilable(
     let existing_entities: std::collections::HashSet<String> =
         existing.iter().map(note_entity_id).collect();
 
-    // Counts entries the user would gain, so collapsed duplicates count once —
-    // it must not promise more than `reconcile` would import.
+    // Collapsed duplicates count once; must not promise more than reconcile imports.
     let count = collapse_candidates(&candidates)
         .iter()
         .filter(|m| !existing_entities.contains(&m.entity_id))
@@ -935,19 +788,12 @@ pub(super) fn count_reconcilable(
     if count > 0 { Some(count) } else { None }
 }
 
-/// Print a one-time discovery nudge to stderr if there are reconcilable notes.
-///
-/// The nudge is suppressed when:
-/// - `server.db` doesn't exist or has no new notes.
-/// - Any note in `memory.db` has `source_ref = 'reconcile:server.db'` (prior
-///   reconcile has already run — we trust the user has seen the nudge).
-/// - `INKENTRY_NO_RECONCILE_NUDGE=1` is set (CI / scripting escape hatch).
 pub(crate) fn maybe_emit_nudge(mem_path: &std::path::Path, cfg: &Config) {
     if std::env::var_os("INKENTRY_NO_RECONCILE_NUDGE").is_some() {
         return;
     }
 
-    // Suppress if any imported-from-server note already exists (run already done).
+    // A prior reconcile means the user has already seen the nudge.
     if let Ok(store) = MemoryStore::open(mem_path)
         && store.has_source_ref("reconcile:server.db").unwrap_or(false)
     {
@@ -985,9 +831,8 @@ mod init_import_tests {
     }
 
     fn make_temp_git_repo() -> tempfile::TempDir {
-        // Process-wide: this repo's own `commit` below runs through the
-        // ambient global git config if it isn't neutralized first, so an
-        // ambient `core.hooksPath` fires a foreign pre-commit hook here.
+        // An ambient `core.hooksPath` would fire a foreign pre-commit hook on
+        // the commit below.
         crate::cli::cmd::test_support::isolate_git_config();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let p = dir.path();
@@ -1028,8 +873,7 @@ mod init_import_tests {
         }
     }
 
-    /// Every edge in `mem_path`'s store as `(from title, kind, to title)`.
-    /// Titles, not ids: the ids a clone mints are its own.
+    // Titles, not ids: the ids a clone mints are its own.
     fn edge_triples(mem_path: &std::path::Path) -> Vec<(String, String, String)> {
         let store = MemoryStore::open(mem_path).expect("open memory.db");
         let notes = store.list(None, 100, true).expect("list");
@@ -1058,8 +902,6 @@ mod init_import_tests {
         rows
     }
 
-    /// D4: the edges a record carries are applied after the entries, so an
-    /// edge between two entries arriving in the same import finds both of them.
     #[tokio::test]
     async fn init_import_applies_carried_edges_after_the_entries_they_join() {
         register_sqlite_vec();
@@ -1102,9 +944,6 @@ mod init_import_tests {
         );
     }
 
-    /// D4: an edge naming an entry this store does not hold is counted, not
-    /// fatal, and resolves on a later import once that entry arrives. The
-    /// second pass also proves the edges already applied are not duplicated.
     #[tokio::test]
     async fn init_import_counts_a_dangling_edge_then_resolves_it_without_duplicating() {
         register_sqlite_vec();
@@ -1120,8 +959,7 @@ mod init_import_tests {
             .await
             .expect("relates_to");
 
-        // The target is on the ref but kept out of this store, which is the
-        // shape a partial fetch produces.
+        // The target is on the ref but not in this store, as after a partial fetch.
         let store = MemoryStore::open(&mem_path).expect("open memory.db");
         let carried = backend.carried_edges().await.expect("carried_edges");
         store
@@ -1145,7 +983,6 @@ mod init_import_tests {
         );
         drop(store);
 
-        // A fuller read of the ref brings the target, and the same edge lands.
         let outcome = import_git_notes_into_memory(git_root, &mem_path)
             .await
             .expect("import");
@@ -1167,9 +1004,6 @@ mod init_import_tests {
         );
     }
 
-    /// An edge appended for two entries that were both imported by an earlier
-    /// pass still lands: the edge-only append is not skipped just because no
-    /// entry is new.
     #[tokio::test]
     async fn init_import_applies_an_edge_appended_after_both_entries_were_hydrated() {
         register_sqlite_vec();
@@ -1199,15 +1033,11 @@ mod init_import_tests {
         assert_eq!(edge_triples(&mem_path).len(), 1);
     }
 
-    // ── supersede-edge hydration ─────────────────────────────────────────────
-
     const SUPERSEDE_OLD_TITLE: &str = "the retired approach";
     const SUPERSEDE_NEW_TITLE: &str = "the chosen approach";
 
-    // Build a git-notes ref carrying two entries where NEW supersedes OLD,
-    // exactly as `memory add` + `memory supersede`'s carrier write-through would:
-    // OLD and NEW added, then an archived state-update on OLD naming NEW as its
-    // successor via `superseded_by_entity_id`. Returns NEW's entity_id.
+    // Leaves the ref as `memory add` + `memory supersede`'s write-through would.
+    // Returns NEW's entity_id.
     async fn seed_supersede_carrier(git_root: &std::path::Path) -> String {
         let backend = GitNotesBackend::with_root(git_root.to_path_buf());
         backend
@@ -1242,12 +1072,6 @@ mod init_import_tests {
         new_eid
     }
 
-    /// Two-clone round trip: a writer records NEW superseding OLD (its memory.db
-    /// gains the authoritative `supersedes` row and the carrier gains OLD's
-    /// `superseded_by_entity_id`); a clone hydrated only from the carrier must
-    /// reconstruct the identical edge. Expected is derived from the writer's own
-    /// rows, mapped through the shared titles, not pasted from output. A re-import
-    /// proves the edge is not duplicated.
     #[tokio::test]
     async fn init_import_reconstructs_supersede_edge_matching_the_writer() {
         register_sqlite_vec();
@@ -1255,9 +1079,7 @@ mod init_import_tests {
         let git_root = repo.path();
         seed_supersede_carrier(git_root).await;
 
-        // The writer's authoritative store: OLD and NEW added, then superseded.
-        // `supersede` writes the edge as (from = NEW, to = OLD), the direction a
-        // clone must match.
+        // `supersede` writes the edge as (from = NEW, to = OLD); a clone must match.
         let writer_mem = git_root.join(".inkentry").join("writer.db");
         let writer = MemoryStore::open(&writer_mem).expect("open writer.db");
         let (old_local, _) = writer
@@ -1297,7 +1119,6 @@ mod init_import_tests {
             "the writer holds exactly one supersede edge, NEW → OLD"
         );
 
-        // The clone hydrates from the carrier alone.
         let clone_mem = git_root.join(".inkentry").join("clone.db");
         import_git_notes_into_memory(git_root, &clone_mem)
             .await
@@ -1309,7 +1130,6 @@ mod init_import_tests {
             "the clone must reconstruct the writer's supersede edge"
         );
 
-        // Re-importing the same carrier adds no second edge.
         import_git_notes_into_memory(git_root, &clone_mem)
             .await
             .expect("clone re-import");
@@ -1320,8 +1140,6 @@ mod init_import_tests {
         );
     }
 
-    /// Happy path: a note recorded via git notes before `init` is imported into
-    /// memory.db, is visible via the SQLite store, and a re-run adds nothing.
     #[tokio::test]
     async fn init_imports_git_notes_and_is_idempotent() {
         register_sqlite_vec();
@@ -1370,17 +1188,13 @@ mod init_import_tests {
         );
     }
 
-    /// A blob written before `entity_id` existed carries no such key. Its
-    /// identity recomputes from the three fields it does carry, so it still
-    /// dedups against a stored row — absence must be fully recoverable.
     #[tokio::test]
     async fn init_import_dedups_legacy_blob_without_entity_id() {
         register_sqlite_vec();
         let repo = make_temp_git_repo();
         let git_root = repo.path();
 
-        // A legacy record: serde omits `entity_id` when None, so this is
-        // byte-identical to a blob written before the field existed.
+        // serde omits `entity_id` when None, so this blob has no such key.
         let legacy = crate::storage::NoteRecord {
             schema_version: 1,
             id: 1,
@@ -1416,9 +1230,9 @@ mod init_import_tests {
             "the seeded blob must genuinely lack the key: {blob}"
         );
 
-        // Seed memory.db with the same content, as a prior import would have.
         let mem_path = git_root.join(".inkentry").join("memory.db");
         let store = MemoryStore::open(&mem_path).expect("open memory.db");
+        // A different created_at, which is not part of the key.
         store
             .add_note_with_created_at(
                 "decision",
@@ -1428,7 +1242,7 @@ mod init_import_tests {
                 &[],
                 Some("manual"),
                 "active",
-                1_700_000_999, // a different created_at: no longer part of the key
+                1_700_000_999,
             )
             .expect("seed note");
 
@@ -1443,7 +1257,6 @@ mod init_import_tests {
         assert_eq!(store.list(None, 10, true).expect("list").len(), 1);
     }
 
-    /// A repo with no inkentry notes ref is a silent no-op.
     #[tokio::test]
     async fn init_import_no_notes_is_noop() {
         register_sqlite_vec();
@@ -1457,10 +1270,6 @@ mod init_import_tests {
         assert_eq!(imported, 0, "no notes ref → nothing imported");
     }
 
-    // ── added coverage (init git-notes import hardening) ──────────────────────
-
-    /// A `git init`'d repo with no commit yet (no HEAD, no notes ref) is a
-    /// silent no-op — and must not churn an empty `memory.db` into existence.
     #[tokio::test]
     async fn init_import_no_commit_repo_is_noop_no_churn() {
         register_sqlite_vec();
@@ -1479,8 +1288,6 @@ mod init_import_tests {
         );
     }
 
-    /// A repo that HAS a commit but no inkentry notes must likewise leave no
-    /// `memory.db` behind (the import bails before opening the store).
     #[tokio::test]
     async fn init_import_no_notes_no_db_churn() {
         register_sqlite_vec();
@@ -1499,8 +1306,6 @@ mod init_import_tests {
         );
     }
 
-    /// An archived git-notes entry imports (carrying its archived status) and
-    /// participates in dedup, so a re-run imports nothing and never duplicates.
     #[tokio::test]
     async fn init_import_archived_entry_imports_and_dedups() {
         register_sqlite_vec();
@@ -1536,18 +1341,15 @@ mod init_import_tests {
         assert_eq!(imported, 1, "archived git-notes entry must import");
 
         let store = MemoryStore::open(&mem_path).expect("open memory.db");
-        // Not surfaced by an active-only listing …
         assert!(
             store.list(None, 10, false).expect("active list").is_empty(),
             "an imported archived entry must not appear in the active listing"
         );
-        // … but present, and archived, when archived rows are included.
         let all = store.list(None, 10, true).expect("full list");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, "archived", "archived status must be carried");
 
-        // Re-run: the archived row already present in memory.db dedups (the
-        // content key excludes status), so nothing re-imports and no duplicate.
+        // Status is not part of the key, so the archived row dedups.
         let again = import_git_notes_into_memory(git_root, &mem_path)
             .await
             .expect("re-import")
@@ -1560,17 +1362,11 @@ mod init_import_tests {
         );
     }
 
-    /// Runs the "already-present entry is skipped, new entry imports" scenario
-    /// end to end against a fresh temp repo. Shared by the single-run test
-    /// below and the concurrency stress test, so both exercise identical
-    /// logic instead of the stress test drifting from what it's supposed to
-    /// be probing.
     async fn run_skip_already_present_scenario() -> Result<()> {
         let repo = make_temp_git_repo();
         let git_root = repo.path();
 
         let backend = GitNotesBackend::with_root(git_root.to_path_buf());
-        // Entry A: will be pre-seeded into memory.db (simulating a prior path).
         backend
             .add(NoteInput {
                 kind: "decision".to_string(),
@@ -1586,7 +1382,6 @@ mod init_import_tests {
             })
             .await
             .context("git-notes add A")?;
-        // Entry B: only in git-notes — the one init should actually import.
         backend
             .add(NoteInput {
                 kind: "decision".to_string(),
@@ -1603,8 +1398,6 @@ mod init_import_tests {
             .await
             .context("git-notes add B")?;
 
-        // Read A back so we can seed memory.db with a byte-identical content key
-        // (same kind/title/body/tags/created_at → same dedup hash).
         let seeded = backend
             .list(None, 10, true, None)
             .await
@@ -1648,7 +1441,6 @@ mod init_import_tests {
             "no duplicate row for the already-present entry, got {}",
             all.len()
         );
-        // A keeps its original source_ref; only B is stamped init:git-notes.
         let init_sourced = all
             .iter()
             .filter(|n| n.source_ref.as_deref() == Some(INIT_GIT_NOTES_SOURCE))
@@ -1658,38 +1450,18 @@ mod init_import_tests {
             "exactly one row came from the init import, got {init_sourced}"
         );
 
-        // Keep the tempdir alive through every access above.
         drop(repo);
         Ok(())
     }
 
-    /// A git-notes entry whose content already exists in `memory.db` (e.g. it
-    /// arrived earlier via `memory reconcile` or a manual add) is NOT
-    /// re-imported: init reuses reconcile's content key, so the two stores
-    /// dedup against each other. Only the genuinely-new entry imports.
     #[tokio::test]
     async fn init_import_skips_entries_already_in_memory_db() {
         register_sqlite_vec();
         run_skip_already_present_scenario().await.expect("scenario");
     }
 
-    /// Stress the same scenario across concurrent tasks in one process, each
-    /// against its own temp repo, so CI gets an active signal instead of
-    /// relying on the parallel test runner's luck to reproduce a flake.
-    ///
-    /// Concurrency is bounded by a semaphore rather than firing all `RUNS`
-    /// unbounded: each run shells out to several real `git` subprocesses, and
-    /// letting 20 of those launch at once, stacked on top of the rest of the
-    /// workspace's own parallel test suite doing the same, was observed to
-    /// spuriously fail `Command::spawn` with ENOENT under `cargo test
-    /// --workspace` (not in isolation), i.e. this test flaked from OS-level
-    /// process-spawn contention, the exact class of noise it exists to filter
-    /// out rather than reintroduce. Capping in-flight scenarios keeps the
-    /// cross-task concurrency this test is actually probing (shared
-    /// `register_sqlite_vec` init, overlapping temp-repo lifecycles, the
-    /// scenario's own dedup transaction) while staying well under what the
-    /// dev/CI machine's fork/exec path reliably sustains alongside everything
-    /// else running.
+    // In-flight scenarios are capped: too many concurrent git subprocess spawns
+    // spuriously fail with ENOENT under `cargo test --workspace`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn init_import_skip_scenario_is_race_free_under_concurrent_tasks() {
         register_sqlite_vec();
@@ -1721,11 +1493,9 @@ mod init_import_tests {
         );
     }
 
-    /// Drift guard: reconcile's server-row key and init-import's memory-row key
-    /// must be byte-identical for identical content. If they ever diverge, an
-    /// entry present in both git-notes and memory.db is imported twice. The two
-    /// inputs below deliberately differ in tag/file order and status — all
-    /// excluded from the key — to prove both entry points agree regardless.
+    // Drift guard: the two keys must match for identical content, or an entry in
+    // both git-notes and memory.db imports twice. The inputs differ in every
+    // field the key excludes.
     #[test]
     fn dedup_key_parity_between_reconcile_and_init_import() {
         register_sqlite_vec();
@@ -1751,9 +1521,6 @@ mod init_import_tests {
             .pop()
             .expect("one note");
 
-        // The reconcile candidate (a server.db row) carrying identical content,
-        // but differing in every field the key excludes: a server-local rowid,
-        // a different created_at, reordered tags/files, and an archived status.
         let server_note = ServerNote {
             id: 4242,
             kind: "decision".to_string(),
@@ -1773,15 +1540,9 @@ mod init_import_tests {
         );
     }
 
-    /// Many entries import in a single batch and the whole set dedups on re-run.
-    ///
-    /// The import caps its git-notes read at `GIT_NOTES_IMPORT_LIMIT` (mirroring
-    /// `GitNotesBackend`'s internal per-list cap). A live test of the 500+
-    /// boundary is deliberately omitted: each git-notes write is a
-    /// read-modify-write of the whole note blob, so seeding 500+ entries is
-    /// O(n^2) subprocess work — too slow and flaky for CI. This exercises the
-    /// multi-entry transaction path with a small plural batch instead, and the
-    /// static assertion below pins the boundary constant.
+    // A live test at the 500-entry cap is omitted: each git-notes write rewrites
+    // the whole blob, so seeding 500+ entries is quadratic subprocess work. The
+    // constant is pinned by the assertion below.
     #[tokio::test]
     async fn init_import_multiple_entries_single_batch() {
         register_sqlite_vec();
@@ -1830,13 +1591,10 @@ mod init_import_tests {
         );
     }
 
-    /// The init import limit mirrors `GitNotesBackend`'s internal per-list cap
-    /// (`GIT_NOTES_MAX_LIST`, currently 500). Kept in a static assertion so a
-    /// change to one side without the other is caught at compile time; the cap
-    /// itself lives in `storage::git_notes` and is not publicly re-exported.
+    // Mirrors `GitNotesBackend`'s per-list cap, which is not re-exported, so a
+    // change to one side alone fails at compile time.
     const _: () = assert!(GIT_NOTES_IMPORT_LIMIT == 500);
 
-    /// A `git init`'d repo with no commit (no HEAD), for the no-op/no-churn path.
     fn make_temp_git_repo_no_commit() -> tempfile::TempDir {
         let dir = tempfile::TempDir::new().expect("tempdir");
         std::process::Command::new("git")
