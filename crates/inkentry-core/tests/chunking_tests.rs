@@ -6,6 +6,8 @@
 mod adversarial_chunker;
 #[path = "chunking_tests/gap_coverage.rs"]
 mod gap_coverage;
+#[path = "chunking_tests/gap_names.rs"]
+mod gap_names;
 #[path = "chunking_tests/lang_csharp_kotlin_swift.rs"]
 mod lang_csharp_kotlin_swift;
 #[path = "chunking_tests/lang_js_ts_function_bindings.rs"]

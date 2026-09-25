@@ -209,25 +209,27 @@ impl SourceParser {
             language,
             specs: &specs,
         };
-        let mut chunks = Vec::new();
+        let mut walked = ts_walker::Walked::default();
 
-        ts_walker::walk_node(tree.root_node(), &ctx, None, &mut chunks, 0);
+        ts_walker::walk_node(tree.root_node(), &ctx, None, &mut walked, 0);
 
-        if chunks.is_empty() {
+        if walked.chunks.is_empty() {
             tracing::debug!("{file_path}: no semantic nodes found, using sliding window");
             return Ok(sliding_window(
                 source, file_path, language, None, None, None,
             ));
         }
 
-        fill_gaps(source, file_path, language, &mut chunks);
+        let mut chunks = walked.chunks;
+        fill_gaps(source, file_path, language, &walked.scopes, &mut chunks);
         Ok(chunks)
     }
 }
 
 /// A gap with fewer letters and digits than this is left out: a closing `}`
-/// or `end`, a lone `private`. Measured over the whole gap, so a run of short
-/// lines (`has_many :fees`, one per line) still qualifies.
+/// or `end`, a lone `private`. Measured over the whole gap (within one
+/// container), so a run of short lines (`has_many :fees`, one per line) still
+/// qualifies.
 const MIN_GAP_WORD_CHARS: usize = 16;
 
 /// Window every stretch of `source` no chunk covers, so code outside a matched
@@ -235,8 +237,31 @@ const MIN_GAP_WORD_CHARS: usize = 16;
 /// of a container too large to keep whole (whose own chunk is suppressed in
 /// favour of its members), such as a Rails model's associations and
 /// validations. A chunk's docstring counts as covering the lines above it.
-fn fill_gaps(source: &str, file_path: &str, language: &str, chunks: &mut Vec<Chunk>) {
+///
+/// A stretch is cut where it crosses the boundary of a suppressed container,
+/// so every window lies in one container or none; the one exception is a
+/// container's bare header, which stays with the nested container it opens.
+/// The window holding a container's declaration is named after it, with its
+/// own `parent_scope`, as the container's re-windowed chunk would be. Windows
+/// between its members stay unnamed: there can be dozens (`private`,
+/// `delegate`, `attr_reader`), and one name on all of them crowds the
+/// container's members out of any query naming it.
+fn fill_gaps(
+    source: &str,
+    file_path: &str,
+    language: &str,
+    scopes: &[ts_walker::SuppressedScope],
+    chunks: &mut Vec<Chunk>,
+) {
     let lines: Vec<&str> = source.lines().collect();
+    let mut owner: Vec<Option<usize>> = vec![None; lines.len() + 1];
+    // Walk order puts an outer container first, so an inner one overwrites it.
+    for (i, scope) in scopes.iter().enumerate() {
+        let to = scope.end_line.min(lines.len());
+        if scope.start_line <= to {
+            owner[scope.start_line..=to].fill(Some(i));
+        }
+    }
     let mut covered = vec![false; lines.len() + 1];
     for chunk in chunks.iter() {
         let doc_lines = chunk.docstring.as_deref().map_or(0, |d| d.lines().count());
@@ -255,18 +280,43 @@ fn fill_gaps(source: &str, file_path: &str, language: &str, chunks: &mut Vec<Chu
             continue;
         }
         let start = line;
+        let mut end = line;
+        let mut here = owner[start];
         while line <= lines.len() && !covered[line] {
+            if owner[line] != here {
+                // `module Billing` / `module Invoices` / `class CreateService`
+                // stays one window: a bare header is not a body of its own.
+                let opens_nested = match (here, owner[line]) {
+                    (Some(outer), Some(inner)) => {
+                        end <= scopes[outer].decl_line && scopes[outer].contains(&scopes[inner])
+                    }
+                    _ => false,
+                };
+                if !opens_nested {
+                    break;
+                }
+                here = owner[line];
+            }
+            if !lines[line - 1].trim().is_empty() {
+                end = line;
+            }
             line += 1;
-        }
-        let mut end = line - 1;
-        while lines[end - 1].trim().is_empty() {
-            end -= 1;
         }
         let text = lines[start - 1..end].join("\n");
         if text.chars().filter(|c| c.is_alphanumeric()).count() < MIN_GAP_WORD_CHARS {
             continue;
         }
-        for mut window in sliding_window(&text, file_path, language, None, None, None) {
+        let scope = here
+            .map(|i| &scopes[i])
+            .filter(|s| (start..=end).contains(&s.decl_line));
+        for mut window in sliding_window(
+            &text,
+            file_path,
+            language,
+            scope.map(|s| s.name.as_str()),
+            None,
+            scope.and_then(|s| s.parent_scope.as_deref()),
+        ) {
             window.start_line += start - 1;
             window.end_line += start - 1;
             gaps.push(window);

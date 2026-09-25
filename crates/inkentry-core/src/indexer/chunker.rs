@@ -103,9 +103,10 @@ pub fn set_chunk_token_cap(tokens: usize) {
 ///
 /// `rules` counts changes to which nodes become chunks. 2: JS/TS function
 /// bindings are chunks, and code outside every chunk is windowed rather than
-/// dropped.
+/// dropped. 3: the window holding the declaration of a container too large to
+/// keep whole is named after it, and windows are cut at container boundaries.
 pub fn chunker_config_id() -> String {
-    format!("max_chunk_tokens={};rules=2", chunk_token_cap())
+    format!("max_chunk_tokens={};rules=3", chunk_token_cap())
 }
 
 /// Whether `chunks` came from the file's syntax tree, as opposed to one
