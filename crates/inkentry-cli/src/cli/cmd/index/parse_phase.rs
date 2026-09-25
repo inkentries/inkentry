@@ -15,26 +15,10 @@ use crate::{
     storage::Database,
 };
 
-/// Upper bound on the size of any single file read into memory during
-/// indexing, checked via `metadata().len()` *before* the file is opened for
-/// reading. Applied uniformly to every format (text, markdown, tree-sitter
-/// source, PDF, DOCX, XLSX, …) — a single gate, not one per branch — so a
-/// multi-GB file (or a compression-bomb office/PDF doc) can't be read fully
-/// into memory and OOM-kill the indexer. This is distinct from (and
-/// complementary to) `MAX_PARSE_BYTES` in `inkentry_core::indexer::parser`,
-/// which only bounds how much of an *already-read* buffer tree-sitter will
-/// attempt to GLR-parse before falling back to a sliding window.
+// Checked via metadata before any read, so a huge or compression-bomb file can't OOM the indexer.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Return `true` (and log a warning) if `path` is over `MAX_FILE_BYTES`,
-/// checked via a `metadata()` call — no file content is read either way.
-/// Callers must skip the file without reading it when this returns `true`.
-/// The file's filesystem modification time as unix seconds, or `0` when it is
-/// unavailable (platform without mtime support, or a stat/timestamp error).
-/// Persisted via `upsert_file` so the embed queue can order by file recency;
-/// `0` sorts last under the queue's `mtime DESC` order — deterministic, never
-/// an error. Only called for files being (re)parsed, so the stat is on
-/// new/changed files, not every walked file.
+// Falls back to 0, which sorts last under the embed queue's `mtime DESC` order.
 fn stat_mtime(path: &std::path::Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -60,15 +44,10 @@ fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
 pub(super) struct ParseResult {
     pub indexed: u64,
     pub removed: u64,
-    /// Count of files skipped by the built-in index filter (generated/vendored/
-    /// machine-data). Distinct from the hash/oversized `skipped` counter.
-    /// Surfaced to the user via the post-parse notice; retained for assertions.
     #[allow(dead_code)]
     pub filtered: u64,
 }
 
-/// The single-line notice printed after the parse bar when the index filter
-/// dropped at least one file. Pure so it can be unit-tested verbatim.
 fn filtered_notice(filtered: u64) -> String {
     format!(
         "Filtered out {filtered} generated/vendored/data file(s) \
@@ -76,17 +55,12 @@ fn filtered_notice(filtered: u64) -> String {
     )
 }
 
-/// Mutable accumulators shared across per-file processor functions.
-/// Bundled into one struct so processor signatures stay under 7 arguments.
 struct ParseAcc {
     indexed: u64,
     skipped: u64,
-    /// Every unchanged file's edges must be re-extracted this run.
     reextract_edges: bool,
 }
 
-/// Collect source files from `root`, parse them, store chunks + graph edges,
-/// then remove stale index records for files that no longer exist.
 pub(super) fn run_parse_phase(
     root: &std::path::Path,
     db: &Database,
@@ -129,15 +103,11 @@ pub(super) fn run_parse_phase(
 
     for entry in &files {
         let path = entry.path();
-        // Store paths relative to the project root so the index is portable.
-        // Normalize separators to `/` so the on-disk index is identical across
-        // OSes and matches forward-slash CLI/query paths (Windows `to_string_lossy`
-        // would otherwise emit `src\lib.rs`).
+        // Root-relative and `/`-separated so the index is portable across OSes.
         let rel = path.strip_prefix(root).unwrap_or(path);
         let path_str = inkentry_core::utils::normalize_index_path(&rel.to_string_lossy());
         parse_bar.set_message(short_path(&path_str));
 
-        // ── Binary document formats (DOCX, XLSX, PDF, …) ─────────────────────
         #[cfg(feature = "rich-formats")]
         if let Some(doc_lang) = detect_doc_language(path)
             && process_doc_file(path, &path_str, doc_lang, db, args, &mut acc)?
@@ -146,7 +116,6 @@ pub(super) fn run_parse_phase(
             continue;
         }
 
-        // ── PDF documents (feature-gated) ─────────────────────────────────────
         #[cfg(feature = "rich-formats")]
         if detect_language(path) == Some("pdf")
             && process_pdf_file(path, &path_str, db, args, &mut acc)?
@@ -155,7 +124,6 @@ pub(super) fn run_parse_phase(
             continue;
         }
 
-        // ── Text / code formats ───────────────────────────────────────────────
         process_text_file(path, &path_str, db, args, &mut acc)?;
         parse_bar.inc(1);
     }
@@ -173,20 +141,7 @@ pub(super) fn run_parse_phase(
     graph_pass::finish(db, acc.reextract_edges)?;
     let ParseAcc { indexed, .. } = acc;
 
-    // The embed queue is not built here: it is rebuilt from the DB
-    // (`missing_embedding_texts`) after the pre-embed structural-summary pass, so
-    // it reflects the summaries and PageRank scores written between parse and
-    // embed, and picks up any chunk still missing a current vector (a prior
-    // parse-only run that skipped embedding, a pending re-embed from the
-    // summary-scheme migration or tier-3). That query is also what the detached
-    // embed worker uses, so both paths share one queue definition.
-
-    // `--force` bypasses the hash-skip for every file processed above, so
-    // once this loop is done every stored chunk was cut under the current
-    // chunker config. Refresh the provenance stamp so a later normal run's
-    // `ensure_chunker_config` check stops warning about a drift that no
-    // longer exists; without this, the warning would persist forever even
-    // after the very re-index the message tells the user to run.
+    // --force re-chunked every file; refresh the stamp or the chunker drift warning never clears.
     if args.force {
         db.stamp_chunker_config(&inkentry_core::indexer::chunker_config_id())?;
     }
@@ -198,12 +153,6 @@ pub(super) fn run_parse_phase(
     })
 }
 
-/// Build the `(chunk_id, embedding_text)` list for every chunk in the index
-/// that has no embedding row yet, reconstructing each chunk's document text
-/// from its stored columns. This is the same union `run_parse_phase` applies as
-/// a backfill; exposed separately so a detached embed-only
-/// subprocess can rebuild the embed queue straight from the DB without
-/// re-parsing.
 pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String, usize)>> {
     let mut out = Vec::new();
     for (chunk_id, name, metadata, summary, content, token_count) in
@@ -217,9 +166,7 @@ pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String,
     Ok(out)
 }
 
-/// Token weight for a queue entry: the stored `chunks.token_count`, estimated
-/// on the fly for a pre-backfill row (stored 0), floored at 1 so token-weighted
-/// arithmetic never divides by zero.
+// Stored 0 is a pre-backfill row; floor at 1 so token-weighted math never divides by zero.
 fn effective_token_count(stored: usize, content: &str) -> usize {
     let tc = if stored == 0 {
         estimate_tokens(content)
@@ -229,11 +176,7 @@ fn effective_token_count(stored: usize, content: &str) -> usize {
     tc.max(1)
 }
 
-/// Rebuild the exact document text that `Chunk::embedding_text()` produces,
-/// from the columns stored for a chunk. The `docstring` lives inside the
-/// `metadata` JSON (`{ "docstring": ..., "parent_scope": ... }`), mirroring how
-/// `store_chunks` persists it. Keep this in lockstep with
-/// `inkentry_core::indexer::Chunk::embedding_text`.
+// Must match `Chunk::embedding_text`; the docstring is read back from the metadata JSON.
 pub(super) fn reconstruct_embedding_text(
     name: Option<&str>,
     metadata: Option<&str>,
@@ -257,20 +200,7 @@ pub(super) fn reconstruct_embedding_text(
     }
 }
 
-// ── File collection ───────────────────────────────────────────────────────────
-
-/// Walk `root` collecting the files the indexer should ingest, returning them
-/// alongside a count of files dropped by the built-in index filter.
-///
-/// Two independent exclusion layers apply:
-///   1. The **sensitive** `OverrideBuilder` (`.env*`, `*.pem`, private keys):
-///      unconditional and NOT user-overridable. Sensitive files are dropped by
-///      the walk before `filter` ever sees them, so nothing in `[index]` can
-///      re-include them.
-///   2. The **index `filter`** (generated/vendored/machine-data): user-tunable
-///      via `[index]` in config. Excluded directories are pruned from the walk
-///      (perf); individual excluded files (and generated-marker survivors) are
-///      counted.
+// Sensitive files are dropped by the walk before `filter` sees them, so `[index]` config can never re-include them.
 fn collect_files(
     root: &std::path::Path,
     filter: &inkentry_core::indexer::filter::IndexFilter,
@@ -309,9 +239,7 @@ fn collect_files(
         walk.overrides(ov);
     }
 
-    // Prune index-filter-excluded directories during the walk so we never
-    // descend into node_modules/, vendor/, dist/, etc. Files are left to the
-    // collect loop below so they can be classified and counted individually.
+    // Prune excluded dirs so the walk never descends into them; files are counted individually below.
     let root_owned = root.to_path_buf();
     let dir_filter = filter.clone();
     walk.filter_entry(move |entry| {
@@ -333,8 +261,7 @@ fn collect_files(
             continue;
         }
         let p = entry.path();
-        // Only weigh files the indexer would otherwise ingest, so the filtered
-        // count reflects real embed/parse work avoided.
+        // Count only files the indexer would otherwise ingest.
         if !(detect_language(p).is_some()
             || detect_text_language(p).is_some()
             || detect_doc_language(p).is_some())
@@ -353,15 +280,13 @@ fn collect_files(
                 filtered += 1;
                 continue;
             }
-            // A user `!` re-include keeps the file AND exempts it from
-            // generated-marker detection.
+            // A user `!` re-include also exempts the file from generated-marker detection.
             Decision::ForceInclude(_) => {
                 files.push(entry);
                 continue;
             }
             Decision::Keep => {}
         }
-        // Generated-marker detection on glob survivors (self-declaration only).
         if filter.detect_generated()
             && let Some(marker) = inkentry_core::indexer::filter::generated_marker(p)
         {
@@ -377,8 +302,6 @@ fn collect_files(
     }
     Ok((files, filtered))
 }
-
-// ── Per-file processors ───────────────────────────────────────────────────────
 
 #[cfg(feature = "rich-formats")]
 fn process_doc_file(
@@ -489,7 +412,6 @@ fn process_text_file(
         .or_else(|| detect_text_language(path))
         .unwrap(); // safe: files were filtered to only include detectable files
 
-    // Skip binary files (e.g. compiled output with wrong extension)
     if matches!(language, "text" | "markdown") && is_binary_file(path) {
         return Ok(());
     }
@@ -528,11 +450,8 @@ fn process_text_file(
     };
 
     let file_id = db.upsert_file(path_str, Some(language), &hash, stat_mtime(path))?;
-    // No transaction spans this hash commit and the chunk writes below, so a
-    // crash here leaves a file with a current hash and zero chunks. The
-    // `file_has_chunks` check above is what makes the *next* plain re-index
-    // reprocess that file instead of skipping it forever; see the
-    // crash-safety suite.
+    // No transaction spans this hash write and the chunk writes below; a crash leaves a current hash
+    // with zero chunks, which the `file_has_chunks` check above repairs on the next run.
     super::crash_test_hook::pause_at("after_index_hash_write", path_str);
     db.delete_embeddings_for_file(file_id)?;
     db.delete_chunks_for_file(file_id)?;
@@ -550,14 +469,10 @@ fn process_text_file(
     Ok(())
 }
 
-/// A chunk `store_chunks` drops rather than store.
 pub(super) fn holds_secret(chunk: &crate::indexer::Chunk) -> bool {
     crate::indexer::secrets::contains_secret(&chunk.embedding_text())
 }
 
-/// Insert a slice of parsed chunks into the DB. The embed queue is rebuilt from
-/// the DB (`missing_embedding_texts`) after the pre-embed structural-summary
-/// pass, so nothing is accumulated here.
 fn store_chunks(
     chunks: &[crate::indexer::Chunk],
     path_str: &str,
@@ -565,12 +480,7 @@ fn store_chunks(
     db: &Database,
 ) -> Result<()> {
     for chunk in chunks {
-        // Scan the full text that will be persisted/embedded (docstring + content;
-        // `chunk.summary` is always `None` at this point, so `embedding_text()`
-        // here is exactly docstring+content). Dropping the chunk here — before the
-        // metadata JSON is built — ensures a secret in the docstring never lands
-        // in stored metadata either. See secrets.rs module doc: this is
-        // best-effort defense-in-depth, not a security boundary.
+        // Dropped before the metadata JSON is built so a secret in the docstring never lands in stored metadata.
         if holds_secret(chunk) {
             tracing::warn!(
                 "skipping chunk '{}' in {path_str} (possible secret detected)",
@@ -595,21 +505,17 @@ fn store_chunks(
     Ok(())
 }
 
-// ── Stale file cleanup ────────────────────────────────────────────────────────
-
 fn cleanup_stale(files: &[ignore::DirEntry], root: &std::path::Path, db: &Database) -> Result<u64> {
-    // Paths in the DB are root-relative, so visited uses the same relative form.
     let visited: std::collections::HashSet<String> = files
         .iter()
         .map(|e| {
             let p = e.path();
-            // Match the normalized form stored during indexing (forward slashes).
             inkentry_core::utils::normalize_index_path(
                 &p.strip_prefix(root).unwrap_or(p).to_string_lossy(),
             )
         })
         .collect();
-    // Pass "" so file_paths_under returns all files in this DB (paths are relative).
+    // "" matches every stored path.
     let all_indexed = db.file_paths_under("")?;
     let mut removed = 0u64;
     for (id, path) in all_indexed {
@@ -627,7 +533,6 @@ mod tests {
     use std::io::Write;
     use std::sync::OnceLock;
 
-    /// Register the sqlite-vec extension exactly once per test process.
     fn register_sqlite_vec() {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
@@ -661,9 +566,7 @@ mod tests {
         }
     }
 
-    /// A sparse file whose reported length is over `MAX_FILE_BYTES`, created
-    /// via `set_len` so no actual bytes are written/allocated on disk — the
-    /// test itself must not read megabytes of data to prove the cap works.
+    // Sparse via set_len so the test never allocates the bytes.
     fn make_oversized_sparse_file() -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().expect("create temp file");
         file.as_file()
@@ -672,13 +575,6 @@ mod tests {
         file
     }
 
-    // ── reconstruct_embedding_text mirrors Chunk::embedding_text ─────────────
-
-    /// The DB-side reconstruction used to backfill unembedded chunks must
-    /// produce byte-for-byte the same document text as `Chunk::embedding_text()`
-    /// did at store time, so a backfilled embedding is identical to one written
-    /// during a normal parse. Covers: name present/absent and
-    /// docstring present/absent (summary is always None at store time).
     #[test]
     fn reconstruct_embedding_text_matches_chunk_embedding_text() {
         use crate::indexer::{Chunk, ChunkKind};
@@ -702,7 +598,6 @@ mod tests {
                 parent_scope: None,
                 summary: None,
             };
-            // Metadata JSON exactly as store_chunks persists it.
             let metadata = serde_json::json!({
                 "docstring": chunk.docstring,
                 "parent_scope": chunk.parent_scope,
@@ -719,12 +614,6 @@ mod tests {
         }
     }
 
-    /// The summary branch of `reconstruct_embedding_text` must also match
-    /// `Chunk::embedding_text()`. Phase-4 LLM summaries can be written to a
-    /// chunk (`chunks.summary`) before a later re-index backfills its embedding,
-    /// so the backfill path reconstructs with a non-null `summary` and must
-    /// produce the exact `title: {name} | summary: {summary} | text: {body}`
-    /// document. Covers summary × docstring present/absent.
     #[test]
     fn reconstruct_embedding_text_matches_chunk_embedding_text_with_summary() {
         use crate::indexer::{Chunk, ChunkKind};
@@ -752,8 +641,6 @@ mod tests {
                 parent_scope: None,
                 summary: Some(summary.to_string()),
             };
-            // Metadata JSON exactly as store_chunks persists it (docstring lives
-            // in metadata; the summary is a separate stored column).
             let metadata = serde_json::json!({
                 "docstring": chunk.docstring,
                 "parent_scope": chunk.parent_scope,
@@ -774,22 +661,6 @@ mod tests {
         }
     }
 
-    // ── End-to-end backfill: parse-only run leaves chunks unembedded, a
-    //    second parse run backfills them without reparsing ────
-
-    /// `run_parse_phase` stores chunks but never writes embeddings — that is the
-    /// embed phase's job. So a single parse run models the real bug: an
-    /// `init`/`index` that chunked while the embedder was still loading, leaving
-    /// the `embeddings` table empty. The embed queue is rebuilt from the DB via
-    /// `missing_embedding_texts`, so this test drives the parse path twice (no
-    /// `--force`) and asserts:
-    ///   (a) after run 1, every stored chunk is unembedded and surfaced by the
-    ///       DB-driven queue;
-    ///   (b) run 2 reparses nothing (`indexed == 0`, all files hash-skipped);
-    ///   (c) yet the DB-driven queue still surfaces those same unembedded chunks
-    ///       — the missing-embedding backfill lives in the query, not the parse;
-    ///   (d) with the same ids across runs (same ids ⇒ no delete+reinsert ⇒ no
-    ///       unchanged file was reparsed) and byte-identical reconstructed text.
     #[test]
     fn reindex_backfills_unembedded_chunks_without_reparsing() {
         use indicatif::MultiProgress;
@@ -810,7 +681,6 @@ mod tests {
         let args = default_args(dir.path().to_path_buf());
         let mp = MultiProgress::new();
 
-        // ── Run 1: parse + store chunks. No embeddings are ever written here. ──
         let cfg = crate::config::Config::default();
         let first = run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("first parse phase");
         assert!(
@@ -818,7 +688,6 @@ mod tests {
             "both fixture files must be indexed on the first run"
         );
 
-        // The DB-driven queue must surface every stored chunk (all unembedded).
         let queue_run1 = missing_embedding_texts(&db).expect("queue after run 1");
         assert!(
             !queue_run1.is_empty(),
@@ -827,8 +696,6 @@ mod tests {
         let mut queued_run1: Vec<i64> = queue_run1.iter().map(|(id, ..)| *id).collect();
         queued_run1.sort();
 
-        // ── Run 2: no file changed, so nothing is reparsed. The DB-driven queue
-        //    must still surface the unembedded chunks for the embed phase. ──────
         let second =
             run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("second parse phase");
         assert_eq!(
@@ -841,9 +708,7 @@ mod tests {
             "the DB-driven queue must still surface the missing-embedding chunks even though indexed == 0"
         );
 
-        // (d) Same chunk ids across runs: identical ids prove the chunks were NOT
-        // deleted and reinserted (a reparse would mint fresh rowids), i.e. no
-        // unchanged file was reparsed — the queue is a pure DB read.
+        // Identical ids prove no delete+reinsert, i.e. no reparse.
         let mut backfilled: Vec<i64> = queue_run2.iter().map(|(id, ..)| *id).collect();
         backfilled.sort();
         assert_eq!(
@@ -851,7 +716,6 @@ mod tests {
             "the DB-driven queue must surface the same chunk ids across runs (no reparse / re-chunk)"
         );
 
-        // The reconstructed embedding text must be byte-identical across runs.
         let mut texts_run1 = queue_run1.clone();
         texts_run1.sort_by_key(|(id, ..)| *id);
         let mut texts_run2 = queue_run2.clone();
@@ -862,16 +726,6 @@ mod tests {
         );
     }
 
-    // ── --force refreshes the chunker-config provenance stamp ─────────────────
-
-    /// A `--force` run re-chunks every file under the current config, so it
-    /// must also refresh `index_meta`'s `chunker_config` stamp: otherwise
-    /// `ensure_chunker_config`'s drift warning (see `embed_phase.rs`) would
-    /// keep firing on every later normal run forever, even once `--force`
-    /// gave the user the exact uniform re-index its own message told them to
-    /// run. Drives the full sequence: stamp old → a normal run leaves the
-    /// drift alone → `--force` → the stamp updates → a later normal run
-    /// reports no drift.
     #[test]
     fn force_reindex_refreshes_the_chunker_config_stamp() {
         let db = open_db();
@@ -885,8 +739,6 @@ mod tests {
         let cfg = crate::config::Config::default();
         let current = inkentry_core::indexer::chunker_config_id();
 
-        // A normal (non-`--force`) run must not touch the stamp: the drift
-        // stays there for the embed phase to warn about.
         let args = default_args(dir.path().to_path_buf());
         run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("normal parse phase");
         assert_eq!(
@@ -900,8 +752,6 @@ mod tests {
             "the stale stamp must still be reported as drift before --force"
         );
 
-        // `--force` re-chunks everything under the current config and must
-        // refresh the stamp.
         let mut force_args = default_args(dir.path().to_path_buf());
         force_args.force = true;
         run_parse_phase(dir.path(), &db, &force_args, &mp, &cfg).expect("force parse phase");
@@ -911,8 +761,6 @@ mod tests {
             "a --force re-index must refresh the stamp to the current config"
         );
 
-        // A later normal run now sees no drift: the whole point of running
-        // --force was to make the warning stop.
         assert_eq!(
             db.ensure_chunker_config(&current)
                 .expect("post-force drift check"),
@@ -921,15 +769,6 @@ mod tests {
         );
     }
 
-    // ── missing_embedding_texts: detached embed-only queue reconstruction ──────
-
-    /// The detached `--_embed-phases` subprocess rebuilds its embed queue purely
-    /// from the DB via `missing_embedding_texts()` — it never re-parses. This test
-    /// seeds chunks, embeds a subset directly, and proves the function returns
-    /// exactly the un-embedded chunks (skipping embedded ones), in id order, with
-    /// each text reconstructed byte-for-byte to `Chunk::embedding_text()`. If this
-    /// diverged, the detached run would either re-embed already-done chunks or
-    /// embed the wrong text.
     #[test]
     fn missing_embedding_texts_returns_only_unembedded_chunks_from_db() {
         use crate::indexer::{Chunk, ChunkKind};
@@ -939,9 +778,6 @@ mod tests {
             .upsert_file("src/lib.rs", Some("rust"), "hash0", 0)
             .unwrap();
 
-        // Store three chunks the way `store_chunks` does (docstring lives in the
-        // metadata JSON), so the reconstructed text is comparable to the
-        // parse-time `embedding_text()`.
         let mut ids = Vec::new();
         let chunks = [
             ("alpha", Some("Doc for alpha."), "fn alpha() {}"),
@@ -981,8 +817,6 @@ mod tests {
             ids.push((id, chunk));
         }
 
-        // Embed only the middle chunk (`beta`), leaving `alpha` and `gamma`
-        // missing their embedding rows.
         let (beta_id, _) = &ids[1];
         db.insert_embedding(
             *beta_id,
@@ -992,8 +826,6 @@ mod tests {
 
         let missing = missing_embedding_texts(&db).expect("missing_embedding_texts");
 
-        // Exactly the two un-embedded chunks, in ascending id order, and NOT the
-        // embedded one.
         let got_ids: Vec<i64> = missing.iter().map(|(id, ..)| *id).collect();
         assert_eq!(
             got_ids,
@@ -1005,8 +837,6 @@ mod tests {
             "the already-embedded chunk must not be re-queued"
         );
 
-        // Each queued text is reconstructed byte-for-byte to the parse-time
-        // `embedding_text()` for that chunk.
         for (queued_id, queued_text, _) in &missing {
             let (_, chunk) = ids.iter().find(|(id, _)| id == queued_id).unwrap();
             assert_eq!(
@@ -1017,9 +847,6 @@ mod tests {
         }
     }
 
-    /// When every chunk already has an embedding, the detached embed queue must
-    /// be empty — the subprocess then does no embed work (guards against the
-    /// missing-embedding query over-matching).
     #[test]
     fn missing_embedding_texts_is_empty_when_all_embedded() {
         let db = open_db();
@@ -1038,10 +865,6 @@ mod tests {
         );
     }
 
-    // ── mtime capture + recency ordering (onboarding embed queue) ─────────────
-
-    /// Set a file's filesystem modification time to `unix_secs` past the epoch,
-    /// without touching its content (so its content hash is unchanged).
     fn set_file_mtime(path: &std::path::Path, unix_secs: u64) {
         let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(unix_secs);
         std::fs::File::options()
@@ -1052,12 +875,6 @@ mod tests {
             .unwrap();
     }
 
-    /// `stat_mtime` on a path that cannot be `stat()`'d (doesn't exist —
-    /// stands in for any metadata-read failure, e.g. a permission error or a
-    /// virtual/generated path with no real inode) must fall back to `0`
-    /// rather than panicking or erroring the whole parse phase. `0` is the
-    /// same sentinel a pre-migration row carries and sorts last,
-    /// deterministically, under the queue's `mtime DESC` order.
     #[test]
     fn stat_mtime_nonexistent_path_falls_back_to_zero() {
         let missing = std::path::Path::new("/nonexistent/definitely-not-a-real-path.rs");
@@ -1068,10 +885,6 @@ mod tests {
         );
     }
 
-    /// A file with a modification time before the Unix epoch (a corrupted
-    /// filesystem timestamp, or a container/VM with a badly-skewed clock) makes
-    /// `SystemTime::duration_since(UNIX_EPOCH)` return `Err`. `stat_mtime` must
-    /// still fall back to `0` rather than panicking on the `i64` conversion.
     #[test]
     fn stat_mtime_pre_epoch_time_falls_back_to_zero_not_panic() {
         let dir = tempfile::tempdir().unwrap();
@@ -1092,15 +905,11 @@ mod tests {
         );
     }
 
-    /// A file whose mtime is far in the future (clock skew, or a deliberately
-    /// forward-touched file) must be read back verbatim as a large positive
-    /// `i64`, without overflow or panic on the `u64 -> i64` cast.
     #[test]
     fn stat_mtime_far_future_time_returns_positive_no_panic() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("future.rs");
         std::fs::write(&f, "pub fn future() {}\n").unwrap();
-        // Year ~2107 — comfortably future without approaching u64/i64 bounds.
         set_file_mtime(&f, 4_300_000_000);
 
         assert_eq!(
@@ -1110,11 +919,6 @@ mod tests {
         );
     }
 
-    /// A parsed file stores its filesystem mtime in `files.mtime`, and the
-    /// DB-driven embed queue (the exact path the detached `--_embed-phases`
-    /// worker rebuilds from) orders the resulting chunks by that recency on a
-    /// cold index (all graph_rank still 0): the more-recently-modified file's
-    /// chunks come first. Drives the real production parse path end-to-end.
     #[test]
     fn parse_captures_mtime_and_queue_orders_by_recency() {
         use indicatif::MultiProgress;
@@ -1133,12 +937,9 @@ mod tests {
         let cfg = crate::config::Config::default();
         run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("parse phase");
 
-        // (a) mtime captured verbatim per file.
         assert_eq!(db.file_mtime("older.rs").unwrap(), Some(1_000));
         assert_eq!(db.file_mtime("newer.rs").unwrap(), Some(2_000));
 
-        // (b) the DB-driven queue emits every newer-file chunk before any
-        // older-file chunk — recency first.
         let queue_ids: Vec<i64> = missing_embedding_texts(&db)
             .expect("queue")
             .iter()
@@ -1174,9 +975,6 @@ mod tests {
         );
     }
 
-    /// A hash-unchanged file is skipped on re-parse, so its stored mtime is NOT
-    /// refreshed even when the file's filesystem mtime changed (a plain touch).
-    /// Retention falls out of the skip path never calling `upsert_file`.
     #[test]
     fn unchanged_file_retains_stored_mtime_on_reindex() {
         use indicatif::MultiProgress;
@@ -1199,8 +997,6 @@ mod tests {
             "run 1 stores the file's filesystem mtime"
         );
 
-        // Touch the file's mtime WITHOUT changing its content: the hash is
-        // identical, so the re-parse hash-skips it.
         set_file_mtime(&f, 5_000);
         let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("run 2");
         assert_eq!(
@@ -1213,8 +1009,6 @@ mod tests {
             "a skipped file's stored mtime is retained, not overwritten with the new FS mtime"
         );
     }
-
-    // ── is_file_too_large ────────────────────────────────────────────────────
 
     #[test]
     fn is_file_too_large_true_over_cap() {
@@ -1229,26 +1023,13 @@ mod tests {
         assert!(!is_file_too_large(file.path(), "small.txt"));
     }
 
-    // ── process_text_file: oversized files are skipped before any read ──────
-
-    /// An oversized text file must be skipped without ever being read into
-    /// memory. We assert this indirectly but strongly: `process_text_file`
-    /// only calls `db.upsert_file` (recording a content hash) *after*
-    /// `std::fs::read_to_string` succeeds. If the size gate didn't
-    /// short-circuit before the read, the file would still get indexed (a
-    /// sparse file reads back as all-zero bytes, which is valid UTF-8) and
-    /// `db.file_hash` would return `Some(..)`. Asserting it stays `None`
-    /// proves the read (and everything downstream of it) never happened —
-    /// not just that some later step errored out.
+    // A sparse file reads back as valid UTF-8 zeros, so it would be indexed if the size gate didn't
+    // short-circuit before the read.
     #[test]
     fn process_text_file_oversized_is_skipped_before_read() {
         let db = open_db();
         let dir = tempfile::tempdir().unwrap();
-        // `.rs` (tree-sitter language) rather than `.txt`, so the unrelated
-        // is_binary_file() sniff (which only applies to "text"/"markdown"
-        // languages) doesn't short-circuit before we reach the size gate —
-        // a sparse file reads back as all-zero bytes, which is_binary_file
-        // would otherwise flag as binary regardless of the size cap.
+        // `.rs`, not `.txt`: is_binary_file sniffs text/markdown only and would flag the zeros first.
         let path = dir.path().join("huge.rs");
         {
             let f = std::fs::File::create(&path).unwrap();
@@ -1273,18 +1054,12 @@ mod tests {
         );
     }
 
-    /// A file just at the cap boundary is allowed through to the normal read
-    /// path (sanity check that the gate uses `>`, not `>=`, matching the doc
-    /// comment "over the size cap").
     #[test]
     fn process_text_file_at_cap_boundary_is_not_skipped_by_size_gate() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        // Exactly at the cap: must NOT be flagged as too large.
         file.as_file().set_len(MAX_FILE_BYTES).unwrap();
         assert!(!is_file_too_large(file.path(), "boundary.bin"));
     }
-
-    // ── Index filter: collect_files exclusion + counting ─────────────────────
 
     use inkentry_core::indexer::filter::IndexFilter;
 
@@ -1295,9 +1070,6 @@ mod tests {
             .collect()
     }
 
-    /// Junk (lockfiles, minified, protobuf codegen) is excluded with the correct
-    /// count; vendored directories are pruned (their contents never counted);
-    /// real source survives.
     #[test]
     fn collect_files_excludes_junk_with_correct_count() {
         let dir = tempfile::tempdir().unwrap();
@@ -1318,15 +1090,10 @@ mod tests {
         assert!(!names.contains(&"package-lock.json".to_string()));
         assert!(!names.contains(&"app.min.js".to_string()));
         assert!(!names.contains(&"user.pb.go".to_string()));
-        // node_modules is pruned, so its file never appears.
         assert!(!names.contains(&"index.js".to_string()));
-        // The three file-level excludes are counted; the pruned dir's contents
-        // are not (that is the walk-time performance win).
         assert_eq!(filtered, 3);
     }
 
-    /// Survivors listed in the spec pass the filter untouched (incl. a `.ts`
-    /// under `i18n/`, since that default only excludes `*.json`).
     #[test]
     fn collect_files_keeps_spec_survivors() {
         let dir = tempfile::tempdir().unwrap();
@@ -1359,8 +1126,6 @@ mod tests {
         assert_eq!(filtered, 0);
     }
 
-    /// A generated-marker file is filtered when `detect_generated` is on, and
-    /// survives when it is off.
     #[test]
     fn collect_files_generated_marker_toggle() {
         let dir = tempfile::tempdir().unwrap();
@@ -1384,10 +1149,6 @@ mod tests {
         assert_eq!(filtered_off, 0);
     }
 
-    /// HARD INVARIANT: the sensitive-file layer (`.env`) is independent of the
-    /// index filter and NOT user-overridable. `[index].exclude = ["!.env"]` must
-    /// have no effect: the sensitive `OverrideBuilder` drops `.env` before the
-    /// index filter can re-include it.
     #[test]
     fn sensitive_env_not_reincludable_via_index_exclude() {
         let dir = tempfile::tempdir().unwrap();
@@ -1408,11 +1169,6 @@ mod tests {
         );
     }
 
-    // ── Cleanup: flipping the filter on removes previously-indexed junk ──────
-
-    /// Cleanup already exists (`cleanup_stale` + `delete_file` cascade). Index
-    /// junk with the filter OFF, then re-index with it ON: the now-excluded file
-    /// is no longer visited, so `cleanup_stale` deletes its rows.
     #[test]
     fn reindex_with_filter_on_cleans_up_previously_indexed_junk() {
         use indicatif::MultiProgress;
@@ -1428,7 +1184,6 @@ mod tests {
         let args = default_args(dir.path().to_path_buf());
         let mp = MultiProgress::new();
 
-        // Filter fully off: the minified file is indexed like any JS file.
         let mut cfg_off = crate::config::Config::default();
         cfg_off.index.use_default_excludes = false;
         cfg_off.index.detect_generated = false;
@@ -1445,7 +1200,6 @@ mod tests {
             "junk is indexed while the filter is off"
         );
 
-        // Filter on (defaults): re-index; the excluded junk row is cleaned up.
         let cfg_on = crate::config::Config::default();
         let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
         assert!(r2.filtered >= 1, "app.min.js filtered on re-index");
@@ -1465,13 +1219,6 @@ mod tests {
         );
     }
 
-    // ── Dir-prune re-include at the walk level: matches git ──────────────────
-
-    /// A `!file` re-include CANNOT escape an excluded parent directory (the walk
-    /// never descends into node_modules/), but a `!dir/` re-include of the
-    /// directory itself DOES bring its contents back. This is the walk-level
-    /// counterpart to filter.rs's `dir_prune_reinclude_semantics`, exercised
-    /// end-to-end through `collect_files`.
     #[test]
     fn collect_files_reinclude_respects_pruned_parent() {
         let dir = tempfile::tempdir().unwrap();
@@ -1481,7 +1228,6 @@ mod tests {
         std::fs::create_dir(dir.path().join("vendor")).unwrap();
         std::fs::write(dir.path().join("vendor/util.rs"), "fn v() {}\n").unwrap();
 
-        // A `!file` inside a pruned dir does not resurrect it.
         let file_reinclude =
             IndexFilter::build(&["!node_modules/keep.js".to_string()], true, true).unwrap();
         let (files, _) = collect_files(dir.path(), &file_reinclude).unwrap();
@@ -1492,7 +1238,6 @@ mod tests {
         );
         assert!(names.contains(&"lib.rs".to_string()));
 
-        // A `!dir/` re-include of the directory brings its contents back.
         let dir_reinclude = IndexFilter::build(&["!vendor/".to_string()], true, true).unwrap();
         let (files2, _) = collect_files(dir.path(), &dir_reinclude).unwrap();
         let names2 = collected_names(&files2);
@@ -1502,20 +1247,11 @@ mod tests {
         );
     }
 
-    // ── Filtered-count contract: pruned-dir contents are never counted ───────
-
-    /// The documented count semantics: files inside a pruned directory are NOT
-    /// added to `filtered` (the walk never descends, so there is no per-file
-    /// decision to count). Only file-level excludes at reachable depths are
-    /// counted. Pins the contract so a later change to walk pruning can't
-    /// silently start (or stop) counting descendants.
     #[test]
     fn collect_files_pruned_dir_contents_never_counted() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("lib.rs"), "fn a() {}\n").unwrap();
-        // One reachable, file-level exclude: counted.
         std::fs::write(dir.path().join("package-lock.json"), "{}\n").unwrap();
-        // Many files (and a nested subdir) inside a pruned directory: none counted.
         std::fs::create_dir_all(dir.path().join("node_modules/react/lib")).unwrap();
         std::fs::write(dir.path().join("node_modules/a.js"), "1\n").unwrap();
         std::fs::write(dir.path().join("node_modules/b.js"), "2\n").unwrap();
@@ -1533,12 +1269,6 @@ mod tests {
         );
     }
 
-    // ── Marker exemption: a `!`-re-included file skips generated-marker sniff ──
-
-    /// A user `!` re-include yields `ForceInclude`, which the collect loop treats
-    /// as "keep AND skip the generated-marker check". So a re-included file that
-    /// carries a `@generated` header still survives, whereas the identical file
-    /// without the re-include is dropped by marker detection.
     #[test]
     fn collect_files_reincluded_file_exempt_from_marker() {
         let dir = tempfile::tempdir().unwrap();
@@ -1548,13 +1278,11 @@ mod tests {
         )
         .unwrap();
 
-        // Without a re-include: the marker drops it.
         let plain = IndexFilter::build(&[], true, true).unwrap();
         let (files, filtered) = collect_files(dir.path(), &plain).unwrap();
         assert!(!collected_names(&files).contains(&"gen.js".to_string()));
         assert_eq!(filtered, 1);
 
-        // With `!gen.js`: ForceInclude exempts it from marker detection.
         let reincluded = IndexFilter::build(&["!gen.js".to_string()], true, true).unwrap();
         let (files2, filtered2) = collect_files(dir.path(), &reincluded).unwrap();
         assert!(
@@ -1564,14 +1292,6 @@ mod tests {
         assert_eq!(filtered2, 0);
     }
 
-    // ── Sensitive-layer defense-in-depth: non-dotfile key materials ──────────
-
-    /// The sensitive `OverrideBuilder` (not the index filter) drops key-material
-    /// files. `[index].exclude` re-include attempts have no effect, and turning
-    /// the whole index filter off (`use_default_excludes=false`) does not expose
-    /// them either - proving the two layers are independent. Complements the
-    /// `.env` case with non-dotfile patterns (`*.pem`, private keys) so the
-    /// invariant isn't only tested on hidden files.
     #[test]
     fn sensitive_key_material_never_reincludable() {
         let dir = tempfile::tempdir().unwrap();
@@ -1580,7 +1300,6 @@ mod tests {
         std::fs::write(dir.path().join("id_rsa"), "-----BEGIN-----\n").unwrap();
         std::fs::write(dir.path().join("tls.key"), "-----BEGIN-----\n").unwrap();
 
-        // Filter off entirely, plus explicit re-include attempts for each.
         let filter = IndexFilter::build(
             &[
                 "!server.pem".to_string(),
@@ -1603,14 +1322,6 @@ mod tests {
         }
     }
 
-    // ── Cleanup-on-reindex: full cascade across every table ──────────────────
-
-    /// Strengthens the file-row cleanup test: after flipping the filter on and
-    /// re-indexing, the previously-indexed junk must be gone from files, chunks,
-    /// embeddings, AND graph_edges - not just the files row - while the real
-    /// source file's rows in every table survive. Embeddings are inserted by
-    /// hand after run 1 (the parse phase never embeds), so the assertion proves
-    /// the `delete_file` cascade clears the embeddings table too.
     #[test]
     fn reindex_with_filter_on_cleans_up_all_tables() {
         use indicatif::MultiProgress;
@@ -1618,8 +1329,7 @@ mod tests {
         let db = open_db();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("lib.rs"), "fn real() {}\n").unwrap();
-        // A JS file that parses into named chunks (so graph/mention edges exist)
-        // and is dropped by the default `*.min.js` glob once the filter is on.
+        // Named functions give it graph edges; the default `*.min.js` glob drops it.
         std::fs::write(
             dir.path().join("app.min.js"),
             "function junk(){return 1;}\nfunction more(){return junk();}\n",
@@ -1628,13 +1338,11 @@ mod tests {
         let args = default_args(dir.path().to_path_buf());
         let mp = MultiProgress::new();
 
-        // Run 1: filter off; the junk is indexed like any JS file.
         let mut cfg_off = crate::config::Config::default();
         cfg_off.index.use_default_excludes = false;
         cfg_off.index.detect_generated = false;
         run_parse_phase(dir.path(), &db, &args, &mp, &cfg_off).unwrap();
 
-        // The junk has chunks and graph edges before cleanup.
         let junk_chunks = db.chunks_for_file("app.min.js").unwrap();
         assert!(
             !junk_chunks.is_empty(),
@@ -1645,7 +1353,6 @@ mod tests {
             "junk must have graph/mention edge rows while the filter is off"
         );
 
-        // Embed both files by hand (the parse phase never writes embeddings).
         for c in db.chunks_for_file("app.min.js").unwrap() {
             db.insert_embedding(
                 c.chunk_id,
@@ -1668,12 +1375,10 @@ mod tests {
             "both files' chunks are embedded before cleanup"
         );
 
-        // Run 2: filter on; app.min.js is excluded, so cleanup_stale purges it.
         let cfg_on = crate::config::Config::default();
         let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
         assert!(r2.filtered >= 1, "app.min.js is filtered on re-index");
 
-        // Files row gone.
         let files_now: Vec<String> = db
             .file_paths_under("")
             .unwrap()
@@ -1683,7 +1388,6 @@ mod tests {
         assert!(!files_now.iter().any(|p| p == "app.min.js"));
         assert!(files_now.iter().any(|p| p == "lib.rs"));
 
-        // Chunks gone for junk, kept for the real file.
         assert!(
             db.chunks_for_file("app.min.js").unwrap().is_empty(),
             "junk chunk rows must be deleted on cleanup"
@@ -1691,13 +1395,11 @@ mod tests {
         let real_chunks = db.chunks_for_file("lib.rs").unwrap();
         assert!(!real_chunks.is_empty(), "real file's chunks survive");
 
-        // Graph edges gone for junk.
         assert!(
             db.edges_for_file("app.min.js").unwrap().is_empty(),
             "junk graph/mention edge rows must be deleted on cleanup"
         );
 
-        // Embeddings: only the real file's remain.
         let embeddings_after = db.stats().unwrap().embedding_count;
         assert_eq!(
             embeddings_after as usize,
@@ -1709,8 +1411,6 @@ mod tests {
             "cleanup must reduce the embedding count"
         );
     }
-
-    // ── Output: the filtered-count notice line ───────────────────────────────
 
     #[test]
     fn filtered_notice_names_count_and_override_location() {
