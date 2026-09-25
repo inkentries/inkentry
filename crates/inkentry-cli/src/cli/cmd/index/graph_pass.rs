@@ -1,6 +1,3 @@
-//! Graph-edge storage for the parse phase: the per-file extraction, and the
-//! re-extraction a migrated index owes for files that did not change.
-
 use anyhow::Result;
 
 use crate::{
@@ -8,10 +5,8 @@ use crate::{
     storage::{Database, GRAPH_EDGES_REEXTRACT},
 };
 
-/// Extract and store `path_str`'s edges, replacing all of them. An unchanged
-/// file re-extracted this way keeps its chunks and embeddings. Call targets
-/// are resolved only for a file its chunks say was cut by its tree
-/// (`chunked_by_tree`), so resolution follows the chunker's own fallback.
+// Call targets resolve only when the chunker cut the file by its tree, so
+// resolution follows the chunker's own sliding-window fallback.
 pub(super) fn store_edges(
     db: &Database,
     source: &str,
@@ -34,8 +29,8 @@ pub(super) fn store_edges(
     }
 }
 
-/// `chunked_by_tree` over the chunks the parse phase will actually store, so
-/// a first index decides from what a later re-extraction reads back.
+// Counts only chunks that survive secret-dropping, so a first index decides
+// from what a later re-extraction reads back.
 pub(super) fn chunked_by_tree_as_stored(chunks: &[Chunk]) -> bool {
     chunked_by_tree(
         chunks
@@ -44,12 +39,10 @@ pub(super) fn chunked_by_tree_as_stored(chunks: &[Chunk]) -> bool {
     )
 }
 
-/// Whether this run owes every unchanged file a re-extraction.
 pub(super) fn reextraction_owed(db: &Database) -> Result<bool> {
     db.pass_owed(GRAPH_EDGES_REEXTRACT)
 }
 
-/// Run once every file has been through the parse phase.
 pub(super) fn finish(db: &Database, reextracted: bool) -> Result<()> {
     if reextracted {
         db.clear_pass_owed(GRAPH_EDGES_REEXTRACT)?;
@@ -190,8 +183,6 @@ mod tests {
         ]);
         let db = open_db();
         index(dir.path(), &db);
-        // `make()` returns whatever it returns: this file binds the name but
-        // defines nothing a call could be said to reach.
         assert_eq!(
             target_of(&db, "app/a.py", "go"),
             vec![("helper".to_owned(), None)]
@@ -209,7 +200,6 @@ mod tests {
         ]);
         let db = open_db();
         index(dir.path(), &db);
-        // Which file holds the imported definition is a cross-file question.
         assert_eq!(
             target_of(&db, "src/a.ts", "run"),
             vec![("foo".to_owned(), None)]
@@ -231,8 +221,7 @@ mod tests {
             parent_scope: None,
             summary: None,
         };
-        // The only chunk that came from the tree is dropped as a secret, so
-        // what gets stored reads as a window, and so must this decision.
+        // The only tree chunk is dropped as a secret, so what is stored reads as a window.
         let chunks = [
             chunk(
                 ChunkKind::Function,
@@ -257,8 +246,7 @@ mod tests {
 
     #[test]
     fn a_file_the_chunker_windows_gets_no_locals_pass_on_either_path() {
-        // No function or class, so the chunker falls back to a sliding
-        // window; the file-level lambda would otherwise resolve `helper`.
+        // No function or class, so the chunker windows it; a locals pass would resolve `helper`.
         let windowed = "helper = lambda: 1\nhelper()\n";
         let treed = "helper = lambda: 1\nhelper()\n\ndef run():\n    return 1\n";
         let dir = tree(&[("app/w.py", windowed), ("app/t.py", treed)]);
@@ -328,9 +316,8 @@ mod tests {
             db.insert_embedding(id, &[0.1f32; 896]).unwrap();
         }
 
-        // What a store migrated from before `target_file` existed holds:
-        // every edge unresolved, the call to the `parse` parameter still
-        // there, and the re-extraction owed.
+        // Every edge unresolved, a call to the `parse` parameter still present,
+        // re-extraction owed.
         for file in ["src/a.rs", "src/b.rs", "src/c.py"] {
             let mut unresolved: Vec<_> = db
                 .edges_for_file(file)

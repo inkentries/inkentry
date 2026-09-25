@@ -30,7 +30,6 @@ use crate::{
 use super::memory::reconcile::GitNotesImport;
 
 pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
-    // ── 1. Detect project root ────────────────────────────────────────────────
     let cwd = std::env::current_dir()?;
     let git_root = find_git_root(&cwd);
 
@@ -48,14 +47,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     let db_path = inkentry_dir.join("index.db");
     let config_path = inkentry_dir.join("config.toml");
 
-    // Ignore machine-specific SQLite (index.db/memory.db + their -wal/-shm
-    // sidecars); config.toml is committed, so must not be listed here.
-    // Idempotent: never clobbers a pre-existing file.
     write_inkentry_gitignore(&inkentry_dir);
 
-    // Project slug: explicit --name, else derived (`host/owner/repo` when a git
-    // remote exists, else `local/<blake3-hex>`). Written to config.toml, never
-    // overwriting an existing project_id (no retroactive rename).
+    // Never overwrites an existing project_id: no retroactive rename.
     let desired_slug = args
         .name
         .clone()
@@ -69,7 +63,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             }
         };
 
-    // ── 2. Check if already initialised ──────────────────────────────────────
     let already_exists = db_path.exists();
     if already_exists {
         println!(
@@ -80,12 +73,9 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         println!("Re-running init is safe — it will update the registry and optionally re-index.");
     }
 
-    // ── 3. Register in global registry ───────────────────────────────────────
     let root_canonical = inkentry_core::utils::canonicalize(project_root.as_ref());
 
     if let Ok(reg) = Registry::open() {
-        // We register with the expected db_path even if it doesn't exist yet —
-        // the index step below will create it.
         let db_canonical = if db_path.exists() {
             inkentry_core::utils::canonicalize(db_path.as_ref())
         } else {
@@ -96,7 +86,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     }
 
-    // ── 4. Install hook (if requested) ───────────────────────────────────────
     let hook_status = if args.hook {
         match install_hook_for_init() {
             Ok(msg) => msg,
@@ -106,24 +95,14 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         "not installed  (run `inkentry hooks install` to add)".to_string()
     };
 
-    // ── 5. Auto-spawn server (TTY only) or probe for a running server ─────────
+    // Non-interactive (CI / hook) only probes, never auto-spawns.
     //
-    // Interactive (stdin is a TTY): attempt to start the server so semantic
-    // search works immediately. Non-interactive (CI / hook): probe only,
-    // never auto-spawn; print a skip notice if offline.
-    //
-    // This runs BEFORE the index step, and the index step below hands the
-    // embed pass to the detached worker. The two are one change (ADR-070 D1):
-    // starting the server first is what makes the detached embed reachable on
-    // a fresh machine (otherwise the embed probes for a server this very
-    // command has not started yet and silently ships a zero-embedding index),
-    // and detaching is what keeps the reorder from holding the terminal
-    // through the entire embed pass.
+    // Runs before the index step: the detached embed would otherwise probe a
+    // server this command has not started yet and ship a zero-embedding index.
     let server_line: Option<String> = {
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() {
-            // One line on purpose: `daemon_spawn_call_sites` pins the config
-            // argument lexically, and it reads a single line at a time.
+            // Keep on one line: `daemon_spawn_call_sites` reads call sites line by line.
             match super::server::ensure_server_running(DEFAULT_SERVER_PORT, &cfg).await {
                 Ok((port, true)) => Some(format!(
                     "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
@@ -145,10 +124,8 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 6. Run initial index (unless --no-index) ──────────────────────────────
     let (file_count, chunk_count) = if args.no_index {
         println!("Skipping index (--no-index). Run `inkentry index .` when ready.");
-        // If the DB exists already, read its stats; otherwise report zeros.
         if db_path.exists() {
             match Database::open(&db_path) {
                 Ok(db) => match db.stats() {
@@ -161,35 +138,25 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             (0, 0)
         }
     } else {
-        // Delegate to the real index command logic. `detach_embed: true` hands
-        // the (usually long) embed pass to the detached background worker, so
-        // init returns the prompt after parsing instead of holding the
-        // terminal through the whole embed (ADR-070 D1; on the profiled repo
-        // that wait is ~103 minutes). The worker waits out a still-loading
-        // embedder, so this holds on a cold machine whose server step 5 only
-        // just started.
         let index_args = super::index::IndexArgs {
             path: project_root.clone(),
             db: None,
             batch_size: 32,
             force: false,
             recount: false,
-            // Structural summaries are deterministic and offline, so `init` runs
-            // them (unlike the retired LLM pass, which init skipped).
             no_summaries: false,
             background_phases: false,
             embed_phases: false,
             detach: false,
+            // The embed pass is long: hand it to the background worker so init
+            // returns after parsing.
             detach_embed: true,
-            // `init` has no global `--config` override of its own to forward
-            // (it isn't threaded through `InitArgs`); a detached embed child
-            // spawned from here falls back to the default config, same as
-            // before this field existed.
+            // `InitArgs` carries no `--config` to forward, so the detached
+            // embed child uses the default config.
             config_path: None,
         };
         super::index::index(index_args, cfg.clone()).await?;
 
-        // Read fresh stats from the just-created DB.
         match Database::open(&db_path) {
             Ok(db) => match db.stats() {
                 Ok(stats) => (stats.file_count, stats.chunk_count),
@@ -199,31 +166,20 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         }
     };
 
-    // ── 6b. Configure the notes fetch refspec, fetch, then import (ADR-077 D3) ─
-    // Order is load-bearing. On a fresh clone the tracking ref has never been
-    // fetched, so the import has to run AFTER the refspec is configured and a
-    // fetch has populated `refs/notes/origin/inkentry` — otherwise a single
-    // `init` imports nothing and the user needs a second one. The read-path
-    // import (ADR-077 D1) is the durable guarantee for anything fetched later;
-    // the one fetch here is what makes ONE `init` after clone self-sufficient.
-
-    // 1. Configure the `origin` notes fetch refspec (only inside a git repo).
+    // Order is load-bearing: on a fresh clone the import must run after the
+    // refspec is configured and a fetch has populated the tracking ref, or one
+    // `init` imports nothing.
     let notes_lines = if git_root.is_some() {
         configure_notes_refspec(&project_root).await
     } else {
         Vec::new()
     };
 
-    // 2 + 3. Best-effort fetch of the notes ref, then merge + import into the
-    // project memory.db. Entries on `refs/notes/inkentry` (a teammate's, or a
-    // pre-init write-through) are invisible to the SQLite-backed reads until
-    // imported. Non-fatal throughout: a failure here (offline fetch included)
-    // must not sink init.
+    // Non-fatal throughout: a failure here (offline included) must not sink init.
     let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
         let mem_path = inkentry_dir.join("memory.db");
         fetch_notes_best_effort(&project_root).await;
-        // Fold anything on the tracking ref into the working ref before
-        // hydrating, so teammates' entries import too (ADR-069 D5 / ADR-077 D3).
+        // Merge the tracking ref first so teammates' entries import too.
         crate::storage::merge_tracking_notes(Some(git_root)).await;
         match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
             Ok(outcome) => git_notes_import_line(&outcome),
@@ -236,7 +192,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
         None
     };
 
-    // ── 8. Print success summary ──────────────────────────────────────────────
     println!();
     println!("inkentry initialised for {}", project_slug);
     println!();
@@ -255,10 +210,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
             config_path.display()
         );
     }
-    // D5 (ADR-077): `init` writes config.toml but takes no git action on it, so
-    // it must tell the user to commit it — the slug travels with the repo only
-    // once it is committed (a remote-less repo derives a per-clone slug, and a
-    // `--name` slug cannot be re-derived at all).
     if wrote_slug {
         println!(
             "           wrote .inkentry/config.toml — commit it so your project slug \
@@ -283,12 +234,8 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     Ok(())
 }
 
-/// The `Memory:` line of the success summary, or `None` when the carrier
-/// changed nothing worth reporting.
-///
-/// Skipped edges are reported rather than swallowed: a graph that is thinner
-/// than the one on the ref is the outcome a user would otherwise discover only
-/// by missing a link (ADR-086 D4).
+// Skipped edges are always reported: a graph thinner than the one on the ref
+// would otherwise be found only by missing a link.
 fn git_notes_import_line(outcome: &GitNotesImport) -> Option<String> {
     let skipped = |u: usize| {
         let noun = if u == 1 { "edge" } else { "edges" };
@@ -297,9 +244,7 @@ fn git_notes_import_line(outcome: &GitNotesImport) -> Option<String> {
              a later import resolves them)"
         )
     };
-    // A skipped supersede edge reads to a user exactly like a skipped
-    // relates_to/contradicts one — a link on the ref whose endpoint is not here
-    // yet — so it is folded into the same count rather than announced apart.
+    // Users cannot tell a skipped supersede edge from any other skipped link.
     let unresolved = outcome.edges_unresolved + outcome.supersede_edges_unresolved;
     match (outcome.imported, unresolved) {
         (0, 0) => None,
@@ -314,26 +259,18 @@ fn git_notes_import_line(outcome: &GitNotesImport) -> Option<String> {
     }
 }
 
-/// Import mints a fresh local id for every entry it takes off the ref, so a
-/// count alone would report every visible id silently changing (ADR-093 D5).
 const MINTED_HERE: &str = "the ids these entries show were minted on this machine; \
      quote the entity id from `inkentry memory show` to name an entry anywhere else";
 
-/// Indent for a continuation line under the summary's `Memory:` value.
 const SUMMARY_CONTINUATION: &str = "           ";
 
-/// Write `.inkentry/.gitignore` covering the machine-specific SQLite, the
-/// per-run index lock (+ its pid sidecar), and log files. The `*` glob covers
-/// the SQLite `-wal`/`-shm` sidecars and the lock's `.pid` sidecar. Created
-/// only when absent so re-init never clobbers user edits; failures are
-/// non-fatal.
+// Written only when absent, so re-init never clobbers user edits.
 fn write_inkentry_gitignore(inkentry_dir: &std::path::Path) {
     let gitignore_path = inkentry_dir.join(".gitignore");
     if gitignore_path.exists() {
         return;
     }
-    // Only machine-specific regenerated files are listed. config.toml is
-    // committed, so it must stay out of this file.
+    // config.toml is committed, so it must stay out of this list.
     const GITIGNORE: &str = "# Machine-specific SQLite, regenerated by `inkentry index`.\n\
                              index.db*\n\
                              memory.db*\n\
@@ -350,13 +287,6 @@ fn write_inkentry_gitignore(inkentry_dir: &std::path::Path) {
     }
 }
 
-/// Best-effort fetch of the notes ref so the first `init` after a clone
-/// hydrates teammates' memory (ADR-077 D3).
-///
-/// Bounded and non-fatal: skipped without an `origin`, fetches only the notes
-/// refspec (never branches), and a failure — offline, or an unreachable
-/// remote — is ignored so `init` still succeeds. A hard time budget with
-/// `kill_on_drop` keeps a black-holed remote from hanging `init`.
 async fn fetch_notes_best_effort(project_root: &std::path::Path) {
     use std::process::Stdio;
     const NOTES_FETCH_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
@@ -401,26 +331,16 @@ async fn fetch_notes_best_effort(project_root: &std::path::Path) {
     }
 }
 
-/// Configure the `origin` fetch refspec so teammates' `refs/notes/inkentry`
-/// (inkentry's memory) travels on clone/fetch. Returns announce lines for the
-/// init summary.
-///
-/// The destination is a **tracking** ref (`refs/notes/origin/inkentry`), never
-/// the working ref. Fetching straight onto `refs/notes/inkentry` force-updates
-/// it, silently replacing a local unpushed note with the remote's; and the
-/// non-glob form makes plain `git fetch` exit 128 until someone pushes notes.
-/// The glob tolerates the missing remote ref; only the tracking destination
-/// stops the clobber. inkentry merges the tracking ref on its read paths
-/// (ADR-069 D4/D5), so fetched notes stay visible without user action.
-///
-/// Push refspec is deliberately NOT set: any `remote.origin.push` value
-/// overrides git's default branch push, so a normal `git push` would stop
-/// pushing the current branch. Publishing rides the opt-in pre-push hook
-/// instead, which this announces (ADR-069 D1/D3) because opt-in only works if it
-/// is discoverable without reading the docs.
-/// Also points `notes.rewriteRef` at inkentry's ref so memory survives history
-/// rewrites. That half is independent of `origin`: rewrites are purely local,
-/// so it runs even in a remote-less repo.
+// The destination is a tracking ref, never the working ref: fetching straight
+// onto `refs/notes/inkentry` force-updates it and replaces a local unpushed
+// note. The glob form keeps plain `git fetch` from exiting 128 while the remote
+// ref does not exist.
+//
+// No push refspec: any `remote.origin.push` overrides git's default branch
+// push. Publishing rides the opt-in pre-push hook, announced below so it is
+// discoverable.
+//
+// `notes.rewriteRef` is set even without an `origin`, since rewrites are local.
 async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> {
     const FETCH_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
 
@@ -432,7 +352,6 @@ async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> 
     };
 
     let mut lines = {
-        // No `origin` remote → skip gracefully with the exact manual commands.
         let has_origin = git(&["remote", "get-url", "origin"])
             .map(|o| o.status.success())
             .unwrap_or(false);
@@ -444,7 +363,6 @@ async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> 
                 ),
             ]
         } else {
-            // Idempotent: only `--add` when the identical refspec is not already present.
             let already = git(&["config", "--get-all", "remote.origin.fetch"])
                 .ok()
                 .filter(|o| o.status.success())
@@ -472,10 +390,7 @@ async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> 
         }
     };
 
-    // Continuation lines: every branch above already opened a `Memory:` block.
-
-    // Reading a teammate's memory is automatic (the refspec above plus the
-    // read-path merge); publishing yours is opt-in, so say so unprompted.
+    // Publishing is opt-in, so say so unprompted.
     if super::hooks::pre_push_installed(project_root) {
         lines.push(
             "         pre-push hook installed: your memory publishes on `git push`".to_string(),
@@ -507,8 +422,6 @@ async fn configure_notes_refspec(project_root: &std::path::Path) -> Vec<String> 
     lines
 }
 
-/// Walk up from `start` to find the nearest `.git` directory.
-/// Returns the directory containing `.git`, not the `.git` directory itself.
 fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
@@ -521,10 +434,7 @@ fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Install the git post-commit hook, returning a short status string.
-///
-/// Shares `hooks.rs`'s resolution logic rather than re-implementing it: a
-/// second hardcoded `$GIT_DIR/hooks` here would disagree with `core.hooksPath`.
+// Reuses `hooks` path resolution; a hardcoded `$GIT_DIR/hooks` would ignore `core.hooksPath`.
 fn install_hook_for_init() -> Result<String> {
     let cwd = std::env::current_dir().context("getting current directory")?;
     match super::hooks::install_post_commit_hook(&cwd)? {
@@ -540,10 +450,6 @@ fn install_hook_for_init() -> Result<String> {
 mod git_notes_import_line_tests {
     use super::*;
 
-    /// Silence is only for the case where the carrier changed nothing. A
-    /// skipped edge is always said out loud, entries or no entries: a graph
-    /// thinner than the one on the ref is otherwise found only by missing a
-    /// link (ADR-086 D4).
     #[test]
     fn a_skipped_edge_is_reported_whether_or_not_entries_arrived() {
         assert_eq!(git_notes_import_line(&GitNotesImport::default()), None);
@@ -555,10 +461,8 @@ mod git_notes_import_line_tests {
             ..Default::default()
         };
         let line = git_notes_import_line(&entries_only).expect("entries must be reported");
-        // Spelled out in one piece, with no line continuation of its own: the
-        // bug this pins was a run of spaces that a continuation left in the
-        // rendered sentence, which an expected value built the same way would
-        // reproduce instead of catching.
+        // Spelled out in one piece: an expected value built with a line
+        // continuation would reproduce the stray-spaces bug instead of catching it.
         assert_eq!(
             line,
             "imported 3 entries from git notes\n           the ids these entries show were minted on this machine; quote the entity id from `inkentry memory show` to name an entry anywhere else"
@@ -583,15 +487,12 @@ mod git_notes_import_line_tests {
         assert!(line.contains("imported 2 entries"), "{line}");
         assert!(line.contains("2 edges skipped"), "{line}");
         assert!(line.contains("minted on this machine"), "{line}");
-        // A run of spaces mid-sentence reaches real output and no `contains`
-        // assertion would see it; only the alignment indent may repeat one.
+        // Only the alignment indent may hold a run of spaces.
         for rendered in line.lines().map(|l| l.trim_start()) {
             assert!(!rendered.contains("  "), "doubled space in {rendered:?}");
         }
     }
 
-    // A dangling supersede (its successor not on the ref yet) is a skipped edge
-    // to a user like any other, and both kinds of skip add into one count.
     #[test]
     fn a_skipped_supersede_edge_is_counted_with_the_rest() {
         let supersede_only = GitNotesImport {
@@ -643,27 +544,20 @@ mod tests {
         write_inkentry_gitignore(&inkentry_dir);
 
         let body = std::fs::read_to_string(inkentry_dir.join(".gitignore")).unwrap();
-        // The index run-lock (`index.lock`) and its pid sidecar
-        // (`index.lock.pid`, which holds a machine-local process id) are
-        // regenerated every `inkentry index` run and must never be committed; a
-        // `git add -A` otherwise churns the pid across machines. `index.lock*`
-        // covers both.
+        // `index.lock.pid` holds a machine-local pid; committing it churns across machines.
         assert!(
             body.contains("index.lock*"),
             "must ignore the index run-lock + pid sidecar: {body}"
         );
     }
 
-    // End-to-end: the generated `.gitignore` must make real git treat the run
-    // lock and its pid sidecar as ignored, so a `git add -A` never stages them.
     #[test]
     fn generated_gitignore_makes_git_ignore_lock_and_pid() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
 
-        // Hermetic git: the shared fixture drops global/system config (and
-        // author identity) so a developer's core.excludesfile can neither mask
-        // nor manufacture the ignore.
+        // Drops global/system git config so a developer's core.excludesfile
+        // can neither mask nor manufacture the ignore.
         crate::cli::cmd::test_support::isolate_git_config();
         let git = |args: &[&str]| {
             std::process::Command::new("git")
@@ -680,8 +574,6 @@ mod tests {
         let inkentry_dir = repo.join(".inkentry");
         write_inkentry_gitignore(&inkentry_dir);
 
-        // Files a `inkentry index` run drops into `.inkentry/`: the machine-local
-        // ones must all be ignored; `.gitignore` itself stays committable.
         for f in [
             "index.lock",
             "index.lock.pid",
@@ -692,7 +584,6 @@ mod tests {
             std::fs::write(inkentry_dir.join(f), b"x").unwrap();
         }
 
-        // `check-ignore -q` exits 0 only when the path is ignored.
         for rel in [".inkentry/index.lock", ".inkentry/index.lock.pid"] {
             assert!(
                 git(&["check-ignore", "-q", rel]).status.success(),
@@ -700,9 +591,7 @@ mod tests {
             );
         }
 
-        // The confirmed churn source: nothing machine-local shows up to stage.
-        // `-uall` lists untracked files individually instead of collapsing the
-        // whole new `.inkentry/` dir into one entry.
+        // `-uall` lists untracked files individually instead of collapsing `.inkentry/`.
         let out = git(&["status", "--porcelain", "-uall"]).stdout;
         let porcelain = String::from_utf8_lossy(&out);
         for f in [
@@ -717,8 +606,6 @@ mod tests {
                 "{f} must not appear in `git status --porcelain`, got:\n{porcelain}"
             );
         }
-        // Sanity: the ignore did not swallow everything - the committable
-        // `.gitignore` is still an untracked, addable file.
         assert!(
             porcelain.contains(".gitignore"),
             "the generated .gitignore should stay untracked+committable, got:\n{porcelain}"
@@ -735,7 +622,6 @@ mod tests {
 
         write_inkentry_gitignore(&inkentry_dir);
 
-        // A pre-existing file is never clobbered.
         let body = std::fs::read_to_string(&gitignore_path).unwrap();
         assert_eq!(body, "custom-user-line\n");
     }
