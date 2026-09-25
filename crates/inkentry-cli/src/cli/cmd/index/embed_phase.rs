@@ -11,44 +11,26 @@ use crate::{
     storage::{Database, credential_hint},
 };
 
-/// Hard ceiling on chunks per request; the server returns 413 above this.
+// Server rejects larger batches with 413.
 const MAX_BATCH: usize = 256;
 
-/// Calibration ceiling when `--batch-size` is unset (0): the server's hard
-/// limit. `--batch-size` only lowers this ceiling, never picks a fixed size
-/// (see `resolve_batch_ceiling`).
 const DEFAULT_BATCH_CEILING: usize = MAX_BATCH;
 
-/// First request is a single chunk: yields an initial per-entry estimate almost
-/// immediately and gets the progress bar moving before any full batch lands.
+// Single chunk first: an early rate estimate, and the bar moves before a full batch lands.
 const CALIBRATION_BATCH_1: usize = 1;
 
-/// Second request: refines the estimate from `CALIBRATION_BATCH_1` (dominated by
-/// one-off cold-start) before committing to a steady-state size.
 const CALIBRATION_BATCH_2: usize = 4;
 
-/// Wall-clock time each steady-state batch aims to stay under; a batch is
-/// sized so its token sum fits this budget at the measured token rate.
 const TARGET_BATCH_SECONDS: u64 = 240;
 
-/// Floor for a calibrated per-request timeout, to absorb transient latency spikes.
 const MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Ceiling for a calibrated per-request timeout, so a pathologically slow sample
-/// can't derive an unbounded deadline.
 const MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// Headroom multiple over a batch's expected duration when deriving its timeout.
 const TIMEOUT_SAFETY_FACTOR: u32 = 4;
 
-/// Backoff sleep before each connect-failure retry (index 0 = the first
-/// retry after the initial attempt), in order. A connect failure (the server
-/// isn't accepting connections at all) carries no signal about batch sizing
-/// or embedding throughput, unlike `BudgetExceeded`, so the response is a
-/// bounded retry at the *same* batch size with this backoff, never a shrink.
-/// The schedule's length doubles as the retry bound: once exhausted, the
-/// batch is abandoned via `report_embed_failure` like any other
-/// unrecoverable failure.
+// A connect failure says nothing about batch size or throughput, so retry the same size
+// on this schedule; its length bounds the retries.
 const CONNECT_FAILURE_BACKOFFS: [Duration; 5] = [
     Duration::from_secs(5),
     Duration::from_secs(15),
@@ -57,23 +39,10 @@ const CONNECT_FAILURE_BACKOFFS: [Duration; 5] = [
     Duration::from_secs(180),
 ];
 
-/// Fallback wait before retrying a `429` (server embed admission queue full)
-/// when the response carries no usable `Retry-After`. The
-/// server always sends one in practice; this only guards a legacy/misbehaving
-/// server.
 const DEFAULT_SATURATION_RETRY: Duration = Duration::from_secs(5);
 
-/// Safety valve on how many times a batch retries a `429` before giving up
-/// like any other unrecoverable failure. Unlike a connect failure (binary
-/// up/down), the server explicitly tells us when to retry via `Retry-After`,
-/// so this is not expected to trigger in practice — it only bounds the
-/// pathological case of a queue that never drains.
 const MAX_SATURATION_RETRIES: usize = 30;
 
-/// Effective ceiling the calibrated batch size may grow to: `--batch-size`
-/// (0 → `DEFAULT_BATCH_CEILING`) clamped to `MAX_BATCH` and, when advertised,
-/// the server's own `max_batch_chunks` (413 above it). Only an upper bound —
-/// actual size is calibrated (see `next_batch_size`).
 fn resolve_batch_ceiling(requested: usize, server_max_batch_chunks: Option<usize>) -> usize {
     let ceiling = if requested == 0 {
         DEFAULT_BATCH_CEILING
@@ -86,19 +55,12 @@ fn resolve_batch_ceiling(requested: usize, server_max_batch_chunks: Option<usize
     }
 }
 
-/// Per-request budget assumed for a server that pre-dates the `/v1/health`
-/// `limits` field: the old blanket 30s `TimeoutLayer` with no `/index/embed`
-/// exemption.
+// Budget of servers predating the `/v1/health` `limits` field: a blanket 30s timeout.
 const LEGACY_SERVER_REQUEST_BUDGET_SECS: u64 = 30;
 
-/// Fraction of the server's per-request budget a calibrated batch targets,
-/// leaving headroom for jitter between the calibration sample and the batch sent.
+// Headroom for jitter between the calibration sample and the batch sent.
 const SERVER_BUDGET_TARGET_FRACTION: f64 = 2.0 / 3.0;
 
-/// Effective target batch duration (seconds), clamped to fit the server's
-/// advertised `/index/embed` budget. Absent `limits` (older server) falls back
-/// to `SERVER_BUDGET_TARGET_FRACTION × LEGACY_SERVER_REQUEST_BUDGET_SECS`. The
-/// 408-triggered shrink in `run_embed_phase` is the fallback.
 fn resolve_target_batch_seconds(server_limits: Option<ServerLimits>) -> u64 {
     let budget_secs = server_limits
         .and_then(|l| l.embed_request_timeout_secs)
@@ -107,20 +69,11 @@ fn resolve_target_batch_seconds(server_limits: Option<ServerLimits>) -> u64 {
     TARGET_BATCH_SECONDS.min(safe_budget.max(1))
 }
 
-/// Max multiple of the previous batch's size the next calibrated batch may grow
-/// to in one step, so one fast sample can't leap to a size nothing has measured.
+// Caps per-step growth so one fast sample can't jump to an unmeasured size.
 const GROWTH_FACTOR: usize = 8;
 
-/// Choose the next steady-state batch length (in chunks) so the batch's
-/// **token** sum fits ~`target_seconds` at the measured `per_token` rate.
-/// `token_tail` is the per-chunk token counts of the queue from the cursor on.
-/// Clamped to `[1, ceiling]` and to at most `GROWTH_FACTOR ×
-/// previous_batch_size` (both in chunks).
-///
-/// Sizing by tokens rather than chunk count is what keeps the derived deadline
-/// honest across a size transition in the queue: per-chunk cost grows ~4x
-/// through an id-ordered queue, so a chunk-count budget calibrated on early
-/// (small) chunks over-fills a batch of late (large) ones.
+// Sized by token sum, not chunk count: per-chunk cost grows ~4x through the id-ordered
+// queue, so a chunk-count budget calibrated on early chunks over-fills a batch of late ones.
 fn next_batch_len(
     per_token: Duration,
     token_tail: &[usize],
@@ -138,8 +91,6 @@ fn next_batch_len(
     }
     let target_tokens = Duration::from_secs(target_seconds).as_secs_f64() / per_token.as_secs_f64();
 
-    // Take chunks while their cumulative token sum stays within the target;
-    // always at least one so progress can't stall.
     let mut len = 0usize;
     let mut tokens = 0f64;
     for &tc in token_tail.iter().take(growth_cap) {
@@ -152,11 +103,6 @@ fn next_batch_len(
     len.max(1)
 }
 
-/// Per-request timeout for a batch: `TIMEOUT_SAFETY_FACTOR ×` its expected
-/// duration at `per_token` over the batch's token sum, clamped to
-/// `[MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT]`. The rate and the deadline
-/// share the token unit, so a size transition in the queue moves the deadline
-/// with the batch's real cost instead of consuming the safety margin.
 fn batch_timeout(per_token: Duration, batch_tokens: u64) -> Duration {
     let expected_secs = per_token.as_secs_f64() * batch_tokens.max(1) as f64;
     let budget_secs = (expected_secs * TIMEOUT_SAFETY_FACTOR as f64)
@@ -164,37 +110,17 @@ fn batch_timeout(per_token: Duration, batch_tokens: u64) -> Duration {
     Duration::from_secs_f64(budget_secs).clamp(MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT)
 }
 
-/// Timeout for the very first (single-chunk) request, before any rate is known.
-/// Pessimistic to absorb one-off model cold-start.
+// Pessimistic: absorbs one-off model cold start.
 const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Weight given to `CALIBRATION_BATCH_1`'s 1-entry sample when the second sample
-/// arrives. Small: that sample is dominated by one-off per-request overhead that
-/// doesn't repeat, so it must not carry the weight of a real multi-entry
-/// measurement. Both the sizing decision and the displayed rate read the same
-/// blended estimate.
+// Small: the 1-entry sample is dominated by one-off per-request overhead.
 const CALIBRATION_BATCH_1_WEIGHT: f64 = 0.1;
 
-/// Running estimate of this run's embedding throughput, refined after every
-/// batch so mid-run drift (thermal throttling, GPU contention) is picked up.
-///
-/// Single authoritative rate source: `next_batch_len`, `batch_timeout`, and the
-/// displayed ETA (`format_eta`) all read `per_token()` from the same instance so
-/// they can't disagree. Deliberately not indicatif's `{eta}`, which infers rate
-/// from `bar.inc(1)` timing — wrong for this phase's bursty increments (see
-/// `format_eta`).
-///
-/// The rate is **per estimated token**, not per chunk: per-chunk cost is not
-/// stationary through an id-ordered queue (~4x growth), so a per-chunk rate is
-/// systematically biased in one direction across the run. The token estimate's
-/// own corpus-dependent bias cancels here because the rate is calibrated from
-/// estimated tokens and only ever multiplied by estimated tokens; the rate
-/// must stay measured per-run, never cached across runs or repos.
+// Single rate source for batch sizing, timeouts and the ETA. Per token, not per chunk:
+// chunk cost isn't stationary through the queue. The token estimate's bias cancels only
+// against estimates from the same run, so never cache the rate across runs.
 struct RateEstimate {
-    /// Exponentially-weighted per-token duration. `None` until the first batch.
     per_token: Option<Duration>,
-    /// Batches folded in so far, so `update` can tell the batch-1 cold sample
-    /// (== 1) from later steady-state blends.
     samples_seen: u32,
 }
 
@@ -206,10 +132,6 @@ impl RateEstimate {
         }
     }
 
-    /// Fold in a batch: `elapsed` for `tokens` estimated tokens. First
-    /// observation seeds the estimate; the second de-weights the batch-1 cold
-    /// sample (`CALIBRATION_BATCH_1_WEIGHT`); from the third onward, a 50/50
-    /// EMA so mid-run rate changes are reflected within a couple of batches.
     fn update(&mut self, elapsed: Duration, tokens: u64) {
         if tokens == 0 {
             return;
@@ -218,13 +140,12 @@ impl RateEstimate {
         self.per_token = Some(match self.per_token {
             None => sample,
             Some(prev) if self.samples_seen == 1 => {
-                // Superseding the batch-1 cold sample: de-weight it.
+                // Second sample: de-weight the cold batch-1 sample.
                 let w = CALIBRATION_BATCH_1_WEIGHT;
                 let blended = prev.as_secs_f64() * w + sample.as_secs_f64() * (1.0 - w);
                 Duration::from_secs_f64(blended)
             }
             Some(prev) => {
-                // Steady-state 50/50 EMA.
                 let blended = (prev.as_secs_f64() + sample.as_secs_f64()) / 2.0;
                 Duration::from_secs_f64(blended)
             }
@@ -232,17 +153,13 @@ impl RateEstimate {
         self.samples_seen += 1;
     }
 
-    /// Current best estimate, or `None` before the first batch has landed.
     fn per_token(&self) -> Option<Duration> {
         self.per_token
     }
 }
 
-/// Progress style for the embed phase. Does NOT use indicatif's `{eta}`:
-/// embedding is bursty (a batch's `bar.inc(1)` calls land together, then a long
-/// silent gap), which indicatif reads as rate ≈ 0 and extrapolates absurd ETAs.
-/// The ETA is computed from `RateEstimate` via `format_eta` and rendered into
-/// `{wide_msg}` by `run_embed_phase` instead.
+// Not indicatif's `{eta}`: batches land in bursts, which it reads as rate ~0 and
+// extrapolates absurd ETAs. The ETA is rendered into `{wide_msg}` instead.
 fn embed_progress_style() -> ProgressStyle {
     ProgressStyle::with_template(
         "{spinner:.cyan} Embedding [{bar:38.cyan/blue}] {pos}/{len}  {wide_msg}",
@@ -251,18 +168,10 @@ fn embed_progress_style() -> ProgressStyle {
     .progress_chars("=>-")
 }
 
-/// Ceiling on the displayed ETA: anything at or above shows `ETA >24h` rather
-/// than a literal (possibly absurd) computed duration.
 const ETA_DISPLAY_CAP: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Render the displayed ETA from the measured `RateEstimate` and estimated
-/// tokens remaining.
-///
-/// - `None` per_token (pre-first-batch): a calibrating placeholder, not a guess.
-/// - Else `per_token * remaining tokens`, computed in f64 and clamped BEFORE
-///   converting back to `Duration` (a pathological rate can overflow/produce
-///   `inf`), so a bad sample yields the `>24h` string, never a panic.
-/// - Compact format: seconds / minutes(+seconds) / hours+minutes.
+// Clamped in f64 before converting to `Duration`: a pathological rate can overflow or
+// produce `inf`, and must yield the `>24h` string, never a panic.
 fn format_eta(remaining_tokens: u64, per_token: Option<Duration>) -> String {
     let Some(per_token) = per_token else {
         return "ETA calibrating…".to_string();
@@ -295,9 +204,7 @@ fn format_eta(remaining_tokens: u64, per_token: Option<Duration>) -> String {
     }
 }
 
-/// Integer percentage of `done` over `total`, 0 when `total` is 0. Callers
-/// must label the result with its denominator; a bare percentage is banned
-/// from every embedding-state surface.
+// Callers must name the denominator; a bare percentage is banned from embedding-state output.
 fn pct(done: u64, total: u64) -> u64 {
     done.saturating_mul(100).checked_div(total).unwrap_or(0)
 }
@@ -313,23 +220,12 @@ struct ReqChunk {
     content: String,
 }
 
-/// Which persistent-failure hint `report_embed_failure` prints as its final
-/// line: the two failure families need different remedies, and the wrong one
-/// sends the operator chasing a fix that cannot help.
 #[derive(Clone, Copy)]
 enum StopHint {
-    /// The batch may have exceeded the server's per-request budget: the remedy
-    /// is on the request-size axis. Used for 408/timeout, connect-failure and
-    /// saturation exhaustion, and other unclassified failures.
     RequestBudget,
-    /// The server's embedder lost its GPU device (see the `embedder_device_lost`
-    /// signal): no request size fixes that, only a server restart does.
     EmbedderDeviceLost,
 }
 
-/// The final, persistent-failure hint line for a given [`StopHint`]. Split out
-/// from `report_embed_failure` so the remedy each failure family points at is
-/// unit-testable without capturing stderr.
 fn persistent_failure_hint(server_url: &str, hint: StopHint) -> String {
     match hint {
         StopHint::RequestBudget => format!(
@@ -345,11 +241,7 @@ fn persistent_failure_hint(server_url: &str, hint: StopHint) -> String {
     }
 }
 
-/// Report an unrecoverable embed-phase failure: abandon the progress bar and
-/// print an actionable message to stderr. The final line depends on `hint`: a
-/// request-budget/size failure and an upstream embedder device loss need
-/// different remedies. Does NOT return `Err` — callers report the count
-/// embedded so far via `Ok(embedded)`.
+// Returns instead of erroring so callers report progress so far via `Ok(embedded)`.
 fn report_embed_failure(
     bar: &ProgressBar,
     embedded: u64,
@@ -370,16 +262,7 @@ fn report_embed_failure(
     eprintln!("{}", persistent_failure_hint(server_url, hint));
 }
 
-/// Send pending chunks to `inkentry-server` for embedding and write the returned
-/// vectors into the local DB.
-///
-/// `chunk_ids_and_texts` items are `(chunk_id, embedding_text, token_count)`;
-/// the token counts weight the progress/ETA display, batch sizing, and request
-/// deadlines (all through the same `RateEstimate`).
-///
-/// Returns the number of chunks successfully embedded.
-///
-/// Requires `Tier::Server`; returns `Ok(0)` immediately for `Tier::Offline`.
+// Items are `(chunk_id, embedding_text, token_count)`.
 pub(super) async fn run_embed_phase(
     chunk_ids_and_texts: Vec<(i64, String, usize)>,
     db: &Database,
@@ -402,11 +285,7 @@ pub(super) async fn run_embed_phase(
     .await
 }
 
-/// Same as [`run_embed_phase`], but with the connect-failure retry backoff
-/// schedule injected instead of hard-coded to `CONNECT_FAILURE_BACKOFFS`.
-/// Exists so tests can exercise the exhausted-retries path on a
-/// millisecond-scale schedule instead of waiting through the production
-/// schedule's several minutes of real sleeping.
+// Backoffs are injected so tests can run the exhausted-retries path in milliseconds.
 #[allow(clippy::too_many_arguments)]
 async fn run_embed_phase_with_backoff(
     chunk_ids_and_texts: Vec<(i64, String, usize)>,
@@ -422,13 +301,10 @@ async fn run_embed_phase_with_backoff(
         Tier::Server { url, .. } => (url.clone(), cfg.bearer_for(url)?),
         Tier::Offline(_) => return Ok(0),
     };
-    // Refuse to append vectors from a different model into an existing index;
-    // stamps provenance on a fresh/legacy DB.
+    // Bails on a model mismatch; stamps a fresh DB.
     db.ensure_embedding_model(inkentry_core::embeddings::MODEL_ID)?;
-    // Same-model/same-dimension drift (e.g. a changed chunk-token cap) isn't
-    // corruption like a model mismatch, so this warns instead of bailing:
-    // unchanged files keep their old chunk boundaries until re-parsed, and
-    // nothing else would tell the user that `--force` is what fixes it.
+    // Warn, not bail: same-model drift is not corruption, but unchanged files keep old chunk
+    // boundaries and only `--force` fixes that.
     let current_chunker_config = inkentry_core::indexer::chunker_config_id();
     if let Some(recorded) = db.ensure_chunker_config(&current_chunker_config)? {
         eprintln!(
@@ -440,18 +316,11 @@ async fn run_embed_phase_with_backoff(
     }
     let server_limits = tier.server_limits();
 
-    // Ceiling the calibrated batch size may grow to (see `next_batch_size`),
-    // clamped to the server's advertised `max_batch_chunks` when known.
     let server_max_batch_chunks = server_limits.and_then(|l| l.max_batch_chunks);
     let ceiling = resolve_batch_ceiling(batch_size, server_max_batch_chunks);
 
-    // Target batch duration, clamped to the server's advertised (or legacy)
-    // `/index/embed` budget — see `resolve_target_batch_seconds`. The 408
-    // shrink below is the fallback.
     let target_batch_seconds = resolve_target_batch_seconds(server_limits);
     if server_limits.is_none() {
-        // Older server: no `limits` field, so it may still enforce the blanket
-        // 30s budget. Target smaller batches to keep the run working.
         eprintln!(
             "Note: inkentry-server at {server_url} did not report its /index/embed request \
              budget; assuming a conservative {LEGACY_SERVER_REQUEST_BUDGET_SECS}s budget and \
@@ -459,14 +328,11 @@ async fn run_embed_phase_with_backoff(
         );
     }
 
-    // Loopback auto-discovered servers may lack `cfg.project_id`; derive it from
-    // the project root, matching `Config::resolve_project_id`.
+    // Loopback servers may lack `cfg.project_id`.
     let project_id_owned = cfg.resolve_project_id(project_root);
     let project_id = project_id_owned.as_str();
 
-    // No client-wide timeout: a PER-REQUEST timeout is applied below, derived
-    // from the measured rate (pessimistic for the first, single-chunk request).
-    // A single fixed deadline let a slow first batch expire with nothing saved.
+    // Per-request timeouts only: one fixed deadline let a slow first batch expire with nothing saved.
     let client = inkentry_core::config::apply_server_ca(
         reqwest::Client::builder(),
         cfg.server_ca.as_deref().map(std::path::Path::new),
@@ -483,9 +349,6 @@ async fn run_embed_phase_with_backoff(
         ProgressBar::hidden()
     };
 
-    // Draw the bar before the first request fires so the phase shows movement
-    // immediately; the steady tick animates the spinner while a request is in
-    // flight so a slow batch never looks frozen.
     bar.set_message("calibrating batch size\u{2026}");
     bar.enable_steady_tick(std::time::Duration::from_millis(120));
     bar.tick();
@@ -497,17 +360,13 @@ async fn run_embed_phase_with_backoff(
     let mut progress_log = super::background_log::ProgressThrottle::new();
     let mut previous_batch_size = 1usize;
     let remaining = chunk_ids_and_texts.len();
-    // Token-weighted work totals: the ETA and the "of work done" percentage
-    // run over these, never over chunk counts (chunk fraction is coverage, a
-    // different question; see `status`).
+    // ETA and "of work done" run over token totals; chunk fraction is coverage, a different question.
     let total_tokens: u64 = chunk_ids_and_texts
         .iter()
         .map(|(_, _, tc)| (*tc).max(1) as u64)
         .sum();
     let mut tokens_done = 0u64;
-    // Percent-encode the project_id segment: slugs contain `/`
-    // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split the
-    // segment and break axum routing → 404.
+    // Slugs contain `/`, which would split the segment and 404 in routing.
     let url = format!(
         "{}/v1/projects/{}/index/embed",
         server_url.trim_end_matches('/'),
@@ -518,8 +377,6 @@ async fn run_embed_phase_with_backoff(
         batch_num += 1;
         let left = remaining - cursor;
 
-        // Calibration: first request 1 chunk, second 4 chunks (both clamped to
-        // what's left), to gather timing before committing to a steady-state size.
         let mut this_batch_size = match batch_num {
             1 => CALIBRATION_BATCH_1,
             2 => CALIBRATION_BATCH_2,
@@ -542,13 +399,8 @@ async fn run_embed_phase_with_backoff(
         }
         .clamp(1, left);
 
-        // Retry loop for THIS batch: a 408/timeout is recoverable — escalate
-        // patience (calibration batch 1, no rate estimate yet) or shrink and
-        // retry, rather than aborting at 0 embedded. A connect failure is
-        // also recoverable, but via a bounded backoff retry at the same size
-        // (see the `ConnectFailure` arm below). A 429 (see `Saturated`) is
-        // recoverable the same way, but the wait comes from the server's own
-        // `Retry-After` instead of a fixed schedule. Any other failure aborts.
+        // 408/timeout, connect failure and 429 are recoverable per batch (shrink, or retry the
+        // same size); anything else aborts.
         let mut escalated_calibration_once = false;
         let mut connect_failures = 0usize;
         let mut saturation_retries = 0usize;
@@ -563,9 +415,6 @@ async fn run_embed_phase_with_backoff(
                 None => FIRST_REQUEST_TIMEOUT,
             };
 
-            // Show which chunks are in flight, prefixed with the `RateEstimate`
-            // ETA (not indicatif's `{eta}`; see `format_eta`). Work-fraction
-            // percentages are token-weighted and always name their denominator.
             let eta_str = format_eta(total_tokens.saturating_sub(tokens_done), rate.per_token());
             let work_pct = pct(tokens_done, total_tokens);
             bar.set_message(format!(
@@ -596,18 +445,10 @@ async fn run_embed_phase_with_backoff(
 
             match outcome {
                 Ok(bytes) => {
-                    // Fold this batch's rate in so later sizes/timeouts track
-                    // the current rate. Also what the `bar.inc(1)` loop below
-                    // reads for the displayed ETA (via `format_eta`).
                     rate.update(started.elapsed(), batch_tokens);
                     break 'retry bytes;
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) if this_batch_size == 1 => {
-                    // Can't shrink below 1 chunk. On calibration batch 1 (no
-                    // rate estimate yet), escalate patience once
-                    // (FIRST_REQUEST_TIMEOUT → MAX_REQUEST_TIMEOUT) before
-                    // giving up: a cold single chunk on slow hardware may still
-                    // finish given the full budget.
                     if !escalated_calibration_once && rate.per_token().is_none() {
                         escalated_calibration_once = true;
                         eprintln!(
@@ -616,10 +457,7 @@ async fn run_embed_phase_with_backoff(
                         );
                         continue 'retry;
                     }
-                    // Don't abort the whole run: prior batches stay committed
-                    // and a re-run backfills the rest. Return the count so far —
-                    // an `Err` would unwind before `stats()` and discard the
-                    // visible progress.
+                    // Return the count, not `Err`: an `Err` would unwind before `stats()` and discard progress.
                     report_embed_failure(
                         &bar,
                         embedded,
@@ -631,13 +469,9 @@ async fn run_embed_phase_with_backoff(
                     return Ok(embedded);
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) => {
-                    // Steady-state batch exceeded the server's budget: shrink
-                    // (halve, floor 1) and retry rather than discarding progress.
                     let shrunk = (this_batch_size / 2).max(1);
                     if shrunk == this_batch_size {
-                        // Already at the floor and still failing (the batch-of-1
-                        // branch above handles this; guards against an infinite
-                        // loop otherwise).
+                        // Guards against looping forever if the size-1 arm above is bypassed.
                         report_embed_failure(
                             &bar,
                             embedded,
@@ -652,20 +486,14 @@ async fn run_embed_phase_with_backoff(
                         "index/embed batch of {this_batch_size} chunks exceeded the server's \
                          request budget (408) — shrinking to {shrunk} chunk(s) and retrying: {e:#}",
                     );
-                    // Fold in a pessimistic per-token sample (the failed timeout
-                    // over the batch's tokens) so future `next_batch_len` calls
-                    // don't re-derive the same too-large batch.
+                    // Pessimistic sample so later `next_batch_len` calls don't re-derive this batch.
                     rate.update(request_timeout, batch_tokens);
                     this_batch_size = shrunk;
                     continue 'retry;
                 }
                 Err(EmbedBatchError::ConnectFailure(e)) => {
-                    // The server isn't reachable at all: no batch size fixes
-                    // that, and folding this attempt's elapsed time into
-                    // `rate` would poison sizing/timeout decisions for every
-                    // batch after it with a duration that measured nothing
-                    // about embedding throughput. Retry the same size with
-                    // backoff instead of shrinking.
+                    // No batch size fixes an unreachable server, and this attempt's elapsed time
+                    // measures nothing about throughput, so it is not folded into `rate`.
                     if connect_failures >= connect_failure_backoffs.len() {
                         report_embed_failure(
                             &bar,
@@ -689,12 +517,7 @@ async fn run_embed_phase_with_backoff(
                     continue 'retry;
                 }
                 Err(EmbedBatchError::Saturated(retry_after)) => {
-                    // The server is up and reachable but shed this request:
-                    // its bounded embed admission queue is full.
-                    // No batch size fixes that either — retry the same size
-                    // after the server's own `Retry-After`, composing with the
-                    // connect-failure retry above rather than reusing its
-                    // fixed schedule (the server already told us how long).
+                    // Server is up but shed the request: retry the same size after its own `Retry-After`.
                     if saturation_retries >= MAX_SATURATION_RETRIES {
                         report_embed_failure(
                             &bar,
@@ -719,10 +542,6 @@ async fn run_embed_phase_with_backoff(
                     continue 'retry;
                 }
                 Err(EmbedBatchError::EmbedderDeviceLost(e)) => {
-                    // The server told us its embedder lost its GPU device and
-                    // self-heal failed: an upstream inference failure, not a
-                    // batch-size problem. No retry or shrink can fix it, so stop
-                    // and point the user at a server restart (see the hint).
                     report_embed_failure(
                         &bar,
                         embedded,
@@ -734,9 +553,6 @@ async fn run_embed_phase_with_backoff(
                     return Ok(embedded);
                 }
                 Err(EmbedBatchError::Other(e)) => {
-                    // Any other failure: prior batches stay committed and a
-                    // re-run backfills the rest. Report and stop rather than
-                    // propagating an `Err` that would discard the visible progress.
                     report_embed_failure(
                         &bar,
                         embedded,
@@ -754,12 +570,8 @@ async fn run_embed_phase_with_backoff(
         let stride = dim * 4;
         let batch = &chunk_ids_and_texts[cursor..cursor + this_batch_size];
 
-        // Decode this batch's vectors and commit them in a single transaction
-        // (see `Database::insert_embeddings`): one commit per batch instead of
-        // one implicit autocommit per row. The whole batch's compute is already
-        // sunk by now, so the commit boundary is the batch — an untimely kill
-        // rolls the batch back atomically and `chunks_missing_embeddings`
-        // re-queues it whole on the next run (ADR-070 D2).
+        // One transaction per batch: a kill mid-batch rolls it back and
+        // `chunks_missing_embeddings` re-queues it whole.
         let embeddings: Vec<(i64, Vec<f32>)> = batch
             .iter()
             .enumerate()
@@ -772,8 +584,7 @@ async fn run_embed_phase_with_backoff(
         db.insert_embeddings(&embeddings)?;
         super::crash_test_hook::pause_at("after_embed_batch", &batch_num.to_string());
 
-        // The batch is now durable; advance the counters and repaint the ETA
-        // per chunk so it still counts down through a batch, not once per request.
+        // Repaint per chunk so the ETA counts down through a batch, not once per request.
         for (_row_id, _text, token_count) in batch.iter() {
             embedded += 1;
             tokens_done += (*token_count).max(1) as u64;
@@ -789,8 +600,7 @@ async fn run_embed_phase_with_backoff(
         previous_batch_size = this_batch_size;
         cursor += this_batch_size;
 
-        // The detached worker has no bar to repaint, so the same counts go to
-        // its log as plain lines (a no-op in the foreground).
+        // The detached worker has no bar; log plain lines instead.
         if progress_log.due(cursor >= remaining) {
             let work_pct = pct(tokens_done, total_tokens);
             super::background_log::emit(format!(
@@ -803,39 +613,14 @@ async fn run_embed_phase_with_backoff(
     Ok(embedded)
 }
 
-/// An `embed_one_batch` failure, distinguishing "the request budget was too
-/// small for this batch" (408, or a client-side timeout expiring first) and
-/// "the server wasn't reachable at all" (a TCP connect-phase failure) from
-/// every other failure: the first is worth shrinking and retrying, the
-/// second worth retrying at the same size, see `run_embed_phase`.
 enum EmbedBatchError {
-    /// Server returned 408, or the client-side `timeout` elapsed after a
-    /// connection was established.
     BudgetExceeded(anyhow::Error),
-    /// The client could not open a TCP connection to the server at all (see
-    /// `reqwest::Error::is_connect`): the server is unreachable, which says
-    /// nothing about whether this batch's size is appropriate.
     ConnectFailure(anyhow::Error),
-    /// Server returned 429: its bounded embed admission queue is full,
-    /// an explicit "shed and back off" signal from a
-    /// server that IS up and reachable — unlike `BudgetExceeded`, says
-    /// nothing about this batch's size, and unlike `ConnectFailure`, the
-    /// server itself names the wait via `Retry-After`.
     Saturated(Duration),
-    /// Server returned the `embedder_device_lost` signal (a `503` whose body
-    /// carries that code): its embedder lost its GPU device and self-heal
-    /// failed. An upstream inference failure, not a batch-size problem — no
-    /// shrink or retry helps, only a server restart, so it is reported with a
-    /// distinct hint (see `StopHint::EmbedderDeviceLost`).
     EmbedderDeviceLost(anyhow::Error),
-    /// Any other failure (network error, non-408 status, malformed body).
     Other(anyhow::Error),
 }
 
-/// True when an error response body carries the server's stable
-/// `embedder_device_lost` code (`{"error": {"code": "embedder_device_lost", …}}`).
-/// A non-JSON or differently-shaped body (e.g. the warming-up `{"state": …}`
-/// shape, or a generic `internal_error`) is not a device loss.
 fn response_signals_device_lost(body: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
@@ -847,9 +632,7 @@ fn response_signals_device_lost(body: &str) -> bool {
         == Some("embedder_device_lost")
 }
 
-/// Parse a `Retry-After` header value as whole seconds, falling back to
-/// [`DEFAULT_SATURATION_RETRY`] when absent or not a plain integer (the
-/// server only ever sends delta-seconds, never an HTTP-date).
+// The server only sends delta-seconds, never an HTTP-date.
 fn parse_retry_after(resp: &reqwest::Response) -> Duration {
     resp.headers()
         .get(reqwest::header::RETRY_AFTER)
@@ -859,11 +642,7 @@ fn parse_retry_after(resp: &reqwest::Response) -> Duration {
         .unwrap_or(DEFAULT_SATURATION_RETRY)
 }
 
-/// Send one embed batch and return the raw little-endian f32 response bytes: one
-/// `EMBEDDING_DIM`-float vector per chunk, in request order. Applies a
-/// per-request `timeout` (see `batch_timeout`) and validates the response length.
-/// Distinguishes a 408/timeout, a connect failure, and other failures; see
-/// [`EmbedBatchError`].
+// Returns little-endian f32 vectors, one per chunk in request order.
 async fn embed_one_batch(
     client: &reqwest::Client,
     url: &str,
@@ -880,10 +659,7 @@ async fn embed_one_batch(
     let send_result = req.send().await;
     let resp = match send_result {
         Ok(resp) => resp,
-        // Checked before `is_timeout()`: a connect-phase failure whose
-        // underlying OS error is itself a timeout (e.g. macOS's "Operation
-        // timed out (os error 60)") satisfies BOTH predicates, and only the
-        // connect classification is correct here.
+        // Before `is_timeout()`: a connect failure whose OS error is a timeout satisfies both.
         Err(e) if e.is_connect() => {
             return Err(EmbedBatchError::ConnectFailure(
                 anyhow::Error::new(e)
@@ -915,13 +691,8 @@ async fn embed_one_batch(
         return Err(EmbedBatchError::Saturated(parse_retry_after(&resp)));
     }
 
-    // A 503 whose body carries the `embedder_device_lost` code is the server
-    // reporting that its embedder lost its GPU device and self-heal failed (see
-    // inkentry-server's `AppError`). That is an upstream inference failure, not
-    // a batch-size rejection, so classify it distinctly here rather than letting
-    // it fall through to the generic `Other` path that prints a batch-size hint.
-    // Any other 503 (e.g. the embedder still warming up) keeps the generic
-    // treatment.
+    // A 503 with `embedder_device_lost` is an upstream inference failure, not a batch-size
+    // rejection; other 503s (e.g. embedder warming up) stay generic.
     if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
         let body = resp.text().await.unwrap_or_default();
         if response_signals_device_lost(&body) {
@@ -936,15 +707,8 @@ async fn embed_one_batch(
         )));
     }
 
-    // This path carries the same per-origin bearer the memory and sync paths
-    // do, so a rejection here has to name the same fix (ADR-088 D3). Without
-    // it an upgrading user whose stored key is no longer migrated sees only a
-    // bare 401 from the one command they are most likely to run first.
-    //
-    // The hint names the origin rather than this endpoint, because that is
-    // what `auth set-key` stores: it normalises whatever it is given down to
-    // an origin, so suggesting the full `/v1/projects/.../index/embed` path
-    // would print a command that works but reads as though the path mattered.
+    // Same credential hint as the memory and sync paths. Names the origin, not this endpoint,
+    // because `auth set-key` normalises to an origin.
     let hint = url
         .parse::<reqwest::Url>()
         .map(|u| credential_hint(resp.status(), &u.origin().ascii_serialization()))
@@ -982,8 +746,6 @@ mod tests {
 
     #[test]
     fn resolve_batch_ceiling_passes_through_valid_values() {
-        // A user-supplied value within range is used verbatim as the ceiling
-        // that calibration may grow the batch size up to.
         assert_eq!(resolve_batch_ceiling(1, None), 1);
         assert_eq!(resolve_batch_ceiling(32, None), 32);
         assert_eq!(resolve_batch_ceiling(64, None), 64);
@@ -993,8 +755,6 @@ mod tests {
 
     #[test]
     fn resolve_batch_ceiling_falls_back_to_default_for_zero() {
-        // 0 means the user left `--batch-size` at its default: the ceiling is
-        // the server's own hard limit, not some fixed pre-calibration size.
         assert_eq!(resolve_batch_ceiling(0, None), DEFAULT_BATCH_CEILING);
         assert_eq!(DEFAULT_BATCH_CEILING, MAX_BATCH);
     }
@@ -1007,23 +767,11 @@ mod tests {
 
     #[test]
     fn resolve_batch_ceiling_clamps_to_server_advertised_max() {
-        // A server advertising a smaller max_batch_chunks than our MAX_BATCH
-        // guess must win — never plan around a count the server won't accept.
         assert_eq!(resolve_batch_ceiling(0, Some(32)), 32);
         assert_eq!(resolve_batch_ceiling(200, Some(32)), 32);
-        // A server-advertised max ABOVE the user's/default ceiling doesn't
-        // raise it — it's a min(), not a replacement.
         assert_eq!(resolve_batch_ceiling(16, Some(256)), 16);
     }
 
-    // Only reachable now when a peer advertises no cap at all: a peer that
-    // advertises one keeps it even if a sibling member is unreadable (see
-    // one_unreadable_limit_keeps_the_readable_limits_beside_it). For a peer
-    // that advertises nothing, 256 is not "no limit": it is the hard cap that
-    // server family enforces (`MAX_EMBED_BATCH`, `413` above it), so it is the
-    // legacy profile on this axis exactly as 30s is on the time axis. The two
-    // still have to be judged separately, because only the time axis derives
-    // its fallback from a documented budget rather than from a shared ceiling.
     #[test]
     fn absent_server_limits_leave_the_chunk_ceiling_at_this_clis_own_maximum() {
         let advertised = resolve_batch_ceiling(0, Some(16));
@@ -1037,12 +785,8 @@ mod tests {
         );
     }
 
-    // ── resolve_target_batch_seconds: server-limits-aware target clamping ───
-
     #[test]
     fn resolve_target_batch_seconds_uses_default_when_server_budget_is_generous() {
-        // A server advertising the new EMBED_REQUEST_TIMEOUT (1800s) budget
-        // comfortably fits the default 240s target — no clamping needed.
         let limits = ServerLimits {
             embed_request_timeout_secs: Some(1800),
             max_batch_chunks: Some(256),
@@ -1057,9 +801,6 @@ mod tests {
 
     #[test]
     fn resolve_target_batch_seconds_clamps_down_for_small_server_budget() {
-        // A server advertising a smaller budget than the default target
-        // forces a smaller target, at SERVER_BUDGET_TARGET_FRACTION of that
-        // budget (leaving headroom rather than targeting the hard edge).
         let limits = ServerLimits {
             embed_request_timeout_secs: Some(60),
             max_batch_chunks: Some(256),
@@ -1071,31 +812,18 @@ mod tests {
 
     #[test]
     fn resolve_target_batch_seconds_assumes_legacy_budget_when_server_limits_absent() {
-        // THE version-skew case: a server that pre-dates the `limits` field
-        // still enforces the old blanket 30s budget with no /index/embed
-        // exemption. Absent `limits` must NOT be read as "no limit" — it must
-        // fall back to the conservative legacy assumption.
         assert_eq!(
             resolve_target_batch_seconds(None),
             20 // 30 * 2/3, floored
         );
     }
 
-    // ── next_batch_len: calibration-driven, token-weighted batch sizing ─────
-    //
-    // A tail of 1-token chunks makes token math equal chunk math, so these
-    // first cases pin the same behaviour the old chunk-count sizing had; the
-    // token-skew cases after them pin what changed.
-
-    /// A uniform queue tail of 1-token chunks.
     fn unit_tail(n: usize) -> Vec<usize> {
         vec![1; n]
     }
 
     #[test]
     fn next_batch_len_shrinks_for_slow_hardware() {
-        // ~60 s/token over 1-token chunks: a 240 s budget fits ~4 chunks.
-        // previous_batch_size=256 so the growth cap doesn't bind here.
         assert_eq!(
             next_batch_len(
                 Duration::from_secs(60),
@@ -1110,8 +838,6 @@ mod tests {
 
     #[test]
     fn next_batch_len_grows_for_fast_hardware_but_respects_growth_cap() {
-        // ~1 s/token over 1-token chunks: a 240 s budget fits 240 chunks, but
-        // growth from a previous batch of 4 is capped to GROWTH_FACTOR (8) × 4.
         assert_eq!(
             next_batch_len(
                 Duration::from_secs(1),
@@ -1126,9 +852,6 @@ mod tests {
 
     #[test]
     fn next_batch_len_reaches_budget_once_previous_batch_is_already_large() {
-        // Once the previous batch was large enough that GROWTH_FACTOR × it
-        // exceeds the ceiling, the token budget (not the growth cap) is the
-        // binding constraint, so growth isn't artificially stalled forever.
         assert_eq!(
             next_batch_len(
                 Duration::from_secs(1),
@@ -1143,8 +866,6 @@ mod tests {
 
     #[test]
     fn next_batch_len_clamps_to_ceiling() {
-        // A very fast rate would derive a batch above the ceiling; the ceiling
-        // wins even when the growth cap would otherwise allow more.
         let t = next_batch_len(
             Duration::from_millis(1),
             &unit_tail(512),
@@ -1165,8 +886,6 @@ mod tests {
 
     #[test]
     fn next_batch_len_floors_at_one_for_extremely_slow_hardware() {
-        // If a single chunk alone blows the whole per-batch budget, we still
-        // must send at least one chunk per request.
         let t = next_batch_len(
             Duration::from_secs(10_000),
             &unit_tail(256),
@@ -1179,9 +898,6 @@ mod tests {
 
     #[test]
     fn next_batch_len_handles_zero_duration_without_panicking() {
-        // A degenerate zero-duration sample (e.g. a clock quirk) must not
-        // divide-by-zero; falls back to the growth cap since the rate is
-        // unmeasurably fast (growth is still capped per step even here).
         let t = next_batch_len(
             Duration::ZERO,
             &unit_tail(256),
@@ -1194,20 +910,12 @@ mod tests {
 
     #[test]
     fn next_batch_len_uses_smaller_clamped_target_when_passed() {
-        // A caller passing a smaller target_seconds (e.g. because
-        // resolve_target_batch_seconds clamped it down for a small-budget
-        // server) must derive a proportionally smaller batch, not always
-        // TARGET_BATCH_SECONDS.
         let t = next_batch_len(Duration::from_secs(1), &unit_tail(256), 256, 256, 20);
         assert_eq!(t, 20);
     }
 
     #[test]
     fn next_batch_len_fills_by_token_sum_not_chunk_count() {
-        // 100-token chunks at 1 s/token: the 240 s budget fits 2 whole chunks
-        // (300 tokens would overshoot), NOT the 240 chunks a chunk-count
-        // budget calibrated on small chunks would have asked for. This is the
-        // sizing half of the D6 wasted-GPU defect.
         let tail = vec![100usize; 256];
         let t = next_batch_len(
             Duration::from_secs(1),
@@ -1221,10 +929,6 @@ mod tests {
 
     #[test]
     fn next_batch_len_stops_at_a_size_transition_in_the_queue() {
-        // A queue crossing from tiny chunks into huge ones (the measured 7.4x
-        // jump) must not fill the batch past the transition: three 1-token
-        // chunks fit, and the 1000-token chunk that follows is left for the
-        // next batch instead of silently consuming the deadline's margin.
         let mut tail = vec![1usize, 1, 1];
         tail.extend(vec![1000usize; 64]);
         let t = next_batch_len(
@@ -1239,8 +943,6 @@ mod tests {
 
     #[test]
     fn next_batch_len_zero_token_chunks_are_floored_not_free() {
-        // A pre-backfill row can carry token_count 0; it must cost at least 1
-        // token so a run of zeros can't derive an unbounded batch.
         let tail = vec![0usize; 512];
         let t = next_batch_len(
             Duration::from_secs(60),
@@ -1252,21 +954,14 @@ mod tests {
         assert_eq!(t, 4); // identical to the 1-token case
     }
 
-    // ── batch_timeout: derive a per-request deadline from the measured rate ──
-
     #[test]
     fn batch_timeout_scales_with_expected_batch_duration() {
-        // At 60 s/token, a 4-token batch is expected to take 240 s; with the
-        // 4x safety factor that's 960 s, inside the 1800 s ceiling.
         let t = batch_timeout(Duration::from_secs(60), 4);
         assert_eq!(t, Duration::from_secs(960));
     }
 
     #[test]
     fn batch_timeout_clamps_to_floor_for_fast_hardware() {
-        // At 1 s/token, a 4-token batch is expected to take 4 s; even with the
-        // 4x safety factor (16 s) that's far below the floor, which must win
-        // so transient latency spikes are still absorbed.
         let t = batch_timeout(Duration::from_secs(1), 4);
         assert_eq!(t, MIN_REQUEST_TIMEOUT);
     }
@@ -1285,11 +980,6 @@ mod tests {
 
     #[test]
     fn batch_timeout_tracks_batch_token_sum_not_chunk_count() {
-        // The deadline is derived from the batch's token sum, so two batches
-        // of equal chunk count but 10x different token weight get 10x
-        // different deadlines. Under chunk-count sizing both would have shared
-        // one deadline and the heavy batch would consume its entire safety
-        // margin (the D6 field failure).
         let per_token = Duration::from_secs(1);
         let light = batch_timeout(per_token, 100);
         let heavy = batch_timeout(per_token, 1000);
@@ -1297,8 +987,6 @@ mod tests {
         assert_eq!(heavy, MAX_REQUEST_TIMEOUT); // 4000s clamped to 1800s
         assert!(heavy > light);
     }
-
-    // ── CONNECT_FAILURE_BACKOFFS: schedule for the connect-failure retry ────
 
     #[test]
     fn connect_failure_backoffs_is_the_documented_schedule() {
@@ -1314,8 +1002,6 @@ mod tests {
         );
     }
 
-    // ── RateEstimate: continuously re-estimate the per-token rate ───────────
-
     #[test]
     fn rate_estimate_seeds_from_first_observation() {
         let mut r = RateEstimate::new();
@@ -1326,14 +1012,10 @@ mod tests {
 
     #[test]
     fn rate_estimate_deweights_the_batch_1_cold_sample_on_second_observation() {
-        // Batch 1: 1 token in 10 s ⇒ 10 s/token (cold). Batch 2 (1 s/token)
-        // must dominate: only CALIBRATION_BATCH_1_WEIGHT (0.1) of the cold
-        // sample survives, not a 50/50 split.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(10), 1);
         r.update(Duration::from_secs(4), 4); // 1 s/token
         let blended = r.per_token().unwrap();
-        // Exact expected value: 10*0.1 + 1*0.9 = 1.9s.
         assert!(
             (blended.as_secs_f64() - 1.9).abs() < 1e-9,
             "expected the de-weighted blend 10*0.1 + 1*0.9 = 1.9s, got {blended:?}"
@@ -1346,8 +1028,6 @@ mod tests {
 
     #[test]
     fn rate_estimate_third_sample_onward_blends_50_50() {
-        // From the third observation onward (batch-1 cold sample already
-        // superseded), later samples blend evenly with the running estimate.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(10), 1); // batch 1 (cold): 10s/token
         r.update(Duration::from_secs(4), 4); // batch 2: 1s/token -> blended 1.9s/token
@@ -1362,21 +1042,14 @@ mod tests {
 
     #[test]
     fn rate_estimate_reproduces_field_failure_scenario_with_fix() {
-        // Batch 1 (1 token) ~25s cold; batch 2 (4 tokens) ~4.8s (~1.2s/token
-        // warm). The single shared estimate (de-weighted + growth-capped) must
-        // derive a small, internally consistent batch, not the unblended
-        // ~50x leap an earlier build produced.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(25), 1); // batch 1: cold
         r.update(Duration::from_millis(4800), 4); // batch 2: 1.2s/token warm
         let per_token = r.per_token().unwrap();
-        // 25*0.1 + 1.2*0.9 = 3.58s/token.
         assert!(
             (per_token.as_secs_f64() - 3.58).abs() < 1e-9,
             "expected 3.58s/token, got {per_token:?}"
         );
-        // The same estimate feeds next_batch_len, growth-capped from the
-        // previous batch of 4 (1-token chunks keep token math == chunk math).
         let batch_3_size = next_batch_len(per_token, &unit_tail(256), 256, 4, TARGET_BATCH_SECONDS);
         assert_eq!(
             batch_3_size, 32,
@@ -1384,8 +1057,6 @@ mod tests {
              240/3.58≈67 the estimate alone would suggest, and nowhere near the field \
              failure's 200"
         );
-        // The resulting batch's expected duration must stay well under ~240s;
-        // uses the uncapped TARGET_BATCH_SECONDS so the growth cap alone is under test.
         let expected_duration = per_token.as_secs_f64() * batch_3_size as f64;
         assert!(
             expected_duration < 150.0,
@@ -1403,22 +1074,10 @@ mod tests {
 
     #[test]
     fn rate_estimate_ignores_connect_failure_attempts() {
-        // `run_embed_phase`'s `ConnectFailure` arm must never call
-        // `RateEstimate::update` (unlike the `BudgetExceeded` shrink arm,
-        // which deliberately folds in a pessimistic sample): a connect
-        // failure carries no signal about embedding throughput. Simulate the
-        // sequence a connect-failure-then-success batch produces (no
-        // `update()` call for the failed attempts) and confirm the estimate
-        // reflects only the two REAL samples, matching the same de-weighted
-        // blend as `rate_estimate_deweights_the_batch_1_cold_sample_on_second_observation`.
         let mut r = RateEstimate::new();
         r.update(Duration::from_secs(10), 1); // batch 1 (cold): 10s/token
-        // Any number of connect-failure retries would occur here in
-        // `run_embed_phase`, contributing no `update` call.
         r.update(Duration::from_secs(4), 4); // batch 2, after the retries: 1s/token
         let blended = r.per_token().unwrap();
-        // 10*0.1 + 1*0.9 = 1.9s/token: if a connect failure had folded in a
-        // bogus sample, this would be a 50/50 (or 3-way) blend instead.
         assert!(
             (blended.as_secs_f64() - 1.9).abs() < 1e-9,
             "connect-failure retries must not fold a bogus sample into the rate estimate: \
@@ -1430,15 +1089,8 @@ mod tests {
         );
     }
 
-    // ── pct + token-weighted progress: work fraction ≠ chunk fraction ───────
-
     #[test]
     fn work_fraction_diverges_from_chunk_fraction_on_a_token_skewed_queue() {
-        // The D4/D6 estimator defect in miniature: a queue whose late chunks
-        // are far heavier than its early ones. After the first two of four
-        // chunks land, HALF the chunks are searchable but almost none of the
-        // work is done; the two percentages must diverge, and each must be
-        // computed over its own denominator.
         let queue: Vec<(i64, String, usize)> = vec![
             (1, "a".into(), 10),
             (2, "b".into(), 10),
@@ -1468,9 +1120,6 @@ mod tests {
 
     #[test]
     fn eta_is_token_weighted_not_chunk_weighted() {
-        // Same rate, same remaining CHUNK count, 100x the remaining tokens:
-        // the displayed ETA must scale with tokens. A chunk-weighted ETA would
-        // print the same string for both (the 3.2x under-report in the field).
         let per_token = Some(Duration::from_secs(1));
         let light = format_eta(60, per_token);
         let heavy = format_eta(6000, per_token);
@@ -1478,16 +1127,11 @@ mod tests {
         assert_eq!(heavy, "ETA 1h40m");
     }
 
-    // ── embed_progress_style: the message-only-ETA template must build ──────
-
     #[test]
     fn embed_progress_style_builds_without_indicatif_eta_token() {
-        // A malformed template would panic at the `.unwrap()` the first time the
-        // embed phase runs; building and applying it here proves it's well-formed.
         let style = embed_progress_style();
         let bar = ProgressBar::hidden();
         bar.set_style(style);
-        // Driving the bar the way the embed phase does must not panic.
         bar.enable_steady_tick(Duration::from_millis(120));
         bar.set_length(10);
         bar.tick();
@@ -1496,18 +1140,13 @@ mod tests {
         bar.finish_and_clear();
     }
 
-    // ── format_eta: display ETA derived from the measured RateEstimate ──────
-
     #[test]
     fn format_eta_shows_calibrating_when_rate_unknown() {
-        // Before the first batch has landed there is no measurement to derive
-        // an ETA from at all — show a calibrating placeholder, not a guess.
         assert_eq!(format_eta(41, None), "ETA calibrating…");
     }
 
     #[test]
     fn format_eta_shows_seconds_for_sub_minute_remaining() {
-        // 1 s/entry * 12 remaining = 12s.
         assert_eq!(format_eta(12, Some(Duration::from_secs(1))), "ETA 12s");
     }
 
@@ -1518,26 +1157,21 @@ mod tests {
 
     #[test]
     fn format_eta_shows_minutes_and_seconds() {
-        // 2 s/entry * 100 remaining = 200s = 3m20s.
         assert_eq!(format_eta(100, Some(Duration::from_secs(2))), "ETA 3m20s");
     }
 
     #[test]
     fn format_eta_shows_bare_minutes_when_no_remainder_seconds() {
-        // 1 s/entry * 180 remaining = 180s = 3m exactly.
         assert_eq!(format_eta(180, Some(Duration::from_secs(1))), "ETA 3m");
     }
 
     #[test]
     fn format_eta_shows_hours_and_minutes() {
-        // 60 s/entry * 65 remaining = 3900s = 1h05m.
         assert_eq!(format_eta(65, Some(Duration::from_secs(60))), "ETA 1h05m");
     }
 
     #[test]
     fn format_eta_caps_pathologically_large_duration_instead_of_showing_absurd_value() {
-        // A pathological per_entry times a large remaining count must render the
-        // capped ">24h" string — never an overflowed, panicking, or years-scale value.
         let eta = format_eta(1_000_000, Some(Duration::from_secs(10_000_000)));
         assert_eq!(eta, "ETA >24h");
         assert!(
@@ -1548,23 +1182,15 @@ mod tests {
 
     #[test]
     fn format_eta_caps_at_boundary_just_above_24h() {
-        // At/above the 24h cap must show the capped string, not a literal
-        // "24h00m" — the cap is a hard display ceiling, not just an overflow guard.
         let eta = format_eta(1, Some(Duration::from_secs(24 * 60 * 60 + 1)));
         assert_eq!(eta, "ETA >24h");
     }
 
     #[test]
     fn format_eta_does_not_panic_on_overflow_prone_inputs() {
-        // Duration::MAX times a large remaining count would overflow a naive
-        // `Duration * u32`/`Duration::saturating_mul` computation; this must
-        // still return the capped string without panicking.
         let eta = format_eta(u64::MAX, Some(Duration::MAX));
         assert_eq!(eta, "ETA >24h");
     }
-
-    // ── run_embed_phase: a mid-run batch failure must not discard earlier,
-    //    already-committed embeddings ──────────────────────────────────────────
 
     use std::sync::OnceLock;
 
@@ -1573,8 +1199,6 @@ mod tests {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// Register the sqlite-vec extension exactly once per test process so the
-    /// in-memory DB can create the `vec0` embeddings table.
     fn register_sqlite_vec() {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
@@ -1587,8 +1211,6 @@ mod tests {
         });
     }
 
-    /// One constant `EMBEDDING_DIM`-vector of little-endian f32 per request
-    /// chunk, matching the server's wire format (response[i] → chunk[i]).
     struct OkEmbedResponder;
     impl wiremock::Respond for OkEmbedResponder {
         fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
@@ -1611,15 +1233,9 @@ mod tests {
         }
     }
 
-    // ── embed_one_batch: connect-phase failure classification ───────────────
-
     #[tokio::test]
     async fn embed_one_batch_classifies_a_refused_connection_as_connect_failure() {
-        // Reserve a port, then release it without ever listening again: a
-        // connection attempt fails at the OS connect phase (refused), exactly
-        // like the field failure's "server not accepting connections", the
-        // one difference being this fails instantly instead of after a long
-        // client-side timeout, which is what makes it fast to test.
+        // A released port refuses the connection instantly.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
@@ -1657,10 +1273,6 @@ mod tests {
 
     #[tokio::test]
     async fn embed_one_batch_still_classifies_a_slow_connected_server_as_budget_exceeded() {
-        // Regression guard: a server that IS reachable but responds slower
-        // than the per-request timeout must still classify as
-        // `BudgetExceeded`: the new `is_connect()` check must not swallow a
-        // real request/response timeout.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -1703,20 +1315,8 @@ mod tests {
 
     #[tokio::test]
     async fn embed_one_batch_classifies_dual_connect_and_timeout_flags_as_connect_failure() {
-        // The `is_connect()`-before-`is_timeout()` ordering matters only when
-        // a single reqwest::Error satisfies both predicates at once. Verified
-        // empirically (not just by reading reqwest's source): a
-        // `connect_timeout` that elapses while the OS is still trying to
-        // reach an unresponsive host produces exactly that dual-flagged
-        // error, since reqwest's own connect-attempt timeout marker gets
-        // wrapped inside the connect-phase error hyper reports.
-        //
-        // 192.0.2.1 is RFC 5737 TEST-NET-1: reserved for documentation, never
-        // assigned or routed on the public internet, so the connection
-        // attempt is silently dropped rather than instantly refused, giving
-        // the client's `connect_timeout` time to elapse first. Bounded to
-        // under a second by that same `connect_timeout`, so this stays fast
-        // and deterministic without depending on a controllable server.
+        // 192.0.2.1 (TEST-NET-1) is silently dropped, so `connect_timeout` elapses first
+        // and the error is both `is_connect()` and `is_timeout()`.
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(300))
             .build()
@@ -1753,8 +1353,6 @@ mod tests {
             Ok(_) => panic!("192.0.2.1 must never actually accept a connection"),
         }
     }
-
-    // ── embed_one_batch: 401 (the credential the index path carries) ───────
 
     #[tokio::test]
     async fn embed_one_batch_names_the_fix_when_the_server_rejects_the_credential() {
@@ -1808,11 +1406,6 @@ mod tests {
         );
     }
 
-    // ── embed_one_batch: 429 (embed admission queue saturated) ──────────────
-    // The server's admission gate sheds a request with 429 + Retry-After
-    // instead of letting it queue behind the mutex-serialized embedder past
-    // its own timeout.
-
     #[tokio::test]
     async fn embed_one_batch_classifies_429_as_saturated_with_parsed_retry_after() {
         let mock = MockServer::start().await;
@@ -1861,9 +1454,6 @@ mod tests {
 
     #[tokio::test]
     async fn embed_one_batch_defaults_retry_after_when_429_header_is_missing() {
-        // A legacy/misbehaving server that sends 429 with no Retry-After must
-        // not crash the classification — fall back to DEFAULT_SATURATION_RETRY
-        // rather than panicking on a missing/unparseable header.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -1904,14 +1494,8 @@ mod tests {
         }
     }
 
-    // ── embed_one_batch: 503 embedder device loss vs generic 503 ────────────
-
     #[tokio::test]
     async fn embed_one_batch_classifies_device_lost_503_distinctly_from_a_budget_rejection() {
-        // A 503 whose body carries the `embedder_device_lost` code is an
-        // upstream inference failure (the server's embedder lost its GPU
-        // device), which must classify as EmbedderDeviceLost so the run prints a
-        // server-restart hint, not the batch-size hint a 408 gets.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -1951,9 +1535,6 @@ mod tests {
 
     #[tokio::test]
     async fn embed_one_batch_treats_a_non_device_lost_503_as_a_generic_failure() {
-        // Any other 503 (e.g. the embedder still warming up, a different shape
-        // with no `error.code`) must NOT be mistaken for a device loss: it keeps
-        // the generic `Other` treatment so only the real signal flips the hint.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -1993,7 +1574,6 @@ mod tests {
         }
     }
 
-    /// Insert `n` chunks into a fresh in-memory DB and return it plus their ids.
     fn seed_chunks(n: usize) -> (Database, Vec<i64>) {
         register_sqlite_vec();
         let db = Database::open(std::path::Path::new(":memory:")).expect("open in-memory DB");
@@ -2022,8 +1602,6 @@ mod tests {
         server_tier_with_limits(url, None)
     }
 
-    /// Same as [`server_tier`], but with `server_limits` set — for tests that
-    /// exercise the version-skew clamping.
     fn server_tier_with_limits(url: String, server_limits: Option<ServerLimits>) -> Tier {
         Tier::Server {
             url,
@@ -2036,13 +1614,7 @@ mod tests {
 
     #[tokio::test]
     async fn batch_failure_keeps_prior_batches_and_stops_gracefully() {
-        // 6 chunks, small ceiling; the mock's third response fails with 500.
-        // The run must persist every chunk embedded before the failure, NOT
-        // error, and report only the successfully-embedded count.
         let mock = MockServer::start().await;
-        // The first two requests (calibration: 1 chunk, then up to 4 chunks)
-        // succeed; everything after that fails, so the run stops partway
-        // through a small index without ever reaching a "finished" state.
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
             .respond_with(OkEmbedResponder)
@@ -2077,9 +1649,6 @@ mod tests {
         .await
         .expect("a failing batch must NOT return Err; it stops gracefully");
 
-        // Calibration sends batch 1 (1 chunk) then batch 2 (up to 4 chunks,
-        // clamped to what's left); both succeed here, so exactly
-        // 1 + min(4, 5) = 5 chunks land before the third request fails.
         assert_eq!(
             embedded, 5,
             "the two successful calibration batches (1 + 4 chunks) must be reported as embedded"
@@ -2094,9 +1663,6 @@ mod tests {
 
     #[tokio::test]
     async fn all_batches_success_embeds_everything() {
-        // Control case: when every batch succeeds, all chunks are embedded and
-        // persisted (guards against the failure path over-triggering), across
-        // calibration batches and into steady state.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2132,11 +1698,6 @@ mod tests {
 
     #[tokio::test]
     async fn chunker_config_drift_warns_but_does_not_block_the_embed_phase() {
-        // A DB stamped under an old chunker config (simulating an upgrade
-        // that changed the default chunk-token cap) must still complete a
-        // normal, non-`--force` embed phase: the mismatch is same-model/
-        // same-dimension drift, not corruption, so it's a warning, not a
-        // bailout.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2171,22 +1732,14 @@ mod tests {
 
         assert_eq!(embedded, 5, "incremental embedding still proceeds normally");
         assert_eq!(db.stats().unwrap().embedding_count, 5);
-        // The stale stamp is left as-is: only a `--force` full re-chunk
-        // (outside this function's scope) would bring it back in sync.
         assert_eq!(
             db.chunker_config().unwrap().as_deref(),
             Some("max_chunk_tokens=2048")
         );
     }
 
-    // ── run_embed_phase: honoring the server's 429 admission shedding ───────
-
     #[tokio::test]
     async fn saturated_429_retries_same_batch_after_retry_after_then_succeeds() {
-        // The server's admission queue may be transiently full; the client
-        // must honor `Retry-After` and retry the SAME batch (no shrink,
-        // unlike a 408 — queue depth says nothing about this batch's size)
-        // rather than treating it as an unrecoverable failure.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2231,10 +1784,6 @@ mod tests {
 
     #[tokio::test]
     async fn saturated_429_gives_up_gracefully_after_max_retries_exhausted() {
-        // Safety valve: if the server's admission queue never drains (or a
-        // misbehaving server always sheds), the run must still terminate
-        // rather than retry forever, and must report progress-so-far (here,
-        // 0) instead of propagating an `Err` that would discard it.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2273,9 +1822,6 @@ mod tests {
 
     #[tokio::test]
     async fn small_index_below_calibration_size_still_embeds_everything() {
-        // An index with fewer chunks than even the first calibration batch
-        // (or between the two) must not panic on slicing and must still embed
-        // every chunk — regression guard for the `.min(left)` clamps.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2312,11 +1858,6 @@ mod tests {
 
     #[tokio::test]
     async fn empty_queue_returns_immediately_without_any_request() {
-        // Nothing to embed (e.g. a re-run where every chunk already has an
-        // embedding) must not enter the batch loop at all — a regression
-        // guard for the `while cursor < remaining` loop that replaced the old
-        // fixed-size `.chunks()` iterator, which handled a zero-length slice
-        // for free.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2344,12 +1885,8 @@ mod tests {
         assert_eq!(embedded, 0);
     }
 
-    // ── 408/timeout retry-then-shrink behaviour ────────────────────────────
-
     #[tokio::test]
     async fn calibration_batch_1_408_is_retried_and_succeeds() {
-        // The first request (calibration batch of 1) 408s once, then succeeds
-        // on retry — must not be fatal at 0/total embedded.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2394,10 +1931,6 @@ mod tests {
 
     #[tokio::test]
     async fn calibration_batch_1_408_twice_gives_up_gracefully() {
-        // If the retried calibration request ALSO 408s, the phase must still
-        // return Ok(0) (not Err) — the caller (`run_embed_phases`/`index()`)
-        // depends on this to still print stats and exit cleanly rather than
-        // unwinding via `?` before `db.stats()` runs.
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2433,12 +1966,6 @@ mod tests {
 
     #[tokio::test]
     async fn steady_state_408_shrinks_batch_and_retries_instead_of_aborting() {
-        // A steady-state (post-calibration) batch that 408s must shrink and
-        // retry rather than discarding all subsequent progress. Set up: 20
-        // chunks, a large `--batch-size` so calibration ramps toward a big
-        // batch quickly, and the mock 408s on any request >4 chunks — forcing
-        // the shrink-and-retry path to run at least once, ending with
-        // everything eventually embedded.
         let mock = MockServer::start().await;
 
         struct ShrinkUntilSmallResponder;
@@ -2504,12 +2031,6 @@ mod tests {
 
     #[tokio::test]
     async fn server_advertised_limits_clamp_batch_size_below_default_ceiling() {
-        // A server whose /v1/health advertises a small max_batch_chunks must
-        // have that respected even when the user's --batch-size (here: 0,
-        // i.e. "use the default") would otherwise allow much larger batches.
-        // We prove this indirectly: mount a mock that 413s any batch above
-        // the advertised limit, and confirm the run still succeeds (i.e. the
-        // client never actually sent an oversized batch).
         let mock = MockServer::start().await;
 
         struct RejectAboveLimitResponder {
@@ -2581,17 +2102,9 @@ mod tests {
         assert_eq!(db.stats().unwrap().embedding_count, 30);
     }
 
-    // ── connect-failure retry behaviour (server unreachable, not just slow) ──
-    //
-    // These drive `run_embed_phase_with_backoff` with a millisecond-scale
-    // backoff schedule instead of the production `CONNECT_FAILURE_BACKOFFS`
-    // (which sums to several minutes): real (unpaused) time, kept fast by
-    // shrinking the schedule rather than by faking the clock. `tokio::time`
-    // paused-time auto-advance was tried here first and discarded: it races
-    // against the real OS-level TCP connect-refusal this test relies on, and
-    // in that race the client's own request `.timeout()` can fire first,
-    // misclassifying the failure as `BudgetExceeded` instead of exercising
-    // the `ConnectFailure` path under test.
+    // Real time with a millisecond backoff schedule: paused-time auto-advance races the OS
+    // connect refusal, and the request timeout can fire first and misclassify the failure
+    // as `BudgetExceeded`.
     const FAST_CONNECT_FAILURE_BACKOFFS: [Duration; 5] = [
         Duration::from_millis(100),
         Duration::from_millis(100),
@@ -2602,17 +2115,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_failure_retries_same_batch_size_then_succeeds() {
-        // Reserve an address, release it, then start a real mock server on
-        // the SAME address partway through the retry backoff schedule: the
-        // first couple of attempts hit connect-refused, then the batch
-        // succeeds once the server starts listening, at the SAME batch size
-        // throughout (the retry loop never shrinks on a `ConnectFailure`).
-        //
-        // The spawned task's delay (150ms) is chosen to land strictly
-        // between the first backoff (100ms) and the cumulative second
-        // backoff (100ms+100ms = 200ms), so the mock deterministically starts
-        // listening after exactly two connect failures, before the third
-        // attempt fires.
+        // 150ms falls between the first (100ms) and cumulative second (200ms) backoff, so the
+        // mock starts listening after exactly two connect failures.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
@@ -2626,7 +2130,7 @@ mod tests {
                 .respond_with(OkEmbedResponder)
                 .mount(&mock)
                 .await;
-            // Keep the mock server alive for the rest of the test.
+            // Keeps `mock` alive.
             std::future::pending::<()>().await
         });
 
@@ -2662,9 +2166,6 @@ mod tests {
 
     #[tokio::test]
     async fn connect_failure_exhausts_retries_and_stops_gracefully() {
-        // A server that never accepts connections: after the bounded number
-        // of connect-failure retries, the run must give up gracefully (Ok,
-        // not Err, not a hang) rather than retrying forever.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
@@ -2699,27 +2200,14 @@ mod tests {
         assert_eq!(db.stats().unwrap().embedding_count, 0);
     }
 
-    // ── resume after an interrupted run (ADR-070 D2: per-batch granularity) ──
-
     #[tokio::test]
     async fn resume_after_interrupted_run_reembeds_the_missing_queue_without_dupes() {
-        // The resume story end-to-end. A run stops partway with one batch never
-        // committed (per-batch transaction: it landed nothing). A re-run
-        // rebuilds the queue from `chunks_missing_embeddings` and embeds exactly
-        // the remainder — every chunk ends embedded once, none skipped, none
-        // duplicated. This relies on `chunks_missing_embeddings` never
-        // re-sending a chunk_id that already has an embedding row, not on
-        // `INSERT OR REPLACE` actually replacing one — see
-        // `storage::db::tests::insert_embedding_single_row_path_does_not_actually_replace_a_repeated_chunk_id`
-        // (inkentry-core) for why that distinction matters: OR REPLACE against
-        // the `embeddings` vec0 table does not work today, so idempotency here
-        // depends entirely on the queue never producing a same-key collision.
+        // Relies on `chunks_missing_embeddings` never re-sending an embedded chunk_id:
+        // `INSERT OR REPLACE` does not replace in the vec0 embeddings table.
         let (db, ids) = seed_chunks(6);
         let cfg = Config::default();
         let mp = MultiProgress::new();
 
-        // ── Run 1: the two calibration batches (1 + 4 chunks) succeed, the
-        //    next request 500s, so the run stops with 5 of 6 embedded. ──
         let mock1 = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2754,9 +2242,6 @@ mod tests {
         );
         assert_eq!(db.stats().unwrap().embedding_count, 5);
 
-        // ── Rebuild the queue exactly as a re-run does: the interrupted batch
-        //    left no partial rows, so exactly the one un-embedded chunk is
-        //    re-queued. ──
         let missing = db.chunks_missing_embeddings().unwrap();
         assert_eq!(
             missing.len(),
@@ -2768,7 +2253,6 @@ mod tests {
             .map(|(id, _name, _meta, _summary, content, tc)| (*id, content.clone(), *tc))
             .collect();
 
-        // ── Run 2: everything succeeds; only the missing chunk is embedded. ──
         let mock2 = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
@@ -2797,8 +2281,6 @@ mod tests {
         );
     }
 
-    // ── device-loss vs request-budget: distinct diagnosis and remedy ────────
-
     #[test]
     fn device_lost_body_is_recognised_by_its_code() {
         let body = r#"{"error":{"code":"embedder_device_lost","message":"restart to recover"}}"#;
@@ -2810,9 +2292,6 @@ mod tests {
 
     #[test]
     fn budget_generic_and_warmup_bodies_are_not_device_lost() {
-        // A generic internal error, the warming-up shape (no `error.code`), a
-        // bad-request code, non-JSON and an empty body must all read as "not a
-        // device loss", so the CLI keeps its normal batch-size diagnosis.
         assert!(!response_signals_device_lost(
             r#"{"error":{"code":"internal_error","message":"Internal server error"}}"#
         ));
