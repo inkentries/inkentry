@@ -1,18 +1,10 @@
-// `inkentry auth set-key --llm`: storing the credential for the configured LLM
-// endpoint.
-//
-// Drives the real binary against an isolated HOME (`inkentry_bin_in` forces
-// `INKENTRY_SECRET_STORE=file`), so nothing here reaches the developer's real
-// config dir or the OS keychain.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-// Read the file-backed secret store directly: there is deliberately no
-// command that prints key material back out.
+// No command prints key material, so read the file store directly.
 fn stored_secret(home: &std::path::Path, key: &str) -> Option<String> {
     use inkentry_core::config::secret_store::{FileStore, SecretStore};
     let path = home.join(".config").join("inkentry").join("secrets.toml");
@@ -125,9 +117,8 @@ fn set_key_rejects_neither_llm_nor_server() {
         .failure();
 }
 
-// The whole point of the stdin-only channel is that argv is world-readable
-// through the process table and lands in shell history. A user who reaches for
-// the obvious `--llm <key>` must be refused, not quietly obeyed.
+// argv is visible in the process table and shell history, so a key passed as an
+// argument must be refused.
 #[test]
 fn set_key_llm_refuses_a_key_passed_as_an_argument() {
     let home = TempDir::new().unwrap();
@@ -145,8 +136,7 @@ fn set_key_llm_refuses_a_key_passed_as_an_argument() {
     assert_eq!(stored_secret(home.path(), "llm_key"), None);
 }
 
-// The credential belongs in the secret store alone. `config.toml` is the file
-// users copy into dotfiles repos, which is the leak this store exists to close.
+// `config.toml` gets copied into dotfiles repos; the credential must stay out of it.
 #[test]
 fn set_key_llm_writes_nothing_into_the_config_file() {
     let home = TempDir::new().unwrap();
