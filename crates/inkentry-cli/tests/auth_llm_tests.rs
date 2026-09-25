@@ -1,5 +1,3 @@
-// Consolidated auth/LLM-routing test binary: groups the previously separate auth, credential, and LLM/server-routing test files into one integration test crate to cut per-binary link overhead.
-
 mod plumbing_helpers;
 
 #[path = "auth_llm_tests/auth_config_partial.rs"]

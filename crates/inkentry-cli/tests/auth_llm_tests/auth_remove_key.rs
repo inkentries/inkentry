@@ -1,11 +1,3 @@
-// `inkentry auth remove-key` (ADR-090): the removal half of the credential
-// surface, spelled and discoverable next to the `set-key` that installed it.
-//
-// Drives the real binary against an isolated `HOME` (via `inkentry_bin_in`,
-// `INKENTRY_SECRET_STORE=file`) so nothing here touches the developer's real
-// `~/.config/inkentry` or the OS keychain, and so a key set by one process
-// survives into the next assertion's separate spawn.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
@@ -58,14 +50,11 @@ fn list_servers(home: &Path) -> String {
     String::from_utf8(out).unwrap()
 }
 
-// Everything the file secret store holds, verbatim. D5's end state is a
-// property of the stored blob, not of what `list-servers` chooses to print.
+// Reads the stored blob directly rather than what `list-servers` prints.
 fn secrets_toml(home: &Path) -> String {
     std::fs::read_to_string(home.join(".config").join("inkentry").join("secrets.toml"))
         .unwrap_or_default()
 }
-
-// ── 1. one origin removed, the rest intact and still usable ────────────────
 
 #[test]
 fn remove_key_clears_one_origin_and_leaves_the_others_listed() {
@@ -91,10 +80,7 @@ fn remove_key_clears_one_origin_and_leaves_the_others_listed() {
     );
 }
 
-// "Intact" is not the same as "usable": a surviving map entry only matters if
-// the surviving origin still authenticates. This checks the `Authorization`
-// header a real request carries after the removal, one origin removed and one
-// left, rather than trusting `list-servers`.
+// Checks the `Authorization` header on a real request rather than trusting `list-servers`.
 #[tokio::test]
 async fn the_surviving_origins_key_still_reaches_the_wire_after_the_other_is_removed() {
     let removed_server = MockServer::start().await;
@@ -168,8 +154,6 @@ async fn the_surviving_origins_key_still_reaches_the_wire_after_the_other_is_rem
     );
 }
 
-// ── 2. the last key takes its stored entry with it ─────────────────────────
-
 #[test]
 fn removing_the_last_server_key_leaves_no_stored_entry_behind() {
     let home = TempDir::new().unwrap();
@@ -206,8 +190,6 @@ fn remove_key_all_servers_leaves_no_stored_entry_behind() {
     assert!(list_servers(home.path()).contains("No server keys stored"));
 }
 
-// `--all-servers` is spelled for what it clears: an LLM key is not a server
-// key and must survive it.
 #[test]
 fn remove_key_all_servers_does_not_touch_the_llm_key() {
     let home = TempDir::new().unwrap();
@@ -226,8 +208,6 @@ fn remove_key_all_servers_does_not_touch_the_llm_key() {
         "`--all-servers` must leave the LLM credential alone"
     );
 }
-
-// ── 3. set-key and remove-key agree on the origin, form for form ───────────
 
 #[test]
 fn every_url_form_set_key_accepts_is_matched_by_remove_key() {
@@ -276,8 +256,6 @@ fn a_different_port_is_a_different_origin_and_is_not_removed() {
         .stdout(predicate::str::contains("Removed").not());
     assert!(list_servers(home.path()).contains("port.example:8443"));
 }
-
-// ── 4. absence is idempotent and is not reported as a removal ──────────────
 
 #[test]
 fn removing_an_absent_server_key_exits_zero_and_claims_no_removal() {
@@ -333,8 +311,6 @@ fn removing_an_absent_set_of_server_keys_exits_zero_and_claims_no_removal() {
         .stdout(predicate::str::contains("Removed").not());
 }
 
-// ── the `--llm` capability ADR-090 D2 adds ─────────────────────────────────
-
 #[test]
 fn an_llm_key_can_be_set_and_then_removed() {
     let home = TempDir::new().unwrap();
@@ -372,8 +348,6 @@ fn removing_the_llm_key_does_not_touch_the_server_keys() {
     assert!(list_servers(home.path()).contains("a.example"));
 }
 
-// ── the flag group mirrors `set-key`'s ─────────────────────────────────────
-
 #[test]
 fn remove_key_requires_one_of_the_three_flags() {
     let home = TempDir::new().unwrap();
@@ -402,8 +376,7 @@ fn the_three_remove_key_flags_are_mutually_exclusive() {
     }
 }
 
-// The bulk flag is `--all-servers`, never a bare `--all`: in a command that
-// can also address the LLM key, "all" does not say what it clears.
+// A bare `--all` would not say whether it clears the LLM key.
 #[test]
 fn remove_key_has_no_bare_all_flag() {
     let home = TempDir::new().unwrap();
@@ -428,8 +401,6 @@ fn auth_help_lists_remove_key_alongside_set_key() {
         .stdout(predicate::str::contains("list-servers"));
 }
 
-// ── 5. no command in the family prints key material ────────────────────────
-
 #[test]
 fn no_command_in_the_family_prints_key_material_on_any_path() {
     let home = TempDir::new().unwrap();
@@ -439,8 +410,6 @@ fn no_command_in_the_family_prints_key_material_on_any_path() {
     set_key(home.path(), "https://b.example:4655", server_secret);
     set_llm_key(home.path(), llm_secret);
 
-    // Success paths, then the error paths: an unparsable URL, a missing flag,
-    // two conflicting flags, and an empty stdin on the way in.
     let invocations: Vec<Vec<&str>> = vec![
         vec!["auth", "list-servers"],
         vec!["auth", "remove-key", "--server", "https://a.example:4655"],

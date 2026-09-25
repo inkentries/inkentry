@@ -14,7 +14,6 @@ use inkentry_core::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Register sqlite-vec for every SQLite connection opened in this process.
     // SAFETY: sqlite3_auto_extension stores the pointer and SQLite calls it
     // with the correct (db, err_msg, api) arguments at connection time.
     #[allow(clippy::missing_transmute_annotations)]
@@ -24,33 +23,26 @@ async fn main() -> Result<()> {
         )));
     }
 
-    // Before any command can open a remote memory backend: a cloud session's
-    // access token outlives only a few minutes of its login.
+    // Must precede any remote memory backend: cloud access tokens expire within minutes.
     storage::install_session_refresher(std::sync::Arc::new(
         cli::cmd::auth_api::CloudSessionRefresher,
     ));
 
     let cli = Cli::parse_or_exit();
     cli::cmd::set_color_choice(cli.color);
-    // Recorded before any command runs, because notices are printed from the
-    // capability probes too, which never see the command's own flags.
+    // Capability probes print notices without seeing the command's flags.
     notice::set_quiet(matches!(&cli.command, Command::Search(a) if a.quiet));
 
-    // Logging: RUST_LOG=debug inkentry ...
-    //
-    // The log layer writes to stdout, which a git hook or a shell redirect
-    // turns into a file, so it takes the same colour decision as the rest of
-    // stdout instead of colouring unconditionally. Parsing first is what makes
-    // `--color` available to that decision.
+    // The log layer writes to stdout, which a git hook or redirect turns into a
+    // file, so it follows the same colour decision as the rest of stdout.
     tracing_subscriber::registry()
         .with(fmt::layer().with_ansi(cli::cmd::color::color_enabled()))
         .with(EnvFilter::from_default_env())
         .init();
 
-    // Config loads before dispatch, so `--best-effort` has to be honoured here
-    // or a publish never reaches the arm that keeps a hook's push alive (D3).
-    // That command ignores `cfg`, so defaults are inert; every other command
-    // still fails loudly on a config it cannot load.
+    // Config loads before dispatch, so `--best-effort` must be honoured here or
+    // a bad config would kill a hook's push. That command ignores `cfg`, so
+    // defaults are inert; every other command still fails loudly.
     let best_effort_publish = matches!(&cli.command, Command::Plumbing(p)
         if matches!(&p.command, PlumbingCommand::PublishNotes(a) if a.best_effort));
     let cli_config_path = cli.config.clone();
@@ -91,14 +83,12 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Sync(args) => {
-            // An explicit `--project <slug>` supplies the project identity that a
-            // first-run user has not yet persisted as `project_id`, so it
-            // satisfies the non-loopback-`server_url` requirement here. The
-            // missing-project case is still gated (with a better, actionable
-            // message) by `resolve_sync_project` inside `memory_sync`.
+            // `--project` supplies the identity a first-run user has not yet
+            // persisted; `resolve_sync_project` gates the missing case with a
+            // better message.
             let project_available = args.project.is_some() || cfg.project_id.is_some();
             cfg.validate_with_project(project_available)?;
-            // ADR-067: fail closed when there is no local `.inkentry/` project.
+            // Fail closed when there is no local `.inkentry/` project.
             let mem_path =
                 config::require_project_db(&cfg.db_path, false)?.with_file_name("memory.db");
             cli::cmd::memory_sync(args, &mem_path, &cfg).await

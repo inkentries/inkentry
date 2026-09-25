@@ -1,13 +1,3 @@
-//! Thin HTTP client for inkentry-server inference endpoints.
-//!
-//! `ServerInferenceClient` calls both `POST /v1/projects/{id}/llm/complete`
-//! (SSE) and `POST /v1/projects/{id}/index/embed` (JSON). LLM and embed routing
-//! resolve independently, so a command that needs both builds two clients rather
-//! than sharing one.
-//!
-//! This is the ONLY place in inkentry-cli that calls AI inference routes.
-//! All prompt orchestration remains CLI-side; the server is a raw-inference peer.
-
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -20,17 +10,9 @@ use crate::config::Config;
 use inkentry_core::config::AuthTokens;
 use inkentry_core::config::secret_store::SecretStore;
 
-/// Characters that must be percent-encoded inside a single URL **path segment**.
-///
-/// `derive_project_id` produces slugs that contain `/` (`local/<blake3-hex>`,
-/// `github.com/owner/repo`). Inserted raw into `/v1/projects/{project_id}/…`
-/// the slashes split the segment and break axum routing (→ 404). We percent-encode
-/// the slug so the whole slug occupies exactly one captured `{project_id}` segment;
-/// axum percent-decodes it back to the original slug server-side, so the
-/// persistence key (`projects.slug`, UNIQUE) is unchanged. See inkentry decision #106.
-///
-/// Set mirrors the WHATWG URL "path" percent-encode set plus the sub-delimiters
-/// that would otherwise be interpreted by a router; crucially it includes `/`.
+// Slugs contain `/` (`github.com/owner/repo`); raw in the path they split the
+// segment and 404 in axum. Encoding keeps the slug in one `{project_id}` segment,
+// which axum decodes back unchanged. Must include `/`.
 const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -44,14 +26,9 @@ const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
     .add(b'/')
     .add(b'%');
 
-/// Percent-encode a `project_id` slug for safe use as a single URL path segment.
-///
-/// Only the segment is encoded (not the surrounding URL); `/` → `%2F` etc.
 pub(crate) fn encode_project_id(project_id: &str) -> String {
     utf8_percent_encode(project_id, PROJECT_ID_SEGMENT).to_string()
 }
-
-// ── Wire types ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct LlmMsg<'a> {
@@ -78,8 +55,6 @@ struct EmbedReq<'a> {
     chunks: Vec<EmbedChunkIn<'a>>,
 }
 
-// ── Public message type (mirrors inkentry_core::llm::Message) ─────────────────
-
 pub struct LlmMessage {
     pub role: String,
     pub content: String,
@@ -100,67 +75,40 @@ impl LlmMessage {
     }
 }
 
-// ── ServerInferenceClient ─────────────────────────────────────────────────────
-
-/// HTTP client for inkentry-server's inference endpoints.
-///
-/// Constructed from config when `server_url` is set (Tier 1). Returns `None`
-/// in Tier-0 mode so callers can emit the standard locked-feature error.
+// LLM and embed routing resolve independently, so a command needing both builds
+// two clients.
 pub struct ServerInferenceClient {
     client: reqwest::Client,
     base_url: String,
     project_id: String,
-    /// `true` when `base_url` came from an explicitly configured team
-    /// `server_url` rather than loopback auto-discovery (which populates
-    /// `inference_url` while leaving `server_url` unset, ADR-004). An
-    /// inference error against an explicit remote must name `base_url`
-    /// instead of pointing at `inkentry server logs`, which only reads the
-    /// local auto-daemon's log.
+    // True when `base_url` came from an explicit team `server_url` rather than
+    // loopback auto-discovery; errors must then name it, since `inkentry server
+    // logs` reads only the local daemon's log.
     is_explicit_remote: bool,
-    /// Current bearer token + refresh state. `RwLock`-free `Mutex` is fine:
-    /// contention is nil (refresh happens at most once per request) and the
-    /// critical section is a cheap clone / swap.
+    // A plain `Mutex` suffices: refresh happens at most once per request.
     auth: Mutex<BearerState>,
 }
 
-/// Mutable bearer state shared across requests so a refreshed token is reused.
 struct BearerState {
-    /// The token sent as `Authorization: Bearer`. `None` in Tier-0 / unauthed.
     bearer: Option<String>,
-    /// WorkOS refresh state, present only when the bearer is a cached WorkOS
-    /// login session (ADR-074). Enables the refresh-on-expiry / refresh-on-401
-    /// path; absent for a per-origin server key (which cannot be refreshed).
+    // Present only when the bearer is a cached WorkOS session; a per-origin
+    // server key cannot be refreshed.
     refresh: Option<RefreshState>,
 }
 
-/// State needed to rotate an expired/rejected WorkOS access token.
-///
-/// Refresh goes DIRECTLY to WorkOS, so the WorkOS base URL and the embedded
-/// public `client_id` are carried here alongside the rotating tokens.
 struct RefreshState {
     tokens: AuthTokens,
-    /// WorkOS User Management base URL (`https://api.workos.com` by default).
     workos_url: String,
-    /// Embedded WorkOS public `client_id` for the active environment.
     client_id: String,
-    /// Secret store the rotated session is written back into (ADR-074): the
-    /// org's own slot, leaving the active pointer and every sibling org
-    /// untouched. Shared (`Arc`) so a test can hold the same store and assert
-    /// the write.
+    // Rotated sessions go into the org's own slot, leaving the active pointer
+    // and sibling orgs untouched. `Arc` so a test can share the store.
     store: Arc<dyn SecretStore>,
 }
 
 impl ServerInferenceClient {
-    /// Build from config. Returns `None` when no inference URL is available.
-    ///
-    /// Uses `Config::resolve_inference_url()` (ADR-004): an auto-discovered
-    /// loopback server sets `inference_url` while leaving `server_url` unset, so
-    /// inference reaches the server even though memory stays local. An explicit
-    /// team `server_url` is used for both.
-    ///
-    /// The bearer is resolved per-origin via `Config::bearer_for` (ADR-071
-    /// D2): a self-hosted server never receives a cloud session token meant
-    /// for a different origin, and vice versa.
+    // An auto-discovered loopback server sets `inference_url` while leaving
+    // `server_url` unset, so inference reaches it though memory stays local. The
+    // bearer is per-origin: a self-hosted server never gets a cloud session token.
     pub fn from_config(cfg: &Config) -> Option<Self> {
         let store: Arc<dyn SecretStore> = Arc::from(
             inkentry_core::config::default_secret_store().expect("resolving the secret store"),
@@ -168,9 +116,7 @@ impl ServerInferenceClient {
         Self::from_config_with_arc_store(cfg, store)
     }
 
-    /// Shared construction from a resolved secret store: the store backs bearer
-    /// resolution, the cached cloud session, and the refresh write-back, so all
-    /// three see one store rather than each resolving its own.
+    // One store backs bearer resolution, the cloud session and the refresh write-back.
     fn from_config_with_arc_store(cfg: &Config, store: Arc<dyn SecretStore>) -> Option<Self> {
         let base_url = cfg
             .resolve_inference_url()?
@@ -185,31 +131,19 @@ impl ServerInferenceClient {
         Some(Self::build(cfg, base_url, bearer, session, store))
     }
 
-    /// Build a client for an explicitly configured remote `server_url` that is
-    /// serving LLM inference.
-    ///
-    /// [`from_config`](Self::from_config) infers "explicit remote" from the
-    /// inference target being unset, which cannot hold once LLM routing has
-    /// pointed that target at `server_url`. Without this, an error on the
-    /// remote would tell the user to read `inkentry server logs`, which only
-    /// ever reads the local daemon's log.
+    // `from_config` infers "explicit remote" from the inference target being unset,
+    // which fails once LLM routing points that target at `server_url`.
     pub fn from_config_explicit_remote(cfg: &Config) -> Option<Self> {
         let mut client = Self::from_config(cfg)?;
         client.is_explicit_remote = true;
         Some(client)
     }
 
-    /// Same as [`from_config`](Self::from_config) but with an injected
-    /// [`SecretStore`](inkentry_core::config::secret_store::SecretStore), so
-    /// in-process tests can exercise bearer resolution without touching the
-    /// real default secret store.
     #[cfg(test)]
     fn from_config_with_store(cfg: &Config, store: Arc<dyn SecretStore>) -> Option<Self> {
         Self::from_config_with_arc_store(cfg, store)
     }
 
-    /// Shared construction once `base_url`, `bearer`, and the cached `session`
-    /// are resolved. `store` is captured for the refresh write-back.
     fn build(
         cfg: &Config,
         base_url: String,
@@ -218,20 +152,14 @@ impl ServerInferenceClient {
         store: Arc<dyn SecretStore>,
     ) -> Self {
         if let Err(msg) = inkentry_core::config::validate_transport_url(&base_url) {
-            // Fail loudly and immediately: the alternative is silently sending a
-            // bearer token in the clear. No opt-out: the fix is always "use
-            // https, or loopback".
+            // Fail immediately rather than send a bearer in the clear; no opt-out.
             eprintln!("error: {msg}");
             std::process::exit(2);
         }
         let project_id = cfg.project_id.clone().unwrap_or_default();
-        // Loopback is bounded too. A closed loopback port usually refuses at
-        // once, but it does not always: a host firewall that drops rather than
-        // rejects leaves the SYN unanswered, and then nothing but this bound
-        // ends the attempt before the 300s request budget does. Under
-        // `cloud_first` this client's base URL is the configured team server,
-        // which is commonly on loopback, so that is the reported case rather
-        // than a hypothetical one.
+        // Loopback needs a connect bound too: a firewall that drops rather than
+        // rejects leaves the SYN unanswered until the 300s budget, and
+        // `cloud_first` commonly targets a loopback team server.
         let client = inkentry_core::config::apply_server_ca(
             reqwest::Client::builder(),
             cfg.server_ca.as_deref().map(std::path::Path::new),
@@ -242,13 +170,7 @@ impl ServerInferenceClient {
         .build()
         .expect("building HTTP client for server inference");
 
-        // Carry WorkOS refresh state only when the resolved bearer came from the
-        // cached cloud session, i.e. `base_url`'s origin is the cloud kind
-        // (ADR-071 D2). A self-hosted server-key / env token is not refreshable
-        // here. Refresh targets WorkOS directly: the WorkOS base URL and the
-        // embedded public client_id (derived from the default cloud host) are
-        // captured here, along with the store the rotated session is written
-        // back into.
+        // Only a bearer from the cached cloud session is refreshable; a server key or env token is not.
         let refresh = session
             .filter(|a| Some(a.access_token.as_str()) == bearer.as_deref())
             .map(|tokens| RefreshState {
@@ -262,20 +184,14 @@ impl ServerInferenceClient {
             client,
             base_url,
             project_id,
-            // Mirrors `Config::resolve_inference_url`'s own fallback exactly:
-            // `base_url` came from `server_url` iff `inference_url` was unset.
-            // Both can be set at once (the `local_first` case, where an
-            // explicit `server_url` is a sync replica only, never the
-            // inference target), so `server_url.is_some()` alone does not
-            // establish that `base_url` is the explicit remote.
+            // Mirrors `resolve_inference_url`'s fallback: `base_url` came from
+            // `server_url` iff `inference_url` was unset. Under `local_first` both
+            // are set and `server_url` is only a sync replica.
             is_explicit_remote: cfg.inference_url.is_none() && cfg.server_url.is_some(),
             auth: Mutex::new(BearerState { bearer, refresh }),
         }
     }
 
-    /// Test-only constructor wiring an explicit base URL, bearer, and refresh
-    /// state (with a temp config path so persistence does not touch the real
-    /// `~/.config/inkentry/config.toml`).
     #[cfg(test)]
     fn for_test(
         base_url: &str,
@@ -290,9 +206,6 @@ impl ServerInferenceClient {
             is_explicit_remote: false,
             auth: Mutex::new(BearerState {
                 bearer,
-                // `workos_url` is the second tuple element (tests point it at a
-                // mock WorkOS server); the third is the store the rotated session
-                // is written back into; the client_id is a fixed test value.
                 refresh: refresh.map(|(tokens, workos_url, store)| RefreshState {
                     tokens,
                     workos_url,
@@ -303,8 +216,6 @@ impl ServerInferenceClient {
         }
     }
 
-    /// [`from_config_explicit_remote`](Self::from_config_explicit_remote) with
-    /// an injected secret store, so tests never touch the real one.
     #[cfg(test)]
     fn from_config_explicit_remote_with_store(
         cfg: &Config,
@@ -315,16 +226,12 @@ impl ServerInferenceClient {
         Some(client)
     }
 
-    /// Mark this test client as reached via an explicit remote `server_url`
-    /// (not loopback auto-discovery), for tests covering the scoped
-    /// inference-error hint.
     #[cfg(test)]
     fn with_explicit_remote(mut self) -> Self {
         self.is_explicit_remote = true;
         self
     }
 
-    /// Current bearer token, if any.
     fn current_bearer(&self) -> Option<String> {
         self.auth
             .lock()
@@ -341,8 +248,6 @@ impl ServerInferenceClient {
         }
     }
 
-    /// Whether a stored WorkOS access token is at/past expiry (refresh state
-    /// present and expired).
     fn access_token_expired(&self) -> bool {
         let guard = self.auth.lock().expect("auth mutex poisoned");
         guard
@@ -351,13 +256,6 @@ impl ServerInferenceClient {
             .is_some_and(|r| r.tokens.is_expired())
     }
 
-    /// Rotate the WorkOS access token DIRECTLY via WorkOS `/authenticate`
-    /// (refresh grant), persist the rotated tokens, and update the
-    /// in-memory bearer.
-    ///
-    /// Returns `Ok(true)` when a refresh was performed, `Ok(false)` when there
-    /// is no refresh state (a per-origin server key, nothing to refresh). Errors
-    /// carry a clear "re-run `inkentry login`" message.
     async fn refresh_access_token(&self) -> Result<bool> {
         let (refresh_token, org_id, cloud_origin, workos_url, client_id, store) = {
             let guard = self.auth.lock().expect("auth mutex poisoned");
@@ -374,9 +272,7 @@ impl ServerInferenceClient {
             }
         };
 
-        // Re-send the active org so a prior `org switch` survives rotation
-        // instead of reverting to the account's default org (see auth_api::
-        // ensure_fresh_token, which has the same requirement).
+        // Re-send the active org so a prior `org switch` survives rotation.
         let rotated = auth_api::refresh_token(
             &self.client,
             &workos_url,
@@ -390,8 +286,6 @@ impl ServerInferenceClient {
         })?;
         let new_tokens = rotated.into_auth_tokens(cloud_origin);
 
-        // Persist the rotated session back into its own org's slot (ADR-074 D3):
-        // the active pointer and every sibling org are left untouched.
         inkentry_core::config::org_tokens::update_in_place(store.as_ref(), &new_tokens)
             .context("persisting refreshed auth tokens")?;
 
@@ -406,30 +300,15 @@ impl ServerInferenceClient {
         Ok(true)
     }
 
-    /// Send a request with WorkOS token management:
-    ///   1. If the stored access token is locally expired, refresh first.
-    ///   2. Send the request (built fresh by `build` so it can be retried).
-    ///   3. On a `401`, refresh once and retry the request a single time.
-    ///
-    /// `build` is given the base (unauthed) `RequestBuilder` for the URL and
-    /// should attach the body; the bearer header is added here so each attempt
-    /// uses the current token. One refresh attempt only; on refresh failure the
-    /// original error / a clear re-login message is surfaced.
     async fn send_authed(
         &self,
         make_req: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
-        // Proactive refresh: avoid a guaranteed-401 round-trip when we already
-        // know the token is past expiry.
         if self.access_token_expired() {
             self.refresh_access_token().await?;
         }
 
-        // Skip the attempt when a connect to this origin already failed in this
-        // process: the inference call would spend another connect timeout to
-        // reach the same conclusion. Purely a latency shortcut; the caller's
-        // own fallback is what decides what happens next, exactly as it would
-        // have after a real failed attempt.
+        // Latency shortcut: another connect timeout would reach the same conclusion.
         if inkentry_core::reachability::connect_already_failed(&self.base_url) {
             anyhow::bail!(
                 "{} is unreachable (a connection attempt earlier in this command already failed)",
@@ -448,13 +327,10 @@ impl ServerInferenceClient {
             return Ok(resp);
         }
 
-        // Reactive refresh on 401, then retry exactly once.
         if self.refresh_access_token().await? {
             return Ok(self.authed(make_req()).send().await?);
         }
-        // Nothing to refresh: the bearer is a per-origin server key, or there
-        // is none. Nothing migrates one into place any more (ADR-088 D3), so
-        // this error is where the user learns the command that stores one.
+        // No refresh state: the bearer is a per-origin key or absent, so this error is where the user learns `auth set-key`.
         anyhow::bail!(
             "{base} rejected the credential ({status}). Store a key for this server with \
              `inkentry auth set-key --server {base}`, or run `inkentry login` if it is \
@@ -488,11 +364,6 @@ impl ServerInferenceClient {
         )
     }
 
-    /// Call `/llm/complete` and collect the full SSE token stream into a `String`.
-    ///
-    /// Returns the concatenated completion text (all `token` events joined).
-    /// Returns an error if the server returns a non-2xx status or the stream
-    /// contains a terminal `error` event.
     pub async fn llm_complete(
         &self,
         messages: &[LlmMessage],
@@ -518,9 +389,6 @@ impl ServerInferenceClient {
             .send_authed(|| self.client.post(&url).json(&body))
             .await
             .context("POST /llm/complete")?;
-        // Same treatment as `embed_text`: surface the server's structured
-        // reason instead of a bare status, and scope the "check the logs" hint
-        // to the server that actually failed.
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -539,7 +407,6 @@ impl ServerInferenceClient {
             let bytes = chunk.context("reading /llm/complete SSE stream")?;
             sse_buf.push_str(&String::from_utf8_lossy(&bytes));
 
-            // Consume complete SSE events (terminated by "\n\n").
             while let Some(pos) = sse_buf.find("\n\n") {
                 let event = sse_buf[..pos].to_string();
                 sse_buf.drain(..pos + 2);
@@ -578,11 +445,8 @@ impl ServerInferenceClient {
         Ok(output)
     }
 
-    /// Call `/index/embed` with a synthetic `chunk_id` and return the vector.
-    ///
-    /// The `chunk_id` is prefixed `query:` per ADR-002 so it is trivially
-    /// distinguishable from real chunk ids in server logs.
     pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+        // The `query:` prefix keeps it distinguishable from real chunk ids in server logs.
         let chunk_id = format!("query:{}", Uuid::now_v7());
         let body = EmbedReq {
             chunks: vec![EmbedChunkIn {
@@ -591,15 +455,11 @@ impl ServerInferenceClient {
             }],
         };
 
-        // Response is raw little-endian f32 bytes (one vector, `dim` floats).
         let url = self.embed_url();
         let resp = self
             .send_authed(|| self.client.post(&url).json(&body))
             .await
             .context("POST /index/embed (query vector)")?;
-        // Surface the server's structured reason (e.g. embedder still loading /
-        // failed to load) instead of a bare "HTTP status 503" so a memory search
-        // against a warming-up local server gets actionable guidance.
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -624,14 +484,7 @@ impl ServerInferenceClient {
         Ok(inkentry_core::embeddings::blob_to_vec(&bytes))
     }
 
-    /// Call `POST /v1/projects/{id}/search` to embed a query server-side and
-    /// return the query vector for CLI-side KNN.
-    ///
-    /// The server applies the F2LLM code-retrieval prefix before embedding, so
-    /// the caller does not need to know the format.
-    ///
-    /// Returns `None` when the server responds with `mode: "text"` (no embedding
-    /// needed; caller should use FTS instead).
+    // `None` means the server answered `mode: "text"`: no vector, so the caller falls back to FTS.
     pub async fn search_query(
         &self,
         query: &str,
@@ -667,18 +520,10 @@ impl ServerInferenceClient {
     }
 }
 
-/// Format a non-2xx inkentry-server inference response into an actionable error.
-///
-/// The server returns a `{ error, state, detail }` JSON body for an unready
-/// embedder (state `loading`/`unavailable`). `reqwest::error_for_status` throws
-/// that body away and yields a bare "HTTP status 503", so we parse it here and
-/// append a next-step hint.
-///
-/// `remote_url` is `Some` when this client reached the server via an explicit
-/// `server_url` (not loopback auto-discovery). The `unavailable` hint must
-/// then name that server instead of pointing at `inkentry server logs`, which
-/// only reads the local auto-daemon's log and would show clean logs for a
-/// failure that lives on the remote server.
+// `error_for_status` discards the `{ error, state, detail }` body an unready
+// server returns, so parse it here for a next-step hint. `remote_url` is set for
+// an explicit `server_url`, where the hint must name that server instead of
+// `inkentry server logs` (which reads only the local daemon's log).
 fn server_inference_error(
     endpoint: &str,
     status: reqwest::StatusCode,
@@ -694,9 +539,7 @@ fn server_inference_error(
             .filter(|s| !s.is_empty())
     };
     let reason = field("detail").or_else(|| field("error"));
-    // Naming the server is not only for the `unavailable` hint: on an explicit
-    // remote, every failure needs to say which server produced it, or the
-    // reader assumes their local daemon.
+    // On an explicit remote every failure must name its server, or the reader assumes their local daemon.
     let server = match remote_url {
         Some(url) => format!("inkentry-server at {url}"),
         None => "inkentry-server".to_string(),
@@ -715,12 +558,6 @@ fn server_inference_error(
     }
 }
 
-// ── Tier-0 error helper ───────────────────────────────────────────────────────
-
-/// Return the locked-feature error when harvest is attempted without a server.
-///
-/// Harvest needs inference only, so a local `inkentry server start` suffices.
-/// See `capability::inference_server_required_message`.
 pub fn harvest_requires_server() -> anyhow::Error {
     anyhow::anyhow!(crate::capability::inference_server_required_message(
         "harvest"
@@ -736,8 +573,6 @@ mod tests {
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // An empty org-token cache wrapped in an `Arc`, for the refresh/persistence
-    // path (RefreshState owns the store it writes rotated sessions into).
     fn arc_store() -> Arc<dyn SecretStore> {
         Arc::new(MemoryStore::default())
     }
@@ -752,9 +587,7 @@ mod tests {
         }
     }
 
-    /// Build an unsigned JWT carrying `exp` and `org_id` so the refresh path's
-    /// claim decode resolves the rotated session's expiry and org. The token
-    /// string itself doubles as the bearer the retry must send.
+    // Unsigned JWT carrying `exp` and `org_id` for the refresh path's claim decode; the token doubles as the bearer the retry must send.
     fn jwt(label: &str, org_id: &str, exp: i64) -> String {
         fn b64url(bytes: &[u8]) -> String {
             const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -777,13 +610,10 @@ mod tests {
             }
             out
         }
-        // `label` keeps distinct test JWTs textually distinguishable.
         let payload = serde_json::json!({ "exp": exp, "org_id": org_id, "lbl": label }).to_string();
         format!("{}.{}.sig", b64url(b"{}"), b64url(payload.as_bytes()))
     }
 
-    /// A 401 from the inference server triggers exactly one refresh + retry; the
-    /// rotated access token is used on the retry and persisted to disk.
     #[tokio::test]
     async fn refresh_on_401_retries_once_and_persists() {
         let inference = MockServer::start().await;
@@ -791,7 +621,6 @@ mod tests {
 
         let at_new = jwt("new", "org_1", 5_000_000_000);
 
-        // First /search call (with stale bearer) → 401.
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/search"))
             .and(header("authorization", "Bearer at-old"))
@@ -800,7 +629,6 @@ mod tests {
             .mount(&inference)
             .await;
 
-        // The WorkOS refresh exchange rotates the tokens.
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -812,7 +640,6 @@ mod tests {
             .mount(&cloud)
             .await;
 
-        // Retry (with the rotated bearer = the new JWT) → 200.
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/search"))
             .and(header("authorization", format!("Bearer {at_new}").as_str()))
@@ -826,7 +653,6 @@ mod tests {
 
         let token = expiring_tokens(5_000_000_000); // not locally expired
         let store = arc_store();
-        // Seed the org as the active session so a no-pin resolution finds it.
         org_tokens::set_active(store.as_ref(), &token, None).unwrap();
         let client = ServerInferenceClient::for_test(
             &inference.uri(),
@@ -841,7 +667,6 @@ mod tests {
             .expect("search should succeed after one refresh+retry");
         assert_eq!(vec, Some(vec![0.1_f32, 0.2, 0.3]));
 
-        // The rotated session was written back into the org's cached slot.
         let session = org_tokens::resolve_session(store.as_ref(), None)
             .unwrap()
             .expect("rotated session cached");
@@ -849,8 +674,6 @@ mod tests {
         assert_eq!(session.refresh_token, "rt-new");
     }
 
-    /// A locally-expired access token is refreshed proactively before the first
-    /// send, so the stale token never reaches the server.
     #[tokio::test]
     async fn proactive_refresh_when_locally_expired() {
         let inference = MockServer::start().await;
@@ -858,8 +681,7 @@ mod tests {
 
         let at_fresh = jwt("fresh", "org_1", 5_000_000_000);
 
-        // The refresh request must carry the stored `org_1` scope, so it never
-        // silently reverts to the account's default org on rotation.
+        // Must carry the stored org scope so rotation never reverts to the default org.
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
             .and(body_string_contains("organization_id=org_1"))
@@ -872,7 +694,6 @@ mod tests {
             .mount(&cloud)
             .await;
 
-        // Only the fresh bearer is ever accepted; the stale one must not appear.
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/search"))
             .and(header(
@@ -900,10 +721,7 @@ mod tests {
         assert_eq!(vec, Some(vec![1.0_f32]));
     }
 
-    // With no refresh state (a per-origin server key), a 401 is surfaced
-    // without a refresh attempt or a retry, and it names the one command that
-    // stores a key for this origin (ADR-088 D3). `{:#}` is how the CLI renders
-    // an error (main.rs), so it is what the user actually reads.
+    // `{:#}` is how the CLI renders an error, so it is what the user reads.
     #[tokio::test]
     async fn no_refresh_state_surfaces_401_naming_the_set_key_command() {
         let inference = MockServer::start().await;
@@ -933,18 +751,12 @@ mod tests {
         );
     }
 
-    /// Loop-safety guard: when the retry *after* a successful refresh also 401s,
-    /// the request is NOT refreshed/retried a second time. The retry surfaces the
-    /// 401 (one inference call, then exactly one refresh, then exactly one retry,
-    /// total two inference hits and one refresh) rather than spinning forever.
     #[tokio::test]
     async fn refresh_retry_caps_at_one_and_does_not_loop() {
         let inference = MockServer::start().await;
         let cloud = MockServer::start().await;
 
-        // EVERY /search call returns 401 — both the original and the retry.
-        // `.expect(2)` is the loop guard: a third hit (i.e. a second retry)
-        // would make wiremock fail the test on drop.
+        // `.expect(2)` is the loop guard: a second retry would fail the test on drop.
         Mock::given(method("POST"))
             .and(path("/v1/projects/proj/search"))
             .respond_with(ResponseTemplate::new(401))
@@ -952,8 +764,6 @@ mod tests {
             .mount(&inference)
             .await;
 
-        // The refresh endpoint must be called EXACTLY once. A second refresh
-        // (the infinite-loop failure mode) would exceed this and fail the test.
         Mock::given(method("POST"))
             .and(path("/user_management/authenticate"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -973,7 +783,6 @@ mod tests {
             Some((token, cloud.uri(), arc_store())),
         );
 
-        // The persistent 401 surfaces as an error, NOT a hang.
         let err = client
             .search_query("q", "semantic", 1)
             .await
@@ -982,13 +791,8 @@ mod tests {
             err.to_string().contains("/search") || err.to_string().contains("401"),
             "error should reflect the failed /search, got: {err}"
         );
-        // Mock `.expect(..)` assertions verify on drop: search hit twice, refresh once.
     }
 
-    /// `from_config` carries refresh state ONLY when the bearer was resolved from
-    /// the cached cloud session, so a `inkentry login` session can refresh. That
-    /// only happens for a cloud-origin target (ADR-071 D2); a self-hosted origin
-    /// never resolves to the cloud token, whatever the cache holds.
     #[test]
     #[serial_test::serial]
     fn from_config_attaches_refresh_state_for_cloud_session_bearer() {
@@ -1005,7 +809,7 @@ mod tests {
         let store = arc_store();
         org_tokens::set_active(store.as_ref(), &tokens, None).unwrap();
 
-        // The cloud kind only applies for the cloud origin (ADR-071 D2).
+        // A self-hosted origin never resolves to the cloud token, whatever the cache holds.
         let cfg = crate::config::Config {
             inference_url: Some(auth_api::DEFAULT_CLOUD_URL.to_string()),
             ..Default::default()
@@ -1021,10 +825,6 @@ mod tests {
         assert_eq!(guard.bearer.as_deref(), Some("at-login"));
     }
 
-    // A per-origin server key (no `[auth]` table) must NOT carry refresh
-    // state: there is nothing to refresh, so a 401 surfaces immediately and we
-    // never call `/v1/auth/token` with a non-existent refresh token. Guards the
-    // "server key does not attempt refresh" contract at the config boundary.
     #[test]
     #[serial_test::serial]
     fn from_config_no_refresh_state_for_a_per_origin_server_key() {
@@ -1053,23 +853,9 @@ mod tests {
         assert_eq!(guard.bearer.as_deref(), Some("sk-team"));
     }
 
-    // `is_explicit_remote` keys off whether `base_url` resolved from
-    // `server_url` (never off what host it resolves to): an explicitly
-    // configured `server_url = http://127.0.0.1:PORT` is still "explicit"
-    // even though the host is loopback. `inkentry server logs` only ever
-    // reads the fixed auto-daemon log path and cannot tell this loopback
-    // address was hand-configured, so the inference-error hint must still
-    // name it. Mirrors
-    // `capability::tier::tests::tier_explicit_remote_url_is_explicit_even_when_host_is_loopback`,
-    // which pins the same invariant on the `Tier` side of this contract.
-    //
-    // `mode: CloudFirst` is required here since the 2026-07-23 ADR-004
-    // revision: `resolve_inference_url` only falls back to
-    // `server_url` in `cloud_first` (in `local_first`, the default this test
-    // used to rely on, a bare `server_url` no longer resolves to any
-    // inference `base_url` at all — see
-    // `from_config_local_first_with_only_server_url_set_has_no_inference_target`
-    // below for that regression).
+    // Keys off whether `base_url` came from `server_url`, not the host: a
+    // hand-configured loopback URL is still explicit. `cloud_first` is needed for
+    // a bare `server_url` to resolve an inference target.
     #[test]
     #[serial_test::serial]
     fn from_config_is_explicit_remote_true_for_explicitly_configured_loopback_url() {
@@ -1082,16 +868,7 @@ mod tests {
             mode: Some(inkentry_core::config::SyncMode::CloudFirst),
             ..Default::default()
         };
-        // Inject an in-memory secret store so this test never touches the
-        // real OS keychain (DI; cf. the `refresh_on_401_retries_once_and_persists`
-        // comment above and config.rs tests). This test previously called
-        // the production `from_config` entry point directly, which resolves
-        // the bearer via `Config::bearer_for` against the *real* default
-        // secret store; on macOS in a headless session that keychain
-        // lookup blocks indefinitely instead of failing fast, which is what
-        // made this test (and the whole module) appear to hang "even in
-        // isolation" without `INKENTRY_SECRET_STORE=file` set in the
-        // environment.
+        // In-memory store: a real OS keychain lookup blocks indefinitely in a headless macOS session.
         let store = arc_store();
         let client =
             ServerInferenceClient::from_config_with_store(&cfg, store).expect("client builds");
@@ -1101,13 +878,6 @@ mod tests {
         );
     }
 
-    /// Regression guard: with only `server_url` set (no
-    /// `inference_url`) and no explicit `mode`, the config defaults to
-    /// `local_first`, and `local_first` must NOT resolve any inference
-    /// `base_url` from `server_url`. `from_config` must return `None` rather
-    /// than silently building a client aimed at `server_url` (which is what
-    /// produced 404s against a cloud `server_url`'s nonexistent
-    /// `/index/embed` route).
     #[test]
     #[serial_test::serial]
     fn from_config_local_first_with_only_server_url_set_has_no_inference_target() {
@@ -1131,21 +901,9 @@ mod tests {
         );
     }
 
-    // Accept TCP on loopback and then say nothing, holding the connection
-    // open. Without a connect bound this client waits out its whole 300s
-    // request budget: the TCP connect succeeds and the TLS handshake it is
-    // waiting for never arrives.
-    //
-    // The portable stand-in for the originating report, a loopback team server
-    // whose SYN a firewall dropped rather than refused. That cannot be
-    // simulated, but it costs a client the same thing, and the connect bound
-    // covers the handshake as well as the TCP connect.
-    //
-    // Pinned here rather than through the CLI because end to end this call site
-    // is masked: the capability probe's own bound fires first and memoises the
-    // origin, so the command stays fast even with this bound removed. That
-    // makes this the only level at which the exemption removed in review can be
-    // caught coming back.
+    // Accepts TCP and then stays silent, standing in for a dropped SYN. Pinned at
+    // this level because end to end the capability probe's own bound fires first
+    // and masks a missing connect bound here.
     fn spawn_stalling_loopback_listener() -> u16 {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stall listener");
         let port = listener.local_addr().expect("local_addr").port();
@@ -1189,15 +947,7 @@ mod tests {
         );
     }
 
-    /// End-to-end regression test for the founder's own manual repro
-    /// (2026-07-23): `local_first`, `server_url` set to a
-    /// cloud host, no explicit `mode` → embedding must reach the LOCAL
-    /// loopback embedder, never the configured `server_url`. Modelled at this
-    /// layer by setting `inference_url` directly to a mocked loopback server
-    /// (what `Tier::effective_config` does once it has probed one, tested
-    /// separately in `capability::tier`) alongside a `server_url` pointed at
-    /// an address nothing mounts anything on: an accidental fallback would
-    /// surface as a hard connection error here, never a silent pass.
+    // `server_url` points at an unroutable host so an accidental fallback is a hard connection error.
     #[tokio::test]
     #[serial_test::serial]
     async fn embed_text_local_first_uses_loopback_not_configured_server_url() {
@@ -1242,9 +992,6 @@ mod tests {
         assert_eq!(vec.len(), dim);
     }
 
-    /// `derive_local_fallback` produces `local/<blake3-hex>` slugs — the `/`
-    /// must become `%2F` so the whole slug occupies one URL path segment
-    /// (IMP-1 / inkentry decision #106).
     #[test]
     fn encode_project_id_escapes_local_fallback_slug() {
         let slug = "local/9f2a8b3c4d5e6f70";
@@ -1252,8 +999,6 @@ mod tests {
         assert_eq!(encoded, "local%2F9f2a8b3c4d5e6f70");
     }
 
-    /// `normalise_git_url` produces `github.com/owner/repo` slugs — both `/`
-    /// must be escaped so axum routes the whole slug into `{project_id}`.
     #[test]
     fn encode_project_id_escapes_github_remote_slug() {
         let slug = "github.com/BurntSushi/jiff";
@@ -1261,10 +1006,6 @@ mod tests {
         assert_eq!(encoded, "github.com%2FBurntSushi%2Fjiff");
     }
 
-    /// Round-trip: percent-decoding the encoded segment must yield the
-    /// original slug unchanged, since the slug is the persistence key
-    /// (`projects.slug` UNIQUE) and must reach `require_project`/
-    /// `upsert_project` exactly as `derive_project_id` produced it.
     #[test]
     fn encode_project_id_round_trips_through_percent_decode() {
         for slug in ["local/9f2a8b3c4d5e6f70", "github.com/BurntSushi/jiff"] {
@@ -1276,31 +1017,14 @@ mod tests {
         }
     }
 
-    /// A slug with no special characters should be left byte-for-byte
-    /// identical (no spurious encoding of ordinary path-safe characters).
     #[test]
     fn encode_project_id_leaves_simple_slug_unchanged() {
         assert_eq!(encode_project_id("my-project"), "my-project");
     }
 
-    // The two peers this CLI talks to publish *incompatible* id types for the
-    // same conceptual Project resource, and both do so as documented
-    // contracts: the cloud API declares a `string`/`uuid`, this repo's
-    // `docs/openapi.json` declares an `integer`/`int64`. Neither is going to
-    // yield to the other soon.
-    //
-    // The only reason that divergence does not already break the CLI is that
-    // the CLI never holds a *typed* project id. It carries the identifier as an
-    // opaque string and spends it as one path segment, so both peers' shapes
-    // pass through untouched. That immunity is load-bearing and completely
-    // invisible in the type signature, which is exactly the kind of property
-    // that gets "tidied up" into an i64 or a Uuid by someone who only ever
-    // looked at one peer.
-    //
-    // This test is the tripwire for that tidy-up. It is deliberately not a
-    // schema-comparison test: this repo cannot see the other peer's schema, so
-    // it pins the CLI-side property that makes the divergence survivable
-    // instead. See docs/version-skew.md.
+    // The cloud API declares the project id a uuid and this repo's server an
+    // int64. The CLI survives that only by holding it as an opaque string; this
+    // is the tripwire against tidying it into a typed id. See docs/version-skew.md.
     #[test]
     fn project_id_stays_opaque_across_both_peers_id_types() {
         let cloud_api_shaped = "550e8400-e29b-41d4-a716-446655440000";
@@ -1318,11 +1042,7 @@ mod tests {
             assert_eq!(decoded, id, "round-trip mismatch for project id {id:?}");
         }
 
-        // Both must also survive as the same Rust type, with no parsing step
-        // that could reject one peer's shape. If this stops compiling because
-        // `project_id` gained a stricter type, that is the breakage this test
-        // exists to announce, and the fix is a conversation with both peers,
-        // not a cast here.
+        // Stops compiling if `project_id` gains a stricter type; that needs a conversation with both peers, not a cast.
         let ids: Vec<String> = [cloud_api_shaped, oss_server_shaped]
             .iter()
             .map(|s| s.to_string())
@@ -1330,10 +1050,6 @@ mod tests {
         assert_eq!(ids.len(), 2, "both peer id shapes must be representable");
     }
 
-    /// The synthetic query `chunk_id` is built from a fresh `uuid` crate v7
-    /// UUID. Two calls must differ (so concurrent queries never collide), and
-    /// the value must be a real version-7 UUID — the `query:` prefix is what
-    /// makes it distinguishable in server logs.
     #[test]
     fn query_chunk_id_is_unique_uuid_v7() {
         let a = Uuid::now_v7();
@@ -1344,14 +1060,8 @@ mod tests {
         assert!(chunk_id.starts_with("query:"));
     }
 
-    // ── transport-scheme validation ──────────────────────────────────────────
-    //
-    // `from_config` hard-exits the process on an invalid (non-loopback http://)
-    // inference URL, so the exit path itself isn't exercised in-process here
-    // (that would kill the test binary). These tests instead cover the pure
-    // validator directly (used identically by `capability::probe::probe_url`) and
-    // confirm `from_config` still builds normally for every URL shape the
-    // validator accepts.
+    // `from_config` hard-exits on an invalid URL, which would kill the test binary,
+    // so the pure validator and the accepted shapes are tested instead.
 
     #[test]
     fn transport_validator_rejects_non_loopback_http() {
@@ -1361,8 +1071,6 @@ mod tests {
         assert!(err.contains("https"));
     }
 
-    // The inference client gates on the same validator, so an authority that
-    // only looks like loopback must not reach the point of carrying a bearer.
     #[test]
     fn transport_validator_rejects_spoofed_loopback_authorities() {
         for url in [
@@ -1410,13 +1118,8 @@ mod tests {
         );
     }
 
-    // ── the remote LLM branch keeps its explicit-remote identity ────────────
-
-    // LLM routing points the inference target at `server_url`, which is
-    // exactly the shape `from_config` reads as "not an explicit remote". If
-    // the flag were re-derived rather than carried, a failure on the team
-    // server would tell the reader to run `inkentry server logs`, which only
-    // ever reads their own local daemon's log.
+    // LLM routing sets the inference target to `server_url`, which `from_config`
+    // reads as not explicit; the flag must be carried, not re-derived.
     #[test]
     #[serial_test::serial]
     fn explicit_remote_constructor_keeps_the_flag_when_the_inference_target_is_set() {
@@ -1444,9 +1147,6 @@ mod tests {
         );
     }
 
-    // `/llm/complete` used to throw the server's response body away and report
-    // a bare status. A failure on a remote LLM must name that server, and must
-    // never send the reader to their own local daemon's log.
     #[tokio::test]
     async fn llm_complete_error_on_an_explicit_remote_names_that_server_not_local_logs() {
         let remote = MockServer::start().await;
@@ -1482,8 +1182,6 @@ mod tests {
         );
     }
 
-    // The loopback counterpart: there, the local log genuinely is the place to
-    // look, so that hint must stay.
     #[tokio::test]
     async fn llm_complete_error_on_the_loopback_still_points_at_the_local_log() {
         let loopback = MockServer::start().await;
@@ -1506,8 +1204,6 @@ mod tests {
         assert!(msg.contains("inkentry server logs"), "got: {msg}");
     }
 
-    // ── server_inference_error ───────────────────────────────────────────────
-
     #[test]
     fn inference_error_surfaces_loading_detail_and_retry_hint() {
         let body = serde_json::json!({
@@ -1524,14 +1220,11 @@ mod tests {
         );
         assert!(msg.contains("downloading model (42%)"), "got: {msg}");
         assert!(msg.contains("inkentry server status"), "got: {msg}");
-        // The bare status is no longer the whole story.
         assert!(msg.contains("503"), "got: {msg}");
     }
 
     #[test]
     fn inference_error_surfaces_unavailable_loopback_points_at_logs() {
-        // Loopback auto-discovery: the failing embedder IS the local daemon,
-        // so `inkentry server logs` is the right place to look.
         let body = serde_json::json!({
             "error": "embedder unavailable",
             "state": "unavailable",
@@ -1550,9 +1243,6 @@ mod tests {
 
     #[test]
     fn inference_error_surfaces_unavailable_remote_names_that_server_never_local_logs() {
-        // Explicit server_url: `inkentry server logs` reads the LOCAL daemon's
-        // log, which is clean when the failure lives on the team server. The
-        // error must name the probed server instead.
         let body = serde_json::json!({
             "error": "embedder unavailable",
             "state": "unavailable",
@@ -1575,7 +1265,6 @@ mod tests {
 
     #[test]
     fn inference_error_falls_back_when_body_not_json() {
-        // A non-JSON body (proxy error page, empty) still yields a clean line.
         let msg = server_inference_error(
             "/index/embed",
             reqwest::StatusCode::BAD_GATEWAY,
@@ -1586,8 +1275,6 @@ mod tests {
         assert!(msg.contains("502"), "got: {msg}");
     }
 
-    /// End-to-end: a 503 from `/index/embed` must surface the server's `detail`
-    /// (not a bare "HTTP status 503") when embedding a query vector.
     #[tokio::test]
     async fn embed_text_surfaces_server_detail_on_503() {
         let inference = MockServer::start().await;
@@ -1612,9 +1299,6 @@ mod tests {
         assert!(msg.contains("inkentry server status"), "got: {msg}");
     }
 
-    /// End-to-end: a 503 `unavailable` from `/index/embed` against an
-    /// explicit team `server_url` must name that server, never `inkentry
-    /// server logs` (which would read a healthy local daemon's log instead).
     #[tokio::test]
     async fn embed_text_remote_names_that_server_never_local_logs() {
         let inference = MockServer::start().await;
@@ -1644,11 +1328,6 @@ mod tests {
         );
     }
 
-    /// `/v1/health`-style probes aside, inference requests built via
-    /// `send_authed`/`authed` still attach the bearer — this is expected (those
-    /// routes ARE authenticated); this test just documents/pins that behaviour
-    /// so a future edit doesn't accidentally strip auth from real inference
-    /// calls while fixing the health probe.
     #[tokio::test]
     async fn inference_requests_still_carry_bearer_when_present() {
         let inference = MockServer::start().await;
