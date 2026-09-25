@@ -12,9 +12,6 @@ pub(super) async fn memory_show(
     backend_override: Option<&str>,
 ) -> Result<()> {
     let started = std::time::Instant::now();
-    // Fold in any fetched teammate notes before the lookup, so an entry a
-    // teammate just published is visible by id on the default path without a
-    // re-init (ADR-077 D1).
     super::reconcile::refresh_read_path_from_git_notes(cfg, mem_path, backend_override).await;
 
     super::outbox::poll_and_apply(cfg, mem_path).await;
@@ -33,9 +30,8 @@ pub(super) async fn memory_show(
                 n.title
             );
             cprintln!("\x1b[2m{}\x1b[0m", format_age(n.created_at));
-            // Both identities in full on the one screen a reader consults
-            // before quoting an entry: the entity id resolves on every machine
-            // holding the entry, the id only on this one (ADR-093 D3).
+            // The entity id resolves on every machine holding the entry, the id
+            // only on this one.
             println!("entity_id:  {}", n.entity_id);
             println!("id:         {}", n.id);
             let effective_valid_at = n.valid_at.unwrap_or(n.created_at);
@@ -55,9 +51,8 @@ pub(super) async fn memory_show(
             }
             if let Some(ref sha) = n.source_ref {
                 let short = &sha[..sha.len().min(8)];
-                // Two genuinely different strings (not just colored vs.
-                // plain), so this branches on the centralized color
-                // decision directly instead of going through `cprintln!`.
+                // The two strings differ beyond color, so branch on the color
+                // decision instead of using `cprintln!`.
                 if color_enabled() {
                     println!(
                         "source:  \x1b[36mgit show {sha}\x1b[0m  \x1b[2m(SHA: {short})\x1b[0m"
@@ -111,9 +106,7 @@ pub(super) async fn memory_show(
     Ok(())
 }
 
-/// An edge's other end as `handle title`, so a relationship line quotes the
-/// same identity as the heading above it. An edge whose endpoint has gone
-/// keeps the stored id, which is all that is left of it.
+// A deleted endpoint falls back to the stored id, all that is left of it.
 async fn edge_end(
     backend: &dyn crate::storage::MemoryBackend,
     id: &crate::storage::NoteId,
