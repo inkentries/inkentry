@@ -57,11 +57,7 @@ pub struct IndexArgs {
     #[arg(long, default_value_t = false)]
     pub detach_embed: bool,
 
-    /// The `--config` override this process itself resolved, if any. Not part
-    /// of the `index` subcommand's own argv: `--config` is a global `Cli`-level
-    /// flag, so `main` fills this in after parsing. Threaded through so the
-    /// detached-child spawns below can forward the same override rather than
-    /// have the child re-resolve the default config.
+    // Filled in by `main` from the global `--config`; forwarded to detached children.
     #[arg(skip)]
     pub config_path: Option<PathBuf>,
 }
@@ -86,10 +82,8 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    // A continuation child's streams are the background log, so its whole run
-    // is bracketed here: the start line is what separates a worker that is
-    // running from one that never got going, and the failure line covers the
-    // lock re-acquire and the index open too, which fail before any phase.
+    // A continuation child's streams are the background log; bracket its whole
+    // run so lock re-acquire and index-open failures (before any phase) are logged.
     let Some(phase) = background_log::Phase::of(&args) else {
         return run_index(args, cfg).await;
     };
@@ -104,27 +98,18 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
 }
 
 async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
-    // Validate config: server_url requires project_id.
     cfg.validate()?;
 
-    // Compile secret-scanning regexes once before the hot loop.
     crate::indexer::secrets::init();
 
-    // If running inside a git linked worktree, resolve to the main worktree root
-    // so all worktrees share one index without creating any symlink.
     let project_root = worktree::resolve_main_worktree_root(&args.path);
 
-    // Default DB lives inside the project root, scoping the index to the project.
     let db_path = args
         .db
         .clone()
         .unwrap_or_else(|| project_root.join(".inkentry").join("index.db"));
 
-    // Serialize whole `inkentry index` runs against this project: two
-    // concurrent writers reproducibly corrupt index.db (see run_lock.rs doc
-    // comment), so only one process may hold this at a time. `mut` + `Option`
-    // because the two background-spawn sites below explicitly release it
-    // before handing off to a continuation child (see their comments).
+    // Concurrent writers corrupt index.db, so only one run may hold this.
     let inkentry_dir = db_path
         .parent()
         .map(|p| p.to_path_buf())
@@ -164,7 +149,6 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
     };
     super::helpers::announce_index_rebuild(&db);
 
-    // Keep the global registry in sync with the current location.
     {
         let root_now = inkentry_core::utils::canonicalize(args.path.as_ref());
         let db_now = inkentry_core::utils::canonicalize(db_path.as_ref());
@@ -173,29 +157,20 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
         }
     }
 
-    // --recount: backfill token_count for existing chunks, then exit.
     if args.recount {
         let updated = db.backfill_token_counts()?;
         println!("Backfilled token counts for {updated} chunk(s).");
         return Ok(());
     }
 
-    // Canonicalise the root so symlinks don't create duplicate entries.
     let root_canonical = inkentry_core::utils::canonicalize(args.path.as_ref());
 
-    // ── Background-phases mode ────────────────────────────────────────────────
-    // When spawned as a background process (--_background-phases), skip phases
-    // 1 & 2 (walk, parse, embed) which are already done, and run only phases 3–5.
     if args.background_phases {
         phases::run_background_phases(&args, &cfg, &db, &project_root, &root_canonical, &db_path)
             .await?;
         return Ok(());
     }
 
-    // ── Embed-phases mode (detached embed) ────────────────────────────────────
-    // Spawned by `--detach-embed` after the foreground process finished
-    // parsing: skip phase 1 (parse) and rebuild the embed queue from the chunks
-    // already stored in the DB, then run the embed phase and phases 3–5.
     if args.embed_phases {
         phases::run_embed_phases(&args, &cfg, &db, &project_root, &root_canonical, &db_path)
             .await?;
@@ -204,37 +179,24 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
 
     let mp = MultiProgress::new();
 
-    // ── Phase 1: parse + store chunks ────────────────────────────────────────
     let result = parse_phase::run_parse_phase(&root_canonical, &db, &args, &mp, &cfg)?;
     if result.removed > 0 {
         eprintln!("Removed {} stale file(s) from index.", result.removed);
     }
 
-    // The walk has been through the tree, so whatever the index holds now is
-    // what the source produced, not what a rebuild left behind. Retiring the
-    // marker here rather than on file count keeps a genuinely empty tree
-    // reading as empty instead of as unrepaired.
+    // Retired after the walk rather than on file count, so a genuinely empty
+    // tree reads as empty, not unrepaired.
     db.mark_reindexed()?;
 
-    // ── Pre-embed phases: PageRank + structural summaries ────────────────────
-    // Offline, and run before the first embed so the embed queue is
-    // PageRank-central on a cold index and each chunk's first vector already
-    // carries its structural summary. The queue is then rebuilt from the DB
-    // below so it reflects the ranks and summaries just written.
+    // Before the first embed so the queue is PageRank-ordered and each chunk's
+    // first vector already carries its summary.
     phases::run_pre_embed_phases(&args, &db)?;
 
-    // ── Phase 2: embed chunks ────────────────────────────────────────────────
-    //
-    // `get_inference_tier` (not `get_tier`): local_first always prefers the
-    // local loopback embedder for inference, even with an explicit
-    // server_url set (2026-07-23 founder decision). `get_tier` alone would
-    // probe the explicit server_url and hand its (possibly wrong) tier
-    // straight to the batch-calibrated embed request loop below.
+    // Not `get_tier`: local_first prefers the loopback embedder even when an
+    // explicit server_url is set, and `get_tier` would probe that URL instead.
     let tier = capability::get_inference_tier(&cfg).await;
 
-    // Rebuild the embed queue from the DB now that PageRank and structural
-    // summaries are written: the parse-time queue predates both, and this also
-    // picks up pending re-embeds (the summary-scheme migration, tier-3).
+    // The parse-time queue predates PageRank and summaries, and misses pending re-embeds.
     let queue = parse_phase::missing_embedding_texts(&db)?;
     if queue.is_empty() {
         let stats = db.stats()?;
@@ -245,33 +207,17 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    // Embed only when the server's embedder is actually ready to serve
-    // (`caps.index_embed` is advertised only in the `ready` state). When the
-    // server is reachable but the model is still `loading` or has failed
-    // (`unavailable`), skip embedding and print a visible, differentiated
-    // notice rather than letting the embed request 503 out mid-index or
-    // silently producing an unembedded index.
+    // `index_embed` is advertised only once the embedder is ready; otherwise
+    // skip with a notice rather than 503 mid-index.
     let embed_ready = matches!(tier.caps(), Some(c) if c.index_embed);
 
-    // ── Detached embed ────────────────────────────────────────────────────────
-    // Parsing is done and the chunks are persisted; hand the (usually long)
-    // embedding phase to a background process so the user regains the prompt
-    // now. The subprocess (`--_embed-phases`) rebuilds the embed queue from the
-    // DB, so nothing from `result` needs to cross the process boundary. Confirm
-    // completion later with `inkentry status`.
-    //
-    // The spawn is gated on "worth waiting for" (ready OR still loading), not
-    // on ready alone: the worker owns the readiness wait, and a fresh install
-    // arrives here with the embedder still `loading`. Gating the spawn on
-    // `embed_ready` is exactly the no-op that ships a permanently unembedded
-    // index on a cold machine.
+    // Gated on ready-or-loading, not `embed_ready`: the worker owns the
+    // readiness wait, and a cold install arrives with the embedder still
+    // loading, so gating on `embed_ready` would leave the index unembedded.
     if args.detach_embed && tier.is_server() && continuation::detach_embed_eligible(&tier) {
         let embed_log = continuation::background_log_path(&db_path);
-        // Dropping the lock before spawning closes the corruption race (the
-        // child never interleaves writes with us), but a third `inkentry
-        // index` can still win the reacquire in the gap; `wait_for_holder_pid`
-        // below confirms the spawned pid, specifically, becomes the holder
-        // before we report success.
+        // Released so the child never interleaves writes with us; a third run
+        // can still win the reacquire, which `wait_for_holder_pid` detects.
         drop(run_lock.take());
         crash_test_hook::pause_at("after_run_lock_drop", "embed");
         if let continuation::EmbedSpawn::Detached {
@@ -312,16 +258,12 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
             }
             return Ok(());
         }
-        // Spawn failed: fall through to the inline path (embeds now if ready,
-        // else prints the skip notice), unprotected by the run lock already
-        // dropped above. Accepted: `Command::spawn` only fails on resource
-        // exhaustion, and re-acquiring here would just move the same
-        // race-vs-a-real-child problem rather than remove it.
+        // Spawn failed: falls through inline without the run lock; re-acquiring
+        // would only move the same race.
     }
 
     if tier.is_server() && embed_ready {
-        // Liveness marker so `inkentry status` from another terminal reports a
-        // foreground embed as running rather than telling the user to resume.
+        // Lets `inkentry status` in another terminal report the embed as running.
         let worker_guard = super::embed_worker::EmbedWorkerGuard::acquire(&db, &db_path);
         embed_phase::run_embed_phase(queue, &db, &cfg, &tier, &project_root, args.batch_size, &mp)
             .await?;
@@ -336,9 +278,6 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
         stats.file_count, stats.chunk_count, stats.embedding_count
     );
 
-    // ── Background spawn for phases 3–5 ──────────────────────────────────────
-    // When more than 100 files were newly indexed, detach phases 3-5 into a
-    // background process so the user regains the prompt immediately.
     if result.indexed > 100 {
         eprintln!("Spawning background job for title-less refinement and conventions\u{2026}");
         let log = continuation::background_log_path(&db_path);
@@ -351,9 +290,6 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
         if let Some(p) = in_use {
             eprintln!("  Log: {}", p.display());
         }
-        // Release before spawning: closes the corruption race (see the
-        // detach-embed site above for the full reasoning, including why this
-        // alone does not guarantee the child specifically wins the reacquire).
         drop(run_lock.take());
         crash_test_hook::pause_at("after_run_lock_drop", "background_phases");
         let _std_handles = super::helpers::StdHandlesNotInherited::for_spawn();
@@ -376,9 +312,6 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
                 return Ok(());
             }
             Err(e) => {
-                // Fall through and run phases 3-5 inline as fallback,
-                // unprotected by the run lock already dropped above (see the
-                // detach-embed site's comment on this same tradeoff).
                 tracing::warn!("failed to spawn background indexer; running inline: {e}");
             }
         }
@@ -392,8 +325,6 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    /// Minimal parser wrapper so we can exercise `IndexArgs` clap parsing in
-    /// isolation without pulling in the whole top-level `Cli`.
     #[derive(clap::Parser, Debug)]
     struct TestCli {
         #[command(flatten)]
@@ -402,9 +333,6 @@ mod tests {
 
     #[test]
     fn batch_size_flag_is_captured() {
-        // The user-supplied `--batch-size` must land in `IndexArgs.batch_size`,
-        // which `index()` then threads into `run_embed_phase`. Before this fix
-        // the value was parsed but never passed through (silent no-op).
         let cli = TestCli::try_parse_from(["inkentry", "some/path", "--batch-size", "16"])
             .expect("parse");
         assert_eq!(cli.index.batch_size, 16);
@@ -412,10 +340,6 @@ mod tests {
 
     #[test]
     fn batch_size_defaults_to_zero_meaning_calibrated_with_no_user_cap() {
-        // 0 means "no user-supplied cap" — the embed phase calibrates the
-        // batch size from measured throughput up to the server's own 256-chunk
-        // ceiling, rather than being pinned to a fixed default (see
-        // `resolve_batch_ceiling` in embed_phase.rs).
         let cli = TestCli::try_parse_from(["inkentry", "some/path"]).expect("parse");
         assert_eq!(cli.index.batch_size, 0);
     }
