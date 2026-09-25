@@ -61,6 +61,21 @@ pub struct NoteRecord {
     /// unknown-key tolerance.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub origin: Option<super::origin::Origin>,
+    /// ADR-099 D3: `Some("anchor")` marks this record as an anchor attachment
+    /// rather than an ordinary write or state-update — the record still
+    /// carries `base`'s full content (kind/title/body/etc, via
+    /// `entity_update_record`) so an old reader that does not know this field
+    /// folds it exactly as any other copy. `None` (every record before this
+    /// ADR) means "not an anchor record".
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub op: Option<String>,
+    /// `git patch-id --stable` of the commit this anchor record is attached
+    /// to, computed once at claim time and stored rather than recomputed
+    /// later (D3: the original commit object may be gone from a clone by
+    /// then). `None` for a merge commit, which carries no patch-id, or when
+    /// `op` is not `"anchor"`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub patch_id: Option<String>,
 }
 
 /// One outgoing graph edge as the carrier records it.
@@ -165,6 +180,8 @@ mod tests {
             superseded_by_entity_id: None,
             edges: vec![],
             origin: None,
+            op: None,
+            patch_id: None,
         }
     }
 

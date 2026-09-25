@@ -398,6 +398,11 @@ fn carrier_record(
             e.origin_tool.clone(),
             e.origin_model.clone(),
         ),
+        // A dump carries no anchor state (ADR-099 D1/D3: pending anchors are
+        // local working state, and a carried anchor record is imported
+        // through the ordinary git-notes read path, not the dump).
+        op: None,
+        patch_id: None,
     }
 }
 

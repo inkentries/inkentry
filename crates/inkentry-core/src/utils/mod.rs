@@ -55,6 +55,21 @@ pub fn resolve_main_worktree_root(root: &std::path::Path) -> std::path::PathBuf 
     main_root.to_path_buf()
 }
 
+/// The absolute git-dir of the worktree containing `path`: a linked
+/// worktree's own `.git/worktrees/<name>`, or the main `.git` otherwise.
+/// `None` outside a git repository.
+///
+/// Unlike [`resolve_main_worktree_root`], this does **not** climb to the main
+/// worktree — it is `git rev-parse --git-dir`'s answer. ADR-099 D1 anchors a
+/// pending memory entry to the worktree it was written in, which is the only
+/// thing separating one agent's pending entries from another's once
+/// `.inkentry/memory.db` (shared by every linked worktree) is in play.
+pub fn current_worktree_git_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    gix::discover(path)
+        .ok()
+        .map(|repo| repo.git_dir().to_path_buf())
+}
+
 /// Returns true when the process is running in agent mode (`AGENT=true`).
 ///
 /// In agent mode all output defaults to structured JSON and progress spinners

@@ -255,6 +255,23 @@ pub async fn append_to_git_notes(
     git_root: Option<&std::path::Path>,
     record: &NoteRecord,
 ) -> Result<AppendOutcome> {
+    // ── 1. Get HEAD sha ───────────────────────────────────────────────────────
+    let head = run_git(git_root, &["rev-parse", "HEAD"])
+        .await
+        .map(|s| s.trim().to_string())?;
+    append_to_git_notes_at(git_root, &head, record).await
+}
+
+/// [`append_to_git_notes`] against an explicit target object rather than
+/// `HEAD` — the one other place a note attaches to a specific commit
+/// (ADR-099 D3: an anchor record attaches to the *claimed* commit, which the
+/// hook or `memory anchor` resolves independently of the process's own
+/// `HEAD`).
+async fn append_to_git_notes_at(
+    git_root: Option<&std::path::Path>,
+    target: &str,
+    record: &NoteRecord,
+) -> Result<AppendOutcome> {
     // Touches `git config` only, never the notes ref, so it stays outside the
     // lock: serializing it would widen the guarded section for nothing.
     let rewrite_ref = ensure_notes_rewrite_ref(git_root).await;
@@ -272,13 +289,8 @@ pub async fn append_to_git_notes(
         )),
     };
 
-    // ── 1. Get HEAD sha ───────────────────────────────────────────────────────
-    let head = run_git(git_root, &["rev-parse", "HEAD"])
-        .await
-        .map(|s| s.trim().to_string())?;
-
     // ── 2. Read existing note (may not exist) ─────────────────────────────────
-    let existing = read_note_body_with_retry(git_root, &head)
+    let existing = read_note_body_with_retry(git_root, target)
         .await
         .context("could not read the existing note, so not overwriting it")?;
 
@@ -297,8 +309,8 @@ pub async fn append_to_git_notes(
     // value: this keeps arbitrary/attacker-influenced note content off the
     // process argv (and therefore out of `ps`/process-list visibility) and
     // means the body can never be misparsed as an option, regardless of its
-    // contents. `--` guards the trailing `<object>` (HEAD sha) so it can't be
-    // interpreted as an option either, even though `head` is always a
+    // contents. `--` guards the trailing `<object>` (target sha) so it can't
+    // be interpreted as an option either, even though `target` is always a
     // `rev-parse`-verified sha here.
     run_git_with_stdin(
         git_root,
@@ -310,7 +322,7 @@ pub async fn append_to_git_notes(
             "-F",
             "-",
             "--",
-            &head,
+            target,
         ],
         &combined,
     )
@@ -492,7 +504,15 @@ pub async fn append_state_update(
     invalid_at: Option<i64>,
     superseded_by_entity_id: Option<String>,
 ) -> Result<AppendOutcome> {
-    let record = entity_update_record(base, status, invalid_at, superseded_by_entity_id, vec![]);
+    let record = entity_update_record(
+        base,
+        status,
+        invalid_at,
+        superseded_by_entity_id,
+        vec![],
+        None,
+        None,
+    );
     append_to_git_notes(git_root, &record).await
 }
 
@@ -508,18 +528,45 @@ pub async fn append_edges(
     base: &Note,
     edges: Vec<CarriedEdge>,
 ) -> Result<AppendOutcome> {
-    let record = entity_update_record(base, &base.status, base.invalid_at, None, edges);
+    let record = entity_update_record(base, &base.status, base.invalid_at, None, edges, None, None);
     append_to_git_notes(git_root, &record).await
+}
+
+/// Append an ADR-099 D3 anchor record for `base`'s entity to `target_commit`
+/// (the claimed commit — not necessarily `HEAD`, unlike every other append in
+/// this module). The record carries `base`'s content unchanged, exactly like
+/// [`append_state_update`], so an entity accidentally selected as its own
+/// fold group's base (never happens in practice: an anchor record is always
+/// created after the entity's original write) loses nothing.
+pub async fn append_anchor_record(
+    git_root: Option<&std::path::Path>,
+    target_commit: &str,
+    base: &Note,
+    patch_id: Option<String>,
+) -> Result<AppendOutcome> {
+    let record = entity_update_record(
+        base,
+        &base.status,
+        base.invalid_at,
+        None,
+        vec![],
+        Some("anchor".to_string()),
+        patch_id,
+    );
+    append_to_git_notes_at(git_root, target_commit, &record).await
 }
 
 /// The record an entity update appends: `base`'s content unchanged, keyed by
 /// its `entity_id`, with the mutable state the caller supplies.
+#[allow(clippy::too_many_arguments)]
 fn entity_update_record(
     base: &Note,
     status: &str,
     invalid_at: Option<i64>,
     superseded_by_entity_id: Option<String>,
     edges: Vec<CarriedEdge>,
+    op: Option<String>,
+    patch_id: Option<String>,
 ) -> NoteRecord {
     NoteRecord {
         schema_version: 1,
@@ -545,6 +592,8 @@ fn entity_update_record(
         // record as its group's base (it is never the earliest-created copy),
         // so this value is not what a reader ultimately sees.
         origin: base.origin.clone(),
+        op,
+        patch_id,
     }
 }
 
@@ -668,6 +717,104 @@ async fn run_git_with_stdin(
             String::from_utf8_lossy(&out.stderr).trim()
         ))
     }
+}
+
+/// ADR-099 D3's "earliest reachable, falling back to earliest" rule over a
+/// set of `(commit, created_at)` anchors (see
+/// [`GitNotesBackend::anchors_for_entity`]). A thin `pub` wrapper: the
+/// resolution logic itself lives in `fold` alongside the fold rules it must
+/// stay consistent with.
+pub fn resolve_source_ref(
+    anchors: &[(String, i64)],
+    reachable: impl Fn(&str) -> bool,
+) -> Option<String> {
+    fold::resolve_source_ref(anchors, reachable)
+}
+
+/// Whether `ancestor` is `descendant` itself or one of its ancestors along
+/// `git`'s ordinary (all-parents) DAG. `false` on any git failure (an unknown
+/// object, for instance) rather than propagating: every caller uses this as
+/// one input to a best-effort claim or reconciliation decision, never as the
+/// sole gate on a write that must fail loudly.
+pub async fn is_ancestor(
+    git_root: Option<&std::path::Path>,
+    ancestor: &str,
+    descendant: &str,
+) -> bool {
+    let mut cmd = Command::new("git");
+    if let Some(d) = git_root {
+        cmd.current_dir(d);
+    }
+    cmd.args(["merge-base", "--is-ancestor", ancestor, descendant]);
+    matches!(cmd.status().await, Ok(status) if status.success())
+}
+
+/// Every commit reachable from a local branch, tag or remote-tracking branch
+/// (ADR-099 D3a: "no longer reachable from any ref"). Deliberately excludes
+/// `refs/notes/*`, whose own commit-shaped history is not the code DAG this
+/// check cares about.
+pub async fn commits_reachable_from_any_ref(
+    git_root: Option<&std::path::Path>,
+) -> Result<HashSet<String>> {
+    match run_git(
+        git_root,
+        &["rev-list", "--branches", "--tags", "--remotes", "HEAD"],
+    )
+    .await
+    {
+        Ok(out) => Ok(out.lines().map(str::trim).map(str::to_string).collect()),
+        // No branches/tags/remotes and an unborn HEAD both exit non-zero here;
+        // either way there is nothing reachable to report.
+        Err(_) => Ok(HashSet::new()),
+    }
+}
+
+/// `git patch-id --stable` of `sha`'s diff, or `None` for a merge commit
+/// (ADR-099 D3: "Merge commits have no patch-id and carry none"). A root
+/// commit (no parent) still gets one, diffed against the empty tree, exactly
+/// as `git show`/`git patch-id` already do for it.
+pub async fn commit_patch_id(
+    git_root: Option<&std::path::Path>,
+    sha: &str,
+) -> Result<Option<String>> {
+    let parents = run_git(git_root, &["rev-list", "--parents", "-1", sha]).await?;
+    let parent_count = parents.split_whitespace().count().saturating_sub(1);
+    if parent_count > 1 {
+        return Ok(None);
+    }
+
+    let diff = run_git(git_root, &["show", "--no-color", "-p", sha]).await?;
+
+    let mut cmd = Command::new("git");
+    if let Some(d) = git_root {
+        cmd.current_dir(d);
+    }
+    cmd.args(["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("failed to open stdin for git patch-id"))?;
+    let writer = async move {
+        stdin.write_all(diff.as_bytes()).await?;
+        stdin.shutdown().await
+    };
+    let (write_res, out) = tokio::join!(writer, child.wait_with_output());
+    let out = out?;
+    write_res?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git patch-id --stable: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Output is "<patch-id> <commit-sha>"; an empty diff (a genuinely empty
+    // commit) prints nothing.
+    Ok(stdout.split_whitespace().next().map(str::to_string))
 }
 
 /// Hard cap on entries returned by `list()`.
@@ -843,6 +990,48 @@ impl GitNotesBackend {
             .collect();
 
         Ok(pairs)
+    }
+
+    /// `(commit_sha, note_blob_sha)` for every noted commit, reachable from
+    /// HEAD or not — unlike [`noted_commits`](Self::noted_commits), which
+    /// filters to HEAD's history. ADR-099 D3a's reconciliation pass needs
+    /// exactly the commits that filter would drop: an anchor whose commit a
+    /// rebase orphaned.
+    async fn all_noted_commits(&self) -> Result<Vec<(String, String)>> {
+        let list_out = self
+            .git()
+            .args(["notes", "--ref=inkentry", "list"])
+            .output()
+            .await?;
+        if !list_out.status.success() {
+            return Ok(vec![]);
+        }
+        Ok(String::from_utf8_lossy(&list_out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut parts = l.split_whitespace();
+                let blob = parts.next()?;
+                let commit = parts.next()?;
+                Some((commit.to_string(), blob.to_string()))
+            })
+            .collect())
+    }
+
+    /// Every record on the ref paired with its attachment commit, reachable
+    /// or not (ADR-099 D3a). The unfiltered counterpart of
+    /// [`records_with_commit`](Self::records_with_commit).
+    pub async fn all_noted_records(&self) -> Result<Vec<(String, NoteRecord)>> {
+        let noted = self.all_noted_commits().await?;
+        let blob_shas: Vec<String> = noted.iter().map(|(_, blob)| blob.clone()).collect();
+        let blobs = self.read_note_blobs(&blob_shas).await?;
+
+        let mut out = Vec::new();
+        for ((commit, _blob), body) in noted.iter().zip(blobs.iter()) {
+            for record in parse_records(body)? {
+                out.push((commit.clone(), record));
+            }
+        }
+        Ok(out)
     }
 
     /// Note blob shas only, for the lenient batch read `folded_records` uses:
@@ -1035,25 +1224,41 @@ impl GitNotesBackend {
     /// matches every noted commit it is a prefix of.
     pub async fn entity_ids_anchored_to(&self, sha_prefix: &str) -> Result<Vec<String>> {
         let records = self.records_with_commit().await?;
-        Ok(fold::anchor_commits(&records)
+        Ok(fold::all_anchor_commits(&records)
             .into_iter()
-            .filter(|(_entity, commit)| commit.starts_with(sha_prefix))
-            .map(|(entity, _commit)| entity)
+            .filter(|(_entity, commits)| commits.iter().any(|c| c.starts_with(sha_prefix)))
+            .map(|(entity, _commits)| entity)
             .collect())
     }
 
+    /// Every explicit `op: "anchor"` commit claimed for `entity_id`, each
+    /// paired with the `created_at` of the record that claimed it (ADR-099
+    /// D3). Excludes the base write-time attachment — see
+    /// [`fold::anchors_for_entity`]'s doc for why. Feeds
+    /// [`fold::resolve_source_ref`].
+    pub async fn anchors_for_entity(&self, entity_id: &str) -> Result<Vec<(String, i64)>> {
+        let records = self.records_with_commit().await?;
+        Ok(fold::anchors_for_entity(&records, entity_id))
+    }
+
     /// The distinct set of full commit shas that at least one entry's memory
-    /// note is anchored to.
+    /// note is anchored to — the write-time attachment plus every commit
+    /// carrying an explicit `op: "anchor"` record (ADR-099 D3), so
+    /// `rec.commit_coverage` counts an entry anchored later, not only at
+    /// `memory add` time.
     ///
     /// Same resolution as [`entity_ids_anchored_to`] (`records_with_commit` +
-    /// [`fold::anchor_commits`]), read from the commit side instead of the
+    /// [`fold::all_anchor_commits`]), read from the commit side instead of the
     /// entity side: `rec.commit_coverage` (ADR-098) needs "is this commit
     /// covered" for every commit in a window, and calling
     /// `entity_ids_anchored_to` once per commit would re-walk the whole notes
     /// ref each time. One pass here, then a caller checks membership.
     pub async fn anchored_commit_shas(&self) -> Result<HashSet<String>> {
         let records = self.records_with_commit().await?;
-        Ok(fold::anchor_commits(&records).into_values().collect())
+        Ok(fold::all_anchor_commits(&records)
+            .into_values()
+            .flatten()
+            .collect())
     }
 
     /// Note-anchored entries whose anchor commit begins with `sha_prefix`, as
@@ -1069,7 +1274,7 @@ impl GitNotesBackend {
         limit: usize,
     ) -> Result<Vec<Note>> {
         let records = self.records_with_commit().await?;
-        let anchors = fold::anchor_commits(&records);
+        let anchors = fold::all_anchor_commits(&records);
         // Fold across every commit so an entry's `status` reflects a
         // state-update appended on a later commit, not just its original line.
         let mut folded = fold_records(records.into_iter().map(|(_, r)| r).collect());
@@ -1077,7 +1282,7 @@ impl GitNotesBackend {
         folded.retain(|record| {
             anchors
                 .get(&record.resolve_entity_id())
-                .is_some_and(|commit| commit.starts_with(sha_prefix))
+                .is_some_and(|commits| commits.iter().any(|c| c.starts_with(sha_prefix)))
                 && record_in_window(record, include_archived, as_of)
         });
 
