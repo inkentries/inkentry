@@ -121,6 +121,14 @@ jobs:
       # Test binaries don't need full debug info; this shrinks compile times
       # and cache size for this job without affecting check/build.
       CARGO_PROFILE_TEST_DEBUG: 0
+      # nextest defaults to one test per vCPU, but this suite mostly waits on
+      # subprocesses, git and SQLite rather than burning CPU, so oversubscribing
+      # wins. Measured paired on the same runners (2026-09): macOS (3 vCPU) at 6
+      # is ~27% faster than 3, and 8 buys nothing more; Windows (4 vCPU) at 6
+      # is ~5% faster than 4. Windows stops at 6 because at 8+ on a slow runner
+      # the CLI's 250ms loopback probe starts missing a busy test's mock
+      # server. Linux is left at its default (4).
+      NEXTEST_TEST_THREADS: ${{ matrix.os == 'ubuntu-latest' && 'num-cpus' || '6' }}
     strategy:
       fail-fast: false
       matrix:
