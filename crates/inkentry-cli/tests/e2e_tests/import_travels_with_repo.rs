@@ -1,11 +1,3 @@
-// Coverage for `inkentry import`'s git-notes write-through carrier (#51).
-//
-// Counting rows in the importing repo's own store proves nothing about what
-// travels: that is exactly the state the defect describes, where every entry
-// was present locally and none of it cloned. So the round trip here is a real
-// one — import into a repo, push its notes, clone from the same origin,
-// hydrate the clone, and read what arrived.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
@@ -46,7 +38,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// A well-formed dump, footer computed as `docs/dump-format.md` specifies.
 fn dump(body: &[&str], counts: &str) -> String {
     let header = r#"{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"test/1.0.0"}"#;
     let mut lines = vec![header.to_string()];
@@ -71,8 +62,6 @@ fn entry(dump_ref: &str, title: &str, created_at: i64, extra: &str) -> String {
     )
 }
 
-// Two entries and the supersede edge between them: enough to show that the
-// edge travels too, not just the entries it links.
 fn two_entries_and_a_supersede() -> String {
     dump(
         &[
@@ -90,9 +79,6 @@ fn empty_config(dir: &Path) -> PathBuf {
     cfg
 }
 
-// Run `inkentry import` in `dir`, writing to `dir/.inkentry/memory.db`, with
-// `dir` as HOME. Offline: the embedding pass cannot reach a server and is
-// reported rather than fatal, so this must still succeed.
 fn run_import(dir: &Path, contents: &str) -> String {
     let path = dir.join("project.dump");
     std::fs::write(&path, contents).unwrap();
@@ -135,9 +121,7 @@ fn run_init(dir: &Path) {
     );
 }
 
-// Entries in `dir`'s own memory store. `include_archived` selects between the
-// default live view and the full one, which is what distinguishes "the entry
-// arrived, marked archived" from "the entry arrived and reads as live".
+// `include_archived` distinguishes "arrived, marked archived" from "arrived and reads as live".
 fn local_entries(dir: &Path, include_archived: bool) -> Vec<serde_json::Value> {
     let mut args = vec!["memory", "list"];
     if include_archived {
@@ -171,7 +155,6 @@ fn titles_of(entries: &[serde_json::Value]) -> Vec<String> {
     titles
 }
 
-// Titles of every entry (archived included) in `dir`'s own memory store.
 fn local_titles(dir: &Path) -> Vec<String> {
     titles_of(&local_entries(dir, true))
 }
@@ -192,9 +175,7 @@ fn carrier_record_titled(dir: &Path, title: &str) -> serde_json::Value {
         .clone()
 }
 
-// Every inkentry record on the notes ref, across all reachable commits, as raw
-// lines. Deliberately unfolded: a duplicate append is invisible once the
-// reader folds by `entity_id`, and duplication is the thing under test.
+// Raw records, deliberately unfolded: folding by `entity_id` hides a duplicate append.
 fn carrier_records(dir: &Path) -> Vec<serde_json::Value> {
     let listing = git_stdout(dir, &["notes", "--ref=inkentry", "list"]);
     let mut out = Vec::new();
@@ -231,9 +212,8 @@ fn init_repo_with_commit(dir: &Path) {
     git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-// A bare origin and one working clone "a", both on the same single commit.
-// `a` gets a `.inkentry/` dir so the import resolves to the SQLite-primary
-// path with the carrier write-through, not the pre-init fallback.
+// `a` gets `.inkentry/` so the import takes the SQLite-primary path with the carrier
+// write-through, not the pre-init fallback.
 fn setup_origin_and_clone(tmp: &Path) -> (PathBuf, PathBuf) {
     let origin = tmp.join("origin.git");
     git(
@@ -258,8 +238,6 @@ fn setup_origin_and_clone(tmp: &Path) -> (PathBuf, PathBuf) {
     (origin, a)
 }
 
-// ── what the import puts on the carrier ──────────────────────────────────────
-
 #[test]
 fn imported_entries_land_on_the_notes_ref() {
     let tmp = TempDir::new().unwrap();
@@ -278,9 +256,8 @@ fn imported_entries_land_on_the_notes_ref() {
     );
 }
 
-/// The dump's own values travel, not this machine's. `created_at` in
-/// particular orders the carrier's fold, so stamping the wall clock would make
-/// the same entry sort differently on every machine that imported the dump.
+// `created_at` orders the carrier's fold; stamping the wall clock would sort the same
+// entry differently on every machine that imported the dump.
 #[test]
 fn the_carrier_record_keeps_the_dump_s_own_values() {
     let tmp = TempDir::new().unwrap();
@@ -310,10 +287,7 @@ fn the_carrier_record_keeps_the_dump_s_own_values() {
     );
 }
 
-/// The conflict case the write-through forces: re-importing a dump this repo
-/// already carries must not write it again. Folding would collapse a duplicate
-/// on read, so the assertion is on the raw ref, which is where a re-import
-/// would otherwise double the log every time.
+// Asserts on the raw ref: folding on read would hide a duplicate append.
 #[test]
 fn re_importing_the_same_dump_does_not_write_it_to_the_carrier_twice() {
     let tmp = TempDir::new().unwrap();
@@ -336,8 +310,6 @@ fn re_importing_the_same_dump_does_not_write_it_to_the_carrier_twice() {
     );
 }
 
-/// A repo the store does not sit inside has no carrier, and that is not a
-/// failure: the import still lands every row and says nothing about travel.
 #[test]
 fn an_import_outside_a_git_repo_still_succeeds() {
     let tmp = TempDir::new().unwrap();
@@ -357,14 +329,8 @@ fn an_import_outside_a_git_repo_still_succeeds() {
     );
 }
 
-// ── the round trip the issue asks for ────────────────────────────────────────
-
-/// Import a dump, publish the notes, clone from the same origin, hydrate the
-/// clone, and end up with exactly the entries you started with.
-///
-/// This is the property the defect broke and the one counts cannot show: the
-/// teammate's repo is a genuine second clone whose memory store starts empty,
-/// so every entry it ends up with arrived through git.
+// The teammate's repo is a genuine second clone with an empty store, so every entry
+// it ends up with arrived through git.
 #[test]
 fn an_imported_log_clones_with_the_repository_and_does_not_duplicate() {
     let tmp = TempDir::new().unwrap();
@@ -388,8 +354,8 @@ fn an_imported_log_clones_with_the_repository_and_does_not_duplicate() {
     );
     git(&b, &["config", "user.email", "b@example.com"]);
     git(&b, &["config", "user.name", "B"]);
-    // Explicit rather than relying on the refspec `init` configures, so the
-    // fetch is not racing the config that enables it.
+    // Explicit rather than relying on the refspec `init` configures, so the fetch does not
+    // race the config that enables it.
     git(
         &b,
         &[
@@ -408,17 +374,15 @@ fn an_imported_log_clones_with_the_repository_and_does_not_duplicate() {
         "the clone must hydrate exactly the imported entries — no losses, no \
          duplicates — from git alone"
     );
-    // A second read re-walks the ref; dedup on the convergence key is what
-    // keeps it from re-inserting what it already imported.
+    // A second read re-walks the ref; dedup on the convergence key prevents re-insertion.
     assert_eq!(
         local_titles(&b),
         vec!["the newer decision", "the older decision"],
         "reading again must not grow the store"
     );
 
-    // Status is the half of the supersede fact that a reader acts on, and it
-    // is the one the fold could silently drop on the receiving side: a copy
-    // that came back active would resurrect a decision the sender retired.
+    // Status is what a reader acts on and the fold could drop it: a copy that came back
+    // active would resurrect a decision the sender retired.
     let all = local_entries(&b, true);
     assert_eq!(
         entry_titled(&all, "the older decision")["status"],
@@ -436,9 +400,8 @@ fn an_imported_log_clones_with_the_repository_and_does_not_duplicate() {
         "the archived entry must not come back live in the default view"
     );
 
-    // The supersede edge in its portable spelling, on the receiving repo's own
-    // carrier: the predecessor's record must name the successor's entity_id,
-    // which is what lets any reader resolve the edge without a shared rowid.
+    // The predecessor's record must name the successor's entity_id, so any reader can
+    // resolve the edge without a shared rowid.
     let older = carrier_record_titled(&b, "the older decision");
     let newer = carrier_record_titled(&b, "the newer decision");
     assert_eq!(

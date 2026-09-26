@@ -1,7 +1,3 @@
-// End-to-end coverage for `inkentry import`: what lands in the store, what is
-// refused outright, and what the user is told about the part that is not done
-// yet.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, parse_jsonl, write_config};
 
@@ -12,9 +8,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// Build a well-formed dump from body lines, computing the footer the way the
-// format document specifies: per-record SHA-256 as lowercase hex, folded as
-// ASCII text in file order, header included, footer excluded.
+// Footer digest: SHA-256 over the concatenated lowercase-hex per-record SHA-256s,
+// header included, footer excluded.
 fn dump(body: &[&str], counts: &str) -> String {
     let header = r#"{"record":"header","format":"portable-dump","format_version":1,"generated_at":1786370293,"generator":"test/1.0.0"}"#;
     let mut lines = vec![header.to_string()];
@@ -41,40 +36,33 @@ fn entry(dump_ref: &str, title: &str, created_at: i64, extra: &str) -> String {
 
 struct Project {
     _tmp: TempDir,
-    // One home, and one registry inside it, for every command a test runs:
-    // the import writes to the registry and a later assertion has to be able
-    // to read what it wrote.
+    // One home and registry for every command in a test: import writes the registry
+    // and assertions read it back.
     home: TempDir,
     mem_path: std::path::PathBuf,
     config_path: std::path::PathBuf,
     root: std::path::PathBuf,
-    // The isolated state dir loopback auto-discovery reads. Isolated per
-    // fixture so step 3b's default port 4655 is never reached: a developer's
-    // own long-running server must not become the embedder under test.
+    // Isolated so a developer's own server on the default port 4655 is never the
+    // embedder under test.
     state_dir: std::path::PathBuf,
     discovery_port: std::cell::RefCell<String>,
 }
 
 fn project() -> Project {
     let p = project_that_may_find_an_embedder();
-    // Offline, so nothing auto-discovers a loopback embedder that happens to
-    // be running on the developer's machine: these tests are about what the
-    // import does when it cannot embed.
+    // Offline, so a running loopback embedder is never auto-discovered.
     let mut cfg = std::fs::read_to_string(&p.config_path).unwrap();
     cfg.push_str("mode = \"offline\"\n");
     std::fs::write(&p.config_path, cfg).unwrap();
     p
 }
 
-// The same fixture with no `mode` pinned, so the capability probe runs its
-// normal loopback auto-discovery and `set_embedder` can point it somewhere.
 fn project_that_may_find_an_embedder() -> Project {
     let tmp = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
-    // Port 1 is never listening, so nothing here can reach an embedder: the
-    // import must succeed regardless.
+    // Port 1 is never listening, so no embedder is reachable.
     let config_path = write_config(tmp.path(), &db_path, "http://127.0.0.1:1");
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -102,10 +90,8 @@ impl Project {
         cmd
     }
 
-    // Point loopback auto-discovery's fixed-port fallback (step 3b) at a mock
-    // embedder. Step 3a's `server.port` file is no longer usable from a test:
-    // it now honours a responder only when the pid recorded beside it is a live
-    // `inkentry-server` process reporting the recorded instance id.
+    // Points loopback discovery's fixed-port fallback at a mock embedder; `server.port`
+    // is honoured only for a live inkentry-server pid.
     fn set_embedder(&self, uri: &str) {
         let port = uri.rsplit(':').next().unwrap().trim_end_matches('/');
         *self.discovery_port.borrow_mut() = port.to_string();
@@ -162,8 +148,6 @@ impl Project {
     }
 }
 
-// ── what lands ───────────────────────────────────────────────────────────────
-
 #[test]
 fn entries_and_their_relationship_land_together() {
     let p = project();
@@ -218,9 +202,7 @@ fn an_entry_arriving_with_an_identity_keeps_it_verbatim() {
 #[test]
 fn an_entry_arriving_without_one_is_identified_from_its_own_creation_time() {
     let p = project();
-    // Listed newest-first by the dump, and imported in file order, so an
-    // identifier derived from import order would come out in the wrong
-    // sequence. It must follow created_at instead.
+    // Dump lists newest-first; identifiers must follow created_at, not import order.
     let d = dump(
         &[
             &entry("e3", "newest", 3_000_000_000, ""),
@@ -262,8 +244,6 @@ fn a_relationship_before_its_entities_imports_the_same_way() {
     assert_eq!(p.sql::<i64>("SELECT count(*) FROM memory_edges"), 1);
 }
 
-// ── supersede ────────────────────────────────────────────────────────────────
-
 #[test]
 fn the_supersede_column_is_set_from_the_relationship_in_the_right_direction() {
     let p = project();
@@ -277,8 +257,7 @@ fn the_supersede_column_is_set_from_the_relationship_in_the_right_direction() {
     );
     p.import(&d).assert().success();
 
-    // `from` is the successor, so it is the PREDECESSOR that carries the link
-    // forward. Getting this backwards is the sharpest trap in the format.
+    // `from` is the successor, so the PREDECESSOR carries the link; easy to get backwards.
     let pointing: String = p.sql("SELECT n.title FROM notes n WHERE n.superseded_by IS NOT NULL");
     assert_eq!(pointing, "predecessor");
     let target: String = p.sql(
@@ -291,9 +270,6 @@ fn the_supersede_column_is_set_from_the_relationship_in_the_right_direction() {
 #[test]
 fn the_same_supersede_fact_twice_yields_one_edge_and_one_column_value() {
     let p = project();
-    // A source holding supersession both as a column and as an edge emits it
-    // twice; the exporter already inverts the column form, so the two arrive
-    // as the identical triple.
     let rel = r#"{"record":"relationship","type":"supersedes","from":"e2","to":"e1"}"#;
     let d = dump(
         &[
@@ -304,9 +280,8 @@ fn the_same_supersede_fact_twice_yields_one_edge_and_one_column_value() {
         ],
         r#"{"entity":{"memory_entry":2},"relationship":{"supersedes":2}}"#,
     );
-    // The reported count, not just the stored one: `INSERT OR IGNORE` and an
-    // idempotent supersede column would both absorb a duplicate silently, so
-    // the row counts alone cannot tell whether the reader deduplicated.
+    // Check the reported count: `INSERT OR IGNORE` would absorb a duplicate silently,
+    // so row counts alone cannot show the reader deduplicated.
     let out = p
         .import(&d)
         .arg("--format")
@@ -344,8 +319,6 @@ fn an_entry_with_no_supersede_relationship_has_no_supersede_link() {
         0
     );
 }
-
-// ── refusal is total ─────────────────────────────────────────────────────────
 
 #[test]
 fn an_altered_dump_is_refused_and_nothing_is_written() {
@@ -402,8 +375,6 @@ fn an_unrecognised_record_kind_is_refused_not_skipped() {
     );
 }
 
-// ── what is deliberately not carried ─────────────────────────────────────────
-
 #[test]
 fn the_git_notes_import_cursor_is_not_carried_across() {
     let p = project();
@@ -413,17 +384,14 @@ fn the_git_notes_import_cursor_is_not_carried_across() {
     );
     p.import(&d).assert().success();
 
-    // The cursor is keyed on notes-ref OIDs a rename invalidates. Carrying it
-    // would suppress the first git-notes import after the crossing; starting
-    // empty costs one redundant walk.
+    // The cursor is keyed on notes-ref OIDs that a rename invalidates; carrying it
+    // would suppress the first git-notes import.
     assert_eq!(
         p.sql::<i64>("SELECT count(*) FROM notes_import_state"),
         0,
         "the import cursor must start empty, not arrive with the dump"
     );
 }
-
-// ── the part that is not done yet ────────────────────────────────────────────
 
 #[test]
 fn an_import_with_no_embedder_still_succeeds_and_says_what_is_left() {
@@ -432,9 +400,6 @@ fn an_import_with_no_embedder_still_succeeds_and_says_what_is_left() {
         &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
         r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
     );
-    // No embedder is reachable. Semantic search would otherwise degrade in the
-    // worst way: the default mode is hybrid, so full-text still answers and
-    // the store looks like it works.
     p.import(&d)
         .assert()
         .success()
@@ -445,8 +410,6 @@ fn an_import_with_no_embedder_still_succeeds_and_says_what_is_left() {
 #[test]
 fn status_reports_the_entries_still_waiting_to_be_embedded() {
     let p = project();
-    // `status` reads the project's own store, so the project has to exist
-    // before the import lands in it.
     p.bin()
         .current_dir(&p.root)
         .arg("--config")
@@ -495,14 +458,8 @@ fn status_reports_the_entries_still_waiting_to_be_embedded() {
     );
 }
 
-// ── entries that share one identity ──────────────────────────────────────────
-
-// Two harvested entries with the same kind/title/body from different commits
-// differ only in `source_ref` — and the store's convergence key is computed
-// over kind/title/body, so both land on one key and one row. That collapse is
-// forced by the schema (`entity_id` is UNIQUE), but the count must describe
-// what landed, because "2 entries imported" is the number a user checks on a
-// move they make once.
+// Same kind/title/body from different commits share one convergence key
+// (`entity_id` is UNIQUE) and collapse to one row; the count must describe what landed.
 #[test]
 fn two_entries_that_collapse_into_one_are_counted_as_one() {
     let p = project();
@@ -543,10 +500,7 @@ fn two_entries_that_collapse_into_one_are_counted_as_one() {
     );
 }
 
-// The survivor is the earliest-created entry in the group, not whichever the
-// writer happened to emit first: dump record order is explicitly unconstrained
-// by the format, so ordering the outcome by it would make the result depend on
-// the writer.
+// Survivor is the earliest-created, not the first emitted: dump record order is unconstrained.
 #[test]
 fn the_surviving_entry_is_the_earliest_created_one_whatever_the_dump_order() {
     let survivor_of = |body_order: [(&str, i64, &str); 2]| {
@@ -573,8 +527,6 @@ fn the_surviving_entry_is_the_earliest_created_one_whatever_the_dump_order() {
     );
 }
 
-// Both copies' tags survive the collapse: the merge is add-wins, exactly as it
-// is when a fresh entry collides with one already in the store.
 #[test]
 fn a_collapsed_entrys_tags_are_folded_into_the_survivor() {
     let p = project();
@@ -588,15 +540,11 @@ fn a_collapsed_entrys_tags_are_folded_into_the_survivor() {
         r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
     );
     p.import(&d).assert().success();
-    // Tags live in `note_tags`, not a `notes.tags` column (ADR-101); one
-    // survivor row, so every tag in the table is its own.
+    // One survivor row, so every row in `note_tags` belongs to it.
     let tags: String = p.sql("SELECT GROUP_CONCAT(tag) FROM note_tags");
     assert!(tags.contains("keep") && tags.contains("alsokeep"), "{tags}");
 }
 
-// Re-running the same import is how a user recovers from an interrupted one.
-// Nothing new lands, and the summary has to say so rather than repeat the
-// original count.
 #[test]
 fn re_importing_the_same_dump_reports_that_nothing_new_landed() {
     let p = project();
@@ -629,11 +577,8 @@ fn re_importing_the_same_dump_reports_that_nothing_new_landed() {
     );
 }
 
-// ── refusal reaches every store, not just memory.db ──────────────────────────
-
-// Projects go to the registry and recorded commands to index.db, both outside
-// the memory transaction. "No partial import" is a claim about the whole dump,
-// so a refusal has to leave all three stores as it found them.
+// Projects go to the registry and commands to index.db, outside the memory
+// transaction; a refusal must leave all three stores untouched.
 #[test]
 fn a_refused_dump_leaves_the_registry_untouched_too() {
     let p = project();
@@ -642,8 +587,7 @@ fn a_refused_dump_leaves_the_registry_untouched_too() {
         &[
             r#"{"record":"entity","type":"project","ref":"p1","root_path":"/tmp/imported-alpha"}"#,
             &entry("e1", "one", 1000, ""),
-            // A relates_to between a project and a memory entry cannot be
-            // stored; the dump is not internally consistent and is refused.
+            // relates_to between a project and a memory entry cannot be stored.
             r#"{"record":"relationship","type":"relates_to","from":"p1","to":"e1"}"#,
         ],
         r#"{"entity":{"memory_entry":1,"project":1},"relationship":{"relates_to":1}}"#,
@@ -660,8 +604,6 @@ fn a_refused_dump_leaves_the_registry_untouched_too() {
         "and no project may survive it either"
     );
 }
-
-// ── identity collisions the dump itself declares ─────────────────────────────
 
 #[test]
 fn two_entities_sharing_a_uuid_are_refused_with_a_message_about_the_dump() {
@@ -698,11 +640,8 @@ fn two_entities_sharing_a_remote_id_are_refused_with_a_message_about_the_dump() 
         .stderr(predicates::str::contains("Refusing to import any of it"));
 }
 
-// ── the refusal that sends a user here names a command that exists ───────────
-
-// Asserted against clap rather than against the literal in the message: a test
-// that pins the string is exactly what let `inkentry memory import` — which is
-// not a command — survive in the refusal an older store gets.
+// Probes clap rather than pinning the message string, which could name a
+// nonexistent command.
 #[test]
 fn the_command_the_legacy_refusal_names_is_one_this_binary_accepts() {
     let p = project();
@@ -731,9 +670,7 @@ fn the_command_the_legacy_refusal_names_is_one_this_binary_accepts() {
         .clone();
     let message = String::from_utf8_lossy(&out).into_owned();
 
-    // Every backticked `inkentry …` is checked, not just the first: the
-    // refusal also names `spelunk-export`, which belongs to the old product and
-    // is not a subcommand to probe.
+    // Check every backticked `inkentry ...` span; `spelunk-export` in the message is not a subcommand.
     let named: Vec<Vec<&str>> = message
         .split('`')
         .skip(1)
@@ -765,11 +702,6 @@ fn the_command_the_legacy_refusal_names_is_one_this_binary_accepts() {
     }
 }
 
-// ── an identity carried as an empty string ───────────────────────────────────
-
-// `""` passes every other check in the reader — it is not repeated, and the
-// type accepts it — and then fails at write time as an inserted note that
-// vanished, which names neither the problem nor the record.
 #[test]
 fn an_entry_carrying_a_blank_identity_is_refused_by_name() {
     for (field, value) in [
@@ -802,16 +734,10 @@ fn an_entry_carrying_a_blank_identity_is_refused_by_name() {
     }
 }
 
-// ── memory that does not live in a local SQLite store ────────────────────────
-
-// `cloud_first` with a `server_url` makes that server the store of record for
-// every memory command. An import writing to `memory.db` there would report
-// success and leave the whole dump in a file the project never opens.
 #[test]
 fn a_project_whose_memory_lives_on_a_server_refuses_the_import() {
     let p = project();
-    // `server_url` is honoured only from the project config or the
-    // environment, never from the global `--config` file.
+    // `server_url` is honoured only from the project config or env, not `--config`.
     let inkentry_dir = p.root.join(".inkentry");
     std::fs::create_dir_all(&inkentry_dir).unwrap();
     std::fs::write(
@@ -840,12 +766,6 @@ fn a_project_whose_memory_lives_on_a_server_refuses_the_import() {
     );
 }
 
-// ── the run that reaches an embedder ─────────────────────────────────────────
-
-// Every other test in this file runs with no embedder reachable, so the
-// finishing pass never gets far enough to print anything and a single-document
-// parse of stdout passes for the wrong reason. This is the path a real user
-// hits.
 fn mock_embedder() -> (tokio::runtime::Runtime, wiremock::MockServer) {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -854,8 +774,7 @@ fn mock_embedder() -> (tokio::runtime::Runtime, wiremock::MockServer) {
     let server = rt.block_on(async {
         let server = MockServer::start().await;
         plumbing_helpers::mount_health(&server).await;
-        // The server's wire format: raw little-endian f32, one 896-dim vector
-        // per requested chunk.
+        // Wire format: raw little-endian f32, one 896-dim vector per chunk.
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.+/index/embed$"))
             .respond_with(
@@ -901,9 +820,8 @@ fn a_json_import_that_reaches_an_embedder_writes_one_document_to_stdout() {
         .stdout
         .clone();
 
-    // The finishing pass has its own json summary. Emitting it here would put
-    // a second document on stdout, and `from_slice` is exactly what a consumer
-    // does.
+    // The finishing pass must not emit its own json summary: a second document
+    // would break `from_slice`.
     let summary: serde_json::Value = serde_json::from_slice(&out).unwrap_or_else(|e| {
         panic!(
             "stdout must be exactly one json document ({e}): {}",
@@ -912,8 +830,8 @@ fn a_json_import_that_reaches_an_embedder_writes_one_document_to_stdout() {
     });
     assert_eq!(summary["memory_entries"], 2);
 
-    // Without this the test proves nothing: an unreachable embedder returns
-    // before the finishing pass prints, which is how the gap survived.
+    // Without this the test proves nothing: an unreachable embedder returns before
+    // the finishing pass prints.
     assert_eq!(
         embedded_entries(&p.mem_path),
         2,

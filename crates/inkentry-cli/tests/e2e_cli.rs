@@ -15,44 +15,28 @@ fn test_help_output() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            // On Windows clap includes the `.exe` extension: "inkentry.exe [OPTIONS]…"
-            // Match only the stable prefix so the assertion holds on all platforms.
+            // On Windows clap prints `inkentry.exe [OPTIONS]`; match only the stable prefix.
             "Usage: inkentry",
         ))
         .stdout(predicate::str::contains("Commands:"));
 }
 
-/// Guard the help-text corrections from PR fix(cli): correct stale and inaccurate --help text.
-///
-/// Checks that:
-/// - `memory add --kind` lists `antipattern` (was missing before the fix)
-/// - `memory harvest --source` lists `failures` (was missing before the fix)
-/// - `memory harvest --help` does not contain an `ADR-` internal reference (removed)
-/// - `sync --help` says "shorthand" not "alias" (was inaccurate before the fix)
-///
-/// These assertions are deliberately non-brittle: they check for the *presence* of
-/// a corrected token or the *absence* of a stale one, not for exact prose alignment,
-/// so ordinary copy edits won't break them.
+// Presence of a corrected token or absence of a stale one, not exact prose, so copy edits do not break it.
 #[test]
 fn test_help_text_accuracy_guards() {
-    // `memory add --help` must list `antipattern` as a valid kind.
     inkentry_bin()
         .args(["memory", "add", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("antipattern"));
 
-    // `memory harvest --help` must list `failures` as a valid --source value.
     inkentry_bin()
         .args(["memory", "harvest", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("failures"))
-        // Must not embed internal ADR references in user-facing help.
         .stdout(predicate::str::contains("ADR-").not());
 
-    // Top-level `sync --help` must say "shorthand", not "alias"
-    // (sync dispatches directly, it is not a clap alias).
     inkentry_bin()
         .args(["sync", "--help"])
         .assert()
@@ -61,23 +45,15 @@ fn test_help_text_accuracy_guards() {
         .stdout(predicate::str::contains("alias").not());
 }
 
-// The harvest promotion surface: `harvest` is a first-class top-level command
-// listed in `--help` with full flag parity, while the old `memory harvest`
-// spelling is hidden from `memory --help` yet still fully documented and
-// runnable via its own `--help` (the still-working deprecated alias).
 #[test]
 fn harvest_is_a_top_level_command_with_a_hidden_working_alias() {
-    // `inkentry --help` lists the top-level `harvest` command. "backfill"
-    // appears only in that command's about, so it is a faithful proxy for the
-    // command being listed.
+    // "backfill" appears only in the harvest command's about, so it proves the command is listed.
     inkentry_bin()
         .arg("--help")
         .assert()
         .success()
         .stdout(predicate::str::contains("backfill"));
 
-    // `inkentry harvest --help` documents every source value and the store
-    // overrides, with no internal references leaking into user-facing help.
     inkentry_bin()
         .args(["harvest", "--help"])
         .assert()
@@ -90,15 +66,12 @@ fn harvest_is_a_top_level_command_with_a_hidden_working_alias() {
         .stdout(predicate::str::contains("--backend"))
         .stdout(predicate::str::contains("ADR-").not());
 
-    // The deprecated alias is hidden from `inkentry memory --help` …
     inkentry_bin()
         .args(["memory", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("harvest").not());
 
-    // … but still fully documented and runnable via `memory harvest --help`,
-    // still listing `failures` and still free of internal references.
     inkentry_bin()
         .args(["memory", "harvest", "--help"])
         .assert()
@@ -107,10 +80,6 @@ fn harvest_is_a_top_level_command_with_a_hidden_working_alias() {
         .stdout(predicate::str::contains("ADR-").not());
 }
 
-// The `explore` command was removed outright (ADR-079). It must no longer
-// appear in `inkentry --help`, and invoking it must fall through to clap's
-// unknown-subcommand error with a non-zero exit — no LLM plumbing, no server
-// probe, just the standard "unrecognized subcommand" failure.
 #[test]
 fn test_help_does_not_list_explore() {
     inkentry_bin()
@@ -129,11 +98,6 @@ fn test_explore_subcommand_is_gone() {
         .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
-// The `check` command was removed outright. Its three jobs are served
-// elsewhere: index freshness by running the idempotent `index` directly (or, for
-// a non-mutating gate, `plumbing ls-files --stale`), server health by `server
-// status`, and active intents/overlap by `context`. Invoking `check` must fall
-// through to clap's unknown-subcommand error, and it must not appear in help.
 #[test]
 fn test_help_does_not_list_check() {
     inkentry_bin()
@@ -153,9 +117,6 @@ fn test_check_subcommand_is_gone() {
         .stderr(predicate::str::contains("check"));
 }
 
-// The old porcelain machine surface (`check --format porcelain`, `--files`) is
-// gone with the command, not merely hidden: it too yields the unknown-subcommand
-// error rather than parsing.
 #[test]
 fn test_check_porcelain_flags_are_gone() {
     inkentry_bin()
@@ -210,8 +171,7 @@ fn test_status_empty_project() {
         .arg("status")
         .assert()
         .success()
-        // ADR-067: an un-init'd dir fails closed and reports no project rather
-        // than describing the global store.
+        // An un-init'd dir reports no project rather than describing the global store.
         .stdout(predicate::str::contains("No inkentry project here"));
 }
 
@@ -223,7 +183,6 @@ async fn test_index_and_status() {
     let mock_server = MockServer::start().await;
     let project_id = FIXTURE_PROJECT_ID;
 
-    // Health probe — Tier 1 capability set.
     Mock::given(method("GET"))
         .and(path("/v1/health"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -233,14 +192,12 @@ async fn test_index_and_status() {
         .mount(&mock_server)
         .await;
 
-    // Embedding endpoint — handles the index phase.
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/index/embed$"))
         .respond_with(IndexEmbedResponder)
         .mount(&mock_server)
         .await;
 
-    // Search endpoint (#322) — returns a fake query vector for CLI-side KNN.
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/search$"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -270,18 +227,13 @@ async fn test_index_and_status() {
         ),
     )
     .unwrap();
-    // `server_url`/`project_id` only take effect from project-level
-    // `.inkentry/config.toml` (or env), never from the `--config` global file.
+    // `server_url`/`project_id` are read only from the project `.inkentry/config.toml` or env, not `--config`.
     write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
-    // Under the default `local_first` mode a bare `server_url` never routes
-    // embedding/search to it (that's a loopback-only inference path); this
-    // test exists to exercise the mock server's `/index/embed` and `/search`
-    // endpoints, so it opts into `cloud_first` explicitly on every command,
-    // the same way a real user would to keep this behavior.
+    // A bare `server_url` under `local_first` never routes embedding/search to it, so opt into
+    // `cloud_first` on every command to reach the mock.
     const CLOUD_FIRST: (&str, &str) = ("INKENTRY_MODE", "cloud_first");
 
-    // 1. Index the project
     let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
@@ -292,7 +244,6 @@ async fn test_index_and_status() {
         .assert()
         .success();
 
-    // 2. Check status
     let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
@@ -306,7 +257,6 @@ async fn test_index_and_status() {
         .stdout(predicate::str::contains("Files:      1"))
         .stdout(predicate::str::contains("Chunks:     1"));
 
-    // 3. Search for the function (semantic search via server embedding)
     let mut cmd = inkentry_bin();
     cmd.current_dir(&project_dir)
         .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
@@ -320,20 +270,8 @@ async fn test_index_and_status() {
         .stdout(predicate::str::contains("fn main()"));
 }
 
-/// Regression test for #349 / qa-v080-test-plan.md §Fix 1 (decision #106).
-///
-/// `derive_project_id` produces slugs containing `/`:
-///   - `local/<blake3-hex>`        — repo with no git remote
-///   - `github.com/owner/repo`     — repo with a GitHub remote
-///
-/// Inserted raw into `/v1/projects/{project_id}/index/embed`, the slashes
-/// split the path into extra segments and axum's router 404s. PR #349 added
-/// `encode_project_id` to percent-encode the whole slug as a single path
-/// segment (`/` → `%2F`) before building the URL. This test locks that fix in
-/// for both shapes of project_id by asserting on the *raw* request path the
-/// mock server actually received — not just that the CLI exits 0 — so a
-/// future change that silently reverts to naive `format!` interpolation would
-/// fail here even though the mock still matches via `path_regex`.
+// Asserts on the raw request path: a naive `format!` of a slug like `local/<hex>` would still
+// match the mock via `path_regex`, so the segment count and `%2F` are checked directly.
 #[tokio::test]
 async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
     for project_id in [
@@ -344,7 +282,6 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
     ] {
         let mock_server = MockServer::start().await;
 
-        // Health probe — Tier 1 capability set.
         Mock::given(method("GET"))
             .and(path("/v1/health"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -354,10 +291,8 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
             .mount(&mock_server)
             .await;
 
-        // Embedding endpoint — match on ANY `/v1/projects/.../index/embed`
-        // shape (including one that's been split into extra segments by an
-        // unencoded slash) so a regression produces a clear path-shape
-        // assertion failure below rather than an opaque 404 from the CLI.
+        // Match any `/index/embed` shape, including an unencoded-slash split, so a regression fails
+        // the path-shape assertion below rather than as an opaque 404.
         Mock::given(method("POST"))
             .and(path_regex(r"^/v1/projects/.*/index/embed$"))
             .respond_with(IndexEmbedResponder)
@@ -385,20 +320,11 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         )
         .unwrap();
 
-        // `server_url` only loads from project-level `.inkentry/config.toml` (or
-        // env), never the personal global config: see `Config::load_with_store`.
+        // `server_url` loads only from the project config or env, never the global config.
         write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
-        // Index the project — must reach the embedding phase without a 404.
-        //
-        // This test's purpose is the project_id slash-encoding in the embed
-        // request path, not local-vs-remote embed routing, so it needs an
-        // explicit `server_url` to legitimately serve embedding. Under the
-        // default `local_first` mode that routing is now correctly refused
-        // (see the `get_inference_tier` routing fix), so force `cloud_first`
-        // here: `.inkentry/config.toml` doesn't recognize a `mode` key (see
-        // `write_project_server_config`), so this must go through the env
-        // var.
+        // Needs an explicit `server_url` to serve embedding; `local_first` refuses that routing and
+        // the project config has no `mode` key, so force `cloud_first` via env.
         inkentry_bin()
             .current_dir(&project_dir)
             .env("INKENTRY_MODE", "cloud_first")
@@ -409,9 +335,6 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
             .assert()
             .success();
 
-        // Inspect the *raw* request the mock server received: the project_id
-        // must occupy exactly one path segment, percent-encoded, with no bare
-        // `/` from the slug splitting it into extra segments.
         let received = mock_server.received_requests().await.unwrap();
         let embed_reqs: Vec<_> = received
             .iter()
@@ -427,10 +350,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
             let raw_path = req.url.path();
             let segments: Vec<&str> = raw_path.trim_start_matches('/').split('/').collect();
 
-            // `v1`, `projects`, `<encoded project_id>`, `index`, `embed` — five
-            // segments. If the slug's `/` were left raw, `local/<hex>` would
-            // add one extra segment (six total) and `github.com/owner/repo`
-            // would add two (seven total).
+            // `v1/projects/<id>/index/embed` is five segments; a raw `/` in the slug would add one or two.
             assert_eq!(
                 segments.len(),
                 5,
@@ -453,9 +373,6 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
                  as a single segment (expected `%2F` in {encoded_segment:?})"
             );
 
-            // Round-trip: percent-decoding the segment must recover the
-            // original slug exactly (this is what axum does server-side, and
-            // what `projects.slug` persistence relies on — decision #106).
             let decoded = percent_encoding::percent_decode_str(encoded_segment)
                 .decode_utf8()
                 .expect("encoded project_id segment must decode as utf-8");
@@ -466,8 +383,6 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         }
     }
 }
-
-// ── Capability tier E2E tests ────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_status_shows_offline_tier() {
@@ -507,20 +422,13 @@ async fn test_status_shows_offline_tier() {
         .stdout(predicate::str::contains("Capability tier:"))
         .stdout(predicate::str::contains("Offline"))
         .stdout(predicate::str::contains("search          text"))
-        // ADR-067 D3: the memory line reflects the resolved backend (sqlite by
-        // default), not a tier-derived git-notes label.
         .stdout(predicate::str::contains("sqlite (local)"))
-        // The kill-switch is why this run is offline, so the hint has to name
-        // it. Recommending `server_url` here recommends an action that cannot
-        // work: the variable short-circuits the probe before any URL is read.
+        // The kill-switch is why this run is offline, so the hint must name it rather than
+        // recommend `server_url`, which the switch short-circuits.
         .stdout(predicate::str::contains("INKENTRY_NO_SERVER"))
         .stdout(predicate::str::contains("server_url").not());
 }
 
-// The ordinary offline case: no kill-switch, no explicit mode, simply no
-// daemon running. Semantic search comes from the local daemon here, so the
-// hint must lead with `inkentry server start`; `server_url` is the team-server
-// feature and solves a different problem.
 #[tokio::test]
 async fn test_status_offline_without_the_kill_switch_points_at_the_local_daemon() {
     let temp = tempdir().unwrap();
@@ -541,9 +449,8 @@ async fn test_status_offline_without_the_kill_switch_points_at_the_local_daemon(
         .assert()
         .success();
 
-    // `inkentry_bin` isolates HOME and disables the fixed-port discovery
-    // fallback, so loopback auto-discovery finds nothing and the tier is
-    // offline without the kill-switch being set.
+    // `inkentry_bin` isolates HOME and disables the fixed-port fallback, so discovery finds
+    // nothing and the tier is offline without the kill-switch.
     let stdout = inkentry_bin()
         .current_dir(&project_dir)
         .arg("--config")
@@ -625,9 +532,7 @@ async fn test_status_shows_server_tier() {
         .stdout(predicate::str::contains("Capability tier:"))
         .stdout(predicate::str::contains("Server"))
         .stdout(predicate::str::contains("semantic"))
-        // ADR-067 D3: memory line reflects the resolved backend. With an explicit
-        // team server_url the mode is local_first, so the store is local sqlite
-        // (converged by `inkentry sync`), not a tier-inferred "server sync" label.
+        // An explicit team server_url is still `local_first`, so the store is local sqlite.
         .stdout(predicate::str::contains("sqlite (local)"));
 }
 
@@ -696,26 +601,16 @@ async fn test_status_json_includes_tier_fields() {
     assert!(body["capabilities"].is_object());
     assert!(body["capabilities"]["search_semantic"].as_bool().unwrap());
     assert!(body["capabilities"]["index_embed"].as_bool().unwrap());
-    // `plan` is a reserved protocol field (ADR-002) with no `inkentry plan`
-    // command yet: even though this mock server advertises "plan", it must
-    // never surface in user-facing status JSON.
+    // `plan` is a reserved protocol field: even when advertised it must not surface in status JSON.
     assert!(body["capabilities"]["plan"].is_null());
-    // `explore` was removed (ADR-079); the capability field is gone, so it never
-    // appears in status JSON.
     assert!(body["capabilities"]["explore"].is_null());
-    // With an explicit server_url and no `mode` override, the default is
-    // local_first even though the tier probe found the server
-    // reachable: tier and sync mode are independent axes.
+    // Tier and sync mode are independent: a reachable server with no `mode` override is still `local_first`.
     assert_eq!(body["mode"], "local_first", "got: {body}");
 }
 
-/// Validate the *stable* JSON schema introduced by issue #269.
-///
-/// Asserted top-level keys must be present in every future release; their
-/// types must remain stable (additive changes only).
+// Top-level keys must stay present with stable types (additive changes only).
 #[tokio::test]
 async fn test_status_json_stable_schema() {
-    // Offline mode — no server URL configured; embed locally.
     let mock_server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -750,7 +645,6 @@ async fn test_status_json_stable_schema() {
     )
     .unwrap();
 
-    // Index the project so there is data to query.
     inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1") // ensure offline even if a local server is running
         .arg("--config")
@@ -775,7 +669,6 @@ async fn test_status_json_stable_schema() {
     let body: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("output must be valid JSON");
 
-    // ── Stable schema assertions (issue #269) ────────────────────────────────
     assert!(
         body["version"].is_string(),
         "version must be a string, got: {}",
@@ -800,11 +693,9 @@ async fn test_status_json_stable_schema() {
         body["total_chunks"].as_i64().unwrap() >= 1,
         "expected at least 1 chunk"
     );
-    // languages must be an array; Rust file should appear.
     assert!(body["languages"].is_array(), "languages must be an array");
     let langs = body["languages"].as_array().unwrap();
     assert!(!langs.is_empty(), "languages must not be empty");
-    // Each language entry must have name (string) and file_count (integer).
     for lang in langs {
         assert!(lang["name"].is_string(), "language name must be string");
         assert!(
@@ -812,20 +703,17 @@ async fn test_status_json_stable_schema() {
             "language file_count must be integer"
         );
     }
-    // embedding_dim: must be an integer or null (768 when embeddings are stored,
-    // null when the local embedding server is not available in CI/test mode).
+    // embedding_dim is null when no embedder is available in test mode.
     assert!(
         body["embedding_dim"].as_u64().is_some() || body["embedding_dim"].is_null(),
         "embedding_dim must be a positive integer or null, got: {}",
         body["embedding_dim"]
     );
-    // has_semantic_search: false in offline mode (no server_url).
     assert_eq!(
         body["has_semantic_search"].as_bool(),
         Some(false),
         "has_semantic_search must be false in offline mode"
     );
-    // last_indexed_at: ISO-8601 string when files are indexed.
     assert!(
         body["last_indexed_at"].is_string(),
         "last_indexed_at must be a string after indexing"
@@ -835,20 +723,14 @@ async fn test_status_json_stable_schema() {
         ts.contains('T') && ts.ends_with('Z'),
         "last_indexed_at must be ISO-8601 UTC, got: {ts}"
     );
-    // memory_entries: integer (0 is valid when no entries exist yet).
     assert!(
         body["memory_entries"].as_i64().is_some(),
         "memory_entries must be an integer"
     );
-    // mode: additive field (no server_url configured -> resolve_mode() is
-    // offline, the same default as pre-existing behaviour).
     assert_eq!(body["mode"], "offline", "got: {body}");
 }
 
-/// Locks the top-level key set of `status --format json` so a future change
-/// cannot silently rename, drop, or add a field outside the documented
-/// "additive extensions only" contract (issue #269 doc comment above
-/// `status()`). `mode` (this story) is the newest addition.
+// Locks the exact key set so a field cannot be silently renamed, dropped or added.
 #[tokio::test]
 async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
     let temp = tempdir().unwrap();
@@ -913,7 +795,6 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "memory_backend",
         "tier",
         "mode",
-        // ADR-037 P2 item 35: additive-only pending-count/last-synced fields.
         "sync_pending",
         "sync_last_synced_at",
         "server_url",
@@ -921,20 +802,15 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
         "embedder_state",
         "embedding_count",
         "embedding_pending",
-        // ADR-104: chunks left to full-text search, outside embedding coverage.
         "text_only_count",
-        // Freshness signal (distinct from coverage) + composition-scheme
-        // provenance: additive-only status fields.
         "embedding_refresh_pending",
         "summary_scheme",
-        // Tells an index this build emptied from one nobody ever indexed; the
-        // two are otherwise the same zeros.
+        // Distinguishes an index this build emptied from one never indexed.
         "index_rebuilt_from",
         "embed_worker_alive",
         "embed_tokens",
         "drift_candidates",
         "usage_7d",
-        // ADR-098: the cheap state-metrics subset, null with no memory store.
         "metrics",
     ];
     want.sort_unstable();
@@ -946,11 +822,8 @@ async fn test_status_json_top_level_keys_are_exactly_the_documented_set() {
     );
 }
 
-// Investigation found no shared server/port/filesystem state this test could
-// race on (INKENTRY_NO_SERVER short-circuits before any is touched); flakes
-// under the parallel runner are attributed to generic child-process
-// spawn/stdio contention on a loaded runner, not CLI logic. Named group so
-// this doesn't serialize against unrelated tests.
+// No shared server/port/filesystem state to race on; flakes are child-process spawn
+// contention on loaded runners. A named serial group avoids serializing against unrelated tests.
 #[tokio::test]
 #[serial_test::serial(e2e_process_spawn_sensitive)]
 async fn test_index_prints_note_when_no_server_configured() {
@@ -981,11 +854,8 @@ async fn test_index_prints_note_when_no_server_configured() {
         .arg(&project_dir)
         .assert()
         .success()
-        // Structural summaries are offline and always run, so there is no
-        // "skipping summaries" notice any more. The notice names the reason the
-        // probe recorded: here the kill-switch, set above, so the
-        // actionable step is unsetting it. Offering `inkentry server start`
-        // under it would be advice the variable guarantees cannot take effect.
+        // The notice names the recorded probe reason: here the kill-switch, so the step is
+        // unsetting it; `inkentry server start` would be advice that cannot take effect.
         .stderr(predicate::str::contains("INKENTRY_NO_SERVER is set"))
         .stderr(predicate::str::contains("inkentry server start").not());
 }
@@ -1036,11 +906,6 @@ fn test_status_json_offline_tier() {
     assert!(body["capabilities"].is_null());
 }
 
-// ── Issue #284: search falls back to structural matching when no index / no embedder ───
-
-/// When there is no .inkentry/index.db, `inkentry search` in auto mode must
-// With no index, `inkentry search` requires one: it funnels to `inkentry init`
-// rather than a silent empty result or the old index-free ast-grep scan.
 #[test]
 fn test_search_no_index_funnels_to_init() {
     let temp = tempdir().unwrap();
@@ -1063,7 +928,6 @@ fn test_search_no_index_funnels_to_init() {
     )
     .unwrap();
 
-    // No `.inkentry/` project here: search must fail closed and point at `init`.
     let mut cmd = inkentry_bin();
     cmd.env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
@@ -1076,8 +940,6 @@ fn test_search_no_index_funnels_to_init() {
         .stderr(predicate::str::contains("inkentry init"));
 }
 
-// When the index exists but there is no embedder (no reachable server),
-// `inkentry search` degrades to full-text search and succeeds, not a hard error.
 #[test]
 fn test_search_index_but_no_embedder_falls_back_to_full_text() {
     let temp = tempdir().unwrap();
@@ -1091,7 +953,6 @@ fn test_search_index_but_no_embedder_falls_back_to_full_text() {
 
     let config_path = temp.path().join("config.toml");
     let db_path = temp.path().join("index.db");
-    // Point at an unreachable endpoint so there's no embedder.
     fs::write(
         &config_path,
         format!(
@@ -1101,9 +962,8 @@ fn test_search_index_but_no_embedder_falls_back_to_full_text() {
     )
     .unwrap();
 
-    // Build the index (offline — no embedder needed for parse phase).
-    // INKENTRY_NO_SERVER=1 keeps the embed phase from auto-discovering a
-    // loopback inkentry-server on 127.0.0.1:4655.
+    // INKENTRY_NO_SERVER=1 keeps the embed phase from auto-discovering a loopback server
+    // on 127.0.0.1:4655.
     inkentry_bin()
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -1113,9 +973,8 @@ fn test_search_index_but_no_embedder_falls_back_to_full_text() {
         .assert()
         .success();
 
-    // Now search with no reachable embedder: the full-text degrade kicks in.
-    // INKENTRY_NO_SERVER pins "no embedder" so the result does not depend on
-    // whatever may be listening on the default loopback port.
+    // INKENTRY_NO_SERVER pins "no embedder" regardless of what listens on the default
+    // loopback port.
     let mut cmd = inkentry_bin();
     let assert = cmd
         .env("INKENTRY_NO_SERVER", "1")
@@ -1127,17 +986,12 @@ fn test_search_index_but_no_embedder_falls_back_to_full_text() {
         .assert()
         .success();
 
-    // Must not print the old opaque error message.
     assert.stdout(predicate::str::contains("Make sure the index has embeddings").not());
 }
 
-// ── inkentry server error-path tests ──────────────────────────────────────────
-
-/// `inkentry server status` prints "not started" when no pid file exists.
 #[test]
 fn test_server_status_not_running() {
     let tmp = tempdir().unwrap();
-    // Point HOME to an empty tmpdir so no real state files interfere.
     inkentry_bin_in(tmp.path())
         .arg("server")
         .arg("status")
@@ -1146,7 +1000,6 @@ fn test_server_status_not_running() {
         .stdout(predicate::str::contains("not started"));
 }
 
-/// `inkentry server logs` exits with an error when no log file exists.
 #[test]
 fn test_server_logs_missing_file() {
     let tmp = tempdir().unwrap();
@@ -1159,9 +1012,6 @@ fn test_server_logs_missing_file() {
         .stderr(predicate::str::contains("No log file"));
 }
 
-/// `inkentry server stop` exits with an error when there is no pid file, and
-/// says how to find a server that is running without one rather than implying
-/// none is.
 #[test]
 fn test_server_stop_not_running() {
     let tmp = tempdir().unwrap();
@@ -1175,18 +1025,11 @@ fn test_server_stop_not_running() {
         .stderr(predicate::str::contains("ps ax | grep inkentry-server"));
 }
 
-/// `inkentry server start --bin <missing-path>` exits with a clear error.
-///
-/// We use `--bin` with a nonexistent path rather than `PATH=""` because in CI
-/// both `inkentry` and `inkentry-server` are built to the same `target/debug/`
-/// directory, so the sibling-binary lookup would find the real binary even with
-/// an empty PATH.
+// `--bin` with a nonexistent path rather than `PATH=""`: in CI both binaries share
+// `target/debug/`, so the sibling lookup would find the real one.
 #[test]
 fn test_server_start_binary_not_found() {
     let tmp = tempdir().unwrap();
-    // Use a path that does not exist on any platform. On Windows, an absolute
-    // Unix-style path like /tmp/... is interpreted as a relative path and will
-    // also not exist, so any clearly non-existent path works here.
     let nonexistent = tmp.path().join("inkentry-server-does-not-exist-xyzzy");
     inkentry_bin()
         .env("HOME", tmp.path())
@@ -1199,12 +1042,9 @@ fn test_server_start_binary_not_found() {
         .stderr(predicate::str::contains("inkentry-server binary not found"));
 }
 
-/// `inkentry init` in non-TTY mode (piped stdin) prints the server skip notice
-/// when no server is reachable. This covers the CI/hook path from issue #318.
 #[test]
 fn test_init_non_tty_prints_skip_notice() {
     let tmp = tempdir().unwrap();
-    // Initialise a git repo so inkentry init finds a project root.
     std::process::Command::new("git")
         .args(["init", "-q"])
         .current_dir(tmp.path())
@@ -1224,8 +1064,7 @@ fn test_init_non_tty_prints_skip_notice() {
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "").unwrap();
 
-    // stdin is piped (not a TTY) when launched via assert_cmd, so
-    // is_terminal() returns false — the non-interactive branch runs.
+    // assert_cmd pipes stdin, so `is_terminal()` is false and the non-interactive branch runs.
     inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
@@ -1240,8 +1079,6 @@ fn test_init_non_tty_prints_skip_notice() {
         ));
 }
 
-/// Init a git repo at `dir` with a committer identity so `inkentry init` finds a
-/// project root. (spelunk-cloud/spelunk#141 init tests only need the repo, not any commits.)
 fn git_init_repo(dir: &std::path::Path) {
     for args in [
         &["init", "-q"][..],
@@ -1256,8 +1093,6 @@ fn git_init_repo(dir: &std::path::Path) {
     }
 }
 
-/// `inkentry init` must NOT create an uninvited `CLAUDE.md` in the user's repo,
-/// and must not claim to have written one.
 #[test]
 fn test_init_does_not_write_claude_md() {
     let tmp = tempdir().unwrap();
@@ -1275,7 +1110,6 @@ fn test_init_does_not_write_claude_md() {
         .args(["init", "--no-index"])
         .assert()
         .success()
-        // The uninvited-write log line must be gone.
         .stdout(predicate::str::contains("CLAUDE.md written").not());
 
     assert!(
@@ -1284,8 +1118,6 @@ fn test_init_does_not_write_claude_md() {
     );
 }
 
-/// A pre-existing `CLAUDE.md` must be left byte-for-byte untouched — init must
-/// never overwrite a user's own file.
 #[test]
 fn test_init_leaves_existing_claude_md_untouched() {
     let tmp = tempdir().unwrap();
@@ -1315,57 +1147,21 @@ fn test_init_leaves_existing_claude_md_untouched() {
     );
 }
 
-// ── memory commands against an auto-discovered (loopback) server ─────────────
-//
-// ADR-004 (unified memory storage): `.inkentry/memory.db` is the single
-// canonical store for every CLI memory read and write. An auto-discovered
-// loopback server is an INFERENCE backend only (embeddings + LLM); it is never
-// a memory store. So `memory add`, `memory search`, and `memory timeline` all
-// resolve to the same local `memory.db`, and the server is consulted only to
-// embed the query — never to fetch memory rows.
-//
-// Historical context: IMP-3 / spelunk-cloud/spelunk#316 / PR spelunk-cloud/spelunk#349 first taught these commands
-// to honour an auto-discovered server (so they no longer errored "requires
-// inkentry-server"), but routed BOTH inference and memory storage to the server
-// via a synthesised `server_url`. That produced the split-brain Johan flagged
-// on PR #386: a note added (to local `memory.db`) was invisible to
-// `memory search` (which read the server's `server.db`). ADR-004 fixes this by
-// routing inference via `inference_url` while leaving `server_url` unset for
-// auto-discovered servers, so `open_memory_backend` keeps memory local.
-//
-// These tests reproduce the auto-discovery path end-to-end: NO `server_url` in
-// config, `INKENTRY_NO_SERVER` unset, and a mock server reachable on loopback,
-// found through the fixed-port fallback pointed at it (`capability/probe.rs`
-// step 3b). We redirect `HOME` and the state dir to isolated temp dirs so the
-// probe finds our `wiremock` instance deterministically, without depending on
-// the real default port (which may be occupied, or unoccupied, on the test
-// host) and without touching the developer's real `~/.local/state`.
-//
-// Coverage note: `memory harvest` routes through the same `effective_config`
-// bridging code, but harvesting requires mocking `git log` plus a streaming
-// `/llm/complete` SSE extraction round-trip — disproportionately heavy relative
-// to what's under test (the auto-discovery → inference-vs-storage split). Left
-// uncovered here; flagged honestly rather than thrashing on heavyweight SSE
-// mocks.
+// Auto-discovery, end to end: no `server_url`, `INKENTRY_NO_SERVER` unset, a mock on
+// loopback reached through the fixed-port fallback. The server is inference-only, so
+// add/search/timeline all use the local `memory.db` and the server only embeds the query.
+// HOME and the state dir are redirected so discovery never touches the developer's real state.
+// `memory harvest` is uncovered: it needs mocked `git log` plus a streaming `/llm/complete` round-trip.
 
-// Create the isolated state dir these tests hand child processes as
-// `INKENTRY_STATE_DIR`. `dirs::home_dir()` 6.x on Windows calls the Win32
-// `SHGetKnownFolderPath` API (a Registry lookup) instead of reading
-// `USERPROFILE`, so setting `HOME`/`USERPROFILE` in the child env is not
-// enough; `INKENTRY_STATE_DIR` bypasses that entirely.
-//
-// The dir is left empty: discovery reaches the mock through the fixed-port
-// fallback's test override instead. Step 3a's `server.port` file is not usable
-// from a test, since it now honours a responder only when the pid recorded
-// beside it is a live `inkentry-server` process reporting the recorded
-// instance id.
+// `INKENTRY_STATE_DIR` is needed because `dirs::home_dir()` on Windows ignores
+// HOME/USERPROFILE. The dir stays empty: discovery reaches the mock via the fixed-port
+// fallback's test override, since `server.port` is honoured only for a live inkentry-server pid.
 fn isolated_state_dir(home: &std::path::Path) -> std::path::PathBuf {
     let state_dir = home.join(".local").join("state").join("inkentry");
     fs::create_dir_all(&state_dir).expect("create state dir");
     state_dir
 }
 
-/// Extract the TCP port `wiremock` bound to from its `uri()` (`http://127.0.0.1:<port>`).
 fn port_from_uri(uri: &str) -> u16 {
     uri.rsplit(':')
         .next()
@@ -1375,17 +1171,8 @@ fn port_from_uri(uri: &str) -> u16 {
         .expect("uri port is numeric")
 }
 
-/// Mount the endpoints an INFERENCE-ONLY auto-discovered server needs:
-/// - `GET /v1/health` — capability probe (reports `memory` + `search.semantic`
-///   so `effective_config` and the inference client build successfully)
-/// - `POST /v1/projects/{id}/index/embed` — query/note embedding (`embed_query`
-///   / `try_embed_via_server`); returns a constant 768-dim vector so KNN over
-///   the LOCAL store is deterministic.
-///
-/// Deliberately does NOT mount `POST /v1/projects/{id}/memory/search`. Under
-/// ADR-004 an auto-discovered server is never a memory backend, so the CLI must
-/// not call it for memory rows. The `expect(0)` guard below turns any such call
-/// into a test failure, locking in the inference-vs-storage split.
+// Mounts only the inference endpoints; the auto-discovered server is never a memory
+// backend. The embed mock returns a constant vector so KNN over the local store is deterministic.
 async fn mount_auto_discovery_inference_endpoints(server: &wiremock::MockServer) {
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, ResponseTemplate};
@@ -1406,9 +1193,8 @@ async fn mount_auto_discovery_inference_endpoints(server: &wiremock::MockServer)
         .mount(server)
         .await;
 
-    // Guard: the server's memory endpoint must NEVER be hit by an auto-discovered
-    // server. If it is, the split-brain has regressed. `expect(0)` fails the test
-    // on any matching request when the `MockServer` is dropped.
+    // Guard: the server's memory endpoint must never be hit; `expect(0)` fails the test on
+    // any matching request when the `MockServer` drops.
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/memory/search$"))
         .respond_with(ResponseTemplate::new(500))
@@ -1417,16 +1203,6 @@ async fn mount_auto_discovery_inference_endpoints(server: &wiremock::MockServer)
         .await;
 }
 
-/// ADR-004 round-trip: with a loopback server auto-discovered (no `server_url`
-/// in config), a note written by `memory add` is found by `memory search` — and
-/// the note's content comes from the LOCAL `memory.db`, not the server. The
-/// server is consulted ONLY to embed (it has no `/memory/search` mount, and the
-/// `expect(0)` guard fails the test if memory rows are ever requested from it).
-///
-/// This is the exact split-brain the ADR removes: before ADR-004 the
-/// auto-discovered server synthesised a `server_url`, so `memory add` wrote
-/// `memory.db` while `memory search` read the server's `server.db` and could not
-/// see the note.
 #[tokio::test]
 async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discovered_server() {
     let mock_server = MockServer::start().await;
@@ -1442,9 +1218,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     fs::create_dir(&project_dir).unwrap();
     fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
 
-    // No `server_url` (and no `project_id`) in config — the defining trait of
-    // the auto-discovered path. `api_base_url` is unrelated to capability tier
-    // probing; it only configures the (offline) embedding/LLM endpoints.
+    // No `server_url` or `project_id`: the defining trait of the auto-discovered path.
     let config_path = temp.path().join("config.toml");
     let db_path = temp.path().join("index.db");
     fs::write(
@@ -1456,8 +1230,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
     )
     .unwrap();
 
-    // Build a local index so memory commands have a DB to resolve `mem_path`
-    // from (offline embedding — INKENTRY_NO_SERVER keeps `index` from probing).
+    // A local index gives memory commands a DB to resolve `mem_path` from.
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_NO_SERVER", "1")
@@ -1468,9 +1241,6 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
         .assert()
         .success();
 
-    // Add a note via the auto-discovery path. No INKENTRY_NO_SERVER, so the
-    // loopback server embeds the note (via /index/embed) while the note text +
-    // metadata are written to the LOCAL memory.db.
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
@@ -1493,10 +1263,8 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
         .success()
         .stdout(predicate::str::contains("Stored [decision]"));
 
-    // Search for it via the same auto-discovery path. The result must be the
-    // locally-stored note — proving add and search share one store. The server
-    // only embedded the query; the `/memory/search` guard ensures no memory rows
-    // were fetched from the server.
+    // The result must be the locally stored note; the `/memory/search` guard proves no
+    // memory rows came from the server.
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
@@ -1513,8 +1281,7 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
         ))
         .stdout(predicate::str::contains("[decision]"));
 
-    // Cross-check: `memory list` (which has always read memory.db) sees the same
-    // note. Before ADR-004 `search` and `list` could disagree; now they cannot.
+    // Cross-check: `memory list` (reads memory.db) sees the same note.
     inkentry_bin()
         .env("HOME", &home)
         .env("INKENTRY_STATE_DIR", &state_dir)
@@ -1531,15 +1298,6 @@ async fn test_memory_add_then_search_round_trip_on_local_store_with_auto_discove
         ));
 }
 
-/// Founder's own manual repro (2026-07-23): `local_first`
-/// (no explicit `mode`, reached because `server_url` is set), an explicit
-/// `server_url` pointed at an address nothing mounts anything on, and a
-/// loopback server auto-discovered via the port file. `memory add` must embed
-/// via the loopback server (never the unroutable `server_url`), and `memory
-/// search` must return the local semantic result rather than erroring: before
-/// the fix, `resolve_inference_url()` returned the explicit `server_url`
-/// unconditionally, and the query embed 404'd against it (`{server_url}` has
-/// no `/index/embed` route in the cloud case this reproduces).
 #[tokio::test]
 async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server_url() {
     let mock_server = MockServer::start().await;
@@ -1555,10 +1313,8 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
     fs::create_dir(&project_dir).unwrap();
     fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
 
-    // `server_url` set, no `mode` key: resolves to `local_first`. Deliberately
-    // an address nothing mounts anything on (mirrors the founder's
-    // `https://api.inkentry.com`): an accidental fallback to it for
-    // inference would surface as a connection error, never a silent pass.
+    // `server_url` is set (so `local_first`) but points at an address nothing mounts anything on:
+    // a fallback to it for inference would surface as a connection error, never a silent pass.
     let config_path = temp.path().join("config.toml");
     let db_path = temp.path().join("index.db");
     fs::write(
@@ -1619,10 +1375,6 @@ async fn test_memory_add_then_search_round_trip_local_first_with_explicit_server
         .stdout(predicate::str::contains("[decision]"));
 }
 
-/// `memory timeline` against an auto-discovered loopback server returns notes
-/// from the LOCAL `memory.db` (the server only embeds the query). Companion to
-/// the add→search round-trip above; guards that `timeline` does not regress to
-/// reading the server's store.
 #[tokio::test]
 async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
     let mock_server = MockServer::start().await;
@@ -1699,17 +1451,7 @@ async fn test_memory_timeline_reads_local_store_with_auto_discovered_server() {
         ));
 }
 
-// ── init imports git-notes memory into memory.db ─────────────────────────────
-//
-// During `inkentry init`, after the project memory.db is created, every entry on
-// the enclosing repo's `refs/notes/inkentry` that is not already present is
-// imported into memory.db (no embeddings). The summary line
-// `Memory:  imported N entries from git notes` prints only when N > 0, and a
-// re-run imports nothing (dedup by the same content key as `memory reconcile`).
-
-/// Init a git repo at `dir` with a committer identity AND one commit, so
-/// `refs/notes/inkentry` can be attached - git notes hang off a commit object,
-/// so the no-commit `git_init_repo` helper above is not enough here.
+// Git notes hang off a commit, so unlike `git_init_repo` this makes one.
 fn git_init_repo_with_commit(dir: &std::path::Path) {
     plumbing_helpers::isolate_git_config();
     for args in [
@@ -1736,9 +1478,7 @@ fn git_init_repo_with_commit(dir: &std::path::Path) {
         .expect("git commit");
 }
 
-/// One JSON-Lines `NoteRecord` as the git-notes backend serializes it. Built as
-/// a `serde_json::Value` rather than the (crate-private) `NoteRecord` type so
-/// this test needs no library dependency on inkentry-cli.
+// Built as a `serde_json::Value`: the `NoteRecord` type is crate-private.
 fn git_note_record_line(id: i64, kind: &str, title: &str, body: &str) -> String {
     serde_json::json!({
         "schema_version": 1,
@@ -1755,7 +1495,6 @@ fn git_note_record_line(id: i64, kind: &str, title: &str, body: &str) -> String 
     .to_string()
 }
 
-/// Attach `jsonl` (one or more record lines) to HEAD's `refs/notes/inkentry`.
 fn seed_git_notes(dir: &std::path::Path, jsonl: &str) {
     let notes_file = tempfile::NamedTempFile::new().expect("notes tempfile");
     fs::write(notes_file.path(), jsonl).unwrap();
@@ -1769,10 +1508,6 @@ fn seed_git_notes(dir: &std::path::Path, jsonl: &str) {
     assert!(status.success(), "seeding git notes must succeed");
 }
 
-/// End-to-end: `inkentry init` over a real repo that already has git-notes
-/// memory imports those entries, `memory list` surfaces them, the summary line
-/// reports the right count, and a second init is a no-op (no re-import, no
-/// duplicate rows). Covers the import-on-init and idempotency guarantees.
 #[test]
 fn test_init_imports_git_notes_memory_and_is_idempotent() {
     let tmp = tempdir().unwrap();
@@ -1795,8 +1530,6 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "").unwrap();
 
-    // First init: both pre-existing git-notes entries import, and the summary
-    // line reports the exact count.
     inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
@@ -1810,7 +1543,6 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
             "imported 2 entries from git notes",
         ));
 
-    // `memory list` (default sqlite backend, reads memory.db) surfaces both.
     inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
@@ -1823,8 +1555,6 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
         .stdout(predicate::str::contains("Adopt sqlite for memory"))
         .stdout(predicate::str::contains("Notes survive a clone"));
 
-    // Second init: everything dedups, so nothing imports and the Memory summary
-    // line is suppressed (printed only when N > 0).
     inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
@@ -1836,7 +1566,6 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
         .success()
         .stdout(predicate::str::contains("from git notes").not());
 
-    // The key idempotency guarantee: row count is stable — no duplicate rows.
     let output = inkentry_bin()
         .current_dir(tmp.path())
         .env("HOME", tmp.path())
@@ -1856,13 +1585,9 @@ fn test_init_imports_git_notes_memory_and_is_idempotent() {
     );
 }
 
-/// `inkentry init` outside any git repo skips the git-notes import entirely:
-/// there is no enclosing repo to read notes from, so no import runs, the Memory
-/// summary line is absent, and init still succeeds.
 #[test]
 fn test_init_without_git_repo_skips_notes_import() {
     let tmp = tempdir().unwrap();
-    // Deliberately NOT a git repo — no `.git`, no notes ref.
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "").unwrap();
 
@@ -1878,13 +1603,8 @@ fn test_init_without_git_repo_skips_notes_import() {
         .stdout(predicate::str::contains("from git notes").not());
 }
 
-// ── ADR-070 D3/D4: warmup contract + status honesty (adversarial pass) ────────
-
-/// Build an offline-indexed project (chunks stored, zero embeddings, no
-/// recorded worker) under `home`, returning `(project_dir, config_path)`.
-/// The index DB lands at `<project_dir>/.inkentry/index.db` - the same path
-/// `status`/`search` resolve via the project walk, and the one the embed
-/// worker's state files are keyed on.
+// Chunks stored, zero embeddings, no recorded worker. The index lands at
+// `<project_dir>/.inkentry/index.db`, the path the worker's state files are keyed on.
 fn offline_indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let project_dir = home.join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -1910,11 +1630,8 @@ fn offline_indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::
     (project_dir, config_path)
 }
 
-/// Path of the embed worker's pid state file for `db_path` under a given
-/// state directory, replicating the worker's own keying (blake3 of the
-/// canonicalised index path, first 16 hex chars). Deliberately duplicated
-/// here: if the writer's keying ever drifts from this, the reader/writer
-/// pair drifts too, and this test fails loudly.
+// Replicates the worker's keying (blake3 of the canonicalised index path, first 16 hex
+// chars), deliberately duplicated so writer/reader drift fails this test loudly.
 #[cfg(unix)]
 fn embed_worker_pid_file_in(
     state_dir: &std::path::Path,
@@ -1927,17 +1644,11 @@ fn embed_worker_pid_file_in(
     state_dir.join(format!("embed-worker-{}.pid", &key[..16]))
 }
 
-/// Same as [`embed_worker_pid_file_in`], for the default (no
-/// `INKENTRY_STATE_DIR`) state dir derived from `home`.
 #[cfg(unix)]
 fn embed_worker_pid_file(home: &std::path::Path, db_path: &std::path::Path) -> std::path::PathBuf {
     embed_worker_pid_file_in(&home.join(".local").join("state").join("inkentry"), db_path)
 }
 
-/// ADR-070 D4: the `status --format json` embed-state extensions are additive
-/// and truthful. On an offline-built index (pending work, no worker) the new
-/// fields must report pending counts, a non-alive worker, and token sums with
-/// their own denominators - while the stable #269 schema keys survive intact.
 #[test]
 fn test_status_json_embed_state_extensions_when_pending() {
     let home = tempfile::TempDir::new().unwrap();
@@ -1954,7 +1665,6 @@ fn test_status_json_embed_state_extensions_when_pending() {
     assert!(output.status.success());
     let body: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
 
-    // Stable schema keys must survive the extension (additive-only contract).
     for key in [
         "version",
         "db_path",
@@ -2001,9 +1711,6 @@ fn test_status_json_embed_state_extensions_when_pending() {
     );
 }
 
-/// ADR-070 D4: with pending work and no recorded worker, text `status` says
-/// `Embedding incomplete` plus the resume command - never `in progress`, and
-/// the deleted hedging parenthetical must not resurface.
 #[test]
 fn test_status_reports_incomplete_when_no_worker_is_recorded() {
     let home = tempfile::TempDir::new().unwrap();
@@ -2023,9 +1730,6 @@ fn test_status_reports_incomplete_when_no_worker_is_recorded() {
         .stdout(predicate::str::contains("may be running").not());
 }
 
-/// ADR-070 D4: a worker that crashed without cleanup leaves a pid file behind;
-/// the next `status` must classify the dead pid as not-running (never
-/// `in progress`) and remove the stale record so it cannot be re-read later.
 #[cfg(unix)]
 #[test]
 fn test_status_cleans_stale_dead_worker_pid_and_reports_incomplete() {
@@ -2061,10 +1765,6 @@ fn test_status_cleans_stale_dead_worker_pid_and_reports_incomplete() {
     );
 }
 
-/// ADR-070 D4: a pid recycled by an unrelated live process (here: this test
-/// process itself - alive, but its command line is not a inkentry index run)
-/// must never be reported as a live embed worker, and the foreign record is
-/// cleaned up like a dead one.
 #[cfg(unix)]
 #[test]
 fn test_status_foreign_pid_reuse_never_reads_as_live_worker() {
@@ -2097,15 +1797,8 @@ fn test_status_foreign_pid_reuse_never_reads_as_live_worker() {
     );
 }
 
-/// Regression: writer and reader of runtime state must agree on
-/// `INKENTRY_STATE_DIR`. `HOME` and `INKENTRY_STATE_DIR` are pointed at two
-/// *different* directories; the embed worker's pid file is written only into
-/// the override directory (as the writer does once it honours the override),
-/// never under `HOME`. `status` - the reader - must resolve the same
-/// override to find and clean it up. Before the fix, `status`'s read path
-/// (`cli/cmd/embed_worker.rs` -> `cli/cmd/server.rs::inkentry_state_dir()`)
-/// ignored `INKENTRY_STATE_DIR` and only ever looked under `HOME`, so a file
-/// written to the override would never be found.
+// HOME and INKENTRY_STATE_DIR point at different dirs and the pid file exists only under
+// the override, so status must resolve the override to find it.
 #[cfg(unix)]
 #[test]
 fn test_status_honors_state_dir_override_for_embed_worker_pid() {
@@ -2115,18 +1808,15 @@ fn test_status_honors_state_dir_override_for_embed_worker_pid() {
     let db_path = project_dir.join(".inkentry").join("index.db");
     assert!(db_path.exists(), "offline index must exist");
 
-    // A pid that was real and is now certainly dead.
     let mut child = std::process::Command::new("true").spawn().unwrap();
     let dead_pid = child.id();
     child.wait().unwrap();
 
-    // Write directly into the override dir - NOT `<home>/.local/state/inkentry`.
     let pid_file = embed_worker_pid_file_in(state_override.path(), &db_path);
     fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
     fs::write(&pid_file, format!("{dead_pid}\n")).unwrap();
     fs::write(pid_file.with_extension("baseline"), "0 1000\n").unwrap();
 
-    // Sanity: nothing was written under the HOME-derived default location.
     let home_pid_file = embed_worker_pid_file(home.path(), &db_path);
     assert!(
         !home_pid_file.exists(),
@@ -2151,10 +1841,8 @@ fn test_status_honors_state_dir_override_for_embed_worker_pid() {
     );
 }
 
-// Re-stamp an index with a schema version this build does not accept, so the
-// next open discards and recreates it. The rebuild branches on the stamp alone,
-// so a re-stamped index takes exactly the path a genuinely older one does,
-// without pinning the test to a shape no released binary writes any more.
+// Re-stamps the index with an unaccepted schema version so the next open rebuilds it; the
+// rebuild branches on the stamp alone, so this matches a genuinely older index.
 fn downstamp_index(project_dir: &std::path::Path, to: i32) -> std::path::PathBuf {
     let db_path = project_dir.join(".inkentry").join("index.db");
     let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -2164,18 +1852,14 @@ fn downstamp_index(project_dir: &std::path::Path, to: i32) -> std::path::PathBuf
     db_path
 }
 
-// A rebuilt index and a never-indexed project print the same zeros, and until
-// this landed nothing at the CLI's default log level told them apart: `search`
-// said `No results found.` and exited 0, so a successful upgrade read as an
-// empty repository. The rebuild has to state itself on the run that performs
-// it, and the emptiness it leaves has to stay attributable on every run after.
+// A rebuilt index and a never-indexed project print the same zeros, so the rebuild must
+// state itself on the run that performs it and stay attributable afterwards.
 #[test]
 fn a_rebuilt_index_states_itself_and_stays_attributable_until_reindexed() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
     downstamp_index(&project_dir, 15);
 
-    // The run that rebuilds says so, without RUST_LOG.
     inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
@@ -2191,8 +1875,7 @@ fn a_rebuilt_index_states_itself_and_stays_attributable_until_reindexed() {
                 .and(predicate::str::contains("inkentry index .")),
         );
 
-    // A later run rebuilds nothing, so it must not claim to, but the absence is
-    // still explained: this is the run a user actually meets after upgrading.
+    // A later run rebuilds nothing so must not claim to, but the emptiness is still explained.
     inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
@@ -2204,7 +1887,6 @@ fn a_rebuilt_index_states_itself_and_stays_attributable_until_reindexed() {
         .stderr(predicate::str::contains("rebuilt empty").not())
         .stdout(predicate::str::contains("rebuilt from schema version 15"));
 
-    // `status` computes the same fact and now states it.
     inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
@@ -2216,8 +1898,7 @@ fn a_rebuilt_index_states_itself_and_stays_attributable_until_reindexed() {
         .stdout(predicate::str::contains("emptied by a rebuild"))
         .stdout(predicate::str::contains("inkentry index ."));
 
-    // The rebuild is a statement, not a gate: the tool still works, and the
-    // reindex it asked for clears the fact rather than leaving it stuck on.
+    // The rebuild is not a gate: the requested reindex clears the fact.
     inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .arg("--config")
@@ -2248,8 +1929,6 @@ fn a_rebuilt_index_states_itself_and_stays_attributable_until_reindexed() {
         .stdout(predicate::str::contains("lib.rs"));
 }
 
-// `status --format json` carries the same fact for the tooling that reads it
-// there, and a never-rebuilt index reports null rather than an absent key.
 #[test]
 fn status_json_reports_the_rebuild_that_emptied_the_index() {
     let home = tempfile::TempDir::new().unwrap();
@@ -2295,10 +1974,6 @@ fn status_json_reports_the_rebuild_that_emptied_the_index() {
     );
 }
 
-// Zero-coverage cell, end to end: an offline-built index has chunks but no
-// embeddings; `search` degrades to full-text search (which covers every chunk
-// from parse time) with a stderr warmup notice, never a bare `No results found.`
-// over a corpus the vector half never saw and never the removed ast-grep scan.
 #[test]
 fn test_search_zero_coverage_degrades_to_full_text_with_warmup_notice() {
     let home = tempfile::TempDir::new().unwrap();
@@ -2318,10 +1993,8 @@ fn test_search_zero_coverage_degrades_to_full_text_with_warmup_notice() {
         .stderr(predicate::str::contains("ast-grep").not());
 }
 
-// The coverage and capability notices stay on stderr by default, and --quiet
-// is the opt-out for a caller that wants none of them. The default arm is a
-// regression guard: the warmup caveat is what keeps a missing hit from reading
-// as "not in the codebase", so it must survive the flag existing.
+// The default arm is a regression guard: the warmup caveat keeps a missing hit from
+// reading as "not in the codebase", so it must survive `--quiet` existing.
 #[test]
 fn test_search_quiet_suppresses_the_stderr_notices_and_leaves_results_intact() {
     let home = tempfile::TempDir::new().unwrap();
@@ -2369,8 +2042,7 @@ fn test_search_quiet_suppresses_the_stderr_notices_and_leaves_results_intact() {
     );
 }
 
-// The sink swallows notices, not failures: an error still has to reach the
-// caller, or -q would leave a non-zero exit with nothing explaining it.
+// The sink swallows notices, not failures: -q must not leave a non-zero exit unexplained.
 #[test]
 fn test_search_quiet_still_reports_a_genuine_error() {
     let home = tempfile::TempDir::new().unwrap();
@@ -2393,10 +2065,8 @@ fn test_search_quiet_still_reports_a_genuine_error() {
     );
 }
 
-// The recorded-server warning explains why semantic ranking is unavailable, and
-// it fires in the ordinary "server was stopped or went stale" state, which is
-// exactly when the ranking notice fires too. A caller who reaches for --quiet
-// because of that red block must not still get this one.
+// The recorded-server warning fires when a stopped or stale server also triggers the
+// ranking notice, so `--quiet` must silence it too.
 #[test]
 fn test_search_quiet_suppresses_the_recorded_server_warning() {
     let home = tempfile::TempDir::new().unwrap();
@@ -2445,15 +2115,11 @@ fn test_search_quiet_suppresses_the_recorded_server_warning() {
         serde_json::from_slice(&quiet.stdout).expect("stdout must stay machine-clean JSON");
 }
 
-// A stale index is the ordinary state right after editing, which is exactly
-// when someone searches, so the stale warning is the notice a caller reaching
-// for --quiet is most likely to hit.
 #[test]
 fn test_search_quiet_also_suppresses_the_stale_index_warning() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
 
-    // Edit a file after indexing so the staleness probe has something to find.
     fs::write(
         project_dir.join("lib.rs"),
         "pub fn compute(x: i32) -> i32 { x * 3 }\npub fn helper() -> i32 { 8 }\npub fn added() -> i32 { 9 }\n",
@@ -2491,17 +2157,14 @@ fn test_search_quiet_also_suppresses_the_stale_index_warning() {
     );
 }
 
-// A log line the CLI writes to a redirected stdout carries no colour escapes.
-// The post-commit hook captures this stream into a file, so escapes written
-// here outlive the run in a file nothing strips them from.
+// The post-commit hook captures this stream into a file that nothing strips escapes from.
 #[test]
 fn test_cli_log_output_to_a_pipe_carries_no_escape_bytes() {
     let home = tempfile::TempDir::new().unwrap();
     let (project_dir, config_path) = offline_indexed_project(home.path());
 
-    // A non-numeric discovery port is refused with a warning and disables the
-    // fixed-port fallback, which both triggers a log line deterministically and
-    // keeps the probe inside this test's world.
+    // A non-numeric discovery port logs a warning deterministically and disables the
+    // fixed-port fallback, keeping the probe inside this test's world.
     let output = inkentry_bin_in(home.path())
         .env("INKENTRY_STATE_DIR", home.path().join("state"))
         .env("INKENTRY_TEST_DISCOVERY_PORT", "notaport")
@@ -2525,10 +2188,6 @@ fn test_cli_log_output_to_a_pipe_carries_no_escape_bytes() {
     );
 }
 
-// Partial-coverage cell, end to end: embed everything, then add a
-// file and re-index offline so coverage is partial. An auto search must emit
-// the one-line stderr warmup notice carrying the coverage AND its
-// front-loaded shape, while `--format json` stdout stays machine-clean.
 #[tokio::test]
 async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
     let mock = MockServer::start().await;
@@ -2552,15 +2211,8 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         &project_dir,
     );
 
-    // Pass 1: embed everything via the mock server (full coverage).
-    //
-    // This test's purpose is the partial-vs-zero coverage warmup notice, not
-    // local-vs-remote embed routing, so it needs an explicit `server_url` to
-    // legitimately serve embedding here. Under the default `local_first`
-    // mode that routing is now correctly refused (see the `get_inference_tier`
-    // routing fix) in favor of the local loopback embedder, which this test
-    // does not configure - so force `cloud_first` via env, which outranks
-    // both config files.
+    // Needs an explicit `server_url` to serve embedding; `local_first` refuses that routing,
+    // so force `cloud_first` via env, which outranks both config files.
     inkentry_bin_in(home.path())
         .env("INKENTRY_MODE", "cloud_first")
         .current_dir(&project_dir)
@@ -2571,8 +2223,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         .assert()
         .success();
 
-    // Pass 2: add a file and re-index offline - its chunks are stored but not
-    // embedded, so coverage drops below 100%.
+    // The offline re-index stores the new chunks unembedded, so coverage drops below 100%.
     fs::write(
         project_dir.join("extra.rs"),
         "pub fn extra_helper() -> i32 { 41 }\npub fn another_helper() -> i32 { 42 }\n",
@@ -2588,9 +2239,6 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         .assert()
         .success();
 
-    // Auto search with no reachable embedder: the partial-coverage warmup
-    // notice must land on stderr (percentage + shape + pointer at status),
-    // and the JSON on stdout must stay parseable.
     let output = inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
@@ -2617,13 +2265,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         .expect("stdout must stay machine-clean JSON with all notices on stderr");
 }
 
-// A key the project config is not read for is named on stderr rather
-// than dropped in silence, and the rest of the file still loads.
-// The personal config's `server_key` is the one credential key named on
-// stderr, and the naming is the whole of ADR-088 D1's user-facing contract:
-// the key is about to stop working and only the tool knows it is in there.
-// Gated to unix because the helper redirects HOME, which `dirs::home_dir()`
-// ignores on Windows.
+// Gated to unix: the helper redirects HOME, which `dirs::home_dir()` ignores on Windows.
 #[cfg(unix)]
 #[test]
 fn unread_personal_config_server_key_is_named_on_stderr() {
