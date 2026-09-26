@@ -11,7 +11,7 @@ until you install the pre-push hook with `inkentry hooks install --pre-push`
 git-notes](#sharing-memory-across-clones-via-git-notes)). No external
 database or server is required. (You can make git-notes the primary backend with
 `--backend git-notes`, or point at a shared server with `server_url`, or opt
-into the hosted inkentry cloud with `cloud = true` instead.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` (or `cloud = true`) **and** opt into `mode = "cloud_first"` (the default once `cloud = true`); with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
+into the hosted inkentry cloud with `cloud = true` instead.) The auto-started local `inkentry-server` (loopback) is used only for *inference* (embeddings/LLM for semantic search); it does **not** store memory. Memory lives on a server only when you *explicitly* configure a team `server_url` (or `cloud = true`) **and** opt into `mode = "cloud_first"`; with the default `local_first` mode the server is a converging replica and reads/writes stay local (see [Team server and sync modes](#team-server-and-sync-modes)). Entries
 are searchable by full text at all times; semantic search (by meaning) is
 available when a server is running — the local one is autostarted on demand.
 
@@ -137,10 +137,10 @@ service is itself the deliberate step (see [`cloud`](config-reference.md#cloud))
 | `mode` | reads | writes | when the server is unreachable |
 |---|---|---|---|
 | `offline` | local | local | never contacted, even with `server_url` set |
-| `local_first` (default when `server_url` is set without `cloud`) | local | local | everything keeps working; the local store is unaffected |
-| `cloud_first` (default when `cloud = true`) | server | server | commands fail with an error; local data is never silently substituted |
+| `local_first` (default when `server_url` or `cloud = true` is set) | local | local | everything keeps working; the local store is unaffected |
+| `cloud_first` (opt-in only) | server | server | commands fail with an error; local data is never silently substituted |
 
-**`local_first`** is the default whenever `server_url` is configured. Reads
+**`local_first`** is the default whenever `server_url` or `cloud = true` is configured. Reads
 and writes stay in the project's local `memory.db`, so every command keeps
 working offline and the team server is a converging replica rather than the
 store of record. Because reads never block on the network, local results can
@@ -195,8 +195,8 @@ cloud = true
 project_id = "my-awesome-app"
 ```
 
-`cloud = true` defaults to `cloud_first` unless `mode` is set explicitly, so it
-does not need to be repeated here. Either way, the CLI settles which backend it
+Like `server_url`, `cloud = true` defaults to `local_first`; set
+`mode = "cloud_first"` only to make the cloud the store of record. Either way, the CLI settles which backend it
 is speaking to when the connection opens, by reading the capability list
 `/v1/health` already advertises. A peer advertising SSE memory streaming is the
 hosted API; anything else, including a probe that times out, is unreachable, or
