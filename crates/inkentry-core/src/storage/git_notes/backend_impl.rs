@@ -38,6 +38,8 @@ impl MemoryBackend for GitNotesBackend {
             superseded_by_entity_id: None,
             edges: Vec::new(),
             origin: input.origin,
+            op: None,
+            patch_id: None,
         };
 
         let head = self.head_sha().await?;

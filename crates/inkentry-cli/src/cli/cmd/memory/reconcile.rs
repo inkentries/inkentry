@@ -1214,6 +1214,8 @@ mod init_import_tests {
             superseded_by_entity_id: None,
             edges: Vec::new(),
             origin: None,
+            op: None,
+            patch_id: None,
         };
         crate::storage::append_to_git_notes(Some(git_root), &legacy)
             .await

@@ -112,6 +112,10 @@ fn print_snapshot_summary(snap: &Snapshot) {
         Some(r) => println!("rec.commit_coverage         {}", format_pct(r)),
         None => println!("rec.commit_coverage         (not a git repository)"),
     }
+    match &s.rec_unanchored_rate {
+        Some(r) => println!("rec.unanchored_rate          {}", format_pct(r)),
+        None => println!("rec.unanchored_rate          (not a git repository)"),
+    }
     println!(
         "rec.supersede_rate           {}",
         format_pct(&s.rec_supersede_rate)

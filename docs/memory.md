@@ -661,6 +661,36 @@ are anchored to a commit by the git note that carries them (the same note you
 see under `git notes --ref=inkentry show <sha>`). Both are found; the SHA may be
 given in full or as a prefix.
 
+### Anchoring `memory add` entries to the commit they belong to
+
+A `memory add` entry is usually written *before* the commit that contains the
+work it describes exists yet, so recording it there directly is not possible
+at write time ([ADR-099](adr/099-anchor-memory-entries-to-the-commit-that-carries-the-work.md)).
+Instead, inside a git repository with at least one commit, `memory add`
+records a local, unsynced **pending anchor**: the worktree the write ran in
+and `HEAD`'s sha at that moment. The post-commit hook (`inkentry hooks
+install`) then claims it with `inkentry memory anchor --commit HEAD`,
+provided the write grew into that commit — same worktree, and `HEAD` at write
+time is an ancestor of the new commit (or the commit an amend replaced).
+Nothing is ever claimed by branch or session: switching branches at commit
+time is a routine workflow ADR-099's rationale covers in full, and two agents
+sharing one worktree share the commit it produces regardless of who wrote
+which entry. Claiming sets `source_ref`, so `--source-ref` and
+`rec.commit_coverage` treat a claimed `memory add` entry exactly like a
+harvested one.
+
+Two escape hatches skip the hook: `memory add --commit <sha>` anchors
+immediately, and `inkentry memory anchor --commit <ref> <id>...` anchors
+existing entries to a ref by hand, no ancestry check. Installing the
+post-commit hook is what makes claiming automatic; without it, entries stay
+pending until anchored by hand. A pending entry older than 14 days, or whose
+worktree no longer exists, is reported by `inkentry status` as unanchored and
+is never assigned — see [`inkentry status`](commands.md#inkentry-status).
+`inkentry index` best-effort follows a local rebase or amend (matching the
+old commit's diff to a new one by `git patch-id`) so a claim, or a pending
+anchor's base, survives history moving under it without needing a
+`post-rewrite` hook.
+
 `question` and `answer` entries show titles only in list view to avoid context saturation. Use `inkentry memory show <id>` to read the full body.
 
 ## Cross-project visibility
@@ -1087,6 +1117,22 @@ Scope and limits:
 
   A push that neither minted nor missed a vector prints the summary line
   unchanged.
+
+### Anchors travel to a team server too
+
+An entry can sync to a configured team `server_url` before a commit claims it
+locally (ADR-099 D5): the outbox is drained opportunistically, independent of
+when the post-commit hook runs. `inkentry sync` and `inkentry plumbing push`
+therefore send a claimed entry's `source_ref` to the server as a small
+update, alongside the ordinary push, for every already-synced row that
+carries one. The client keeps no record of whether a previous run already
+delivered it, so this resends every time rather than tracking that — the
+server-side write is unconditional for exactly that reason, so a resend is a
+no-op rather than an error. The summary line reports how many were sent:
+
+```
+Sent 1 anchor update(s).
+```
 
 ## Using memory as context
 

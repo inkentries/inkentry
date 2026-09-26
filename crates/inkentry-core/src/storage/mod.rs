@@ -31,15 +31,16 @@ pub use entity_id::{
 pub use files::FileRecord;
 pub use git_notes::{
     AppendOutcome, BatchAppendOutcome, GitNotesBackend, LOCK_WAIT_BUDGET, LockAttempt, NotesLock,
-    NotesMergeOutcome, NotesRefs, PublishOutcome, RewriteRefStatus, SkipReason, append_edges,
-    append_new_to_git_notes, append_state_update, append_to_git_notes, ensure_notes_rewrite_ref,
-    lock_notes, merge_tracking_notes, publish_notes,
+    NotesMergeOutcome, NotesRefs, PublishOutcome, RewriteRefStatus, SkipReason,
+    append_anchor_record, append_edges, append_new_to_git_notes, append_state_update,
+    append_to_git_notes, commit_patch_id, commits_reachable_from_any_ref, ensure_notes_rewrite_ref,
+    is_ancestor, lock_notes, merge_tracking_notes, publish_notes, resolve_source_ref,
 };
 pub use graph::GraphEdge;
 pub use memory::{
     CarriedEdgeImport, DedupeSummary, FileState, MemoryEdge, MemoryStore, NoteId,
-    NotesImportMarker, ResolvedFileLink, SyncEdge, SyncRow, normalize_relative_path, normalize_tag,
-    resolve_file_link, unresolvable_id_message, uuid_v7_at,
+    NotesImportMarker, PendingAnchor, ResolvedFileLink, SyncEdge, SyncRow, normalize_relative_path,
+    normalize_tag, resolve_file_link, unresolvable_id_message, uuid_v7_at,
 };
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{CarriedEdge, NoteRecord, carrier_token, now_millis, now_secs};

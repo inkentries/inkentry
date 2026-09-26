@@ -659,6 +659,12 @@ modes](memory.md#team-server-and-sync-modes)). `--format json` carries the
 same information as `sync_pending` / `sync_last_synced_at`, both `null`
 outside `local_first`.
 
+When a project holds pending anchors (ADR-099) older than 14 days, or whose
+worktree no longer exists on disk, `status` prints a line naming the count
+and pointing at `inkentry memory anchor --commit <sha> <id>`: those entries
+are never assigned automatically. `--format json` carries the same count as
+`memory_unanchored`.
+
 When a memory store exists, `status` also prints a compact metrics section
 (ADR-098): entries recorded in the default 30-day window by kind, commit
 coverage, how many entries were superseded in the window and the median time
@@ -846,10 +852,16 @@ inkentry hooks install --pre-push
 inkentry hooks uninstall
 ```
 
-`install` writes a post-commit hook that runs `inkentry index` and
-`inkentry harvest` after each commit (both `--detach` so git is not
-blocked). Developers without `inkentry` installed are unaffected. `--ci` prints a
-GitHub Actions workflow step instead of writing a hook.
+`install` writes a post-commit hook that first claims this worktree's pending
+memory entries onto the new commit (`memory anchor --commit HEAD`, ADR-099),
+then runs `inkentry index` and `inkentry harvest` after each commit (both
+`--detach` so git is not blocked). Developers without `inkentry` installed are
+unaffected. `--ci` prints a GitHub Actions workflow step instead of writing a
+hook; the CI step does not claim anchors, since it never runs `memory add` in
+the same working tree that committed. Re-running `install` over an existing
+inkentry-installed hook updates it in place, so upgrading past this ADR needs
+one re-install to pick up the new line — installed hooks are not rewritten on
+their own.
 
 `install --pre-push` writes a pre-push hook that publishes your memory
 (`refs/notes/inkentry`) to the named remote you are pushing to, so decisions travel
@@ -1245,8 +1257,9 @@ Store and query project context, decisions, and requirements. See
 [Memory](memory.md) for full documentation.
 
 ```
-inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs] [--format text|json|jsonl]
+inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs] [--commit <sha>] [--format text|json|jsonl]
 inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
+inkentry memory anchor --commit <ref> [<id>...]   # claims pending entries, or anchors <id>... by hand
 inkentry memory list [--kind decision] [--tag auth] [--file src/auth.rs] [--limit 20] [--format text|json] [--local-only]
 inkentry memory show <id> [--format text|json]
 inkentry memory tags [--format text|json]    # tag vocabulary with counts
@@ -1330,6 +1343,27 @@ writer's entry: `memory add` warns on stderr that the entry is stored locally
 but will not travel with the repo (pre-`init`, where git notes is the sole
 store, it fails instead), and retrying the command is the remedy.
 
+**Anchoring to a commit** ([ADR-099](adr/099-anchor-memory-entries-to-the-commit-that-carries-the-work.md)):
+`memory add` inside a git repository with at least one commit records where the
+write happened — the worktree and HEAD's sha — as a local, unsynced pending
+row. Installing the post-commit hook (`inkentry hooks install`) makes the next
+commit in that worktree claim it automatically, provided the write grew into
+that commit (same worktree, and `HEAD` at write time is an ancestor of the new
+commit, or the commit an amend replaced); nothing is ever claimed by recency,
+branch, or session. Claiming attaches an `anchor` record to the commit on the
+notes carrier and sets the entry's `source_ref`, the same field `--source-ref`
+already filters on — the mapping this ADR adds is simply that a `memory add`
+entry can now get one too, not only a harvested one. `--commit <sha>` on
+`memory add` anchors immediately instead of waiting for the hook.
+`inkentry memory anchor --commit <ref>` is the hook's own command and is safe
+to run by hand; with explicit ids it anchors those entries to `<ref>`
+directly, skipping the ancestry check (the same escape hatch `--commit` on
+`add` is). It never fails and never prints, so it is safe inside automation.
+`inkentry status` reports a pending entry as unanchored, and never assigns it,
+once it is older than 14 days or its worktree no longer exists on disk;
+`inkentry index` best-effort follows a local rebase or amend so a claim still
+lands once the hook next runs.
+
 **Entry identity:** entries are identified by a SHA-256 over exactly their
 `kind`, `title`, and `body`, so the same decision recorded on two machines
 converges on one identity. `memory reconcile` and the `inkentry init` git-notes
@@ -1402,8 +1436,8 @@ time, the newest memory entry's `created_at` and the newest recorded event,
 never at the wall clock, so an entry or event recorded since the last commit
 is still counted. A project that is
 not a git repository (or has no commits yet) has every commit-based metric —
-`rec.commit_coverage`, `cmp.lines_per_decision` — **absent** from the
-document, not reported as zero.
+`rec.commit_coverage`, `rec.unanchored_rate`, `cmp.lines_per_decision` —
+**absent** from the document, not reported as zero.
 
 Without `--json`, the same numbers print as a short human summary.
 
@@ -1418,7 +1452,8 @@ the meaning of.
 | id | what it is |
 |---|---|
 | `rec.entries` | total / active / in-window entry counts, by kind; active entries also broken down `by_origin` (`human` / `agent` / `harvest` / `unknown`, ADR-098 D6) |
-| `rec.commit_coverage` | commits in the window with at least one entry anchored to them (by `source_ref` or the git-notes attachment), over commits in the window |
+| `rec.commit_coverage` | commits in the window with at least one entry anchored to them (by `source_ref`, the git-notes write-time attachment, or an ADR-099 `anchor` record), over commits in the window |
+| `rec.unanchored_rate` | `memory add` entries older than 14 days with no anchor, over `memory add` entries older than 14 days (ADR-099) |
 | `rec.supersede_rate` | entries superseded in the window, over active decisions at window start |
 | `rec.time_to_supersede_p50` | median seconds between a superseding entry and what it superseded |
 | `rec.open_question_age_p50` | median age of open questions (a `question` entry with no `relates_to` edge to an `answer` entry — the closest this schema can express "unanswered") |

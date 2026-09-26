@@ -424,6 +424,8 @@ fn make_note_record(id: i64, title: &str) -> NoteRecord {
         superseded_by_entity_id: None,
         edges: Vec::new(),
         origin: None,
+        op: None,
+        patch_id: None,
     }
 }
 

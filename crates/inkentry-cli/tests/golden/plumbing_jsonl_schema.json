@@ -146,7 +146,8 @@
         "edges_pushed": "integer",
         "without_local_vector": "integer",
         "embedded_locally": "integer",
-        "interrupted": "boolean"
+        "interrupted": "boolean",
+        "anchors_pushed": "integer"
       }
     },
     "pull": {

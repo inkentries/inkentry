@@ -29,6 +29,8 @@ pub(in crate::cli::cmd) struct PushSummary {
     // Always 0 under `LocalEmbedPolicy::Skip`.
     pub without_local_vector: usize,
     pub edges_pushed: usize,
+    // ADR-099 D5: already-synced rows whose anchor update was sent this run.
+    pub anchors_pushed: usize,
 }
 
 pub(in crate::cli::cmd) async fn push_local_oneway(
@@ -96,6 +98,7 @@ async fn push_local_reporting(
             embedded_locally: 0,
             without_local_vector: 0,
             edges_pushed: 0,
+            anchors_pushed: 0,
         });
     }
 
@@ -226,6 +229,17 @@ async fn push_local_reporting(
         0
     };
 
+    // ADR-099 D5: an entry can sync before a commit claims it locally, so a
+    // row already carrying a `remote_id` may have gained `source_ref` since.
+    // No local record of "already told the server" exists, so this resends
+    // on every push/sync rather than tracking that — the server-side write
+    // is unconditional for exactly that reason (see `push_anchor_update`).
+    let anchors_pushed = if interrupted.is_none() {
+        push_anchor_updates(&rows, client).await
+    } else {
+        0
+    };
+
     Ok(PushSummary {
         attempted,
         created,
@@ -236,7 +250,27 @@ async fn push_local_reporting(
         embedded_locally: repair.embedded,
         without_local_vector: repair.without_vector,
         edges_pushed,
+        anchors_pushed,
     })
+}
+
+/// One best-effort `POST /memory/{id}/anchor` per already-synced, anchored
+/// row; a single failure only warns (the entry itself already landed) and
+/// does not stop the rest. Returns how many succeeded.
+async fn push_anchor_updates(rows: &[crate::storage::SyncRow], client: &CloudSyncClient) -> usize {
+    let mut pushed = 0;
+    for r in rows {
+        let (Some(remote_id), Some(source_ref)) = (&r.remote_id, &r.source_ref) else {
+            continue;
+        };
+        match client.push_anchor_update(remote_id, source_ref).await {
+            Ok(()) => pushed += 1,
+            Err(e) => {
+                eprintln!("warning: failed to push the anchor for {remote_id} to the cloud: {e:#}")
+            }
+        }
+    }
+    pushed
 }
 
 // Only `relates_to` is pushed: `supersedes` rides its entry's lifecycle and

@@ -114,6 +114,14 @@ pub struct StateMetrics {
         skip_serializing_if = "Option::is_none"
     )]
     pub rec_commit_coverage: Option<Rate>,
+    /// ADR-099 "Measured by": `memory add` entries older than 14 days with no
+    /// anchor, divided by `memory add` entries older than 14 days. `None`
+    /// outside a git repository, same as `rec_commit_coverage`.
+    #[serde(
+        rename = "rec.unanchored_rate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rec_unanchored_rate: Option<Rate>,
     #[serde(rename = "rec.supersede_rate")]
     pub rec_supersede_rate: Rate,
     #[serde(rename = "rec.time_to_supersede_p50")]
@@ -151,6 +159,11 @@ pub struct StatusMetricsSummary {
         skip_serializing_if = "Option::is_none"
     )]
     pub rec_commit_coverage: Option<Rate>,
+    #[serde(
+        rename = "rec.unanchored_rate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rec_unanchored_rate: Option<Rate>,
     #[serde(rename = "rec.supersede_rate")]
     pub rec_supersede_rate: Rate,
     #[serde(rename = "rec.time_to_supersede_p50")]
@@ -208,6 +221,8 @@ pub fn compute_status_metrics_summary(
         (Some(shas), Some(anchored)) => Some(commit_coverage(store, shas, anchored)?),
         _ => None,
     };
+    let rec_unanchored_rate =
+        commit_shas_in_window.map(|_| unanchored_rate(&all_notes, window_end));
 
     let review_items = all_notes
         .iter()
@@ -231,6 +246,7 @@ pub fn compute_status_metrics_summary(
         window_days,
         rec_entries_in_window,
         rec_commit_coverage,
+        rec_unanchored_rate,
         rec_supersede_rate,
         rec_time_to_supersede_p50,
         rec_open_question_age_p50,
@@ -289,6 +305,7 @@ pub fn compute_state_metrics(
     let rec_commit_coverage = git
         .map(|g| commit_coverage(store, &g.commit_shas, &g.anchored_commit_shas))
         .transpose()?;
+    let rec_unanchored_rate = git.map(|_| unanchored_rate(&all_notes, window_end));
     let cmp_lines_per_decision =
         git.map(|g| Rate::new(g.lines_changed_in_window, decisions_in_window));
 
@@ -306,6 +323,7 @@ pub fn compute_state_metrics(
     Ok(StateMetrics {
         rec_entries,
         rec_commit_coverage,
+        rec_unanchored_rate,
         rec_supersede_rate,
         rec_time_to_supersede_p50,
         rec_open_question_age_p50,
@@ -515,6 +533,34 @@ fn commit_coverage(
     Ok(Rate::new(covered, commit_shas.len() as u64))
 }
 
+/// Entries older than 14 days from `now`, `origin.actor_kind: harvest`
+/// aside, with no `source_ref`: never anchored despite ample time for a
+/// commit to have claimed them (ADR-099 "Measured by"). A `memory add` entry
+/// starts with `source_ref` unset and only ever gains one by being anchored
+/// (D2/D4); a harvest entry is stamped with one at insert time and never goes
+/// through `pending_anchors` at all, so `actor_kind` is what distinguishes
+/// the two populations this rate is about. An entry with no declared origin
+/// (predates D6, or an undeclared caller) is counted as a `memory add`
+/// entry, not excluded: harvest always declares its own origin.
+const UNANCHORED_AGE_SECS: i64 = 14 * 24 * 3600;
+
+fn unanchored_rate(all_notes: &[Note], now: i64) -> Rate {
+    let cutoff = now - UNANCHORED_AGE_SECS;
+    let eligible = all_notes.iter().filter(|n| {
+        n.created_at <= cutoff
+            && n.origin.as_ref().map(|o| o.actor_kind.as_str()) != Some("harvest")
+    });
+    let mut denominator = 0u64;
+    let mut numerator = 0u64;
+    for n in eligible {
+        denominator += 1;
+        if n.source_ref.is_none() {
+            numerator += 1;
+        }
+    }
+    Rate::new(numerator, denominator)
+}
+
 /// `cmp.tokens_context_estimate`: token count of the entries `inkentry
 /// context`'s default (no `--kind`, no `--limit`, no `--budget`) view would
 /// print, using the existing chars/4 estimator
@@ -584,5 +630,85 @@ mod tests {
     #[test]
     fn median_of_even_length_averages_the_two_middle_values() {
         assert_eq!(median(vec![10, 20, 30, 40]), Some(25));
+    }
+
+    // ── ADR-099 "Measured by": rec.unanchored_rate ──────────────────────────
+
+    fn note(created_at: i64, source_ref: Option<&str>, actor_kind: Option<&str>) -> Note {
+        use crate::config::caller::ActorKind;
+        use crate::storage::memory::NoteId;
+        use std::str::FromStr;
+
+        Note {
+            id: NoteId::from_str("0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e01").unwrap(),
+            entity_id: "e".to_string(),
+            kind: "note".to_string(),
+            title: "t".to_string(),
+            body: "b".to_string(),
+            tags: vec![],
+            linked_files: vec![],
+            created_at,
+            status: "active".to_string(),
+            superseded_by: None,
+            source_ref: source_ref.map(str::to_string),
+            valid_at: None,
+            invalid_at: None,
+            distance: None,
+            score: None,
+            source_project: None,
+            source_project_path: None,
+            remote_id: None,
+            origin: actor_kind.map(|k| crate::storage::origin::Origin {
+                actor_kind: match k {
+                    "harvest" => ActorKind::Harvest,
+                    "agent" => ActorKind::Agent,
+                    _ => ActorKind::Human,
+                },
+                tool: None,
+                model: None,
+            }),
+        }
+    }
+
+    const DAY: i64 = 24 * 3600;
+
+    #[test]
+    fn unanchored_rate_counts_old_unanchored_memory_add_entries_only() {
+        let now = 1_000_000_000;
+        let notes = vec![
+            // Old, no source_ref: counts in both numerator and denominator.
+            note(now - 20 * DAY, None, None),
+            // Old, anchored: denominator only.
+            note(now - 20 * DAY, Some("sha1"), None),
+            // Old, harvested, no source_ref would be unusual, but harvest is
+            // excluded from the population regardless.
+            note(now - 20 * DAY, None, Some("harvest")),
+            // Too young: excluded entirely, whether anchored or not.
+            note(now - DAY, None, None),
+        ];
+
+        let r = unanchored_rate(&notes, now);
+        assert_eq!(r.numerator, 1);
+        assert_eq!(r.denominator, 2);
+    }
+
+    #[test]
+    fn unanchored_rate_is_none_value_on_an_empty_eligible_set() {
+        let r = unanchored_rate(&[], 1_000_000_000);
+        assert_eq!(r.denominator, 0);
+        assert_eq!(r.value, None);
+    }
+
+    #[test]
+    fn unanchored_rate_treats_an_undeclared_origin_as_memory_add_not_harvest() {
+        let now = 1_000_000_000;
+        let notes = vec![note(now - 20 * DAY, None, None)];
+        let r = unanchored_rate(&notes, now);
+        assert_eq!(
+            r.denominator, 1,
+            "an entry predating D6 (no origin at all) must still count \
+             toward the memory-add population, since only harvest \
+             deliberately declares its own origin"
+        );
     }
 }

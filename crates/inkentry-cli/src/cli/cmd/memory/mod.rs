@@ -51,6 +51,13 @@ pub enum MemoryCommand {
     Dedupe(MemoryDedupeArgs),
     /// List the tag vocabulary with how many active entries carry each (ADR-101)
     Tags(MemoryTagsArgs),
+    /// Anchor memory entries to a commit (ADR-099). With no ids, claims
+    /// pending entries per the D2 claim rule (same worktree, and the entry
+    /// was written from an ancestor of the commit, or the commit it amends);
+    /// this is what the post-commit hook calls. With ids, anchors those
+    /// entries to the commit directly, skipping the claim rule. Plumbing:
+    /// always exits 0 and prints nothing, so it never fails a commit.
+    Anchor(MemoryAnchorArgs),
 }
 
 #[derive(Args, Debug)]
@@ -124,9 +131,28 @@ pub struct MemoryAddArgs {
     #[arg(long, value_name = "ID")]
     pub relates_to: Option<NoteId>,
 
+    /// Anchor this entry to a commit immediately (ADR-099 D4), instead of
+    /// recording a pending anchor for the post-commit hook to claim later.
+    /// The commit does not have to exist on disk under `git show` for this
+    /// process's working tree only — it must resolve with `git rev-parse`.
+    #[arg(long, value_name = "SHA")]
+    pub commit: Option<String>,
+
     /// Output format: text, json, or jsonl
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+#[derive(Args, Debug)]
+pub struct MemoryAnchorArgs {
+    /// The commit (or any ref git resolves to one) to claim pending entries
+    /// for, or to anchor `<id>...` to by hand.
+    #[arg(long)]
+    pub commit: String,
+
+    /// Anchor these entries to `--commit` directly, skipping the D2 claim
+    /// rule (ADR-099 D4).
+    pub ids: Vec<NoteId>,
 }
 
 #[derive(Args, Debug)]
@@ -327,6 +353,7 @@ pub struct MemoryDedupeArgs {
 use super::status::format_age;
 
 mod add;
+pub(crate) mod anchor;
 mod archive;
 mod corpus;
 pub(crate) mod cross_project;
@@ -351,6 +378,14 @@ pub(crate) use corpus::{MemoryCorpus, memory_corpus_search};
 pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> {
     cfg.validate()?;
     let be = backend_override(&args.backend);
+    // Hook plumbing (ADR-099): never errors, never prints to stdout, whatever
+    // is wrong with the project — a git hook's exit code gates the commit.
+    if let MemoryCommand::Anchor(a) = args.command {
+        if let Ok((mem_path, false)) = resolve_store_path(args.db.clone(), false, &cfg, be).await {
+            let _ = anchor::memory_anchor(a, &mem_path).await;
+        }
+        return Ok(());
+    }
     let (mem_path, pre_init_notes) = resolve_memory_store(&args, &cfg, be).await?;
     match args.command {
         MemoryCommand::Add(a) => add::memory_add(a, &mem_path, &cfg, be, pre_init_notes).await,
@@ -376,6 +411,8 @@ pub async fn memory(args: MemoryArgs, cfg: crate::config::Config) -> Result<()> 
         }
         MemoryCommand::Dedupe(a) => dedupe::memory_dedupe(a, &mem_path).await,
         MemoryCommand::Tags(a) => tags::memory_tags(a, &mem_path).await,
+        // Handled and returned above, before `mem_path` was even resolved.
+        MemoryCommand::Anchor(_) => Ok(()),
     }
 }
 
