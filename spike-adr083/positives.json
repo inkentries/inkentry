@@ -1,0 +1,22 @@
+[
+  {"note_id": 1,  "question": "Which relational engine did we pick for invoicing, and what drove that choice?"},
+  {"note_id": 2,  "question": "How should a client space out repeated attempts after a failure?"},
+  {"note_id": 3,  "question": "What form will the phone experience take at launch?"},
+  {"note_id": 4,  "question": "What is our branching strategy for the main repository?"},
+  {"note_id": 5,  "question": "Can a billing document be changed after it goes out to a customer?"},
+  {"note_id": 6,  "question": "Where are we allowed to store user records geographically?"},
+  {"note_id": 7,  "question": "What is the tail response-time budget for the purchase flow?"},
+  {"note_id": 8,  "question": "What remains outstanding on the duplicate-suppression work for incoming callbacks?"},
+  {"note_id": 9,  "question": "What is the state of the pre-production Kubernetes rollout?"},
+  {"note_id": 10, "question": "Why is the overnight data dump missing records beyond a certain count?"},
+  {"note_id": 11, "question": "Which component does not follow a single global clock convention?"},
+  {"note_id": 12, "question": "Why does one of the query-layer checks fail intermittently?"},
+  {"note_id": 13, "question": "Is a dedicated copy of the database required for business intelligence workloads?"},
+  {"note_id": 14, "question": "Do repeated callback deliveries consume a tenant's throttling quota?"},
+  {"note_id": 15, "question": "When is my teeth check-up now that it changed?"},
+  {"note_id": 16, "question": "How often should the bread culture be refreshed?"},
+  {"note_id": 17, "question": "How coarse should the coffee be with the replacement grinder?"},
+  {"note_id": 18, "question": "How much air should go in the wheels of the vehicle?"},
+  {"note_id": 19, "question": "When does the bicycle need its next maintenance visit?"},
+  {"note_id": 20, "question": "Which day do they take away the sorted waste, and how often?"}
+]
