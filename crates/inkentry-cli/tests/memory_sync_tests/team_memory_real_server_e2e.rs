@@ -1,16 +1,7 @@
-// The CLI's memory commands against a real self-hosted team server.
-//
-// Every other CLI-to-team-server test in this suite runs against a mock, and a
-// mock is written from the CLI's own expectations — by construction it agrees
-// with them, so it cannot detect the CLI and the real server disagreeing about
-// the wire. That is how the server kept exposing integer note ids while
-// `NoteId` moved to strings: one test noticed, and only because its mock had
-// been hand-updated.
-//
-// This test has no mock. `inkentry-server`'s production router serves a real
-// `ServerDb` over a real loopback socket, and the real `inkentry` binary drives
-// it in `cloud_first` — the mode that makes the server the store of record, so
-// every assertion below is about data that only ever existed server-side.
+// No mock: a mock agrees with the CLI's own expectations by construction, so it cannot catch
+// the CLI and the real server disagreeing about the wire. Here `inkentry-server`'s production
+// router serves a real `ServerDb` over loopback and the real binary drives it in `cloud_first`,
+// so every assertion is about data that only existed server-side.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
@@ -38,9 +29,7 @@ fn register_sqlite_vec() {
     });
 }
 
-// A real `inkentry-server` on an ephemeral loopback port. The database is a
-// file rather than `:memory:` so it behaves as a deployed server does, migrations
-// and all.
+// The database is a file rather than `:memory:` so it behaves as a deployed server does, migrations and all.
 async fn spawn_real_server(db_path: &Path) -> String {
     register_sqlite_vec();
     let db = inkentry_server::db::ServerDb::open(db_path, 4, "test-model").expect("open server db");
@@ -80,11 +69,7 @@ async fn spawn_real_server(db_path: &Path) -> String {
     format!("http://{addr}")
 }
 
-// A project configured the way a team member's would be: `cloud_first`, so the
-// server is the store of record and nothing falls back to a local `memory.db`.
-//
-// `mode` sits in the global config here; the project-config placement the team
-// setup documents has its own test below.
+// `cloud_first`, so the server is the store of record and nothing falls back to a local memory.db.
 fn make_project(home: &Path, base_url: &str) {
     write_project_config(
         home,
@@ -93,9 +78,7 @@ fn make_project(home: &Path, base_url: &str) {
     );
 }
 
-// `store_in_git_notes` off in the global config: the child would otherwise
-// write a git note per entry into whatever repository its working directory
-// sits in.
+// `store_in_git_notes` off: the child would otherwise write a git note per entry into its cwd's repository.
 fn write_project_config(home: &Path, project: &str, global: &str) {
     let project_dir = home.join(".inkentry");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
@@ -106,12 +89,10 @@ fn write_project_config(home: &Path, project: &str, global: &str) {
     std::fs::write(global_dir.join("config.toml"), global).expect("write global config");
 }
 
-// `current_dir` is the throwaway home rather than the crate directory, so this
-// repo's own committed `.inkentry/config.toml` never reaches the child, and
-// `INKENTRY_STATE_DIR` points at the same throwaway so loopback auto-discovery
-// cannot find a developer's running daemon. (`INKENTRY_NO_SERVER` would be the
-// blunter tool and is the wrong one: it forces `offline`, which routes memory
-// straight back to a local store and makes the whole test vacuous.)
+// `current_dir` is the throwaway home so this repo's committed `.inkentry/config.toml` never
+// reaches the child; `INKENTRY_STATE_DIR` keeps loopback discovery off a developer's daemon.
+// `INKENTRY_NO_SERVER` is the wrong tool: it forces `offline`, routing memory to a local store
+// and making the test vacuous.
 fn cli(home: &Path, _base_url: &str) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(home)
@@ -176,12 +157,7 @@ fn assert_uuid_v7(id: &str, what: &str) {
     assert_eq!(parsed.get_version_num(), 7, "{what} must be a UUIDv7: {id}");
 }
 
-// The round trip the mocks cannot cover: entries written through the real CLI
-// to the real server come back through the real CLI, addressed by the ids the
-// server actually minted.
-//
-// `multi_thread` because the test blocks its own thread on a synchronous
-// `Command::output()` while the in-process server must keep serving it.
+// `multi_thread` because the test blocks on a synchronous `Command::output()` while the in-process server must keep serving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_memory_round_trips_against_a_real_team_server() {
     let db_dir = TempDir::new().unwrap();
@@ -203,8 +179,7 @@ async fn cli_memory_round_trips_against_a_real_team_server() {
         assert_uuid_v7(id, "a listed entry's id");
     }
 
-    // `memory show <id>` proves the id the list handed out actually addresses
-    // the entry on the server — a shape the CLI merely echoed would not.
+    // `show <id>` proves the listed id addresses the entry server-side.
     let first = id_of(&entries, "First decision");
     let shown = run_ok(home, &base_url, &["memory", "show", &first]);
     assert!(
@@ -213,17 +188,9 @@ async fn cli_memory_round_trips_against_a_real_team_server() {
     );
 }
 
-// The team-setup shape: `server_url`, `project_id` and `mode` together in the
-// checked-in `.inkentry/config.toml`, with nothing in the personal config
-// beyond a personal key. The `mode` line used to be dropped, so the project
-// silently ran `local_first`, and memory a team believed was server-authoritative
-// was sitting in each developer's own `memory.db`.
-//
-// Which is why the assertion is not that a status line reads `cloud_first`. The
-// entry is written from one checkout and listed from a second, freshly created
-// one that has never seen it: under `local_first` the second checkout reads its
-// own empty `memory.db` and finds nothing, so an entry that arrives there, under
-// the id the first checkout was handed, can only have come from the server.
+// Written from one checkout and listed from a fresh second one: under `local_first` the second
+// would read its own empty memory.db, so an entry arriving there can only have come from the
+// server. Asserting a status line reads `cloud_first` would not prove that.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cloud_first_from_the_project_config_puts_memory_on_the_server() {
     const TITLE: &str = "Decision from the project config";
@@ -260,8 +227,6 @@ async fn cloud_first_from_the_project_config_puts_memory_on_the_server() {
     );
 }
 
-// Supersede is the route that carries an id in the path *and* in the body, so
-// it is the one where a shape disagreement can hide on either side.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn supersede_against_a_real_team_server_links_the_pair_by_uuid() {
     let db_dir = TempDir::new().unwrap();
@@ -303,9 +268,7 @@ async fn supersede_against_a_real_team_server_links_the_pair_by_uuid() {
     assert_uuid_v7(&new, "the successor id");
 }
 
-// A numeric id is what a user has in shell history from before the crossing.
-// It must miss cleanly rather than address whatever row happens to hold that
-// rowid on the server.
+// A stale numeric id from shell history must miss cleanly, not address whatever row holds that rowid.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_numeric_id_does_not_address_an_entry_on_a_real_team_server() {
     let db_dir = TempDir::new().unwrap();

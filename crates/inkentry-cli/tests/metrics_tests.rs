@@ -1,16 +1,10 @@
-//! Integration tests for `inkentry metrics snapshot` (ADR-098) and the
-//! additive `metrics` field it adds to `inkentry status --format json` and
-//! the text summary in `inkentry status`.
-
 mod plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
 
 use std::fs;
 use tempfile::TempDir;
 
-/// An indexed, non-git project under `home`, returning `(project_dir,
-/// config_path)`. Deliberately not a git repository: commit-based metrics
-/// must be absent from this fixture's output.
+// Not a git repository: commit-based metrics must be absent.
 fn indexed_project(home: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
     let project_dir = home.join("project");
     fs::create_dir(&project_dir).unwrap();
@@ -137,7 +131,6 @@ fn status_json_gains_the_additive_metrics_field_without_disturbing_stable_keys()
     let home = TempDir::new().unwrap();
     let (project_dir, config_path) = indexed_project(home.path());
 
-    // Seed one memory entry so the memory store exists.
     inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(&project_dir)
@@ -167,7 +160,7 @@ fn status_json_gains_the_additive_metrics_field_without_disturbing_stable_keys()
     assert!(output.status.success());
     let body: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
 
-    // Stable schema keys (issue #269) survive the addition (additive-only contract).
+    // Existing schema keys must survive the additive change.
     for key in [
         "version",
         "project",

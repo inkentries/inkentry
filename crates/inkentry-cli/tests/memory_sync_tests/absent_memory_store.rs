@@ -1,15 +1,6 @@
-// What an absent memory store means to the three commands that resolve one by
-// the same function.
-//
-// A command that receives data may create the store; a command that only sends
-// must refuse, because a push from a store that does not exist is not an empty
-// delta, it is a run with nothing behind it. So `plumbing push` exits 2 and
-// leaves no file behind, while `plumbing pull` and `inkentry sync` create the
-// store: creation is how a fresh checkout first receives team memory.
-//
-// The sync case is the one that has to be pinned rather than reasoned about.
-// Sync runs a push leg internally, and a refusal placed in code that leg
-// travels would break the bootstrap the ruling exists to protect.
+// Push refuses an absent store (exit 2, no file created): sending from nothing is not an
+// empty delta. Pull and `sync` create it, which is how a fresh checkout first receives team
+// memory. Sync runs a push leg internally, so push's refusal must not be reachable from it.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{
@@ -23,8 +14,7 @@ use wiremock::MockServer;
 
 use inkentry_core::storage::MemoryStore;
 
-// A project directory as a fresh checkout leaves it: `.inkentry/config.toml` is
-// committed and discovered, `memory.db` is not in the repository at all.
+// A fresh checkout: `.inkentry/config.toml` is committed, `memory.db` is not.
 struct Checkout {
     home: TempDir,
     proj: TempDir,
@@ -115,9 +105,6 @@ async fn mount_since_one(server: &MockServer, title: &str) {
     .await;
 }
 
-// Push only sends. With no store there is nothing to send from, and reporting
-// that as an empty delta says "nothing to push" when the truth is "there was
-// nothing here to push from".
 #[tokio::test]
 async fn push_refuses_an_absent_store_and_creates_nothing() {
     let server = MockServer::start().await;
@@ -153,10 +140,6 @@ async fn push_refuses_an_absent_store_and_creates_nothing() {
     );
 }
 
-// An explicit `--source` gets the same answer as the resolved path. A path the
-// caller named and got wrong is where conjuring a store is least defensible:
-// the run reports an empty delta for a file the caller believes holds their
-// memory.
 #[tokio::test]
 async fn push_refuses_an_absent_explicit_source() {
     let server = MockServer::start().await;
@@ -189,8 +172,6 @@ async fn push_refuses_an_absent_explicit_source() {
     );
 }
 
-// Pull receives, and creating the store is how a fresh checkout first receives
-// team memory.
 #[tokio::test]
 async fn pull_creates_an_absent_store_and_applies_entries() {
     let server = MockServer::start().await;
@@ -223,8 +204,7 @@ async fn pull_creates_an_absent_store_and_applies_entries() {
     );
 }
 
-// The regression guard: sync runs a push leg, and if push's refusal were
-// reachable from that leg a fresh checkout could never sync at all.
+// Guards the bootstrap: sync's push leg must not inherit push's refusal.
 #[tokio::test]
 async fn sync_on_a_fresh_checkout_with_no_store_still_works() {
     let server = MockServer::start().await;
@@ -251,10 +231,8 @@ async fn sync_on_a_fresh_checkout_with_no_store_still_works() {
     );
 }
 
-// `cloud_first` with a `server_url` routes memory to the team server, which
-// owns the store and leaves the local path a placeholder nothing opens. Under
-// that mode an absent local file says nothing about whether there is memory,
-// so neither transfer may refuse on it.
+// With `cloud_first` and a `server_url` the team server owns the store, so an absent
+// local file says nothing and neither transfer may refuse on it.
 #[tokio::test]
 async fn cloud_first_push_does_not_refuse_an_absent_store() {
     let server = MockServer::start().await;
@@ -284,9 +262,6 @@ async fn cloud_first_push_does_not_refuse_an_absent_store() {
     );
 }
 
-// Pull has no carve-out to hold, since it never consults one: it creates in
-// every mode. This pins that `cloud_first` does not change that, so a later
-// refusal added to pull would have to break this deliberately.
 #[tokio::test]
 async fn cloud_first_pull_still_applies_without_a_local_store() {
     let server = MockServer::start().await;
@@ -310,8 +285,8 @@ async fn cloud_first_pull_still_applies_without_a_local_store() {
     assert_eq!(report(&out.stdout)["applied"], 1, "stderr={stderr}");
 }
 
-// A store that is genuinely there and holds nothing is the empty delta the
-// refusal must stay distinguishable from: exit 1 with the report on stdout.
+// A present-but-empty store must stay distinguishable from an absent one: exit 1 with
+// the report on stdout.
 #[tokio::test]
 async fn an_existing_empty_store_is_still_an_empty_delta_for_both() {
     let server = MockServer::start().await;

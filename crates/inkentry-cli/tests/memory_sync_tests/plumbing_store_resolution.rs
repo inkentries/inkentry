@@ -1,16 +1,7 @@
-// Which memory store the memory-targeting plumbing commands act on.
-//
-// The marker for a local project is the `.inkentry/` directory, not a present
-// `index.db`. A directory configured by `inkentry init --no-index` (or simply
-// never indexed) has `.inkentry/config.toml` and no `index.db`, and deriving
-// the memory path from the index walk sends `plumbing push` to the
-// machine-global store while `memory add`/`list`/`sync` in that same directory
-// stay on the project store. Two commands, one directory, two answers, and
-// push writes.
-//
-// Outside any project the global store is still the honest answer, so these
-// also pin that the store actually used is named on stderr rather than left to
-// be misread as an empty local delta.
+// The local-project marker is the `.inkentry/` directory, not a present `index.db`: deriving
+// the memory path from the index walk would send `plumbing push` to the machine-global store
+// while `memory add`/`list`/`sync` stay on the project store. Outside a project the global
+// store is right, and the store used must be named on stderr.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin_in, register_sqlite_vec};
@@ -23,8 +14,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use inkentry_core::storage::MemoryStore;
 use inkentry_core::test_support::git_command;
 
-// No characters `encode_project_id` would percent-encode, so the mocked route
-// path can be matched literally.
+// No characters `encode_project_id` would percent-encode, so the mocked route matches literally.
 const PROJECT_SLUG: &str = "acme-widget";
 
 async fn mount_health(server: &MockServer) {
@@ -57,8 +47,7 @@ fn seed_store(mem_path: &Path, title: &str) {
         .expect("seed note");
 }
 
-// A `--config` file whose `db_path` is the machine-global index, well outside
-// any project. Its sibling `memory.db` is the store the index walk reaches.
+// `db_path` is the machine-global index, outside any project; its sibling memory.db is what the index walk reaches.
 fn write_global_config(home: &Path) -> (PathBuf, PathBuf) {
     let global_db = home.join("global").join("index.db");
     std::fs::create_dir_all(global_db.parent().unwrap()).expect("create global dir");
@@ -71,8 +60,6 @@ fn write_global_config(home: &Path) -> (PathBuf, PathBuf) {
     (config_path, global_db.with_file_name("memory.db"))
 }
 
-// `.inkentry/config.toml` with no `index.db` beside it: a configured project
-// that has never been indexed.
 fn make_unindexed_project(proj: &Path, server_url: &str) {
     plumbing_helpers::write_project_server_config(proj, server_url, PROJECT_SLUG);
     assert!(
@@ -90,7 +77,6 @@ fn report(stdout: &[u8]) -> serde_json::Value {
     })
 }
 
-// Titles of every note the server was asked to accept, across all batches.
 async fn pushed_titles(server: &MockServer) -> Vec<String> {
     let mut titles = Vec::new();
     for req in server.received_requests().await.unwrap_or_default() {
@@ -129,7 +115,6 @@ async fn mount_since_one_entry(server: &MockServer, title: &str) {
         .await;
 }
 
-// Sorted so the assertion does not depend on the order rows come back in.
 fn titles_in(mem_path: &Path) -> Vec<String> {
     register_sqlite_vec();
     let store = MemoryStore::open(mem_path).expect("open memory.db");
@@ -279,8 +264,7 @@ async fn push_from_a_linked_worktree_uses_the_main_worktree_store() {
         "the linked worktree must have no .inkentry/ of its own"
     );
 
-    // The linked worktree has no `.inkentry/config.toml` to discover, so the
-    // team-server settings come from the environment instead.
+    // A linked worktree has no `.inkentry/config.toml` to discover, so team-server settings come from the environment.
     let out = inkentry_bin_in(home.path())
         .current_dir(&wt_root)
         .env("INKENTRY_SERVER_URL", server.uri())
@@ -337,9 +321,7 @@ async fn push_outside_any_project_names_the_global_store_it_acts_on() {
     );
 }
 
-// `read-memory` derives its store the same way `push` does, so it reached the
-// global store in the same directory. Unlike push it never writes, but a
-// silently-wrong read is what a caller then acts on.
+// Never writes, but a silently-wrong read is what a caller then acts on.
 #[tokio::test]
 async fn read_memory_uses_the_project_store_of_a_configured_but_unindexed_project() {
     let server = MockServer::start().await;
@@ -371,8 +353,6 @@ async fn read_memory_uses_the_project_store_of_a_configured_but_unindexed_projec
     );
 }
 
-// Pull is the write direction for other people's entries, so a wrong store
-// here deposits team memory where this project's own commands never look.
 #[tokio::test]
 async fn pull_writes_into_the_project_store_of_a_configured_but_unindexed_project() {
     let server = MockServer::start().await;

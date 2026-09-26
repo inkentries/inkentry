@@ -1,6 +1,3 @@
-// CLI-level coverage for ADR-101: `inkentry memory tags`, and the exact
-// `--tag`/`--file` filters on `inkentry memory list`.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin, write_config};
 
@@ -8,12 +5,8 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-// A fresh project with no server configured (the local backend needs none
-// for `memory add`/`memory list`/`memory tags`). `memory.db` sits at the
-// real `<root>/.inkentry/memory.db` layout — not flattened into `tmp`
-// directly, the way some older fixtures do — because linked-file
-// resolution (ADR-101 D3) derives the project root from `memory.db`'s own
-// location (its parent's parent), and only this layout makes that correct.
+// memory.db must sit at <root>/.inkentry/memory.db: linked-file resolution
+// derives the project root from its parent's parent.
 fn project() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let inkentry_dir = tmp.path().join(".inkentry");
@@ -60,8 +53,6 @@ fn add_note(
     cmd.assert().success();
 }
 
-// `memory tags` lists the normalised vocabulary with counts, and two
-// differently-spelled inputs collapse into one tag (ADR-101 D2).
 #[test]
 fn memory_tags_lists_normalised_vocabulary_with_counts() {
     let (tmp, mem_path, config_path) = project();
@@ -102,8 +93,6 @@ fn memory_tags_lists_normalised_vocabulary_with_counts() {
     );
 }
 
-// `memory list --tag` is an exact match after normalisation: querying with
-// different casing/spelling than the stored form still finds the entry.
 #[test]
 fn memory_list_tag_filter_is_exact_after_normalisation() {
     let (tmp, mem_path, config_path) = project();
@@ -132,9 +121,6 @@ fn memory_list_tag_filter_is_exact_after_normalisation() {
     assert_eq!(rows[0]["title"], "tagged");
 }
 
-// `memory list --file` matches the exact normalised, repository-relative
-// path — not a substring — and reports `missing` state via `memory add`'s own
-// stderr warning for a file that does not exist on disk.
 #[test]
 fn memory_list_file_filter_is_an_exact_path_match() {
     let (tmp, mem_path, config_path) = project();
@@ -168,8 +154,7 @@ fn memory_list_file_filter_is_an_exact_path_match() {
     assert_eq!(rows.len(), 1, "only the linked note matches: {rows:?}");
     assert_eq!(rows[0]["title"], "linked");
 
-    // A prefix or directory substring must NOT match — this filter is exact,
-    // unlike `context --path`.
+    // Exact match, unlike `context --path`: a prefix or directory substring must not match.
     let output = memory_cmd(&mem_path, &config_path)
         .arg("list")
         .arg("--file")
@@ -188,9 +173,6 @@ fn memory_list_file_filter_is_an_exact_path_match() {
     );
 }
 
-// `memory add` warns on stderr and reports `state: missing` in its own JSON
-// output for a linked file that does not exist yet (ADR-101 D3): never
-// refused, always stored.
 #[test]
 fn memory_add_reports_missing_linked_file_state_without_refusing() {
     let (tmp, mem_path, config_path) = project();
@@ -227,7 +209,6 @@ fn memory_add_reports_missing_linked_file_state_without_refusing() {
     assert_eq!(linked[0]["state"], "missing");
 }
 
-// A linked-file path that escapes the project root is refused, not stored.
 #[test]
 fn memory_add_refuses_a_linked_file_that_escapes_the_project_root() {
     let (tmp, mem_path, config_path) = project();

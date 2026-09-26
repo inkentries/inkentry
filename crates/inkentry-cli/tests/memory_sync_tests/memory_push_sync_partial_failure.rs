@@ -1,17 +1,5 @@
-// Subprocess-level coverage for a mid-push (partial) failure: a multi-chunk
-// `inkentry sync` whose later chunk fails must exit non-zero, print honest
-// partial progress (`Pushed X of Y`) plus a resume hint, and never print success
-// framing (`Sync complete.`).
-//
-// `push_local` (`crates/inkentry-cli/src/cli/cmd/memory/sync/push/mod.rs`) stops
-// at the first failed chunk, keeps the chunks that already landed durably
-// stamped, and returns a summary marked `interrupted` rather than
-// `?`-propagating; the command layer (`sync/mod.rs`) turns that into the
-// partial-progress message and a non-zero exit via `bail!`. This test spawns the
-// real compiled `inkentry` binary (`assert_cmd`, following
-// `memory_push_sync_total_failure.rs`) against a mock team server that serves the
-// first chunk then 500s, so a regression in the command-layer framing or exit
-// code is what fails here.
+// A later push chunk failing after an earlier one landed: `sync` must exit non-zero with
+// `Pushed X of Y` and a resume hint, and never print `Sync complete.`.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
@@ -24,17 +12,13 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use inkentry_core::storage::MemoryStore;
 
-// Project slug with no characters `encode_project_id` would percent-encode,
-// so the mocked route paths below can be matched literally.
+// No characters `encode_project_id` would percent-encode, so mocked routes match literally.
 const PROJECT_SLUG: &str = "acme-widget";
 
-// Enough entries to span more than one push chunk (chunk size is 50), so a
-// later chunk can fail after an earlier one has already landed.
+// More than one push chunk (chunk size 50), so a later chunk can fail after an earlier one landed.
 const SEED_COUNT: usize = 60;
 
-// The first `POST /memory/batch` (chunk 1) lands `created: 50`; every later
-// request 500s (chunk 2 fails). Keyed on call count so it does not depend on
-// wiremock's ordering of same-path mocks.
+// Keyed on call count so it does not depend on wiremock's ordering of same-path mocks.
 struct FirstChunkThenFail {
     calls: AtomicUsize,
 }
@@ -72,7 +56,6 @@ async fn mount_batch_first_ok_then_fail(server: &MockServer) {
         .await;
 }
 
-// The pull half of `inkentry sync` runs independently of the push outcome.
 async fn mount_since_empty(server: &MockServer) {
     Mock::given(method("GET"))
         .and(path_regex(format!(
@@ -85,9 +68,7 @@ async fn mount_since_empty(server: &MockServer) {
         .await;
 }
 
-// See `memory_push_sync_total_failure.rs::write_config` for why `server_url` /
-// `project_id` live in the project-level `.inkentry/config.toml` rather than the
-// `--config` file.
+// `server_url`/`project_id` only apply from the project-level `.inkentry/config.toml`.
 fn write_config(dir: &Path, server_url: &str) -> std::path::PathBuf {
     let db_path = dir.join(".inkentry").join("index.db");
     let config_path = dir.join("config.toml");
@@ -107,9 +88,7 @@ fn init_project(proj: &Path) {
     std::fs::create_dir_all(proj.join(".inkentry")).expect("create .inkentry");
 }
 
-// Seed a standalone memory.db with `SEED_COUNT` distinct live notes, directly
-// via the library, so the push has a multi-chunk live set without spawning one
-// `memory add` subprocess per note.
+// Seeds via the library to avoid one `memory add` subprocess per note.
 fn seed_source_store(mem_path: &Path) {
     register_sqlite_vec();
     std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create source dir");

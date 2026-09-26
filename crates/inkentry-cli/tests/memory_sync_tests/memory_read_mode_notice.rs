@@ -1,21 +1,10 @@
-//! Read commands under a configured team `server_url`.
-//!
-//! With `server_url` set, the default `local_first` mode serves reads from the
-//! local store. That is by design (offline-resilient; the background reconciler
-//! converges the server replica), and the read commands must stay quiet about
-//! it: no per-read manual-sync nag on stderr. These tests pin that silence and
-//! the `cloud_first` counterpart: reads route to the server and an unreachable
-//! server is a hard error, never a silent local read. They also cover the
-//! neutral `inkentry status` mode word and its scope-aware offline hints.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
 
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-/// Title of the locally seeded entry; must never appear on stdout when reads
-/// route to the server.
+// Must never appear on stdout when reads route to the server.
 const LOCAL_TITLE: &str = "local only entry";
 
 fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
@@ -29,16 +18,13 @@ fn write_cfg(dir: &Path, name: &str, db_path: &Path, extra: &str) -> PathBuf {
     path
 }
 
-/// Seed one local memory entry (no `server_url`: solo/local write path) and
-/// return `(tmp, mem_path, id)`.
 fn seeded_project() -> (TempDir, PathBuf, String) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
     let mem_path = db_path.with_file_name("memory.db");
     let cfg = write_cfg(tmp.path(), "config-seed.toml", &db_path, "");
     let out = inkentry_bin()
-        // Not a git repo: the git-notes write-through is a no-op, so the entry
-        // lands only in the local memory.db.
+        // Not a git repo, so the entry lands only in memory.db.
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&cfg)
@@ -57,7 +43,6 @@ fn seeded_project() -> (TempDir, PathBuf, String) {
         .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // The per-machine id is on its own `id:` line under the handle-led lead line.
     let id = stdout
         .lines()
         .find_map(|l| l.trim_start().strip_prefix("id:"))
@@ -82,8 +67,6 @@ fn memory_list(tmp: &TempDir, mem_path: &Path, cfg: &Path) -> std::process::Outp
         .unwrap()
 }
 
-/// stderr must never carry a manual-sync nag on a read; the background
-/// reconciler owns convergence.
 fn assert_no_sync_nag(stderr: &str) {
     assert!(
         !stderr.contains("inkentry sync"),
@@ -95,21 +78,17 @@ fn assert_no_sync_nag(stderr: &str) {
     );
 }
 
-// ── local_first: data served, stdout machine-clean, stderr free of any nag ────
-
 #[test]
 fn local_first_read_serves_data_without_sync_nag() {
     let (tmp, mem_path, _id) = seeded_project();
-    // Non-loopback https passes the transport guard; local_first never contacts
-    // it, so the host being unresolvable is irrelevant (and proves no probe).
+    // The host is unresolvable on purpose: local_first must never contact it.
     let cfg = write_cfg(
         tmp.path(),
         "config-local-first.toml",
         &tmp.path().join("inkentry.db"),
         "",
     );
-    // `server_url`/`project_id` only take effect from project-level
-    // `.inkentry/config.toml` (`memory_list` sets `.current_dir(tmp.path())`).
+    // `server_url`/`project_id` only apply from the project-level `.inkentry/config.toml`.
     plumbing_helpers::write_project_server_config(
         tmp.path(),
         "https://team.invalid:4655",
@@ -122,7 +101,6 @@ fn local_first_read_serves_data_without_sync_nag() {
 
     assert!(out.status.success(), "expected exit 0; stderr: {stderr}");
     assert_no_sync_nag(&stderr);
-    // Local data is still served, as pure JSON on stdout.
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
     assert!(
@@ -132,11 +110,6 @@ fn local_first_read_serves_data_without_sync_nag() {
     assert!(stdout.contains(LOCAL_TITLE), "got: {stdout}");
 }
 
-/// ADR-037 P2 item 34: the new pending/last-synced clause belongs on `inkentry
-/// status` only. No per-read banner is reintroduced on
-/// `list`/`search`/`show`/`timeline`/`context` — extends this file's existing
-/// `assert_no_sync_nag` coverage (recorded in commit `a44279e26`) to also
-/// guard against the new content, not just the old removed nag.
 #[test]
 fn read_commands_never_print_pending_or_last_synced_banner() {
     let (tmp, mem_path, id) = seeded_project();
@@ -200,16 +173,12 @@ fn read_commands_never_print_pending_or_last_synced_banner() {
     assert_clean(&context, "context");
 }
 
-// ── cloud_first: unreachable server = hard error, local data never printed ────
-
 #[test]
 fn cloud_first_read_unreachable_server_errors_without_local_data() {
     let (tmp, mem_path, _id) = seeded_project();
-    // Loopback http passes the transport guard; nothing listens on port 1, so
-    // the read must fail. A raw-UUID project_id skips slug resolution, proving
-    // the failure is the memory read itself. `mode` isn't a `ProjectConfig`
-    // field, so it stays in the global file; `server_url`/`project_id` only
-    // take effect from project-level `.inkentry/config.toml`.
+    // Nothing listens on port 1, so the read must fail. A raw-UUID project_id skips slug
+    // resolution, so the failure is the memory read itself. `mode` is not a project-config
+    // field, so it stays in the global file.
     let cfg = write_cfg(
         tmp.path(),
         "config-cloud-first.toml",
@@ -231,13 +200,10 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
         "cloud_first read against an unreachable server must exit non-zero; \
          stdout: {stdout}"
     );
-    // The one unacceptable outcome: silently substituting local data.
     assert!(
         !stdout.contains(LOCAL_TITLE),
         "local data must never be printed when reads route to the server: {stdout}"
     );
-    // The error names the failed operation and carries the source chain
-    // (anyhow context + reqwest cause).
     assert!(
         stderr.contains("GET /memory"),
         "error must name the failed server read: {stderr}"
@@ -248,10 +214,6 @@ fn cloud_first_read_unreachable_server_errors_without_local_data() {
     );
 }
 
-// ── inkentry status: neutral mode word + scope-aware offline hints ─────────────
-
-/// Minimal indexed project so `inkentry status` passes the ADR-067 project
-/// gate. Indexed with INKENTRY_NO_SERVER=1 (no embed phase, no probes).
 fn indexed_project() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let project = tmp.path().join("project");
@@ -273,17 +235,15 @@ fn indexed_project() -> (TempDir, PathBuf) {
 #[test]
 fn status_shows_neutral_mode_and_truthful_hints_with_unreachable_server_url() {
     let (tmp, project) = indexed_project();
-    // Loopback https passes the transport guard; nothing listens on port 1, so
-    // the tier probe fails fast and the tier is Offline with server_url SET.
+    // Nothing listens on port 1, so the tier probe fails: Offline with server_url set.
     let cfg = write_cfg(
         tmp.path(),
         "config-team.toml",
         &tmp.path().join("index.db"),
         "",
     );
-    // `server_url`/`project_id` only take effect from project-level
-    // `.inkentry/config.toml`; the `status` command below runs with
-    // `.current_dir(&project)`, so it must land there, not under `tmp.path()`.
+    // `server_url`/`project_id` only apply from the project-level config, which must sit
+    // under `project` (the cwd of `status`), not `tmp.path()`.
     plumbing_helpers::write_project_server_config(&project, "https://127.0.0.1:1", "team/proj");
 
     let out = inkentry_bin()
@@ -296,7 +256,6 @@ fn status_shows_neutral_mode_and_truthful_hints_with_unreachable_server_url() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stdout: {stdout}");
 
-    // A neutral one-word mode indicator, with no manual-sync call to action.
     assert!(stdout.contains("mode"), "got: {stdout}");
     assert!(stdout.contains("local_first"), "got: {stdout}");
     assert!(
@@ -326,11 +285,9 @@ fn status_has_no_mode_line_on_solo_default() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stdout: {stdout}");
 
-    // Solo default: no sync configuration, no mode line.
     assert!(!stdout.contains("\n  mode"), "got: {stdout}");
     assert!(!stdout.contains("local_first"), "got: {stdout}");
-    // The kill-switch is what makes this run offline, so that is what the
-    // search hint names; `server_url` is inert while it is set (#126).
+    // The kill-switch makes this run offline, so the search hint names it, not the inert `server_url`.
     assert!(stdout.contains("INKENTRY_NO_SERVER"), "got: {stdout}");
     assert!(!stdout.contains("server_url"), "got: {stdout}");
 }
