@@ -1,19 +1,3 @@
-// End-to-end regression tests for `inkentry memory add`'s insert-then-recover
-// behavior once `idx_notes_entity_id` has been promoted to UNIQUE (ADR-068's
-// fourth amendment, criteria 25-30, 33, 34).
-//
-// Every existing test proving this behavior (`entity_id_migration.rs`'s
-// `add_note_after_promotion_*` tests) drives `MemoryStore::add_note`
-// directly, the storage layer, one level below the actual regression QA
-// reproduced: "`inkentry memory add` for a second time with identical
-// kind/title/body prints 'Error: UNIQUE constraint failed: notes.entity_id'
-// and exits 1", run against the *built CLI binary*. Nothing in the existing
-// suite drives the real `inkentry` binary through this path end to end, so
-// this file closes that gap: it proves the CLI's own output branch
-// (criterion 33: "Stored" vs "Already recorded as") and the git-notes
-// write-through carrier's behavior on a reuse (criterion 34) against the
-// actual process, not just the library call it wraps.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin};
 
@@ -58,9 +42,7 @@ fn row_count(mem_db: &Path) -> i64 {
         .unwrap_or(0)
 }
 
-// Tags moved from a comma-joined `notes.tags` column to rows in `note_tags`
-// (ADR-101); reads by `note_uuid`, not the storage-surrogate `id`, and
-// reconstructs the comma-joined form callers here compare against.
+// Reads by `note_uuid` and rejoins the tag rows into the comma-joined form callers compare against.
 fn note_tags(mem_db: &Path, uuid: &str) -> String {
     let conn = Connection::open(mem_db).expect("open memory.db");
     let mut stmt = conn
@@ -74,8 +56,6 @@ fn note_tags(mem_db: &Path, uuid: &str) -> String {
     tags.join(",")
 }
 
-// Parse every `{"id": ..., ...}` JSONL record out of `git notes --ref=inkentry
-// show HEAD`, returning each record's `id` field in file order.
 fn git_note_record_entity_ids(dir: &Path) -> Vec<String> {
     let out = std::process::Command::new("git")
         .args(["notes", "--ref=inkentry", "show", "HEAD"])
@@ -101,18 +81,13 @@ fn git_note_record_entity_ids(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-// ── Criteria 25/29/30/33: a fresh insert prints "Stored", a colliding second
-// insert prints "Already recorded as", and the row count stays at 1 ─────────
-
 #[test]
 fn second_identical_add_reuses_the_row_and_prints_already_recorded() {
     let tmp = TempDir::new().unwrap();
     let mem_db = tmp.path().join("memory.db");
     let cfg = write_config(tmp.path(), &mem_db);
 
-    // First add: a fresh store with zero rows promotes idx_notes_entity_id to
-    // UNIQUE on this very `open()` (zero duplicate groups trivially), so the
-    // *second* call below hits the promoted index.
+    // The first add promotes `idx_notes_entity_id` to UNIQUE on this `open()`, so the second call hits the promoted index.
     memory_add_cmd(tmp.path(), &cfg, &mem_db)
         .arg("--title")
         .arg("dup entry")
@@ -124,10 +99,6 @@ fn second_identical_add_reuses_the_row_and_prints_already_recorded() {
 
     assert_eq!(row_count(&mem_db), 1, "first add creates one row");
 
-    // Second add: byte-identical kind/title/body. Pre-fix this hard-crashed
-    // with a raw "UNIQUE constraint failed: notes.entity_id" SQLite error and
-    // a non-zero exit, reproduced live against the built binary during the
-    // original QA review this story fixes.
     memory_add_cmd(tmp.path(), &cfg, &mem_db)
         .arg("--title")
         .arg("dup entry")
@@ -144,9 +115,6 @@ fn second_identical_add_reuses_the_row_and_prints_already_recorded() {
         "criterion 26/30: a collision must reuse the existing row, not create a second one"
     );
 }
-
-// ── Criterion 26: tags supplied on the colliding call merge into the
-// existing row (add-wins) rather than being silently dropped ────────────────
 
 #[test]
 fn second_identical_add_merges_tags_into_the_existing_row() {
@@ -186,11 +154,7 @@ fn second_identical_add_merges_tags_into_the_existing_row() {
     );
 }
 
-// ── Criterion 34: the git-notes write-through carrier is unconditional: it
-// appends on a reused row exactly as on a fresh one, under the SAME identity.
-// The carrier's own `id` field is a per-write stamp of the frozen ADR-059
-// format and is not identity; `entity_id` is what a reader resolves on ───
-
+// The carrier's own `id` is a per-write stamp, not identity; a reader resolves on `entity_id`.
 #[test]
 fn second_identical_add_still_writes_through_to_git_notes_with_the_same_entity_id() {
     let tmp = TempDir::new().unwrap();
@@ -229,6 +193,5 @@ fn second_identical_add_still_writes_through_to_git_notes_with_the_same_entity_i
          for what SQLite considers a single entry"
     );
 
-    // SQLite itself agrees there is exactly one row.
     assert_eq!(row_count(&mem_db), 1);
 }

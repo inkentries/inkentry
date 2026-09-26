@@ -1,18 +1,3 @@
-// Integration tests for `inkentry memory dedupe`.
-//
-// Covers the CLI-facing acceptance criteria (see ADR-068's third amendment):
-// - `--dry-run` reports counts and makes no writes (AC9).
-// - Without `--dry-run`, duplicate groups collapse and row count drops by
-//   exactly `rows_collapsed` (AC10).
-// - Zero duplicate groups: all-zero counts, no writes, either mode (AC22).
-// - `--format json` emits one JSON summary object (AC23).
-//
-// Storage-layer mechanics (survivor selection, tag/file union, archived
-// sticks, supersede adoption/rewrite/self-edge-guard, embedding cleanup,
-// transactional rollback) are covered directly against `MemoryStore` in
-// `inkentry_core::storage::memory::dedupe`; these tests exercise the command
-// surface end to end instead of re-proving that mechanics.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin;
 
@@ -34,8 +19,6 @@ fn ensure_sqlite_vec() {
     });
 }
 
-// Write a minimal inkentry config and make `dir` a real project, mirroring
-// `memory_reconcile.rs`'s `write_config`. Returns `(config_path, mem_path)`.
 fn write_config(dir: &Path) -> (PathBuf, PathBuf) {
     let inkentry_dir = dir.join(".inkentry");
     std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry");
@@ -53,11 +36,8 @@ fn write_config(dir: &Path) -> (PathBuf, PathBuf) {
     (config_path, mem_path)
 }
 
-// Seed `mem_path` with two rows sharing `{kind, title, body}` (a duplicate
-// entity_id group). The initial schema declares `idx_notes_entity_id` UNIQUE,
-// so a store this binary created cannot hold such rows; the seed drops that
-// index to reproduce a hand-edited database, which is the only way the
-// condition `memory dedupe` exists for can still arise.
+// Two rows sharing `{kind, title, body}`. The schema's UNIQUE `idx_notes_entity_id` forbids that, so the seed
+// drops it to mimic a hand-edited database, the only way the condition `memory dedupe` handles can arise.
 fn seed_duplicate_group(mem_path: &Path) {
     ensure_sqlite_vec();
     std::fs::create_dir_all(mem_path.parent().unwrap()).expect("create .inkentry dir");
@@ -103,8 +83,6 @@ fn dedupe_cmd(config_path: &Path) -> Command {
     cmd
 }
 
-// ── AC9: --dry-run reports counts, makes no writes ───────────────────────────
-
 #[test]
 fn dry_run_reports_counts_and_writes_nothing() {
     let tmp = TempDir::new().unwrap();
@@ -136,8 +114,6 @@ fn dry_run_reports_counts_and_writes_nothing() {
     );
 }
 
-// ── AC10: without --dry-run, duplicates collapse and row count drops exactly ─
-
 #[test]
 fn real_run_collapses_and_row_count_drops_by_rows_collapsed() {
     let tmp = TempDir::new().unwrap();
@@ -163,15 +139,12 @@ fn real_run_collapses_and_row_count_drops_by_rows_collapsed() {
     assert_eq!(count_memory_notes(&mem_path), before - rows_collapsed);
 }
 
-// ── AC22: zero duplicate groups -> all-zero counts, no writes ───────────────
-
 #[test]
 fn zero_duplicates_reports_all_zero_and_writes_nothing() {
     let tmp = TempDir::new().unwrap();
     let (config_path, mem_path) = write_config(tmp.path());
 
-    // A single `memory add` seeds one unique row and, on its own `open()`,
-    // the empty-store Step B promotes the index: no duplicates ever exist.
+    // A single `memory add` on an empty store promotes the index, so no duplicates can exist.
     inkentry_bin()
         .current_dir(tmp.path())
         .env("INKENTRY_NO_SERVER", "1")
@@ -212,8 +185,6 @@ fn zero_duplicates_reports_all_zero_and_writes_nothing() {
         "no writes on zero groups"
     );
 }
-
-// ── AC23: default/text format emits a human-readable line, not JSON ─────────
 
 #[test]
 fn default_format_emits_human_readable_line() {

@@ -1,11 +1,3 @@
-// Component tests for `inkentry plumbing graph-edges`.
-//
-// Paths here are the paths the index stores, which are relative to the indexed
-// project root (`src/main.rs`), not to the fixture directory
-// (`simple-project/src/main.rs`). Filtering on the latter matches nothing and
-// exits 2, so a test written as "exit 0 or non-zero" over such a path never
-// runs its assertions at all.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{
     index_fixture_project, index_project_dir, inkentry_bin, inkentry_cmd, parse_jsonl,
@@ -29,8 +21,6 @@ fn assert_edge_fields(rows: &[Value]) {
         }
     }
 }
-
-// ── happy path: file filter ───────────────────────────────────────────────────
 
 #[test]
 fn graph_edges_file_filter_emits_the_files_call_edges() {
@@ -84,8 +74,6 @@ fn graph_edges_main_file_emits_both_call_and_import_edges() {
         has_edge(&rows, "main", "greet", "calls"),
         "expected the `main -> greet` call edge: {rows:?}"
     );
-    // An import edge has no enclosing symbol, which is why `source_name` is
-    // nullable in the JSONL contract rather than always a string.
     let import = rows
         .iter()
         .find(|row| row["kind"] == "imports")
@@ -95,8 +83,6 @@ fn graph_edges_main_file_emits_both_call_and_import_edges() {
         "an import edge is not attributed to a symbol: {import}"
     );
 }
-
-// ── resolved target file ──────────────────────────────────────────────────────
 
 fn edge_row<'a>(rows: &'a [Value], source: &str, target: &str) -> &'a Value {
     rows.iter()
@@ -141,8 +127,8 @@ fn graph_edges_carries_target_file_only_for_a_resolved_edge() {
 
 #[test]
 fn graph_edges_keeps_rows_that_differ_only_in_target_file_when_filters_merge() {
-    // One line calls `helper` twice: the bare call binds to the import and
-    // stays unresolved, the receiver call reaches this file's own method.
+    // One line calls `helper` twice: the bare call binds to the import and stays unresolved,
+    // the receiver call resolves to this file's own method.
     let project = TempDir::new().unwrap();
     std::fs::create_dir_all(project.path().join("src")).unwrap();
     std::fs::write(
@@ -159,8 +145,7 @@ fn graph_edges_keeps_rows_that_differ_only_in_target_file_when_filters_merge() {
     let (_tmp, db_path, config_path) = index_project_dir(project.path());
 
     let out = inkentry_cmd(&db_path, &config_path)
-        // The two rows arrive through `--symbol`, so it is the merge's own
-        // de-duplication that has to keep them apart.
+        // Rows arrive via `--symbol`, so the merge's own de-duplication must keep them apart.
         .args(["graph-edges", "--file", "src/b.ts", "--symbol", "helper"])
         .assert()
         .success()
@@ -176,8 +161,6 @@ fn graph_edges_keeps_rows_that_differ_only_in_target_file_when_filters_merge() {
     targets.sort();
     assert_eq!(targets, vec![None, Some("src/a.ts")], "{rows:?}");
 }
-
-// ── symbol filter ─────────────────────────────────────────────────────────────
 
 #[test]
 fn graph_edges_symbol_filter_finds_edges_across_files() {
@@ -208,8 +191,7 @@ fn graph_edges_symbol_filter_finds_edges_across_files() {
 fn graph_edges_symbol_filter_finds_edges_out_of_the_definition() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // `greet` only calls `format!`, a builtin the graph skips, so the edge out
-    // of a definition is exercised on `sum_slice`, which calls `sum`.
+    // `greet` only calls the skipped builtin `format!`, so the out-edge case uses `sum_slice`.
     let result = inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--symbol")
@@ -231,16 +213,12 @@ fn graph_edges_symbol_filter_finds_edges_out_of_the_definition() {
     );
 }
 
-// ── a path the index does not store ───────────────────────────────────────────
-
 #[test]
 fn graph_edges_exits_2_for_a_path_the_index_does_not_store() {
     let (_tmp, db_path, config_path) = index_fixture_project();
 
-    // Stored paths are relative to the indexed root, so a fixture-relative path
-    // matches nothing. That is a hard error naming the path, not an empty set:
-    // a silent exit here is what made the earlier file-filter tests
-    // unfalsifiable, and what let a mistyped path pass for a file with no edges.
+    // Stored paths are relative to the indexed root, so a fixture-relative path matches nothing:
+    // a hard error, not an empty set.
     inkentry_cmd(&db_path, &config_path)
         .arg("graph-edges")
         .arg("--file")
@@ -250,8 +228,6 @@ fn graph_edges_exits_2_for_a_path_the_index_does_not_store() {
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("simple-project/src/main.rs"));
 }
-
-// ── no results (exit 1) ───────────────────────────────────────────────────────
 
 #[test]
 fn graph_edges_exits_1_for_nonexistent_symbol() {
@@ -265,8 +241,6 @@ fn graph_edges_exits_1_for_nonexistent_symbol() {
         .code(1);
 }
 
-// ── error path: no flags ──────────────────────────────────────────────────────
-
 #[test]
 fn graph_edges_exits_nonzero_when_no_flags_given() {
     let (_tmp, db_path, config_path) = index_fixture_project();
@@ -279,8 +253,6 @@ fn graph_edges_exits_nonzero_when_no_flags_given() {
             "at least one of --file or --symbol is required",
         ));
 }
-
-// ── error path: missing DB ────────────────────────────────────────────────────
 
 #[test]
 fn graph_edges_exits_nonzero_when_db_missing() {

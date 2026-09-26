@@ -1,12 +1,3 @@
-//! Regression test for the `inkentry memory harvest` argument-injection guard
-//! (security review finding: `--branch`/`--git-range` values starting with
-//! `-` must never reach `git log` as an option — see
-//! `crates/inkentry-cli/src/cli/cmd/memory/harvest.rs::reject_option_like_ref`).
-//!
-//! A malicious value like `--branch=--output=/tmp/x` must be rejected with a
-//! clear error before any `git` subprocess runs, and must never create or
-//! overwrite the target file.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin};
 
@@ -14,22 +5,10 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
-// `server_url`/`project_id` only satisfy harvest's upfront "server
-// configured" gate: the injection guard under test fires before any request
-// reaches that address, so it deliberately never needs to be reachable.
-// `Config::load` only honors those two fields from project-level
-// `.inkentry/config.toml` (or env), never the global `--config` file, so they
-// land in `dir`'s project config instead of `dir/config.toml`. Every caller
-// sets `.current_dir(dir)`.
-//
-// `mode = "cloud_first"` (global config) is required since the 2026-07-23
-// ADR-004 revision: `Config::resolve_inference_url()` no longer falls back to
-// an unreachable `server_url` under the default `local_first`, so the Tier-0
-// gate this helper means to satisfy unconditionally would (correctly) start
-// checking real reachability instead, and nothing listens on the address
-// below. Only `cloud_first` keeps the old "a configured server_url always
-// satisfies the gate" behavior this test relies on to reach the injection
-// guard beneath it.
+// `server_url`/`project_id` only satisfy harvest's upfront server gate; the guard under test fires first,
+// so the address is never contacted. `Config::load` reads them only from project-level
+// `.inkentry/config.toml`, so they land there rather than in the `--config` file.
+// `mode = "cloud_first"` makes the gate accept a configured `server_url` without probing its reachability.
 fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
     let db_path = dir.join("memory.db");
     let config_path = dir.join("config.toml");
@@ -38,19 +17,14 @@ fn write_harvest_config(dir: &std::path::Path) -> std::path::PathBuf {
         db_path
     );
     fs::write(&config_path, content).expect("write config.toml");
-    // Port 0 can never have a listener: ref rejection happens before any
-    // network use, so an unreachable server_url exercises the same path
-    // without probing the developer's own daemon (inkentry-oss^5).
+    // Port 0 never has a listener, so the test cannot probe the developer's own daemon.
     plumbing_helpers::write_project_server_config(dir, "http://127.0.0.1:0", "test/proj");
     config_path
 }
 
-/// Initialize a throwaway git repo with a single commit so a real HEAD exists.
 fn init_repo(dir: &std::path::Path) {
     init_git_repo(dir);
-    // ADR-067: `memory harvest` fails closed without a local `.inkentry/` project,
-    // so make this repo a real project — otherwise the guard fires before the
-    // ref-injection check under test is reached.
+    // Without a local `.inkentry/`, harvest fails closed before reaching the ref check under test.
     fs::create_dir_all(dir.join(".inkentry")).expect("create .inkentry");
 }
 
@@ -59,8 +33,6 @@ fn harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
     let temp = tempdir().unwrap();
     init_repo(temp.path());
 
-    // Victim file elsewhere on disk that a successful `--output=` injection
-    // would create/overwrite via `git log --output=<path>`.
     let victim_dir = tempdir().unwrap();
     let victim_path = victim_dir.path().join("victim.txt");
     assert!(!victim_path.exists());
@@ -89,8 +61,6 @@ fn harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
     );
 }
 
-// The same option-injection guard protects the promoted top-level
-// `inkentry harvest` command, which shares the handler.
 #[test]
 fn toplevel_harvest_rejects_option_like_branch_and_does_not_touch_victim_file() {
     let temp = tempdir().unwrap();
@@ -152,9 +122,6 @@ fn harvest_rejects_option_like_git_range() {
     assert!(!victim_path.exists());
 }
 
-/// Short option-shaped refs (e.g. `-1`, mimicking `git log -1`) must be
-/// rejected too, not just long `--flag=value` forms. Regression coverage
-/// for the "short option that looks like a legitimate-ish ref" edge case.
 #[test]
 fn harvest_rejects_short_option_like_branch() {
     let temp = tempdir().unwrap();
@@ -177,8 +144,6 @@ fn harvest_rejects_short_option_like_branch() {
         .stderr(predicate::str::contains("rejected").or(predicate::str::contains("Invalid")));
 }
 
-/// A ref value that is exactly the `--` end-of-options marker must be
-/// rejected (not silently accepted or treated as a no-op separator).
 #[test]
 fn harvest_rejects_bare_double_dash_branch() {
     let temp = tempdir().unwrap();
@@ -201,11 +166,7 @@ fn harvest_rejects_bare_double_dash_branch() {
         .stderr(predicate::str::contains("rejected").or(predicate::str::contains("Invalid")));
 }
 
-/// A ref value starting with `-` but containing shell metacharacters must
-/// still be rejected by the option-like guard (belt-and-braces: no shell is
-/// ever involved since git is spawned via argv, but the leading `-` alone is
-/// grounds for rejection, and this pins that no metacharacter-based bypass
-/// exists).
+// No shell is involved; this pins that metacharacters offer no bypass of the leading-`-` guard.
 #[test]
 fn harvest_rejects_option_like_branch_with_shell_metacharacters() {
     let temp = tempdir().unwrap();

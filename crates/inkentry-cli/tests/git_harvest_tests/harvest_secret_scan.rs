@@ -1,18 +1,3 @@
-// Secret scanning on the git-commit harvest (`inkentry harvest --source git`).
-//
-// A commit message is already in shared git history, so harvest does not leak
-// anything new by reading one. What it does is *promote* that text into
-// memory, which is written to `refs/notes/inkentry` and pushed to a team or
-// hosted server, the same destination `memory add` refuses to write a
-// matched secret to. This path therefore applies the same scanner.
-//
-// The failure shape is deliberately not `memory add`'s. `add` aborts the
-// whole command, which is right for one interactive title/body; a `--branch`
-// walk can cover thousands of commits, so one match skips that commit and the
-// walk continues. The tests below pin that difference: a match must not end
-// the run, and the warning must name the commit SHA without echoing what
-// matched.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, isolate_git_config};
 
@@ -27,12 +12,8 @@ fn aws_key() -> String {
     format!("AKIA{}", "IOSFODNN7EXAMPLE")
 }
 
-// ── mock inference server ─────────────────────────────────────────────────
-
-// Embedding vectors are derived from the request's chunk content rather than
-// being a constant: harvest drops an entry whose nearest neighbour is closer
-// than 0.15, so identical vectors for every entry would make each commit after
-// the first look like a duplicate and hide whether the walk really stored it.
+// Content-derived rather than constant vectors: harvest drops an entry whose nearest neighbour is closer
+// than 0.15, so identical vectors would make every commit after the first look like a duplicate.
 struct ContentDerivedEmbedResponder;
 
 impl wiremock::Respond for ContentDerivedEmbedResponder {
@@ -52,9 +33,7 @@ impl wiremock::Respond for ContentDerivedEmbedResponder {
         let dim = inkentry_core::embeddings::EMBEDDING_DIM;
         let mut bytes = Vec::with_capacity(body.chunks.len() * dim * 4);
         for chunk in &body.chunks {
-            // One-hot on a content-derived axis: distinct texts land on
-            // orthogonal vectors (cosine distance 1.0), identical texts on the
-            // same one, so the dedup check still means something.
+            // One-hot on a content-derived axis: distinct texts are orthogonal and identical texts coincide, so dedup stays meaningful.
             let axis = (content_axis(&chunk.content)) % dim;
             for i in 0..dim {
                 let v: f32 = if i == axis { 1.0 } else { 0.0 };
@@ -68,9 +47,7 @@ impl wiremock::Respond for ContentDerivedEmbedResponder {
     }
 }
 
-// Every subject this file harvests. The mock titles an entry with its commit's
-// subject and embeds only that, so these decide the axes the fixture occupies
-// and `fixture_entries_occupy_distinct_axes` proves they do not collide.
+// Every subject this file harvests; `fixture_entries_occupy_distinct_axes` proves their embed axes do not collide.
 const INIT_SUBJECT: &str = "feat: choose sqlite over postgres for the local index";
 
 const SECRET_SCAN_SUBJECTS: [&str; 2] = [
@@ -97,24 +74,14 @@ fn content_axis(text: &str) -> usize {
     acc
 }
 
-// The extraction reply is built from the prompt the CLI actually sent: one
-// entry per `COMMIT <sha>` line. A commit that never reaches the LLM therefore
-// yields no entry, so "stored" in these tests tracks "was sent for extraction"
-// exactly.
-//
-// The prompt carries each commit's subject on the line after its sha, and the
-// reply echoes it as the title. Nothing here may carry the sha: the fixture
-// embedder above is one-hot on `content_axis(text) % EMBEDDING_DIM`, so two
-// entries collide only when their texts hash to the same axis, and a sha in
-// the text re-rolls that hash every run. That is what made this file fail
-// about one run in a hundred. Subjects are fixed, so the axes are fixed, and
-// `fixture_entries_occupy_distinct_axes` holds them apart.
+// Built from the prompt the CLI sent: one entry per `COMMIT <sha>` line, so a commit that never reaches the LLM
+// yields no entry. The title is the subject on the following line; the text must not carry the sha, since
+// it would re-roll the axis hash each run and make the fixture axes collide intermittently.
 fn entry_body(subject: &str) -> String {
     format!("{subject}. Extracted by the mock extractor.")
 }
 
-// Mirrors what harvest embeds for dedup (`memory/harvest.rs`), so the axis
-// check above measures the same string the product does.
+// Mirrors what harvest embeds for dedup, so the axis check measures the same string.
 fn embed_text_for(subject: &str) -> String {
     format!("title: {subject} | text: {}", entry_body(subject))
 }
@@ -182,7 +149,6 @@ async fn inference_mock() -> MockServer {
     server
 }
 
-// Every `/llm/complete` prompt this mock received, concatenated.
 async fn llm_prompts(server: &MockServer) -> String {
     server
         .received_requests()
@@ -194,8 +160,6 @@ async fn llm_prompts(server: &MockServer) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-// ── repo + project fixtures ───────────────────────────────────────────────
 
 fn git(dir: &Path, args: &[&str]) {
     let status = std::process::Command::new("git")
@@ -216,7 +180,6 @@ fn head_sha(dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-// A git project with one indexable source file, ready for further commits.
 fn init_project(dir: &Path) {
     isolate_git_config();
     std::fs::write(
@@ -238,8 +201,6 @@ fn init_project(dir: &Path) {
     git(dir, &["commit", "-q", "-m", INIT_SUBJECT]);
 }
 
-// Add an empty commit carrying `subject` (and `body`, when non-empty), and
-// return its full SHA.
 fn commit(dir: &Path, subject: &str, body: &str) -> String {
     let mut args = vec!["commit", "--allow-empty", "-q", "-m", subject];
     if !body.is_empty() {
@@ -263,14 +224,9 @@ fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
     cmd
 }
 
-// Point loopback auto-discovery at `url` and return the port to hand its
-// fixed-port fallback (step 3b) through `INKENTRY_TEST_DISCOVERY_PORT`.
-//
-// Not the `server.port` file (step 3a): that step now uses a responder only
-// when the pid recorded beside the port is a live `inkentry-server` process and
-// the instance id it reports is the recorded one, neither of which a wiremock
-// stand-in can be. The state dir is still created and still redirected, so
-// nothing here reaches the developer's own daemon or state.
+// Points loopback discovery's fixed-port fallback at `url` via `INKENTRY_TEST_DISCOVERY_PORT`. The `server.port`
+// file is unusable: it requires a live `inkentry-server` pid and matching instance id, which a wiremock stand-in
+// cannot supply. The state dir is still redirected so nothing reaches the developer's own daemon.
 fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).expect("create state dir");
     url.rsplit(':')
@@ -280,8 +236,7 @@ fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
         .to_string()
 }
 
-// `inkentry index` offline, so the project has the `.inkentry/` directory
-// harvest requires (ADR-067) without contacting anything.
+// Offline `inkentry index`, so the project has the `.inkentry/` directory harvest requires.
 fn seed_index(home: &Path, project: &Path, db: &Path) {
     base_cmd(home, project)
         .env("INKENTRY_NO_SERVER", "1")
@@ -302,7 +257,6 @@ fn combined(output: &std::process::Output) -> String {
     )
 }
 
-// The `source_ref` of every note in `mem_db`.
 fn stored_source_refs(mem_db: &Path) -> Vec<String> {
     plumbing_helpers::register_sqlite_vec();
     if !mem_db.exists() {
@@ -366,13 +320,8 @@ impl Harness {
     }
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────
-
-// The fixture embedder is one-hot, so two entries are either orthogonal or
-// exactly identical: a collision is a hash clash on `content_axis % dim`, not a
-// near miss. Harvest then drops one entry as a duplicate and the walk reads as
-// though it lost a commit. Adding or reordering a subject can trigger that, so
-// this fails at the fixture rather than in whichever test happens to notice.
+// One-hot embeddings make a collision a hash clash on `content_axis % dim`: harvest then drops one entry as a
+// duplicate and the walk looks like it lost a commit. Failing here points at the fixture, not a random test.
 #[test]
 fn fixture_entries_occupy_distinct_axes() {
     let dim = inkentry_core::embeddings::EMBEDDING_DIM;
@@ -466,8 +415,7 @@ async fn a_branch_walk_stores_every_clean_commit_despite_one_match() {
         clean.push(commit(h.project.path(), subject, ""));
     }
 
-    // Batch size 2 puts the matching commit in the middle of a multi-batch
-    // walk: a skip that ended the run would leave later batches unharvested.
+    // Batch size 2 puts the match mid-walk: a skip that ended the run would leave later batches unharvested.
     let output = h.harvest(&["--batch-size", "2"]);
     let text = combined(&output);
 

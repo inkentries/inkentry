@@ -1,13 +1,3 @@
-//! Regression coverage: `memory add --db` must scope the git-notes
-//! write-through carrier to the `--db` target's own project, not to
-//! whatever git repo the process happens to be run from.
-//!
-//! Before the fix, `append_to_git_notes`/`append_state_update`/
-//! `GitNotesBackend::new()` all resolved the repo from the process CWD
-//! regardless of `--db`, so `cargo test`-style fixture seeding (which points
-//! `--db` at a tmpdir but inherits the developer's repo as CWD) silently
-//! appended fixture entries to the developer's real `refs/notes/inkentry`.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin_in};
 
@@ -25,8 +15,6 @@ fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("spawn git")
 }
 
-/// The inkentry records currently on `HEAD`'s `refs/notes/inkentry` note in
-/// `dir`, or `None` when that repo holds no such note at all.
 fn inkentry_note_lines(dir: &Path) -> Option<Vec<String>> {
     let out = git_out(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
     if !out.status.success() {
@@ -51,7 +39,6 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-/// A `inkentry` command with an isolated HOME and no server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
@@ -60,10 +47,8 @@ fn bin(home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
-/// The regression guard itself: a `--db` target with no git repo of its own
-/// must never fall back to writing the carrier into the CWD repo. This is
-/// exactly the shape `cargo test` fixture seeding relies on (DB in a bare
-/// tmpdir, CWD the developer's checkout).
+// A `--db` target with no git repo of its own must never fall back to the CWD repo's notes: fixture
+// seeding points `--db` at a tmpdir while inheriting the developer's checkout as CWD.
 #[test]
 fn db_target_outside_any_repo_never_writes_cwd_repos_notes() {
     let tmp = TempDir::new().unwrap();
@@ -97,8 +82,6 @@ fn db_target_outside_any_repo_never_writes_cwd_repos_notes() {
     );
 }
 
-/// Positive control: when `--db`'s parent directory IS its own git repo,
-/// separate from CWD's, the carrier writes there and not into CWD's repo.
 #[test]
 fn db_target_inside_its_own_repo_writes_there_not_cwd_repo() {
     let tmp = TempDir::new().unwrap();
@@ -139,12 +122,7 @@ fn db_target_inside_its_own_repo_writes_there_not_cwd_repo() {
     );
 }
 
-/// The `--supersedes` state-update carry for the OLD entity (a separate call
-/// site from the main record write) must also be scoped to the `--db` target,
-/// not the CWD repo.
-// The id the `--db` store holds for the entry titled `title`. A git-notes
-// record's own `id` belongs to the frozen carrier format and never resolves
-// against the store.
+// A git-notes record's own `id` never resolves against the store.
 fn local_id_for_title(home: &Path, cwd: &Path, db_path: &Path, title: &str) -> String {
     let out = bin(home, cwd)
         .arg("memory")
@@ -184,8 +162,7 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
     init_git_repo(&project_repo);
     let db_path = project_repo.join("memory.db");
 
-    // Both adds run from host_repo's CWD: only --db should decide where the
-    // carrier (new record AND old-entity state-update) lands.
+    // Both adds run from host_repo: only `--db` should decide where the carrier lands.
     bin(home.path(), &host_repo)
         .arg("memory")
         .arg("--db")
@@ -242,10 +219,6 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
     );
 }
 
-/// No local `.inkentry` project and no `--db`: `add` rides the git-notes
-/// carrier straight into CWD's own repo (ADR-068 D3). This path's project
-/// root is legitimately CWD-derived, so this confirms the redirect fix left
-/// it alone rather than guarding a regression.
 #[test]
 fn pre_init_add_with_no_local_project_uses_cwd_repo() {
     let tmp = TempDir::new().unwrap();
@@ -272,12 +245,6 @@ fn pre_init_add_with_no_local_project_uses_cwd_repo() {
     assert_eq!(record_field(&lines[0], "title"), "pre-init-entry");
 }
 
-/// `--supersedes` on the pre-init (no local project, no `--db`) path exercises
-/// the third call site: the E4 pre-flight read of OLD via
-/// `GitNotesBackend::with_root(project_root)` at `add.rs`'s `pre_init_notes`
-/// branch. None of the other tests in this file combine `pre_init_notes` with
-/// `--supersedes`, so without this test that read path (and the state-update
-/// carry that follows it) runs unexercised by anything in this suite.
 #[test]
 fn pre_init_supersedes_reads_and_writes_cwd_repo() {
     let tmp = TempDir::new().unwrap();
@@ -335,17 +302,8 @@ fn pre_init_supersedes_reads_and_writes_cwd_repo() {
     );
 }
 
-/// Adversarial nesting case: the `--db` target's own repo is not a sibling of
-/// the CWD repo but lives *inside* it (a second `.git` nested a few
-/// directories below the CWD repo's root, as e.g. a vendored checkout would
-/// look, without going through an actual submodule). `git -C <dir>` discovery
-/// walks upward from `<dir>` and must stop at the nearest `.git` (the nested
-/// repo), not continue past it to the outer CWD repo. This is a stricter
-/// version of `db_target_inside_its_own_repo_writes_there_not_cwd_repo`: that
-/// test's two repos are unrelated siblings, so it can't tell "found the right
-/// repo" apart from "found *some* repo containing a `.git` in its ancestry
-/// that happens not to be CWD's". Nesting the target repo inside the CWD repo
-/// closes that gap.
+// The target repo is nested inside the CWD repo rather than a sibling: git discovery must stop at the
+// nearest `.git`, which unrelated sibling repos cannot distinguish from finding some other repo.
 #[test]
 fn db_target_nested_inside_cwd_repo_writes_there_not_cwd_repo() {
     let tmp = TempDir::new().unwrap();

@@ -1,5 +1,4 @@
-// Consolidated memory CRUD test binary: groups the previously separate memory add/list/dedupe/reindex/removed-command test files into one integration test crate to cut per-binary link overhead.
-
+// One test binary for all memory CRUD suites, to cut per-binary link overhead.
 mod plumbing_helpers;
 
 #[path = "memory_crud_tests/memory_add_db_scopes_git_notes.rs"]

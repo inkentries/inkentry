@@ -1,20 +1,3 @@
-// Regression tests for cross-project freshness reporting (`inkentry links check`
-// / `inkentry links list`).
-//
-// Bug: a freshly-indexed *linked* project was reported STALE by `links check`
-// / `links list`. The cross-project staleness probe read each indexed file's
-// (root-relative) path against the *linking* project's cwd instead of the
-// linked project's own root, so every sampled file looked "changed" and the
-// documented CI gate ("`links check` exits non-zero if any linked index is
-// stale or missing") false-failed on a clean checkout.
-//
-// Expected: `links check` / `links list` agree with the linked project's own
-// non-mutating freshness probe (`plumbing ls-files --stale`). A freshly-indexed
-// dep is FRESH; a dep with a file modified since indexing is STALE.
-//
-// These tests seed a linked project's index.db directly (relative path + the
-// real blake3 hash of an on-disk file), so no embed server is needed.
-
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
 
@@ -25,22 +8,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-// ── test-registry helpers ─────────────────────────────────────────────────────
-
-// The directory the CLI reads via `INKENTRY_REGISTRY_DIR`, under the isolated
-// test HOME. Mirrors the real `registry_path()` layout.
 fn registry_dir(home: &Path) -> PathBuf {
     home.join(".config").join("inkentry")
 }
 
-// Canonicalize the same way the product does, so registry `root_path` entries
-// match the path the CLI derives from `current_dir()` (macOS `/var` ↔
-// `/private/var`).
+// Canonicalized as the product does, so registry `root_path` matches `current_dir()` (macOS `/var` vs `/private/var`).
 fn canon(p: &Path) -> PathBuf {
     inkentry_core::utils::canonicalize(p)
 }
 
-// A self-contained test registry backed by `registry.db` under the test HOME.
 struct TestRegistry {
     conn: Connection,
 }
@@ -99,16 +75,12 @@ impl TestRegistry {
     }
 }
 
-// ── project / index helpers ────────────────────────────────────────────────────
-
-// Create `<root>/.inkentry/index.db` and return its path.
 fn create_index_db(root: &Path) -> PathBuf {
     let inkentry_dir = root.join(".inkentry");
     fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
     inkentry_dir.join("index.db")
 }
 
-// Write a minimal global config pointing `db_path` at `index_db`.
 fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
     let cfg = format!(
         "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1\"\nllm_model = \"none\"\n",
@@ -119,9 +91,7 @@ fn write_config(dir: &Path, index_db: &Path) -> PathBuf {
     config_path
 }
 
-// Index `rel` into `index_db` exactly as a fresh `inkentry index` would: write
-// the file on disk under `root`, then store the root-*relative* path plus the
-// real blake3 hash of its content. `Database::open` migrates the schema.
+// Stores the root-relative path with the real blake3 hash, as a fresh `inkentry index` would.
 fn seed_indexed_file(index_db: &Path, root: &Path, rel: &str, content: &[u8]) {
     register_sqlite_vec();
     fs::write(root.join(rel), content).expect("write source file");
@@ -132,7 +102,6 @@ fn seed_indexed_file(index_db: &Path, root: &Path, rel: &str, content: &[u8]) {
     drop(db);
 }
 
-// A `primary` project that links a freshly-indexed `dep` project.
 struct Linked {
     _tmp: TempDir,
     home: PathBuf,
@@ -143,7 +112,6 @@ struct Linked {
     dep_config: PathBuf,
 }
 
-// primary → dep, with `dep/shared.rs` indexed fresh.
 fn setup() -> Linked {
     let tmp = TempDir::new().expect("create temp dir");
     let home = tmp.path().join("home");
@@ -184,7 +152,6 @@ fn setup() -> Linked {
     }
 }
 
-// `inkentry <args>` in `cwd` with the isolated registry/home wired up.
 fn cmd(env: &Linked, cwd: &Path, config: &Path) -> Command {
     let mut c = inkentry_bin_in(&env.home);
     c.env("HOME", &env.home)
@@ -197,9 +164,6 @@ fn cmd(env: &Linked, cwd: &Path, config: &Path) -> Command {
     c
 }
 
-// ── tests ──────────────────────────────────────────────────────────────────────
-
-// A freshly-indexed linked project must report FRESH from the linking project.
 #[test]
 fn links_check_reports_freshly_indexed_dep_as_fresh() {
     let env = setup();
@@ -211,7 +175,6 @@ fn links_check_reports_freshly_indexed_dep_as_fresh() {
         .stdout(predicate::str::contains("fresh"));
 }
 
-// `links list` must not tag a freshly-indexed dep as stale.
 #[test]
 fn links_list_shows_freshly_indexed_dep_not_stale() {
     let env = setup();
@@ -235,14 +198,11 @@ fn links_list_shows_freshly_indexed_dep_not_stale() {
     );
 }
 
-// Guard against over-correcting into never-stale: a dep whose file changed
-// since indexing must still report STALE (non-zero exit).
+// Guards against over-correcting into never-stale.
 #[test]
 fn links_check_reports_modified_dep_as_stale() {
     let env = setup();
 
-    // Modify the indexed file on disk so its content no longer matches the
-    // stored hash.
     fs::write(
         env.dep_root.join("shared.rs"),
         b"pub fn shared() { changed }\n",
@@ -257,17 +217,11 @@ fn links_check_reports_modified_dep_as_stale() {
         .stderr(predicate::str::contains("stale"));
 }
 
-// The cross-project probe (`links check`, from the linking project) and the
-// linked project's own non-mutating freshness probe (`plumbing ls-files
-// --stale`, from its own root) must agree: both see the freshly-indexed dep as
-// FRESH.
 #[test]
 fn links_check_and_in_project_freshness_agree_on_fresh_dep() {
     let env = setup();
 
-    // In-project: the dep's own non-mutating probe finds nothing stale. Per the
-    // plumbing exit-code convention a fresh tree emits no rows and exits 1 (no
-    // results) — the inverse polarity of a "fresh = success" check.
+    // A fresh tree emits no rows and exits 1 (no results), the inverse polarity of a success check.
     cmd(&env, &env.dep_root, &env.dep_config)
         .args(["plumbing", "ls-files", "--stale"])
         .arg("--db")
@@ -278,7 +232,6 @@ fn links_check_and_in_project_freshness_agree_on_fresh_dep() {
         .code(1)
         .stdout(predicate::str::is_empty());
 
-    // Cross-project: `links check` from the primary agrees.
     cmd(&env, &env.primary_root, &env.primary_config)
         .args(["links", "check"])
         .assert()
