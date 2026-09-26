@@ -1,11 +1,3 @@
-// Unified `search` surface + behaviour (ADR-081 rank fusion, ADR-082 surface
-// collapse): the removed surfaces exit 2 naming their replacement, the corpus
-// filters are mutually constrained, results come back as the nested code/memory
-// envelope interleaved in fused order, the second query embed is elided when a
-// filter makes it redundant, --budget packs the fused typed list, and the
-// memory-only modifiers (--as-of, --expand-graph) plus --graph enrichment carry
-// over.
-
 use crate::plumbing_helpers;
 
 use plumbing_helpers::{inkentry_bin_in, mount_health, mount_index_embed};
@@ -15,8 +7,6 @@ use tempfile::TempDir;
 use wiremock::MockServer;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, ResponseTemplate};
-
-// ── removed surfaces: no stub, but the error names the replacement ─────────────
 
 fn assert_usage_error(args: &[&str], needles: &[&str]) {
     let home = TempDir::new().unwrap();
@@ -66,8 +56,7 @@ fn removed_top_level_graph_names_the_graph_replacements() {
     );
 }
 
-// The replacement has to be named because clap's own did-you-mean points at
-// `memory archive`, one edit away and completely unrelated.
+// clap's own did-you-mean points at `memory archive`, one edit away and unrelated.
 #[test]
 fn removed_memory_search_names_only_memory_and_not_archive() {
     assert_usage_error(&["memory", "search", "anything"], &["--only-memory"]);
@@ -86,8 +75,7 @@ fn removed_memory_search_names_only_memory_and_not_archive() {
     );
 }
 
-// `memory graph` survives the removal of the top-level `graph` porcelain, so it
-// must not be swept up by the migration hint.
+// `memory graph` survives the removal of top-level `graph`, so the migration hint must not sweep it up.
 #[test]
 fn memory_graph_still_runs() {
     let home = TempDir::new().unwrap();
@@ -112,11 +100,8 @@ fn only_code_and_only_memory_are_mutually_exclusive() {
     );
 }
 
-// ── the interleaved code/memory envelope (deterministic, offline FTS) ──────────
-
-// An initialised project with one code chunk and one memory entry that both
-// match the word "authentication", so a `--only-text` search (zero embeds)
-// returns one result from each corpus deterministically.
+// One code chunk and one memory entry both match "authentication", so `--only-text` (zero
+// embeds) returns one result from each corpus deterministically.
 fn project_with_code_and_memory(home: &Path, proj: &Path) {
     std::fs::write(
         proj.join("auth.rs"),
@@ -176,8 +161,6 @@ fn only_text_interleaves_code_and_memory_in_fused_order() {
         "expected at least one code and one memory result; got {results:?}"
     );
 
-    // Every ranked member carries the discriminator + fusion metadata, and
-    // exactly one of code/memory is present, matching `type`.
     for r in &results {
         assert!(r.get("fused_rank").unwrap().is_number());
         assert!(r.get("fused_score").unwrap().is_number());
@@ -201,30 +184,19 @@ fn only_text_interleaves_code_and_memory_in_fused_order() {
         types.contains(&"memory"),
         "a memory result must appear: {types:?}"
     );
-    // Code rank 1 ties memory rank 1, broken code-before-memory, so the code
-    // result leads.
     assert_eq!(types[0], "code", "code precedes memory at equal rank");
 
-    // The payloads nest the existing serializers verbatim.
     let code = results.iter().find(|r| r["type"] == "code").unwrap();
     assert_eq!(code["code"]["file_path"], "auth.rs");
     let mem = results.iter().find(|r| r["type"] == "memory").unwrap();
     assert_eq!(mem["memory"]["title"], "Authentication decision");
-    // The portable identity rides along additively; the documented fields
-    // around it are untouched.
     let entity_id = mem["memory"]["entity_id"].as_str().expect("entity_id");
     assert_eq!(entity_id.len(), 64);
     assert!(mem["memory"]["id"].as_str().is_some());
 }
 
-// ── ADR-098 D5: event recording never perturbs search/context stdout ───────────
-//
-// `search` and `context` promise deterministic stdout (CLAUDE.md: "Never add
-// output to search, context or memory stdout"). Event recording writes only
-// to `memory.db`, after the response above it is already printed, so running
-// the same command twice in a row — the second run recording against a
-// `memory.db` the first run's own event just landed in — must produce
-// byte-identical stdout both times.
+// Event recording writes only to `memory.db` after stdout is printed, so a second run
+// recording into a store the first run already wrote to must print byte-identical stdout.
 
 #[test]
 fn search_stdout_is_byte_identical_whether_or_not_an_earlier_call_recorded_an_event() {
@@ -254,8 +226,6 @@ fn search_stdout_is_byte_identical_whether_or_not_an_earlier_call_recorded_an_ev
     };
 
     let first = run();
-    // By now `memory.db` holds the first call's recorded event; the second
-    // call records into a store the first call already wrote to.
     let second = run();
     assert_eq!(
         first, second,
@@ -291,11 +261,8 @@ fn context_stdout_is_byte_identical_whether_or_not_an_earlier_call_recorded_an_e
     );
 }
 
-// A corpus pair deep enough for the fused order to distinguish ordering rules:
-// three code chunks and three memory entries all matching "reticulation". The
-// memory bodies repeat the term and the code chunks mention it once, so the two
-// corpora's raw relevance magnitudes are separated and ordered memory-first —
-// the opposite of the rank-fused order, which leads with code.
+// Three code chunks and three memory entries matching "reticulation"; memory bodies repeat
+// the term so raw relevance magnitudes order memory-first, opposite of the fused order.
 fn project_with_three_of_each(home: &Path, proj: &Path) {
     for i in 1..=3 {
         std::fs::write(
@@ -329,12 +296,8 @@ fn project_with_three_of_each(home: &Path, proj: &Path) {
     }
 }
 
-// The load-bearing ranking property, asserted end to end: the fused order is
-// the two corpora's *rank positions* interleaved, never their raw relevance
-// magnitudes merged. Swapping `fuse`'s rank sort for a cross-corpus distance
-// sort groups each corpus together instead — corpus_rank comes back as
-// 1,2,3,1,2,3 rather than 1,1,2,2,3,3 — so this fails on the whole shape, not
-// on one position that could coincide.
+// The fused order interleaves the corpora's rank positions, never their raw magnitudes. A
+// cross-corpus distance sort would give corpus_rank 1,2,3,1,2,3 rather than 1,1,2,2,3,3.
 #[test]
 fn fused_order_interleaves_rank_positions_not_raw_distances() {
     let home = TempDir::new().unwrap();
@@ -391,10 +354,8 @@ fn fused_order_interleaves_rank_positions_not_raw_distances() {
         String::from_utf8_lossy(&out)
     );
 
-    // Guard the guard: the interleave above only rules out a magnitude sort
-    // while the two corpora's raw distances stay in separate bands, because a
-    // sort on them then groups each corpus instead of pairing them. If a scale
-    // change ever overlaps the bands, this fires and the test needs a new
+    // Guard the guard: the interleave rules out a magnitude sort only while the corpora's raw
+    // distances stay in separate bands; if a scale change overlaps them the test needs a new
     // fixture rather than quietly ceasing to test anything.
     let band = |kind: &str, key: &str| -> (f64, f64) {
         let v: Vec<f64> = results
@@ -475,9 +436,6 @@ fn only_text_human_output_labels_each_corpus() {
         .stdout(predicate::str::contains("Authentication decision"));
 }
 
-// ── second-embed elision (ADR-081): code prefix via /search, QA prefix via
-// /index/embed; the redundant one is skipped under a corpus filter ─────────────
-
 async fn mount_search(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/search$"))
@@ -489,10 +447,8 @@ async fn mount_search(server: &MockServer) {
         .await;
 }
 
-// Point loopback auto-discovery's fixed-port fallback (step 3b) at the mock.
-// Step 3a's `server.port` file is not usable from a test: it now honours a
-// responder only when the pid recorded beside it is a live `inkentry-server`
-// process reporting the recorded instance id.
+// Points loopback auto-discovery's fixed-port fallback at the mock: the `server.port` file is
+// honoured only when its recorded pid is a live `inkentry-server`.
 fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(state_dir).unwrap();
     url.rsplit(':')
@@ -528,11 +484,8 @@ async fn corpus_filters_elide_the_redundant_query_embed() {
     let state_dir = TempDir::new().unwrap();
     let discovery_port = loopback_discovery_port(state_dir.path(), &mock.uri());
 
-    // ADR-083 decision 7 elides the memory embed whenever the store holds zero
-    // embedded notes, regardless of corpus filter — so this table (which tests
-    // corpus-filter elision specifically) needs a store with at least one
-    // embedded note. Add it through the mock so it actually gets a vector,
-    // then rebase `seen` past that request.
+    // The memory embed is elided whenever the store holds zero embedded notes, so this table
+    // needs one embedded note. Add it through the mock, then rebase `seen` past that request.
     inkentry_bin_in(home.path())
         .env_remove("INKENTRY_NO_SERVER")
         .env_remove("INKENTRY_SERVER_URL")
@@ -596,20 +549,10 @@ async fn corpus_filters_elide_the_redundant_query_embed() {
     }
 }
 
-// ── ADR-083: the memory relevance gate ─────────────────────────────────────────
-//
-// A mock `/index/embed` responder that steers the returned vector by a marker
-// in the embedded text, so a test controls which memory entries land near the
-// query and which land far from it without a real embedder. Only one marker,
-// "UNRELATED", is checked: everything else — the RELATED entry's text and the
-// query embed's text alike, which carry no marker — gets the same vector, so
-// the query always matches RELATED exactly and only UNRELATED entries are
-// steered away.
-//
-// `w` plays the role ADR-083's calibration writes up: with the query and
-// RELATED both at `unit_vec(1.0)`, their distance is `sqrt(2 - 2*1.0) = 0`;
-// UNRELATED at `unit_vec(0.0)` is `sqrt(2 - 2*0.0) = sqrt(2) ≈ 1.414`,
-// comfortably beyond `MEMORY_MAX_QA_DISTANCE` (1.2032).
+// Mock `/index/embed` that steers the vector by an "UNRELATED" marker in the embedded text;
+// everything else, including the query embed, gets one vector. The query then matches
+// RELATED at distance 0 while UNRELATED sits at sqrt(2), beyond `MEMORY_MAX_QA_DISTANCE`
+// (1.2032).
 struct SteeredEmbedResponder;
 
 impl wiremock::Respond for SteeredEmbedResponder {
@@ -669,12 +612,8 @@ fn memory_add_steered(
         .success();
 }
 
-// Reproduces the failure signature ADR-083 measured in miniature: a small code
-// index plus several memory entries unrelated to the query. Pre-fix, the
-// unified 1:1 interleave put every one of those unrelated entries on the page
-// regardless of relevance ("something is always nearest" in a small store);
-// post-fix, only the entry that clears the relevance floor survives, and the
-// rest of the page is code.
+// A small code index plus several memory entries unrelated to the query: only the entry
+// that clears the relevance floor may reach the page ("something is always nearest").
 #[tokio::test]
 async fn unrelated_memory_entries_do_not_dominate_a_code_query() {
     let mock = MockServer::start().await;
@@ -704,9 +643,6 @@ async fn unrelated_memory_entries_do_not_dominate_a_code_query() {
     let state_dir = TempDir::new().unwrap();
     let discovery_port = loopback_discovery_port(state_dir.path(), &mock.uri());
 
-    // Five memory entries unrelated to the query (household notes from an
-    // unrelated project, echoing ADR-083's own calibration fixture) and one
-    // that answers it.
     for i in 0..5 {
         memory_add_steered(
             home.path(),
@@ -785,10 +721,8 @@ async fn unrelated_memory_entries_do_not_dominate_a_code_query() {
     );
 }
 
-// ADR-083 decision 7: a memory store with zero embedded notes elides the QA
-// embed on every invocation that would otherwise issue it — default and
-// `--only-memory` alike — because the store cannot produce a vector candidate
-// regardless of scope.
+// A store with zero embedded notes elides the QA embed on every invocation that would
+// otherwise issue it, default and `--only-memory` alike.
 #[tokio::test]
 async fn zero_embedded_memory_notes_elides_the_qa_embed_on_every_invocation() {
     let mock = MockServer::start().await;
@@ -813,11 +747,9 @@ async fn zero_embedded_memory_notes_elides_the_qa_embed_on_every_invocation() {
     let state_dir = TempDir::new().unwrap();
     let discovery_port = loopback_discovery_port(state_dir.path(), &mock.uri());
 
-    // `memory list` stamps `memory.db` with its schema and zero rows without
-    // adding an entry, so the elision check below reads a genuinely empty
-    // local store rather than a not-yet-created path (which it treats as
-    // "can't tell" and never elides for, to stay safe for a cloud-routed
-    // store with no local replica).
+    // `memory list` stamps `memory.db` with zero rows, so the elision check reads a genuinely
+    // empty store rather than a missing path (never elided for, to stay safe for a
+    // cloud-routed store with no local replica).
     inkentry_bin_in(home.path())
         .env("INKENTRY_NO_SERVER", "1")
         .current_dir(proj.path())
@@ -856,8 +788,6 @@ async fn zero_embedded_memory_notes_elides_the_qa_embed_on_every_invocation() {
         );
     }
 }
-
-// ── --budget over the fused, typed list ────────────────────────────────────────
 
 #[test]
 fn budget_packs_the_fused_typed_list_within_the_token_budget() {
@@ -900,8 +830,6 @@ fn budget_packs_the_fused_typed_list_within_the_token_budget() {
     );
 
     let results = resp["results"].as_array().expect("results is an array");
-    // A generous budget packs the whole fused list: both corpora, and each item
-    // still a typed envelope (so memory items are token-estimated and packed too).
     let types: Vec<&str> = results
         .iter()
         .map(|r| r["type"].as_str().unwrap())
@@ -952,11 +880,8 @@ fn budget_zero_packs_nothing_but_stays_a_valid_envelope() {
     );
 }
 
-// ── code project: --graph appendix + exact-symbol-at-top ───────────────────────
-
-// A project where `reticulate_splines` calls `helper_xyz`. The FTS query for the
-// caller's exact name matches only the caller's chunk, so `helper_xyz` can only
-// enter results via the call-graph appendix (it never matches the query text).
+// `helper_xyz` never matches the query text, so it can only enter results via the
+// call-graph appendix.
 fn indexed_code_project(home: &Path, proj: &Path) {
     // The file path is indexed for full-text search, so it must share no word
     // with the queries below: `helper_xyz` has to stay unreachable by text.
@@ -1039,7 +964,6 @@ fn graph_flag_appends_call_graph_neighbours_e2e() {
         .expect("array")
         .clone();
 
-    // The ranked member is the caller; it is a real ranked result, not an appendix.
     assert!(
         results
             .iter()
@@ -1047,8 +971,6 @@ fn graph_flag_appends_call_graph_neighbours_e2e() {
         "the queried symbol is a ranked member: {results:?}"
     );
 
-    // `helper_xyz` never matched the query text; it can only be here via --graph,
-    // appended with from_graph = true and null fusion metadata.
     let appended: Vec<&serde_json::Value> = results
         .iter()
         .filter(|r| r["code"]["from_graph"] == serde_json::Value::Bool(true))
@@ -1067,8 +989,6 @@ fn graph_flag_appends_call_graph_neighbours_e2e() {
         "appendix corpus_rank is null"
     );
 }
-
-// ── memory-only modifiers on search: --as-of and --expand-graph ────────────────
 
 fn memory_project(home: &Path, proj: &Path) {
     std::fs::write(proj.join("x.rs"), "pub fn x() {}\n").unwrap();
@@ -1131,8 +1051,7 @@ fn as_of_filters_the_memory_corpus() {
         ],
     );
 
-    // The note was created now (valid_at defaults to created_at), so a point in
-    // the distant past predates it and it must not appear.
+    // valid_at defaults to created_at, so a point in the distant past predates the note.
     let past = search_memory_stdout(
         home.path(),
         proj.path(),
@@ -1143,7 +1062,6 @@ fn as_of_filters_the_memory_corpus() {
         "an as-of before the note existed must exclude it: {past}"
     );
 
-    // Without --as-of, the active note is returned.
     let now = search_memory_stdout(home.path(), proj.path(), &["widget"]);
     assert!(
         now.contains("Timegate widget policy"),
@@ -1169,7 +1087,6 @@ fn expand_graph_pulls_in_related_memory_neighbours() {
             "frobnicator design",
         ],
     );
-    // The per-machine id is on its own `id:` line under the handle-led lead line.
     let a_id: String = a
         .lines()
         .find_map(|l| l.trim_start().strip_prefix("id:"))
@@ -1195,7 +1112,6 @@ fn expand_graph_pulls_in_related_memory_neighbours() {
         ],
     );
 
-    // Plain memory search finds only A (B never matches "frobnicator").
     let plain = search_memory_stdout(home.path(), proj.path(), &["frobnicator"]);
     assert!(
         plain.contains("Alpha about frobnicators"),
@@ -1206,7 +1122,6 @@ fn expand_graph_pulls_in_related_memory_neighbours() {
         "B does not match the query without expansion: {plain}"
     );
 
-    // --expand-graph pulls B in via the relates_to edge.
     let expanded =
         search_memory_stdout(home.path(), proj.path(), &["frobnicator", "--expand-graph"]);
     assert!(
@@ -1218,10 +1133,8 @@ fn expand_graph_pulls_in_related_memory_neighbours() {
         "--expand-graph surfaces the related note: {expanded}"
     );
 
-    // B was reached from A, not ranked against the query, so it is an
-    // attachment: null fusion metadata, exactly like a --graph code neighbour.
-    // With a corpus_rank it would take a ranked position and displace a
-    // genuinely matched result (ADR-081).
+    // B was reached from A, not ranked, so it is an attachment with null fusion metadata like a
+    // `--graph` code neighbour; a corpus_rank would displace a genuinely matched result.
     let json = search_memory_stdout(
         home.path(),
         proj.path(),

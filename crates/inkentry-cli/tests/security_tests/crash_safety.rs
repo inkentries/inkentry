@@ -1,16 +1,7 @@
-// Chaos-engineering drills for the layer *this codebase* owns on top of
-// SQLite: our transaction boundaries, our blake3-hash resume/skip logic, our
-// multi-DB (index.db / memory.db) consistency, and our concurrent-access
-// behaviour. SQLite's own WAL/fsync/B-tree durability is out of scope, so
-// every drill here targets a window this codebase controls, not one SQLite
-// already guarantees.
-//
-// Every SIGKILL below is real: the target process is a real `inkentry` child
-// spawned via `Command`, parked at a specific write-window by
-// `crash_test_hook::pause_at`/`storage::pause_for_crash_test` (env-gated,
-// inert for every real invocation), and killed with `Child::kill()`, which
-// sends `SIGKILL` on Unix. Nothing here simulates a crash by catching a panic
-// or calling `std::process::exit` in-process.
+// Drills target windows this codebase controls (transaction boundaries, hash resume/skip,
+// index.db/memory.db consistency, concurrent access), not SQLite's own durability. Every
+// SIGKILL is real: a real `inkentry` child parked at a write window by the env-gated crash
+// hook and killed with `Child::kill()`; nothing simulates a crash in-process.
 
 use crate::plumbing_helpers;
 
@@ -27,13 +18,8 @@ use tempfile::TempDir;
 
 const MARKER_TIMEOUT: Duration = Duration::from_secs(30);
 
-// ── Process plumbing ─────────────────────────────────────────────────────────
-
-/// Build a `inkentry` `Command` isolated from the developer's real keychain,
-/// config dir, and git identity, mirroring `plumbing_helpers::inkentry_bin_in`
-/// but returning a raw `std::process::Command` so callers get full control
-/// over stdio (needed to pipe stdin/stdout for the marker-then-kill protocol
-/// below; `assert_cmd::Command` does not expose that).
+// A raw `std::process::Command` rather than `assert_cmd`'s, which cannot expose the stdio
+// control the marker-then-kill protocol needs.
 fn inkentry_command(home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("inkentry"));
     cmd.env("INKENTRY_SECRET_STORE", "file")
@@ -46,22 +32,15 @@ fn inkentry_command(home: &Path) -> Command {
     cmd
 }
 
-/// A child parked at a crash point: stdin/stdout piped and a background
-/// thread draining stdout into `stdout_so_far` (so the child never blocks on
-/// a full pipe buffer after the marker line, and so a failed assertion can
-/// print what the child actually said).
+// Stdout is drained into `stdout_so_far` so the child never blocks on a full pipe and a failed
+// assertion can print what it said.
 struct PausedChild {
     child: Child,
     stdout_so_far: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
-/// Spawn `cmd` with `INKENTRY_TEST_CRASH_POINT=<point>` and block until the
-/// child prints the matching `INKENTRY_TEST_CRASH_POINT_REACHED:<point>`
-/// marker (see `storage::pause_for_crash_test` / `crash_test_hook::pause_at`),
-/// proving it is parked exactly inside the write window under test rather
-/// than merely "probably there by now". Panics loudly (with the child's
-/// stdout so far) if the marker never arrives, rather than hanging or
-/// silently no-opping the drill.
+// Blocks until the child prints the REACHED marker, proving it is parked in the window under
+// test rather than "probably there by now"; panics with the child's stdout if it never does.
 fn spawn_paused_at(mut cmd: Command, point: &str) -> PausedChild {
     cmd.env("INKENTRY_TEST_CRASH_POINT", point)
         .stdin(Stdio::piped())
@@ -70,8 +49,7 @@ fn spawn_paused_at(mut cmd: Command, point: &str) -> PausedChild {
     let mut child = cmd.spawn().expect("spawn inkentry");
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    // Drain stderr too so a chatty child can't deadlock on a full pipe while
-    // we wait on the stdout marker.
+    // Drain stderr too so a chatty child can't deadlock on a full pipe.
     std::thread::spawn(move || {
         let mut r = BufReader::new(stderr);
         let mut line = String::new();
@@ -102,8 +80,7 @@ fn spawn_paused_at(mut cmd: Command, point: &str) -> PausedChild {
                     buf_writer.lock().unwrap().push_str(&line);
                     if line.contains(&marker) {
                         let _ = tx.send(true);
-                        // Keep draining afterward so the child never blocks
-                        // on a full stdout pipe for the rest of its life.
+                        // Keep draining so the child never blocks on a full stdout pipe.
                         loop {
                             line.clear();
                             match reader.read_line(&mut line) {
@@ -133,9 +110,7 @@ fn spawn_paused_at(mut cmd: Command, point: &str) -> PausedChild {
     }
 }
 
-/// SIGKILL the paused child and wait for it to be reaped. Asserts it actually
-/// died by signal (not a coincidental clean exit), which would otherwise mean
-/// the drill never really tested a crash.
+// Asserts death by signal: a coincidental clean exit would mean the drill never tested a crash.
 fn kill_and_reap(mut pc: PausedChild) {
     pc.child.kill().expect("SIGKILL the paused child");
     let status = pc.child.wait().expect("reap the killed child");
@@ -153,10 +128,7 @@ fn kill_and_reap(mut pc: PausedChild) {
     let _ = status;
 }
 
-/// Release a paused child without crashing it: write a byte to its stdin
-/// (unblocking the `read` in `pause_at`/`pause_for_crash_test`) and wait for
-/// a normal exit. Used by drills that need a real, held write/lock window but
-/// are not themselves testing a kill (e.g. the concurrent-reader drill).
+// For drills that need a held write/lock window without testing a kill.
 fn release_and_wait(mut pc: PausedChild) -> std::process::ExitStatus {
     {
         let stdin = pc.child.stdin.as_mut().expect("piped stdin");
@@ -165,13 +137,6 @@ fn release_and_wait(mut pc: PausedChild) -> std::process::ExitStatus {
     pc.child.wait().expect("wait for released child")
 }
 
-// ── DB assertions shared by every drill ──────────────────────────────────────
-
-/// SQLite's own structural guarantee: never violated by a `SIGKILL` at any
-/// point, since it is exactly what WAL/journal recovery on the next open
-/// exists to uphold. Asserted in every drill as the baseline "reopens clean"
-/// check, distinct from (and less interesting than) the product-level
-/// invariants asserted alongside it.
 fn assert_integrity_ok(db_path: &Path) {
     register_sqlite_vec();
     let conn = Connection::open(db_path).expect("reopen db after crash");
@@ -218,14 +183,9 @@ fn page_count(db_path: &Path) -> i64 {
         .expect("read page_count")
 }
 
-// ── Drill 1-3: the parse-phase per-file crash window ─────────────────────────
-//
-// `process_text_file` (parse_phase.rs) commits the file's new blake3 hash via
-// `upsert_file` *before* it deletes/inserts that file's chunks - there is no
-// transaction spanning the two. A SIGKILL landed between them (pinned here by
-// `crash_test_hook::pause_at("after_index_hash_write", path)`) leaves the
-// file's `files.hash` already matching its on-disk content while `chunks` for
-// it is empty. Drills 1-3 pin exactly that window and its consequences.
+// `process_text_file` commits the file's new hash via `upsert_file` before deleting and
+// inserting its chunks, with no transaction spanning the two: a SIGKILL between them leaves
+// `files.hash` current while `chunks` is empty.
 
 struct InterruptedFixture {
     _home: TempDir,
@@ -233,19 +193,14 @@ struct InterruptedFixture {
     db_path: PathBuf,
 }
 
-/// Three files; the crash point targets `target.py` specifically so the
-/// window is pinned regardless of the walk's (unspecified) file order. The
-/// other two are asserted only for "fully present or fully absent, never
-/// partial" - not for a specific order - since the walk order is not a
-/// contract this suite should pin.
+// The crash point targets `target.py` so the window is pinned regardless of walk order; the
+// other two files are only asserted fully present or fully absent.
 fn write_three_file_project(dir: &Path) {
     std::fs::write(dir.join("alpha.py"), "def alpha():\n    return 1\n").unwrap();
     std::fs::write(dir.join("target.py"), "def target():\n    return 2\n").unwrap();
     std::fs::write(dir.join("gamma.py"), "def gamma():\n    return 3\n").unwrap();
 }
 
-/// Run `inkentry index`, killing it exactly after `target.py`'s hash commits
-/// and before any of its chunks do.
 fn crash_mid_target_file() -> InterruptedFixture {
     let home = TempDir::new().expect("home");
     let project = TempDir::new().expect("project");
@@ -285,9 +240,8 @@ fn interrupted_file_hash_commits_before_its_chunks_pinning_the_real_write_orderi
          window"
     );
 
-    // Every other file must be fully present or fully absent - never the same
-    // half-state target.py is in. Walk order is not pinned, so both outcomes
-    // are accepted per file; a partial one is not.
+    // The other files must be fully present or fully absent, never target.py's half-state;
+    // walk order is not pinned.
     for path in ["alpha.py", "gamma.py"] {
         match file_hash(&conn, path) {
             None => {} // never reached: fine, that is not the window under test
@@ -302,12 +256,6 @@ fn interrupted_file_hash_commits_before_its_chunks_pinning_the_real_write_orderi
 
 #[test]
 fn plain_reindex_heals_a_hash_current_empty_chunks_file() {
-    // Regression pin for the fix: `process_text_file`'s skip check
-    // (parse_phase.rs) now requires "hash matches AND chunks exist for this
-    // file", not just a hash match, so a plain re-index (no `--force`)
-    // reprocesses target.py despite its hash already being current and
-    // converges it back to indexed - the user never needs to know about
-    // `--force` to recover from this crash window.
     let f = crash_mid_target_file();
 
     let mut cmd = inkentry_command(f._home.path());
@@ -341,15 +289,9 @@ fn plain_reindex_heals_a_hash_current_empty_chunks_file() {
 
 #[test]
 fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
-    // Scope check on the self-heal fix, not a bug pin: an empty file (zero
-    // lines) parses to zero chunks by design (`sliding_window`'s
-    // `lines.is_empty()` short-circuit, which every language falls back to
-    // when tree-sitter finds no semantic nodes either) - `file_has_chunks`
-    // has no way to distinguish that from the crash-window half-indexed
-    // state it exists to catch, so it reprocesses this file on every plain
-    // re-index. Accepted: extra parse-phase work on a file that is legitimately
-    // empty, not a correctness issue, since it produces the same zero chunks
-    // every time.
+    // An empty file parses to zero chunks by design and `file_has_chunks` cannot tell that from
+    // the crash-window state, so it is reprocessed on every plain re-index: accepted extra
+    // work, not a correctness issue.
     let home = TempDir::new().expect("home");
     let project = TempDir::new().expect("project");
     std::fs::write(
@@ -387,10 +329,8 @@ fn plain_reindex_keeps_reprocessing_a_legitimately_empty_file_every_run() {
         );
     }
 
-    // The decisive check: a second plain re-index must still *reach*
-    // empty.py's per-file processing (the pause point fires) rather than
-    // skip it. If `file_has_chunks` somehow distinguished this case,
-    // `spawn_paused_at` would time out waiting for the marker and panic.
+    // The decisive check: a second re-index must still reach empty.py's per-file processing
+    // (the pause point fires); if it were skipped, `spawn_paused_at` would time out.
     let mut second = inkentry_command(home.path());
     second
         .current_dir(project.path())
@@ -438,18 +378,9 @@ fn force_reindex_heals_the_interrupted_file() {
     }
 }
 
-// ── Drill 4: the embed-phase crash window ────────────────────────────────────
-//
-// Unlike the parse-write path above, `insert_embeddings` (db.rs) commits one
-// whole batch per transaction by design (ADR-070 D2), and
-// `chunks_missing_embeddings` (chunks.rs) re-derives the embed queue from
-// presence/absence of an `embeddings` row rather than trusting any in-memory
-// state. This drill exercises that resume path end to end through the real
-// CLI orchestration (parse -> embed -> a second, independent process), not
-// just the single already-covered unit test that hard-exits mid-transaction
-// in-process (`insert_embeddings_shaped_batch_leaves_nothing_after_a_hard_
-// process_exit` in inkentry-core).
-
+// `insert_embeddings` commits one whole batch per transaction and
+// `chunks_missing_embeddings` re-derives the embed queue from the absence of an `embeddings`
+// row; this exercises that resume path through the real CLI across two processes.
 struct EmbedFixture {
     _home: TempDir,
     project: TempDir,
@@ -485,9 +416,8 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let f = embed_fixture(&rt);
 
-    // 2 chunks total: calibration batch 1 takes exactly 1 (CALIBRATION_BATCH_1),
-    // so pausing after "after_embed_batch:1" commits leaves exactly 1 embedded
-    // and 1 missing - a small, deterministic split, not an approximation.
+    // 2 chunks, and calibration batch 1 takes exactly 1, so pausing after
+    // "after_embed_batch:1" leaves exactly 1 embedded and 1 missing.
     let mut cmd = inkentry_command(f._home.path());
     cmd.current_dir(f.project.path())
         .env("INKENTRY_MODE", "cloud_first")
@@ -508,9 +438,8 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
         );
     }
 
-    // Plain re-run: both files' hashes are already current, so parse_phase
-    // skips reparsing them, but the missing-embeddings backfill union must
-    // still queue the one chunk that never got embedded.
+    // Both files' hashes are current so parsing skips them, but the missing-embeddings
+    // backfill must still queue the one chunk that never got embedded.
     let mut cmd2 = inkentry_command(f._home.path());
     let out = cmd2
         .current_dir(f.project.path())
@@ -546,16 +475,10 @@ fn sigkill_mid_embed_phase_resumes_exactly_the_missing_chunk() {
     drop(f.server);
 }
 
-// ── Drill 5-6: disk-full (SQLITE_FULL) surfaces cleanly, never corrupts ──────
-//
-// `INKENTRY_TEST_MAX_PAGE_COUNT` caps a freshly-opened connection's
-// `PRAGMA max_page_count` (see `storage::apply_test_page_cap`), which forces
-// the identical `SQLITE_FULL` SQLite would raise for a real disk-full without
-// needing a size-capped filesystem or a custom VFS - `max_page_count` is a
-// per-connection setting SQLite does not persist to the file, so a fresh,
-// uncapped process re-opening the same file afterward behaves like any real
-// disk-full recovery: the earlier writer's cap is gone, not baked into the DB.
-
+// `INKENTRY_TEST_MAX_PAGE_COUNT` caps a fresh connection's `max_page_count`, forcing the
+// SQLITE_FULL a real disk-full raises without a size-capped filesystem. The cap is
+// per-connection and not persisted, so a fresh uncapped process re-opening the file behaves
+// like real disk-full recovery.
 #[test]
 fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
     let home = TempDir::new().expect("home");
@@ -567,10 +490,8 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
     .unwrap();
     let db_path = project.path().join(".inkentry").join("index.db");
 
-    // Uncapped baseline: establishes the schema and a small amount of data,
-    // so the capped run below is growing an existing file, not failing
-    // during first-open migrations (which would test migration behaviour,
-    // not the index write path this drill targets).
+    // Uncapped baseline so the capped run grows an existing file rather than failing in
+    // first-open migrations.
     let mut baseline = inkentry_command(home.path());
     let out = baseline
         .current_dir(project.path())
@@ -582,9 +503,7 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
     assert!(out.status.success(), "baseline index must succeed");
     let baseline_pages = page_count(&db_path);
 
-    // A lot of new content, forced to fully reparse: guarantees the write
-    // volume needed to blow past a cap set just above the baseline, however
-    // small the margin.
+    // Enough new content, force-reparsed, to blow past a cap set just above the baseline.
     for i in 0..40 {
         std::fs::write(
             project.path().join(format!("bulk_{i}.py")),
@@ -625,8 +544,6 @@ fn disk_full_during_index_surfaces_a_clean_error_and_db_stays_valid() {
          'database or disk is full'), not a generic failure: {stderr}"
     );
 
-    // The cap was per-connection: a fresh, uncapped open must succeed and
-    // find a structurally valid file.
     assert_integrity_ok(&db_path);
 }
 
@@ -679,12 +596,8 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
             .unwrap()
     };
 
-    // Large enough to need far more than the +2-page cap margin below (FTS5
-    // indexing alone roughly doubles the stored bytes), small enough to stay
-    // under a single-process-argument command line on every CI platform:
-    // Windows' CreateProcess caps the whole command line around 32KB, and
-    // Linux caps a single argv entry at 128KB (32 pages) regardless of the
-    // much larger total argv+envp budget.
+    // Far beyond the +2-page cap margin (FTS5 roughly doubles stored bytes) yet under argv
+    // limits: Windows caps the command line near 32KB, Linux a single argv entry at 128KB.
     let huge_body = "y".repeat(20_000);
     let out = memory_add(
         home.path(),
@@ -723,35 +636,16 @@ fn disk_full_during_memory_add_surfaces_a_clean_error_and_note_is_not_partially_
     );
 }
 
-// ── Drill 7: two concurrent `inkentry index` runs on one project ─────────────
-//
-// Neither index.db, memory.db, nor registry.db ever sets `PRAGMA
-// busy_timeout` anywhere in this codebase (confirmed by reading `Database::
-// open`, `MemoryStore::open`, and `Registry::init`), so a second writer that
-// arrives while another holds the WAL write lock gets `SQLITE_BUSY`
-// immediately, not after a retry window.
-//
-// CONFIRMED FINDING against unmodified code: this drill used to reproducibly
-// hit real SQLite-level corruption ("database disk image is malformed",
-// SQLITE_CORRUPT), not merely a busy/locked error from the losing process.
-// The fix is `run_lock.rs`: a per-project cross-process advisory lock (same
-// shape as `storage::git_notes::lock`) taken as the first thing `inkentry
-// index` does, non-blocking. A second process that finds it held exits
-// immediately with a clean "index already running" error instead of racing
-// the first process's writes - it never touches the DB at all, so there is
-// nothing left to corrupt. This test now pins that behaviour: no longer
-// `#[ignore]`d, and re-run in a loop (not just this internal `TRIALS` count)
-// during development to build confidence the fix is real, not just less
-// likely to lose the race within one process run.
+// Neither db sets `busy_timeout`, so a second writer gets SQLITE_BUSY immediately. `run_lock.rs`'s
+// non-blocking per-project advisory lock makes a second `index` exit with a clean "already
+// running" error before touching the DB.
 #[test]
 fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
     const TRIALS: usize = 8;
     const FILES_PER_TRIAL: usize = 150;
 
-    // Across all trials, at least one must have actually contended for the
-    // lock (one process observed the other mid-run) - otherwise the two
-    // processes just happened to run back-to-back every time and this test
-    // would pass trivially without ever exercising the fix.
+    // At least one trial must actually contend for the lock, else back-to-back runs pass
+    // trivially.
     let mut observed_contention = false;
 
     for trial in 0..TRIALS {
@@ -802,8 +696,6 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
             out2.status
         );
 
-        // A losing process must fail CLEANLY with the lock-contention error,
-        // never hang, panic, or partially write before bailing.
         for (label, out) in [("run 1", &out1), ("run 2", &out2)] {
             if !out.status.success() {
                 observed_contention = true;
@@ -816,15 +708,8 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
             }
         }
 
-        // The decisive assertion, now expected to hold unconditionally: the
-        // index-run lock makes the two processes mutually exclusive, so
-        // index.db is never corrupted regardless of how they interleaved.
         assert_integrity_ok(&db_path);
 
-        // The winner (or both, if they never actually overlapped this trial)
-        // must have fully indexed the project: a clean-error loser exits
-        // before writing anything, so it can never leave the index
-        // half-written from its own aborted attempt.
         let conn = Connection::open(&db_path).expect("reopen db after concurrent runs");
         let file_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
@@ -844,15 +729,8 @@ fn two_concurrent_index_runs_on_one_project_do_not_corrupt_the_db() {
     );
 }
 
-// ── Drill 8: a concurrent reader is never blocked by an open writer ─────────
-//
-// WAL mode's whole purpose is that a reader never contends with a writer -
-// only writer-vs-writer does. This pins that guarantee for the real CLI
-// paths: `inkentry search --mode text` (a pure FTS read against index.db)
-// must complete cleanly while a `inkentry index` embed batch's transaction is
-// genuinely open (held via `storage::pause_for_crash_test("embed_tx_open")`,
-// not merely "probably in progress").
-
+// WAL readers never contend with a writer: a pure FTS `search` must complete while an `index`
+// embed batch's transaction is genuinely open (held via `embed_tx_open`).
 #[test]
 fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -895,29 +773,10 @@ fn concurrent_full_text_search_during_an_open_embed_transaction_never_sees_busy(
     drop(f.server);
 }
 
-// ── Drill 9: run_lock.rs hardening ───────────────────────────────────────────
-//
-// Three properties the fix's own doc comments claim but don't yet pin with a
-// real process: (1) a SIGKILLed lock holder must not wedge every future run
-// on that project - there is no stale-lock detection/cleanup path in
-// run_lock.rs, so this only holds if the OS itself releases the advisory
-// lock on process death; (2) the lock is genuinely per-project, not
-// per-machine or per-user, so two unrelated projects indexing at the same
-// time must never contend; (3) the "release before spawning a continuation
-// child" handoff (mod.rs) is race-free against *corruption* specifically -
-// whichever process the child's own re-acquisition loses to, it must bail
-// before touching the DB, never race it - even though the handoff is not
-// race-free against the child's continuation work simply not happening (see
-// the test below for that residual gap, documented rather than fixed here).
-
 #[test]
 fn sigkilled_lock_holder_never_wedges_a_future_index_run() {
-    // `crash_mid_target_file` SIGKILLs a `inkentry index` process while it is
-    // parked at "after_index_hash_write", which is well before either
-    // continuation-spawn site that releases the run lock explicitly - so the
-    // kill lands with the lock still held, and its file descriptor closes
-    // only because the OS reaps the process, not because any in-process
-    // cleanup ran.
+    // The kill lands well before either continuation-spawn site releases the lock, so its fd
+    // closes only because the OS reaped the process.
     let f = crash_mid_target_file();
 
     let mut cmd = inkentry_command(f._home.path());
@@ -946,10 +805,8 @@ fn sigkilled_lock_holder_never_wedges_a_future_index_run() {
 
 #[test]
 fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() {
-    // A lock keyed by anything broader than the single project (e.g. a
-    // shared path, or missing the project root from the key entirely) would
-    // make indexing project B hang or fail while project A's run is merely
-    // in progress - that would be a regression the fix must not introduce.
+    // A lock keyed broader than the project would hang or fail project B while A's run is
+    // merely in progress.
     let home = TempDir::new().expect("home");
 
     let project_a = TempDir::new().expect("project a");
@@ -984,16 +841,10 @@ fn concurrent_index_on_different_projects_is_not_blocked_by_an_unrelated_lock() 
 
 #[test]
 fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
-    // Models the detach-embed / phases-3-5 handoff's continuation child
-    // losing its lock re-acquisition to *some* other holder (whether that is
-    // a genuinely unrelated third `inkentry index` process racing into the
-    // gap between the parent's release and the child's own acquire, or - as
-    // set up deterministically here - anything else holding the lock at that
-    // moment). `index()` re-acquires the same per-project lock
-    // unconditionally, before either `--_background-phases` or
-    // `--_embed-phases` branches into real work and before `Database::open`
-    // is even called, so a child that loses this race must bail before
-    // touching the DB at all - never interleave writes with whoever holds it.
+    // A continuation child losing its lock re-acquisition to another holder (held
+    // deterministically here) must bail before `Database::open`, never interleave writes:
+    // `index()` re-acquires the per-project lock before either `--_background-phases` or
+    // `--_embed-phases` does real work.
     let home = TempDir::new().expect("home");
     let project = TempDir::new().expect("project");
     write_three_file_project(project.path());
@@ -1044,18 +895,10 @@ fn losing_child_continuation_mode_fails_clean_without_touching_the_db() {
 
 #[test]
 fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race() {
-    // The previous test drives the losing child directly, never the real
-    // parent-releases/parent-spawns handoff, so it cannot see what the
-    // *parent* tells the user. This test does: the parent must not claim
-    // "embedding in the background" unless the spawned child, specifically,
-    // became the run lock's recorded holder - `wait_for_holder_pid` is what
-    // confirms that before the parent reports success.
-    //
-    // Reproduced deterministically (rather than by racing wall-clock timing)
-    // the same way the test above does: pause the parent right after it
-    // releases the lock and before it spawns its continuation child, let an
-    // entirely separate `inkentry index` process win and hold the lock in
-    // that window, then resume the parent and inspect what it told the user.
+    // Unlike the test above, this drives the real parent-releases/parent-spawns handoff: the
+    // parent must not claim "embedding in the background" unless the spawned child became the
+    // lock's recorded holder (`wait_for_holder_pid`). Reproduced deterministically: pause the
+    // parent after it releases the lock, let a separate `index` process win it, then resume.
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let f = embed_fixture(&rt);
 
@@ -1069,20 +912,16 @@ fn parent_reports_the_handoff_honestly_when_a_third_process_wins_the_lock_race()
     let paused_parent = spawn_paused_at(cmd, "after_run_lock_drop:embed");
     let parent_stdout = paused_parent.stdout_so_far.clone();
 
-    // The parent's own parse phase (upstream of the pause point above) has
-    // already hashed `one.py`/`two.py`, so a third `inkentry index` run over
-    // them now would see unchanged hashes and skip straight past the
-    // hash-write pause point without ever hitting it. A brand new file the
-    // parent never saw gives the third process something to actually hash.
+    // The parent's parse phase already hashed one.py/two.py, so a third run over them would
+    // skip past the hash-write pause point; a new file gives it something to hash.
     std::fs::write(
         f.project.path().join("three.py"),
         "def three():\n    return 3\n",
     )
     .expect("write third file");
 
-    // The parent has released the lock but not yet spawned its continuation
-    // child. A genuinely separate process wins it here and holds it well
-    // past the child's own (bounded) confirmation window below.
+    // The parent has released the lock but not yet spawned its child; a separate process
+    // wins it here and holds it past the child's bounded confirmation window.
     let mut third_cmd = inkentry_command(f._home.path());
     third_cmd
         .current_dir(f.project.path())
