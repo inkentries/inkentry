@@ -1,13 +1,10 @@
-//! Regression tests for the secret-scanner bypass fix.
-//!
-//! Covers:
-//! - a secret in a doc-comment causes the whole chunk to be dropped, so it
-//!   never lands in `chunks.content`, `chunks.metadata`, or the embed queue;
-//! - sensitive filenames are excluded from indexing regardless of case on a
-//!   case-preserving filesystem (macOS/Windows).
-//!
-//! Suppression of a secret folded into a composed structural summary is covered
-//! at the unit level in `inkentry_core::indexer::summariser`.
+// A secret in a doc-comment must drop the whole chunk, so it never lands in
+// `chunks.content`, `chunks.metadata`, or the embed queue. Sensitive filenames
+// are excluded from indexing regardless of case on a case-preserving
+// filesystem (macOS/Windows).
+//
+// A secret folded into a composed structural summary is covered at the unit
+// level in `inkentry_core::indexer::summariser`.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{index_project_dir, inkentry_cmd};
@@ -15,10 +12,8 @@ use plumbing_helpers::{index_project_dir, inkentry_cmd};
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-/// A syntactically valid AWS secret access key value (fake, for test purposes).
+// A syntactically valid but fake AWS secret access key.
 const FAKE_AWS_SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1";
-
-// ── docstring secret → chunk dropped ───────────────────────────────────────────
 
 #[test]
 fn docstring_secret_drops_whole_chunk() {
@@ -26,10 +21,8 @@ fn docstring_secret_drops_whole_chunk() {
     let src_dir = tmp.path().join("src");
     std::fs::create_dir_all(&src_dir).unwrap();
 
-    // The function body itself is clean; the secret lives only in the
-    // preceding doc-comment. Before the fix, `store_chunks` only scanned
-    // `chunk.content`, so this chunk was indexed, stored (docstring in
-    // `metadata`), and embedded.
+    // The function body is clean; the secret lives only in the preceding
+    // doc-comment.
     let source = format!(
         "/// aws_secret_access_key = \"{FAKE_AWS_SECRET}\"\npub fn clean_fn(x: i32) -> i32 {{\n    x + 1\n}}\n"
     );
@@ -42,7 +35,6 @@ fn docstring_secret_drops_whole_chunk() {
 
     let (_tmp_idx, db_path, config_path) = index_project_dir(tmp.path());
 
-    // The chunk store must not contain the dropped chunk at all.
     let output = inkentry_cmd(&db_path, &config_path)
         .arg("cat-chunks")
         .arg("src/lib.rs")
@@ -60,9 +52,8 @@ fn docstring_secret_drops_whole_chunk() {
         "the secret must never appear in cat-chunks output"
     );
 
-    // Directly inspect the DB: no row in `chunks` may contain the secret in
-    // either `content` or `metadata` (which holds the docstring JSON), and no
-    // row in `embeddings` may exist that used to hold this chunk's vector.
+    // No row in `chunks` may hold the secret in `content` or `metadata`
+    // (docstring JSON).
     let conn = rusqlite::Connection::open(&db_path).expect("open db");
     let mut stmt = conn
         .prepare("SELECT content, metadata FROM chunks")
@@ -85,9 +76,8 @@ fn docstring_secret_drops_whole_chunk() {
         }
     }
 
-    // The chunk store must not have an embeddings row referencing the file at
-    // all beyond what's expected — i.e. there is no chunk for this file, so
-    // there is nothing in the embedding accumulator for it either.
+    // No chunk row exists for this file, so nothing exists for it in
+    // embeddings either.
     let chunk_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM chunks c JOIN files f ON c.file_id = f.id WHERE f.path LIKE '%lib.rs'",
@@ -101,14 +91,12 @@ fn docstring_secret_drops_whole_chunk() {
     );
 }
 
-// ── case-insensitive exclusion globs ───────────────────────────────────────────
-
 #[test]
 fn case_variant_sensitive_filenames_are_excluded() {
     let tmp = TempDir::new().expect("create temp project dir");
 
-    // Uppercase / mixed-case variants of patterns that are already excluded in
-    // lowercase form (parse_phase.rs `sensitive_patterns`).
+    // Case variants of patterns already excluded in lowercase form
+    // (parse_phase.rs `sensitive_patterns`).
     std::fs::write(tmp.path().join("ID_RSA"), "fake private key material\n").unwrap();
     std::fs::write(tmp.path().join(".ENV"), "SECRET=fake\n").unwrap();
     std::fs::write(
@@ -152,9 +140,8 @@ fn case_variant_sensitive_filenames_are_excluded() {
     );
 }
 
-/// Sanity check that the exclusion also holds for canonical lowercase names
-/// (guards against a regression where `case_insensitive(true)` accidentally
-/// disabled the globs entirely instead of making them case-insensitive).
+// Guards against `case_insensitive(true)` disabling the globs entirely
+// instead of making them case-insensitive.
 #[test]
 fn lowercase_sensitive_filenames_still_excluded() {
     let tmp = TempDir::new().expect("create temp project dir");

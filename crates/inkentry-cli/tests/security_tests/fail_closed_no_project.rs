@@ -1,9 +1,9 @@
-//! Fail-closed behaviour when there is no local `.inkentry/` project (ADR-067).
-//!
-//! In a directory that was never `inkentry init`'d, memory/context/index-backed
-//! search must refuse rather than silently read or write the machine-global
-//! `~/.config/inkentry/` store. `--db` and `inkentry index` stay exempt. `status`
-//! reports "no project" instead of describing the global store.
+// Fail-closed behaviour when there is no local `.inkentry/` project.
+//
+// In a directory that was never `inkentry init`'d, memory/context/index-backed
+// search must refuse rather than silently read or write the machine-global
+// `~/.config/inkentry/` store. `--db` and `inkentry index` stay exempt; `status`
+// reports "no project" instead of describing the global store.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
@@ -13,17 +13,15 @@ use predicates::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// Exact fail-closed error text (ADR-067; em dash restructured out per the
-/// no-em-dash house rule for user-facing copy).
 const NO_PROJECT_ERR: &str = "no inkentry project here. Run 'inkentry init' first";
 
-/// ADR-068 D3 dual-escape-hatch error for `memory add`/`list` when there is
-/// neither a project DB nor a usable git repo (case 5).
+// Dual-escape-hatch error for `memory add`/`list` when there is neither a
+// project DB nor a usable git repo.
 const NO_PROJECT_NO_REPO_ERR: &str = "no inkentry project here, and not inside a git repo. Run 'inkentry init' first, \
      or run inside a git repository.";
 
-/// A `inkentry` command with an isolated HOME (so the "global" store lives under
-/// `<home>/.config/inkentry`) and no server contact, run in `cwd`.
+// Isolated HOME (global store lives under `<home>/.config/inkentry`), no
+// server contact, run in `cwd`.
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
@@ -32,24 +30,20 @@ fn bin(home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
-/// The global memory store path under the isolated HOME. Must never be created
-/// by a fail-closed command.
+// Must never be created by a fail-closed command.
 fn global_memory_db(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("inkentry").join("memory.db")
 }
 
-/// The global index store path under the isolated HOME. Display commands must
-/// never read or create it from an un-init'd dir (ADR-067).
+// Must never be read or created by a fail-closed command.
 fn global_index_db(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("inkentry").join("index.db")
 }
 
-// ── refuse-guard: un-init'd dir, no --db ───────────────────────────────────────
-
 // A bare `TempDir` is not inside a git repo (it lives under the system temp
-// dir, not a checkout), so `memory add`/`list` hit ADR-068 D3 case 5 (neither
-// a project DB nor a usable git repo) and refuse with the dual-hatch message
-// rather than falling back to git-notes.
+// dir, not a checkout), so `memory add`/`list` hit the neither-a-project-nor-
+// a-git-repo case and refuse with the dual-hatch message rather than falling
+// back to git-notes.
 #[test]
 fn memory_add_refuses_without_project_or_git_repo() {
     let home = TempDir::new().unwrap();
@@ -88,8 +82,9 @@ fn search_only_memory_refuses_without_local_project() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
-    // Unified search resolves the index project before touching any corpus, so a
-    // memory-only search still fails closed rather than reading the global store.
+    // Unified search resolves the index project before touching any corpus, so
+    // a memory-only search still fails closed rather than reading the global
+    // store.
     bin(home.path(), proj.path())
         .args(["search", "anything", "--only-memory"])
         .assert()
@@ -118,15 +113,12 @@ fn index_backed_search_refuses_without_local_project() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
-    // Index-backed search must refuse rather than fall back to global.
     bin(home.path(), proj.path())
         .args(["search", "anything", "--only-text"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(NO_PROJECT_ERR));
 }
-
-// ── exempt: a real local project, an explicit --db, and `inkentry index` ────────
 
 #[test]
 fn memory_add_works_with_local_dot_inkentry() {
@@ -191,8 +183,6 @@ fn index_creates_project_in_uninit_dir() {
     );
 }
 
-// ── status: report no-project, and label the resolved backend ──────────────────
-
 #[test]
 fn status_text_reports_no_project_when_uninit() {
     let home = TempDir::new().unwrap();
@@ -228,8 +218,8 @@ fn status_labels_resolved_backend_as_sqlite_not_git_notes() {
         .assert()
         .success();
 
-    // The memory line must reflect the resolved backend (sqlite by default), not
-    // a tier-derived "git-notes" label (ADR-067 D3).
+    // The memory line must reflect the resolved backend (sqlite by default),
+    // not a tier-derived "git-notes" label.
     bin(home.path(), proj.path())
         .args(["status"])
         .assert()
@@ -238,13 +228,11 @@ fn status_labels_resolved_backend_as_sqlite_not_git_notes() {
         .stdout(predicate::str::contains("git-notes").not());
 }
 
-// ── gap: the top-level `Sync` arm (main.rs), distinct from memory-dispatch ─────
-
 #[test]
 fn sync_arm_refuses_without_local_project() {
-    // `inkentry sync` is a top-level command whose guard lives in `main.rs`, not in
-    // the `memory` dispatch. With no `server_url` configured, `validate_with_project`
-    // passes, so the fail-closed guard is what must fire (not a config error).
+    // `inkentry sync`'s guard lives in `main.rs`, not the `memory` dispatch.
+    // With no `server_url` configured, `validate_with_project` passes, so the
+    // fail-closed guard is what must fire, not a config error.
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -260,14 +248,11 @@ fn sync_arm_refuses_without_local_project() {
     );
 }
 
-// ── gap: a memory subcommand past add/list/search proves the shared funnel ─────
-
 #[test]
 fn memory_timeline_refuses_without_local_project() {
-    // Every `memory` subcommand *except* the ADR-068 D3 add/list fallback
-    // resolves its store through the same `require_project_db` line before
-    // dispatch; `timeline` (needs no server) confirms the fail-closed guard
-    // still holds for the non-add/list subcommands.
+    // Every `memory` subcommand except add/list's git-repo fallback resolves
+    // its store through the same `require_project_db` check; `timeline`
+    // confirms the guard holds for the rest too.
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
@@ -280,11 +265,9 @@ fn memory_timeline_refuses_without_local_project() {
     assert!(!global_memory_db(home.path()).exists());
 }
 
-// ── security invariant: a refused command must not MUTATE a pre-existing global ──
-//
-// The other refuse tests assert the global store is not *created*. These assert
-// the other half of ADR-067's "not created or mutated": a global store left over
-// from the pre-fix silent-fallback era is left byte-for-byte untouched.
+// The other refuse tests assert the global store is not *created*. These
+// assert the other half: a pre-existing global store is left byte-for-byte
+// untouched, not just left uncreated.
 
 #[test]
 fn refused_memory_add_does_not_mutate_preexisting_global_store() {
@@ -340,12 +323,7 @@ fn refused_index_search_does_not_touch_preexisting_global_index() {
     );
 }
 
-// ── display commands: chunks ─────────────────────────
-//
-// This read-only command previously resolved its DB via the legacy
-// `open_project_db`/`resolve_db` path, which fell back to the machine-global
-// `index.db` in an un-init'd dir and displayed cross-project data. It now shares
-// ADR-067's fail-closed resolver: refuse instead of reading global.
+// Read-only, but must still fail closed instead of reading the global index.
 
 #[test]
 fn chunks_refuses_without_local_project() {
@@ -370,11 +348,9 @@ fn chunks_refuses_without_local_project() {
     );
 }
 
-// ── happy path: an init'd project still resolves graph-edges/chunks locally ────
-//
-// The fail-closed rework must not break the normal case: with a real local
-// `.inkentry/index.db`, the index-backed commands resolve LOCAL (not global) and
-// work. A stray global index is left in place to prove they read local.
+// With a real local `.inkentry/index.db`, the index-backed commands must still
+// resolve LOCAL (not global). A stray global index is left in place to prove
+// they read local.
 
 #[test]
 fn display_commands_resolve_local_index_in_initd_project() {
@@ -394,15 +370,12 @@ fn display_commands_resolve_local_index_in_initd_project() {
     let sentinel = b"stray global index sentinel";
     std::fs::write(&global, sentinel).unwrap();
 
-    // Create the local project.
     bin(home.path(), proj.path())
         .args(["index", "."])
         .assert()
         .success();
     assert!(proj.path().join(".inkentry").join("index.db").exists());
 
-    // graph-edges: index-backed symbol query resolves the LOCAL index (the graph
-    // capability's machine surface after the top-level `graph` porcelain was removed).
     bin(home.path(), proj.path())
         .args(["plumbing", "graph-edges", "--symbol", "local_target"])
         .assert()
@@ -410,7 +383,6 @@ fn display_commands_resolve_local_index_in_initd_project() {
         .stdout(predicate::str::contains("lib.rs"))
         .stdout(predicate::str::contains("local_target"));
 
-    // chunks: resolves the LOCAL index and returns this file's chunks.
     bin(home.path(), proj.path())
         .args(["chunks", "lib.rs", "--format", "json"])
         .assert()
@@ -424,8 +396,6 @@ fn display_commands_resolve_local_index_in_initd_project() {
     );
 }
 
-// ── walk-up: memory resolves the ancestor project from a deep subdir ───────────
-
 #[test]
 fn memory_add_works_from_deep_nested_subdir() {
     let home = TempDir::new().unwrap();
@@ -434,7 +404,7 @@ fn memory_add_works_from_deep_nested_subdir() {
     let deep = proj.path().join("a").join("b").join("c");
     std::fs::create_dir_all(&deep).unwrap();
 
-    // Run several levels below the `.inkentry/` project root; the guard walks up
+    // Several levels below the `.inkentry/` project root: the guard walks up
     // and resolves the ancestor's store, not the global one.
     bin(home.path(), &deep)
         .args([
@@ -451,10 +421,7 @@ fn memory_add_works_from_deep_nested_subdir() {
     assert!(!global_memory_db(home.path()).exists());
 }
 
-// ── worktree-awareness: a linked worktree resolves to the main worktree's store ──
-
-/// Run `git args` in `dir`, asserting success. Isolated identity so it works on a
-/// machine with no global git config.
+// Isolated identity so it works on a machine with no global git config.
 fn git(dir: &Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .current_dir(dir)
@@ -485,7 +452,6 @@ fn memory_resolves_main_worktree_dot_inkentry_from_linked_worktree() {
     // Only the main worktree is a real project (has `.inkentry/`).
     std::fs::create_dir_all(main_root.join(".inkentry")).unwrap();
 
-    // Add a linked worktree with no `.inkentry/` of its own.
     let linked = tmp.path().join("linked");
     git(
         &main_root,
@@ -503,8 +469,8 @@ fn memory_resolves_main_worktree_dot_inkentry_from_linked_worktree() {
         "precondition: linked worktree has no .inkentry/"
     );
 
-    // ADR-067 worktree-awareness: memory run from the linked worktree must resolve
-    // to the MAIN worktree's `.inkentry/` store, not fail closed and not go global.
+    // Memory run from the linked worktree must resolve to the MAIN worktree's
+    // `.inkentry/` store, not fail closed and not go global.
     bin(home.path(), &linked)
         .args([
             "memory", "add", "--kind", "note", "--title", "t", "--body", "b",

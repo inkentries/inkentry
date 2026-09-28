@@ -1,10 +1,6 @@
-// What loopback auto-discovery declines to use, it has to say out loud.
-//
-// Every refusal here used to reach the user through `tracing::warn!` alone,
-// which is off at the default log level, so a run that quietly stopped using
-// the local server looked identical to one that never had one. These pin the
-// two refusals a user is most likely to meet, on stderr, where a default
-// `inkentry` run shows them.
+// What loopback auto-discovery declines to use, it has to say on stderr, where
+// a default `inkentry` run shows it (`tracing::warn!` alone is off at the
+// default log level).
 //
 // Unix only: the UID check compares against this process's effective UID, and
 // the CLI reports no UID at all on Windows. The second test would work
@@ -64,8 +60,8 @@ async fn a_foreign_uid_on_the_discovered_port_reaches_stderr() {
             "started_by": theirs,
             "embedding_dim": 0
         })))
-        // Verified when the mock server drops: a test that never reached the
-        // probe would otherwise look the same as one whose warning is missing.
+        // Verified on drop, so a test that missed the probe doesn't look
+        // identical to one with a missing warning.
         .expect(1..)
         .mount(&server)
         .await;
