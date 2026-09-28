@@ -1,23 +1,16 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Returns `~/.config/inkentry/`, or `INKENTRY_CONFIG_DIR` when set.
-///
-/// On all platforms we use `~/.config` rather than the OS-native config dir
-/// (e.g. `~/Library/Application Support` on macOS) so that the path matches
-/// what the CLI documentation and error messages say, and so that config files
-/// work the same way across Linux and macOS.
-///
-/// `INKENTRY_CONFIG_DIR` is a supported override of the entire path, not
-/// dev-only cruft: it is load-bearing on Windows, where `dirs::home_dir()` 6.x
-/// calls `SHGetKnownFolderPath` (a Registry lookup) rather than reading
-/// `HOME`/`USERPROFILE`, making a per-process environment override of `HOME`
-/// ineffective (the identical portability gap documented on
-/// `inkentry_state_dir` in the CLI's `capability/probe.rs` and on
-/// `web_to_md_script_path` in `memory/add.rs`). Tests that need an isolated
-/// config/secret-store location (this crate's own `config::mod::tests`, and
-/// the CLI integration tests via `inkentry_bin_in`) set this instead of relying
-/// on `HOME` alone.
+// Returns `~/.config/inkentry/`, or `INKENTRY_CONFIG_DIR` when set. We use
+// `~/.config` on all platforms, not the OS-native config dir, so config files
+// work the same way across Linux and macOS.
+//
+// `INKENTRY_CONFIG_DIR` is a supported override of the entire path, not
+// dev-only cruft: it is load-bearing on Windows, where `dirs::home_dir()` 6.x
+// calls `SHGetKnownFolderPath` rather than reading `HOME`/`USERPROFILE`,
+// making a per-process override of `HOME` ineffective. Tests that need an
+// isolated config/secret-store location set this instead of relying on `HOME`
+// alone.
 pub(in crate::config) fn inkentry_config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("INKENTRY_CONFIG_DIR") {
         return PathBuf::from(dir);
@@ -67,14 +60,14 @@ pub fn find_project_dir(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// ADR-067: resolve the local project's `.inkentry/index.db` base path anchored at
+/// Resolve the local project's `.inkentry/index.db` base path anchored at
 /// `start`, failing closed when `start` has no `.inkentry/` project instead of
 /// silently falling back to the global `~/.config/inkentry/` store.
 ///
-/// Explicit `--db` / index-path callers bypass this (an explicit store is always
-/// honored). Memory callers apply `.with_file_name("memory.db")` to the result.
-/// `allow_global` restores the legacy global fallback and is reserved for a
-/// future `--global` flag (ADR-067 D2); no caller sets it today.
+/// Explicit `--db` / index-path callers bypass this (an explicit store is
+/// always honored). Memory callers apply `.with_file_name("memory.db")` to
+/// the result. `allow_global` restores the legacy global fallback, reserved
+/// for a future `--global` flag; no caller sets it today.
 pub fn require_project_db_at(
     start: &Path,
     cfg_default: &Path,
@@ -95,8 +88,8 @@ pub fn require_project_db(cfg_default: &Path, allow_global: bool) -> Result<Path
     require_project_db_at(&cwd, cfg_default, allow_global)
 }
 
-/// Walk up from `start` looking for `.inkentry/config.toml` (project-level config).
-/// Stops at the filesystem root. Returns the path if found.
+// Walk up from `start` looking for `.inkentry/config.toml` (project-level
+// config). Stops at the filesystem root.
 pub(in crate::config) fn find_project_config(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
@@ -130,11 +123,6 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ── inkentry_config_dir / INKENTRY_CONFIG_DIR override ─────────────────────
-
-    /// `INKENTRY_CONFIG_DIR` wins over `dirs::home_dir()`-derived resolution.
-    /// This is the override that makes per-test isolation possible on
-    /// Windows, where `dirs::home_dir()` does not read `HOME`.
     #[test]
     #[serial_test::serial(inkentry_config_dir_env)]
     fn inkentry_config_dir_honors_env_override() {
@@ -158,10 +146,6 @@ mod tests {
         );
     }
 
-    // ── find_project_dir / require_project_db_at (ADR-067) ───────────────────
-
-    /// Exact fail-closed error text (ADR-067; em dash restructured out per the
-    /// no-em-dash house rule for user-facing copy).
     const NO_PROJECT_ERR: &str = "no inkentry project here. Run 'inkentry init' first";
 
     #[test]
@@ -191,7 +175,6 @@ mod tests {
 
     #[test]
     fn find_project_dir_ignores_dot_inkentry_file() {
-        // A regular file named `.inkentry` is not a project dir.
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join(".inkentry"), "not a dir").unwrap();
         assert_eq!(find_project_dir(tmp.path()), None);
@@ -227,17 +210,17 @@ mod tests {
 
     #[test]
     fn require_project_db_at_allow_global_returns_default_when_no_project() {
-        // The reserved --global opt-in path (ADR-067 D2) restores the legacy
-        // global fallback instead of failing closed.
+        // The reserved --global opt-in path restores the legacy global
+        // fallback instead of failing closed.
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("global-index.db");
         let got = require_project_db_at(tmp.path(), &global, true).unwrap();
         assert_eq!(got, global);
     }
 
-    /// Build a linked-worktree fixture: `<main>/.inkentry/index.db` exists and
-    /// `<wt>` is a linked worktree with NO local `.inkentry/`. Returns
-    /// `(main_root, wt_root, index_db)`. Mirrors the fixture in `utils::tests`.
+    // Builds a linked-worktree fixture: `<main>/.inkentry/index.db` exists and
+    // `<wt>` is a linked worktree with no local `.inkentry/`. Returns
+    // `(main_root, wt_root, index_db)`.
     fn linked_worktree_fixture(tmp: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
         let main_root = tmp.path().join("main");
         let wt_root = tmp.path().join("feat-branch");
@@ -263,8 +246,6 @@ mod tests {
 
     #[test]
     fn find_project_db_resolves_worktree_to_main_index() {
-        // A linked worktree with no local `.inkentry/` resolves reads to the
-        // main worktree's shared index, with no setup step.
         let tmp = TempDir::new().unwrap();
         let (_main_root, wt_root, index_db) = linked_worktree_fixture(&tmp);
         assert!(

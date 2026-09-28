@@ -3,20 +3,15 @@ use std::path::Path;
 
 use super::paths::inkentry_config_dir;
 
-// ───────────────────────────────────────────────────────────────────────────
-// Legacy `[auth]` table cleanup
-// ───────────────────────────────────────────────────────────────────────────
-//
-// The WorkOS session lives in the secret store, keyed per organization
-// (ADR-074; see `super::org_tokens`), never here. These remove functions exist
-// only to strip a legacy plaintext `[auth]` table — the one-time migration off
-// it, and `inkentry logout`'s cleanup of any remnant.
+// The WorkOS session lives in the secret store, keyed per organization (see
+// `super::org_tokens`), never here. These remove functions exist only to
+// strip a legacy plaintext `[auth]` table.
 
 /// Remove the legacy `[auth]` table from `~/.config/inkentry/config.toml`.
 ///
-/// The migration off plaintext (ADR-074) and `inkentry logout` both use this to
-/// clear a legacy remnant. It does not touch self-hosted server keys as a side
-/// effect; removing those is the explicit `inkentry auth remove-key` (see
+/// Used by the migration off plaintext and by `inkentry logout` to clear a
+/// legacy remnant. Does not touch self-hosted server keys as a side effect;
+/// removing those is the explicit `inkentry auth remove-key` (see
 /// [`super::server_keys::clear_origin`] and
 /// [`super::server_keys::clear_all`]). No-op if the file or the table is
 /// absent. Other keys are preserved.
@@ -63,8 +58,8 @@ pub fn write_project_slug(config_path: &Path, slug: &str) -> Result<(String, boo
     Ok((slug.to_string(), true))
 }
 
-/// Parse the config file into a `toml::Table`, returning an empty table when the
-/// file does not exist.
+// Parse the config file into a toml::Table, returning an empty table when the
+// file does not exist.
 fn read_config_table(config_path: &Path) -> Result<toml::Table> {
     if !config_path.exists() {
         return Ok(toml::Table::new());
@@ -75,8 +70,8 @@ fn read_config_table(config_path: &Path) -> Result<toml::Table> {
         .with_context(|| format!("parsing {}", config_path.display()))
 }
 
-/// Write `contents` to `config_path` and tighten permissions to `0600` on Unix
-/// so secrets in the file are owner-only.
+// Write `contents` to `config_path` and tighten permissions to 0600 on Unix so
+// secrets in the file are owner-only.
 fn write_config_secure(config_path: &Path, contents: &str) -> Result<()> {
     std::fs::write(config_path, contents)
         .with_context(|| format!("writing {}", config_path.display()))?;
@@ -84,7 +79,7 @@ fn write_config_secure(config_path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Set `0600` permissions on Unix; a no-op on other platforms.
+// Set 0600 permissions on Unix; a no-op on other platforms.
 #[cfg(unix)]
 fn set_owner_only_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -156,7 +151,6 @@ mod tests {
         assert!(raw.contains("server_url"), "existing key preserved: {raw}");
     }
 
-    /// `remove_auth_tokens_from` is a no-op when the file is missing.
     #[test]
     fn remove_auth_tokens_no_op_when_file_missing() {
         let tmp = TempDir::new().unwrap();
