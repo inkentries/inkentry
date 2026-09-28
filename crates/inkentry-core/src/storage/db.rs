@@ -12,37 +12,37 @@ pub struct Database {
     rebuilt_from: Option<i32>,
 }
 
-/// Version stamped into `PRAGMA user_version` by [`Database::open`].
-///
-/// Every index this binary opens reaches this version by the registry in
-/// `storage::index_migrate`: a fresh index is created from the frozen
-/// `index_001_initial.sql` at [`INITIAL_SCHEMA_VERSION`] and climbs from
-/// there, and a store stamped above [`LAST_LEGACY_SCHEMA_VERSION`] and below
-/// this migrates forward in place the same way, one version at a time, unless
-/// a registered version in that range asks to rebuild instead
-/// (`storage::index_migrate::IndexMigrationKind::Rebuild`) — for a change,
-/// like a different embedding space, that an in-place step cannot fix.
-/// Anything else — at or below [`LAST_LEGACY_SCHEMA_VERSION`], or
-/// from a build newer than this one — is discarded and rebuilt or refused,
-/// because an index is derived from the user's source tree and reindexing
-/// reproduces it exactly.
-///
-/// It continues the old ladder's numbering rather than restarting at 1, for the
-/// reason [`LAST_LEGACY_SCHEMA_VERSION`] records.
+// Version stamped into `PRAGMA user_version` by `Database::open`.
+//
+// Every index this binary opens reaches this version by the registry in
+// `storage::index_migrate`: a fresh index is created from the frozen
+// `index_001_initial.sql` at `INITIAL_SCHEMA_VERSION` and climbs from there,
+// and a store stamped above `LAST_LEGACY_SCHEMA_VERSION` and below this
+// migrates forward in place the same way, one version at a time, unless a
+// registered version in that range asks to rebuild instead
+// (`storage::index_migrate::IndexMigrationKind::Rebuild`) — for a change,
+// like a different embedding space, that an in-place step cannot fix.
+// Anything else — at or below `LAST_LEGACY_SCHEMA_VERSION`, or from a build
+// newer than this one — is discarded and rebuilt or refused, because an
+// index is derived from the user's source tree and reindexing reproduces it
+// exactly.
+//
+// It continues the old ladder's numbering rather than restarting at 1, for
+// the reason `LAST_LEGACY_SCHEMA_VERSION` records.
 pub(super) const CURRENT_SCHEMA_VERSION: i32 = 20;
 
-/// The highest `user_version` the old migration ladder ever stamped.
-///
-/// `user_version` is one i32 per file, shared with every stamp the ladder wrote,
-/// so a fresh numbering starting at 1 would make an index from an older build
-/// read as one from a *newer* build — and be refused with advice to upgrade to
-/// something that does not exist. Nothing may reclaim this range:
-/// `CURRENT_SCHEMA_VERSION` only ever moves up from here.
+// The highest `user_version` the old migration ladder ever stamped.
+//
+// `user_version` is one i32 per file, shared with every stamp the ladder
+// wrote, so a fresh numbering starting at 1 would make an index from an
+// older build read as one from a newer build — and be refused with advice to
+// upgrade to something that does not exist. Nothing may reclaim this range:
+// `CURRENT_SCHEMA_VERSION` only ever moves up from here.
 pub(super) const LAST_LEGACY_SCHEMA_VERSION: i32 = 16;
 
-/// The version `index_001_initial.sql` creates, and the one it is frozen at.
-/// The ladder below it was collapsed into that file once, at the 1.0 rename;
-/// every later shape is a numbered step, and the file is never edited again.
+// The version `index_001_initial.sql` creates, and the one it is frozen at.
+// The ladder below it was collapsed into that file once, at the 1.0 rename;
+// every later shape is a numbered step, and the file is never edited again.
 pub(super) const INITIAL_SCHEMA_VERSION: i32 = LAST_LEGACY_SCHEMA_VERSION + 1;
 
 const _: () = assert!(
@@ -51,16 +51,16 @@ const _: () = assert!(
      from an older build is misread as one from a newer build"
 );
 
-/// `index_meta` key recording that the file the caller is holding is one
-/// [`Database::rebuild`] emptied, and which version it replaced.
-///
-/// The in-memory [`Database::rebuilt_from`] only reaches the run that did the
-/// rebuild; every run after it opens a file that is merely empty. Without a
-/// durable record, "emptied by a rebuild" and "never indexed" are the same
-/// store, which is what made a rebuilt index read as an empty repository.
-///
-/// [`Database::mark_reindexed`] removes it, so the marker means "not
-/// repopulated since", not "was rebuilt once".
+// `index_meta` key recording that the file the caller is holding is one
+// `Database::rebuild` emptied, and which version it replaced.
+//
+// The in-memory `Database::rebuilt_from` only reaches the run that did the
+// rebuild; every run after it opens a file that is merely empty. Without a
+// durable record, "emptied by a rebuild" and "never indexed" are the same
+// store, which is what made a rebuilt index read as an empty repository.
+//
+// `Database::mark_reindexed` removes it, so the marker means "not
+// repopulated since", not "was rebuilt once".
 const REBUILT_FROM_KEY: &str = "rebuilt_from_version";
 
 /// [`Database::pass_owed`] key for "every file's graph edges must be
@@ -174,28 +174,26 @@ impl Database {
         Ok(())
     }
 
-    /// Per-connection settings, applied on every connection this type opens —
-    /// including the second one a rebuild makes, which would otherwise come up
-    /// without foreign-key enforcement or the WAL.
+    // Per-connection settings, applied on every connection this type opens —
+    // including the second one a rebuild makes, which would otherwise come up
+    // without foreign-key enforcement or the WAL.
     fn apply_connection_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         super::apply_test_page_cap(conn)?;
         Ok(())
     }
 
-    /// Create the index schema on a new file, accept one already at it,
-    /// migrate one stamped between [`LAST_LEGACY_SCHEMA_VERSION`] and this
-    /// build's own version forward in place, and rebuild anything older.
-    ///
-    /// Below [`LAST_LEGACY_SCHEMA_VERSION`] there is still no ladder: an index
-    /// is derived from the user's source tree, so the answer to a shape this
-    /// old is to reindex, not to convert. That is the same reasoning ADR-078
-    /// applies to `memory.db`, reaching the opposite action for versions below
-    /// its own floor because the two stores hold different things — memory is
-    /// authored and refuses rather than rebuild, an index is not.
-    ///
-    /// `usage` is the exception that stops "purely derived" being true, and it
-    /// is carried across every rebuild, whichever version triggered it.
+    // Creates the index schema on a new file, accepts one already at it,
+    // migrates one stamped between `LAST_LEGACY_SCHEMA_VERSION` and this
+    // build's own version forward in place, and rebuilds anything older.
+    //
+    // Below `LAST_LEGACY_SCHEMA_VERSION` there is still no ladder: an index is
+    // derived from the user's source tree, so the answer to a shape this old
+    // is to reindex, not to convert (unlike `memory.db`, which is authored and
+    // refuses rather than rebuild below its own floor).
+    //
+    // `usage` is the exception that stops "purely derived" being true, and it
+    // is carried across every rebuild, whichever version triggered it.
     fn create_schema(&mut self, path: &Path) -> Result<()> {
         let version: i32 = self
             .conn
@@ -232,15 +230,14 @@ impl Database {
         self.create_fresh()
     }
 
-    /// Migrate `found` forward to `target` through `registry`'s `Migrate`
-    /// steps, unless a registered version in `(found, target]` is a
-    /// [`IndexMigrationKind::Rebuild`] — in which case this rebuilds once,
-    /// carrying `usage` across, instead of running any step in that range.
-    ///
-    /// Split out of [`create_schema`](Self::create_schema) so a test can drive
-    /// the resolution logic against a synthetic registry and target without
-    /// the production [`CURRENT_SCHEMA_VERSION`] and [`INDEX_MIGRATIONS`]
-    /// having to move to exercise it.
+    // Migrates `found` forward to `target` through `registry`'s `Migrate`
+    // steps, unless a registered version in `(found, target]` is a
+    // `IndexMigrationKind::Rebuild` — in which case this rebuilds once,
+    // carrying `usage` across, instead of running any step in that range.
+    //
+    // Split out of `create_schema` so a test can drive the resolution logic
+    // against a synthetic registry and target without the production
+    // `CURRENT_SCHEMA_VERSION` and `INDEX_MIGRATIONS` having to move.
     fn migrate_or_rebuild(
         &mut self,
         path: &Path,
@@ -264,13 +261,13 @@ impl Database {
         super::migration_ladder::apply_ladder(&self.conn, found, target, &steps, "index.db")
     }
 
-    /// Replace an index this build did not write, carrying `usage` across.
-    ///
-    /// The file is removed and recreated rather than having its tables
-    /// dropped. Two of them are virtual — an FTS5 index and a vec0 table — and
-    /// each owns a set of shadow tables that must not be dropped directly and
-    /// whose names have changed across the shapes this might encounter. Taking
-    /// the file out removes the need to know any of them.
+    // Replaces an index this build did not write, carrying `usage` across.
+    //
+    // The file is removed and recreated rather than having its tables
+    // dropped. Two of them are virtual — an FTS5 index and a vec0 table — and
+    // each owns a set of shadow tables that must not be dropped directly and
+    // whose names have changed across the shapes this might encounter. Taking
+    // the file out removes the need to know any of them.
     fn rebuild(&mut self, path: &Path, found: i32) -> Result<()> {
         let carried = self.read_usage().unwrap_or_default();
 
@@ -353,9 +350,9 @@ impl Database {
         Ok(())
     }
 
-    /// Best effort by design: an index old enough to predate the `usage` table
-    /// has nothing to carry, and failing the whole open over telemetry would
-    /// be the wrong trade.
+    // Best effort by design: an index old enough to predate the `usage` table
+    // has nothing to carry, and failing the whole open over telemetry would
+    // be the wrong trade.
     fn read_usage(&self) -> Result<Vec<(String, i64)>> {
         let mut stmt = self.conn.prepare("SELECT command, called_at FROM usage")?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -377,7 +374,7 @@ impl Database {
         Ok(())
     }
 
-    /// True when the file has no user tables.
+    // True when the file has no user tables.
     fn is_empty_file(&self) -> Result<bool> {
         let n: i64 = self
             .conn
@@ -692,8 +689,6 @@ mod tests {
         }
     }
 
-    /// A freshly created DB runs every migration and ends stamped at the latest
-    /// version.
     #[test]
     fn fresh_db_stamps_current_version() {
         register_sqlite_vec();
@@ -701,8 +696,6 @@ mod tests {
         assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
     }
 
-    /// Opening an already-migrated DB a second time is a clean no-op that keeps
-    /// the version.
     #[test]
     fn reopen_is_idempotent() {
         register_sqlite_vec();
@@ -712,8 +705,6 @@ mod tests {
         let db = Database::open(tmp.path()).expect("second open");
         assert_eq!(user_version(&db.conn), CURRENT_SCHEMA_VERSION);
     }
-
-    // ── forward migration (17 and above) ─────────────────────────────────────
 
     #[test]
     fn migrate_or_rebuild_applies_registered_steps_in_place_and_preserves_existing_rows() {
@@ -852,19 +843,13 @@ mod tests {
         );
     }
 
-    // ── migration parity ──────────────────────────────────────────────────────
-
     // Every non-internal `sqlite_master` row (tables, indexes, triggers, and
-    // each virtual table's own shadow tables), normalised so incidental
-    // whitespace differences in a `CREATE` statement's text don't register as
-    // a schema difference. The same comparison `memory.db`'s own parity test
-    // uses (`storage::memory::schema_tests::sqlite_master_signature`); no
-    // extra handling is needed for `chunks_fts`'s and `embeddings`'s shadow
-    // tables here, because both sides below execute byte-identical DDL, and
-    // FTS5/vec0 each derive a shadow table's `CREATE` statement
-    // deterministically from its virtual table's declaration — two
-    // independently created instances of the same declaration produce
-    // identical shadow rows, not merely same-shaped ones.
+    // each virtual table's shadow tables), normalised so incidental whitespace
+    // in a `CREATE` statement doesn't register as a schema difference. No
+    // extra handling is needed for `chunks_fts`/`embeddings` shadow tables:
+    // FTS5/vec0 derive a shadow table's `CREATE` statement deterministically
+    // from its virtual table's declaration, so two independently created
+    // instances produce identical rows, not merely same-shaped ones.
     fn sqlite_master_signature(conn: &Connection) -> Vec<(String, String, String)> {
         let mut stmt = conn
             .prepare(
@@ -1054,8 +1039,6 @@ mod tests {
         assert_eq!(queued, vec![1], "only the named product code is queued");
     }
 
-    // ── pass-owed marker ──────────────────────────────────────────────────────
-
     #[test]
     fn a_pass_owed_marker_round_trips_and_clears() {
         register_sqlite_vec();
@@ -1105,9 +1088,8 @@ mod tests {
             0,
             "the old index's derived rows must not survive into a schema that never held them"
         );
-        // The vec0 table has to be the current one, not the FLOAT[768] the old
-        // file carried: a stale dimension is the failure the deleted upgrade
-        // path existed to prevent, and rebuilding has to cover it too.
+        // The vec0 table must be the current one, not the FLOAT[768] the old
+        // file carried; a stale dimension must not survive a rebuild.
         let vec_sql: String = db
             .conn
             .query_row(
@@ -1203,10 +1185,9 @@ mod tests {
         );
     }
 
-    // The tell this replaces was "no files, but usage rows survived". Usage
-    // accrues on every `search`, so a store that was init'd over a tree with
-    // nothing indexable and then searched wears the same signature without any
-    // rebuild ever happening.
+    // Usage accrues on every `search`, so a store init'd over a tree with
+    // nothing indexable and then searched wears the same signature (no
+    // files, but usage rows) without any rebuild ever happening.
     #[test]
     fn an_index_that_was_never_rebuilt_is_not_reported_as_emptied() {
         register_sqlite_vec();
@@ -1291,8 +1272,6 @@ mod tests {
         assert_eq!(db.stats().unwrap().chunk_count, 0);
     }
 
-    /// Model provenance round-trips through index_meta, and a mismatch is a hard
-    /// error while an absent model is backfilled.
     #[test]
     fn embedding_model_stamp_reject_and_backfill() {
         register_sqlite_vec();
@@ -1319,9 +1298,8 @@ mod tests {
         );
     }
 
-    /// Chunker config provenance round-trips like `embedding_model`, but a
-    /// mismatch returns the stale value instead of erroring, and the run
-    /// keeps going (a chunk-cap change doesn't corrupt the vector space).
+    // A mismatch returns the stale value instead of erroring, and the run
+    // keeps going, since a chunk-cap change doesn't corrupt the vector space.
     #[test]
     fn chunker_config_stamp_and_warn_on_mismatch() {
         register_sqlite_vec();
@@ -1357,9 +1335,7 @@ mod tests {
         );
     }
 
-    /// A DB stamped under an old chunker config still lets normal
-    /// (non-`--force`) indexing proceed: `ensure_chunker_config` never
-    /// blocks the caller, it only reports the drift.
+    // `ensure_chunker_config` never blocks the caller, it only reports drift.
     #[test]
     fn chunker_config_mismatch_does_not_block_incremental_indexing() {
         register_sqlite_vec();
@@ -1376,9 +1352,6 @@ mod tests {
         assert_eq!(warned.as_deref(), Some("max_chunk_tokens=2048"));
     }
 
-    /// `stamp_chunker_config` is the refresh mechanism a `--force` re-index
-    /// uses to silence the drift warning: stamp old, detect the mismatch,
-    /// force-refresh, then confirm the same config no longer reports drift.
     #[test]
     fn stamp_chunker_config_silences_a_prior_mismatch() {
         register_sqlite_vec();
@@ -1428,8 +1401,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A fresh index is stamped with the current summary scheme and marks nothing
-    /// pending — the flag never fires on the fresh path.
     #[test]
     fn fresh_open_stamps_summary_scheme_and_marks_nothing_pending() {
         register_sqlite_vec();
@@ -1441,9 +1412,7 @@ mod tests {
         assert_eq!(db.refresh_pending_count().unwrap(), 0);
     }
 
-    /// The re-embed flag is cleared in the same transaction as the vector write:
-    /// a batch that re-embeds a pending chunk both persists the new vector and
-    /// clears `embed_pending`, atomically.
+    // Persists the new vector and clears `embed_pending` atomically.
     #[test]
     fn insert_embeddings_clears_embed_pending_in_the_same_transaction() {
         register_sqlite_vec();
@@ -1468,7 +1437,6 @@ mod tests {
         );
     }
 
-    /// The batch insert writes every row of a batch in one call.
     #[test]
     fn insert_embeddings_commits_the_whole_batch() {
         register_sqlite_vec();
@@ -1482,11 +1450,9 @@ mod tests {
         assert_eq!(embedding_count(&db), 3, "all three rows persist");
     }
 
-    /// The batch is a single transaction: if any row fails, none commit. This
-    /// is the guarantee the resume story rests on — a process killed while a
-    /// batch is being written leaves zero partial rows behind, so
-    /// `chunks_missing_embeddings` re-queues the whole batch cleanly. A per-row
-    /// autocommit loop would instead leak the rows written before the failure.
+    // A process killed mid-batch must leave zero partial rows, so
+    // `chunks_missing_embeddings` re-queues the whole batch cleanly; a per-row
+    // autocommit loop would instead leak the rows written before the failure.
     #[test]
     fn insert_embeddings_is_atomic_a_failing_row_rolls_back_the_whole_batch() {
         register_sqlite_vec();
@@ -1507,9 +1473,8 @@ mod tests {
         );
     }
 
-    /// An empty batch is a deliberate no-op, not an error. `run_embed_phase`
-    /// never constructs one today (batches are only built from a non-empty
-    /// slice of the work queue), but the boundary must still be safe.
+    // `run_embed_phase` only ever builds a batch from a non-empty slice of the
+    // work queue, but the empty boundary must still be safe, not an error.
     #[test]
     fn insert_embeddings_empty_batch_is_a_no_op() {
         register_sqlite_vec();
@@ -1519,9 +1484,7 @@ mod tests {
         assert_eq!(embedding_count(&db), 0);
     }
 
-    /// A batch of exactly one row commits normally — the boundary case
-    /// closest to the old per-row behaviour must not silently regress to a
-    /// non-transactional bypass.
+    // A batch of exactly one row must not silently bypass the transaction.
     #[test]
     fn insert_embeddings_single_row_batch_commits() {
         register_sqlite_vec();
@@ -1532,15 +1495,8 @@ mod tests {
         assert_eq!(embedding_count(&db), 1);
     }
 
-    /// Was a bug (see `git blame`/ADR-070): `insert_embedding`'s doc-comment
-    /// promises "insert or replace", but plain `INSERT OR REPLACE` against the
-    /// `embeddings` vec0 virtual table does not honour the conflict clause —
-    /// a second call for the same `chunk_id` raised `UNIQUE constraint
-    /// failed` instead of overwriting. This mattered because the run-level
-    /// resume test's own comment and the batch engineer's handoff note both
-    /// cited OR-REPLACE idempotency as a safety property to lean on. Fixed by
-    /// emulating replace with an explicit delete-then-insert (see
-    /// `insert_embedding`); this test now pins the fixed, promised behaviour.
+    // `insert_embedding` must replace an existing chunk_id's vector, not fail
+    // with a `UNIQUE constraint failed` error.
     #[test]
     fn insert_embedding_single_row_path_does_not_actually_replace_a_repeated_chunk_id() {
         register_sqlite_vec();
@@ -1555,15 +1511,9 @@ mod tests {
         assert_eq!(embedding_count(&db), 1);
     }
 
-    /// Same underlying bug as the test above, exercised through the batch
-    /// path this story added: a batch containing the same `chunk_id` twice
-    /// (still legitimate input — nothing in `insert_embeddings`'s contract
-    /// forbids it) used to hit the identical `UNIQUE constraint failed`
-    /// error, because it was the same OR-REPLACE-against-vec0 gap, not
-    /// something the transaction wrapper introduced. `insert_embeddings` now
-    /// applies the same delete-then-insert-per-row fix inside its batch
-    /// transaction, so a repeated id within one batch collapses to a single
-    /// last-write-wins row instead of erroring.
+    // A repeated `chunk_id` within one batch is legitimate input — nothing in
+    // `insert_embeddings`'s contract forbids it — and must collapse to a
+    // single last-write-wins row, not error.
     #[test]
     fn insert_embeddings_duplicate_chunk_id_within_one_batch_last_write_wins() {
         register_sqlite_vec();
@@ -1581,11 +1531,9 @@ mod tests {
         );
     }
 
-    /// The batch ceiling is 256 chunks (`resolve_batch_ceiling`'s default) —
-    /// confirm the transaction wrapper itself has no lower internal limit
-    /// (e.g. SQLite's bound statement/variable count) that would make a
-    /// full-size real batch behave differently from the small batches every
-    /// other test here uses.
+    // 256 is the batch ceiling (`resolve_batch_ceiling`'s default); confirms
+    // the transaction wrapper has no lower internal limit (e.g. SQLite's
+    // bound statement/variable count) that a full-size batch would hit.
     #[test]
     fn insert_embeddings_handles_a_full_size_256_batch() {
         register_sqlite_vec();
@@ -1597,13 +1545,11 @@ mod tests {
         assert_eq!(embedding_count(&db), 256);
     }
 
-    /// The other atomicity test triggers rollback via a sqlite-vec dimension
-    /// check, which is an application-level guard, not a generic SQLite
-    /// failure. Prove the same "whole batch or nothing" guarantee holds for a
-    /// genuine SQLite runtime error too: hold the file's write lock from a
-    /// second connection (no `busy_timeout` is configured — see
-    /// `Database::open`) so `insert_embeddings`'s own write hits `SQLITE_BUSY`
-    /// on the very first row, unrelated to any row's content.
+    // The other atomicity test triggers rollback via a sqlite-vec dimension
+    // check, an application-level guard rather than a generic SQLite failure.
+    // This proves the same guarantee for a genuine SQLite error: holding the
+    // file's write lock from a second connection makes the write hit
+    // `SQLITE_BUSY` on the first row, unrelated to any row's content.
     #[test]
     fn insert_embeddings_rolls_back_on_a_real_sqlite_error_not_just_bad_dimension() {
         register_sqlite_vec();
@@ -1647,11 +1593,9 @@ mod tests {
         assert_eq!(embedding_count(&db), 2);
     }
 
-    /// The batch change makes the write transaction live for the whole batch
-    /// instead of a single row, so it holds the writer lock longer than the
-    /// old per-row autocommit ever did. WAL mode should still let a concurrent
-    /// reader (e.g. `inkentry search` running mid-embed) proceed rather than
-    /// blocking or erroring — verify this empirically instead of assuming it.
+    // A batch transaction holds the writer lock for the whole batch, not just
+    // one row. WAL mode should still let a concurrent reader (e.g. `inkentry
+    // search` running mid-embed) proceed rather than blocking or erroring.
     #[test]
     fn open_batch_transaction_does_not_block_a_concurrent_reader() {
         register_sqlite_vec();
@@ -1683,11 +1627,9 @@ mod tests {
              (WAL snapshot isolation)"
         );
 
-        // The real code path a concurrent `inkentry search` takes — a sqlite-vec
-        // KNN `MATCH` query, not a plain `SELECT count(*)` — against the same
-        // virtual table the open transaction is writing into. `Database` opens
-        // its own connection, so build a second `Database` over the reader's
-        // (already-migrated) file rather than a raw `Connection`.
+        // The real path a concurrent `inkentry search` takes is a sqlite-vec
+        // KNN `MATCH` query against the same virtual table the open
+        // transaction is writing into, not a plain `SELECT count(*)`.
         let reader_db = Database {
             conn: reader,
             rebuilt_from: None,
@@ -1709,24 +1651,16 @@ mod tests {
         assert_eq!(count_after, 1, "reader's next read sees the committed row");
     }
 
-    /// The run-level resume regression test (`embed_phase.rs`) simulates an
-    /// interrupted batch by never calling `insert_embeddings` at all (the
-    /// mock server 500s before the batch write would happen) — a weaker
-    /// guarantee than the spec's "kill mid-batch" acceptance criterion, since
-    /// it never proves anything about a transaction that *was* opened and
-    /// *was* partway through writing when the process died.
-    ///
-    /// This test closes that gap literally: a child process opens the same
-    /// on-disk DB, stages every row of a batch inside an open transaction,
-    /// then hard-exits via `std::process::exit` — which runs no destructors,
-    /// so neither `COMMIT` nor `ROLLBACK` is ever sent, the closest safe
-    /// stand-in for a `SIGKILL` mid-commit (a real signal would skip Drop the
-    /// same way; unlike an in-process leak, `std::process::exit` still lets
-    /// the OS release the file lock, so the parent can reopen cleanly — a
-    /// leaked `Connection` in the same process cannot be observed this way,
-    /// since the lock would never clear). The child prints a marker after
-    /// staging so a filter/argv mismatch can never silently no-op this test
-    /// into a false pass.
+    // `embed_phase.rs`'s resume test simulates an interrupted batch by never
+    // calling `insert_embeddings`, which proves nothing about a transaction
+    // that was actually opened and partway through writing when the process
+    // died. This test closes that gap: a child process stages a batch inside
+    // an open transaction, then hard-exits via `std::process::exit` — no
+    // destructors run, so neither COMMIT nor ROLLBACK is sent, the closest
+    // safe stand-in for a SIGKILL mid-commit. Unlike an in-process leak,
+    // exiting still lets the OS release the file lock, so the parent can
+    // reopen cleanly. The child prints a marker after staging so a
+    // filter/argv mismatch can't silently false-pass.
     #[test]
     fn insert_embeddings_shaped_batch_leaves_nothing_after_a_hard_process_exit() {
         const HELPER_ENV: &str = "INKENTRY_TEST_CRASH_MID_BATCH_DB_PATH";
@@ -1795,12 +1729,10 @@ mod tests {
         );
     }
 
-    /// Two independent, fully-committed `insert_embedding` calls for the same
-    /// `chunk_id` must leave exactly one row holding the *second* vector — the
-    /// re-embed-on-content-change idempotency the resume/`index --force` paths
-    /// assume. On a `vec0` virtual table plain `INSERT OR REPLACE` silently
-    /// fails to do this (the conflict clause isn't honoured), so this pins the
-    /// delete-then-insert fix.
+    // Two independent, fully-committed `insert_embedding` calls for the same
+    // chunk_id must leave exactly one row holding the second vector. Plain
+    // `INSERT OR REPLACE` against a vec0 virtual table doesn't honour the
+    // conflict clause, so this requires an explicit delete-then-insert.
     #[test]
     fn insert_embedding_single_row_path_replaces_a_repeated_chunk_id() {
         register_sqlite_vec();
@@ -1841,9 +1773,7 @@ mod tests {
         );
     }
 
-    /// The same duplicate-`chunk_id` sequence inside a single explicit
-    /// transaction (mirroring a batch embed that flushes many rows under one
-    /// `BEGIN`) must also collapse to one last-write-wins row.
+    // Mirrors a batch embed flushing many rows under one `BEGIN`.
     #[test]
     fn insert_embedding_duplicate_chunk_id_within_one_transaction_last_write_wins() {
         register_sqlite_vec();
@@ -1893,10 +1823,9 @@ mod tests {
         );
     }
 
-    /// Replacing a `chunk_id` that has never been inserted must be a harmless
-    /// no-op DELETE followed by a normal INSERT — not an error. This is the
-    /// overwhelmingly common real-world call pattern (indexing a chunk for the
-    /// first time), so it must not regress under the delete-then-insert fix.
+    // Replacing a chunk_id that has never been inserted (the overwhelmingly
+    // common call pattern: indexing a chunk for the first time) must be a
+    // harmless no-op DELETE followed by a normal INSERT, not an error.
     #[test]
     fn insert_embedding_of_nonexistent_chunk_id_is_a_harmless_delete_no_op() {
         register_sqlite_vec();
@@ -1933,14 +1862,12 @@ mod tests {
         assert_eq!(stored, crate::embeddings::vec_to_int8_blob(&vector));
     }
 
-    /// The strongest test of "joins the existing transaction" vs. "just happens
-    /// not to error": call `insert_embedding` for a repeated `chunk_id` from
-    /// WITHIN a transaction the caller already opened, then roll that outer
-    /// transaction back. If the delete+insert genuinely joined the caller's
-    /// transaction (rather than, say, silently nesting a SAVEPOINT that
-    /// commits independently), rolling back the outer transaction must undo
-    /// both the delete and the insert, restoring the pre-transaction row
-    /// exactly.
+    // Calls `insert_embedding` for a repeated chunk_id from within a
+    // transaction the caller already opened, then rolls that outer
+    // transaction back. If the delete+insert genuinely joined the caller's
+    // transaction, rather than silently nesting a SAVEPOINT that commits
+    // independently, the rollback must undo both, restoring the
+    // pre-transaction row exactly.
     #[test]
     fn insert_embedding_joins_callers_transaction_and_rolls_back_with_it() {
         register_sqlite_vec();
@@ -1966,10 +1893,9 @@ mod tests {
                  is_autocommit() guard's join branch rather than its own-BEGIN branch"
             );
 
-            // Must not attempt a nested BEGIN (vec0/SQLite would reject it) —
-            // simply not erroring here already covers that. The real test is
-            // below: did it join *this* transaction, or silently commit on its
-            // own?
+            // Not erroring here already rules out a nested BEGIN; the rollback
+            // assertions below are the real test of whether it joined this
+            // transaction rather than silently committing on its own.
             db.insert_embedding(1, &second)
                 .expect("replacing inside the caller's open transaction must not nest a BEGIN");
 
@@ -2007,14 +1933,11 @@ mod tests {
         );
     }
 
-    /// The `embeddings` table runs in WAL mode (`Database::open`). A repeated
-    /// `chunk_id` replace is delete-then-insert; if those two statements were
-    /// not wrapped in one atomic transaction, a concurrent reader (e.g. a
-    /// search query racing an index refresh) could observe a window with zero
-    /// rows for that id between the DELETE committing and the INSERT
-    /// committing. Drive many replaces on one connection while a second,
-    /// independent connection continuously polls the row count, and assert
-    /// the reader never observes zero.
+    // A repeated chunk_id replace is delete-then-insert; if those two
+    // statements were not wrapped in one atomic transaction, a concurrent
+    // reader (e.g. a search query racing an index refresh) could observe a
+    // window with zero rows for that id. Drives many replaces on one
+    // connection while a second, independent connection polls the row count.
     #[test]
     fn insert_embedding_replace_has_no_zero_row_window_visible_to_a_concurrent_reader() {
         register_sqlite_vec();

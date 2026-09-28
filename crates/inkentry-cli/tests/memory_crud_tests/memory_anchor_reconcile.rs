@@ -1,10 +1,9 @@
-// ADR-099 D3a: hook-free rewrite reconciliation, run by `inkentry index` (the
-// pass that already runs after local history moves — see the post-commit
-// hook and the "bring the index up to date" step every session starts with).
+// Hook-free rewrite reconciliation, run by `inkentry index` after local
+// history moves.
 //
 // These tests simulate a rebase with `cherry-pick`: the cheapest way to
-// produce a commit with the same diff (so the same `git patch-id --stable`)
-// under a different sha, without driving an actual `git rebase` sequence.
+// produce a commit with the same diff (same `git patch-id --stable`) under a
+// different sha, without driving an actual `git rebase`.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
@@ -51,14 +50,13 @@ fn init_repo(dir: &Path) {
     isolate_git_config();
     std::fs::create_dir_all(dir).unwrap();
     git(dir, &["init", "-q", "-b", "main"]);
-    // Repo-local identity: the binary under test runs with HOME redirected
-    // and no global config, and git will not auto-detect an email on a host
-    // without a domain name, which is what a CI runner is.
+    // Repo-local identity: git won't auto-detect an email on a host with no
+    // domain name, which is what a CI runner is.
     git(dir, &["config", "user.email", "test@example.com"]);
     git(dir, &["config", "user.name", "Test"]);
-    // `.inkentry/` (memory.db, index.db) must never be part of the commits
-    // these tests manufacture: a `git reset --hard`/cherry-pick would then
-    // rewrite or delete the live stores as a side effect of moving history.
+    // `.inkentry/` must never be part of the commits these tests manufacture:
+    // a `git reset --hard`/cherry-pick would rewrite or delete the live
+    // stores as a side effect of moving history.
     std::fs::write(dir.join(".gitignore"), ".inkentry/\n").unwrap();
     std::fs::write(dir.join("README.md"), "hello\n").unwrap();
     git(dir, &["add", "."]);
@@ -135,8 +133,6 @@ fn head_at_write_of(repo: &Path, entity_id: &str) -> Option<String> {
         .ok()
 }
 
-// ── an anchored commit, rebased ─────────────────────────────────────────────
-
 #[test]
 fn a_rebased_anchored_commit_gets_a_second_anchor_and_source_ref_follows() {
     let tmp = TempDir::new().unwrap();
@@ -153,8 +149,8 @@ fn a_rebased_anchored_commit_gets_a_second_anchor_and_source_ref_follows() {
     let original_sha = head_sha(&repo);
     assert_eq!(source_ref_of(&repo, &entity_id), Some(original_sha.clone()));
 
-    // Rewrite history so the original commit is no longer reachable from any
-    // ref, and cherry-pick the same diff onto a new tip (same patch-id, new sha).
+    // Move the original commit out of reach, then cherry-pick the same diff
+    // onto a new tip (same patch-id, new sha).
     git(&repo, &["reset", "-q", "--hard", "HEAD~1"]);
     std::fs::write(repo.join("unrelated.txt"), "unrelated\n").unwrap();
     git(&repo, &["add", "."]);
@@ -172,8 +168,6 @@ fn a_rebased_anchored_commit_gets_a_second_anchor_and_source_ref_follows() {
     );
 }
 
-// ── a conflict-resolved rebase changes the diff: left alone ────────────────
-
 #[test]
 fn a_rebase_that_changes_the_diff_is_left_alone() {
     let tmp = TempDir::new().unwrap();
@@ -189,9 +183,8 @@ fn a_rebase_that_changes_the_diff_is_left_alone() {
     anchor_head(home.path(), &repo);
     let original_sha = head_sha(&repo);
 
-    // Move the original commit out of reach, but land a DIFFERENT diff at the
-    // new tip rather than cherry-picking the same one (as if a rebase needed
-    // conflict resolution and the result differs).
+    // Move the original commit out of reach, but land a different diff at
+    // the new tip, as if a rebase needed conflict resolution.
     git(&repo, &["reset", "-q", "--hard", "HEAD~1"]);
     std::fs::write(repo.join("work.txt"), "a differently resolved change\n").unwrap();
     git(&repo, &["add", "."]);
@@ -210,8 +203,6 @@ fn a_rebase_that_changes_the_diff_is_left_alone() {
     );
 }
 
-// ── two identical diffs: ambiguous, left alone ──────────────────────────────
-
 #[test]
 fn two_reachable_commits_with_the_same_patch_id_are_ambiguous_and_left_alone() {
     let tmp = TempDir::new().unwrap();
@@ -227,10 +218,10 @@ fn two_reachable_commits_with_the_same_patch_id_are_ambiguous_and_left_alone() {
     anchor_head(home.path(), &repo);
     let original_sha = head_sha(&repo);
 
-    // Move the original out of reach, then land the SAME diff twice more
-    // further down `main`'s own line — two distinct, reachable shas sharing
-    // one patch-id (`git cherry-pick` refuses to no-op a tree already
-    // present, so an unrelated commit separates the two picks).
+    // Move the original out of reach, then land the same diff twice more
+    // further down `main`: two distinct, reachable shas sharing one
+    // patch-id. `git cherry-pick` refuses to no-op a tree already present,
+    // so an unrelated commit separates the two picks.
     git(&repo, &["reset", "-q", "--hard", "HEAD~1"]);
     std::fs::write(repo.join("unrelated.txt"), "u\n").unwrap();
     git(&repo, &["add", "."]);
@@ -258,8 +249,6 @@ fn two_reachable_commits_with_the_same_patch_id_are_ambiguous_and_left_alone() {
     );
 }
 
-// ── a pending row's base is rebased, then claimed through the replacement ──
-
 #[test]
 fn a_pending_rows_rebased_base_is_claimed_through_the_replacement() {
     let tmp = TempDir::new().unwrap();
@@ -276,8 +265,8 @@ fn a_pending_rows_rebased_base_is_claimed_through_the_replacement() {
         Some(original_head.clone())
     );
 
-    // Amend the commit the entry was written on: same diff, new sha, and the
-    // original sha drops out of `main`'s reachable history.
+    // Same diff, new sha; the original sha drops out of `main`'s reachable
+    // history.
     git(
         &repo,
         &["commit", "-q", "--amend", "-m", "initial commit, amended"],
@@ -299,7 +288,7 @@ fn a_pending_rows_rebased_base_is_claimed_through_the_replacement() {
     );
 
     // The next ordinary commit in this worktree now claims it via the
-    // ordinary D2 ancestry test, through the replacement.
+    // ordinary ancestry test, through the replacement.
     std::fs::write(repo.join("next.txt"), "next\n").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "the next commit"]);

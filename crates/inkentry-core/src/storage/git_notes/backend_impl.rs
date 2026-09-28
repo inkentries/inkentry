@@ -7,8 +7,8 @@ use super::super::memory::{MemoryEdge, Note, NoteId};
 use super::super::note_record::{CarriedEdge, NoteRecord, now_millis, now_secs, record_to_note};
 use super::GitNotesBackend;
 
-/// The carrier keys on the frozen integer record id, so an id minted anywhere
-/// else simply does not exist here — a miss, not an error.
+// The carrier keys on the frozen integer record id, so an id minted anywhere
+// else simply does not exist here — a miss, not an error.
 fn carrier_id(id: &NoteId) -> Option<i64> {
     id.as_str().parse().ok()
 }
@@ -71,12 +71,10 @@ impl MemoryBackend for GitNotesBackend {
     }
 
     /// Filters by the git-notes **anchor** (the commit each entry's note is
-    /// attached to), not a stored `source_ref` field — the notes carrier never
-    /// records the anchor commit inside the record, only as the attachment. This
-    /// is what makes a note-anchored `memory add` entry findable by its commit
-    /// on the git-notes-primary path; the SQLite-primary path resolves the same
-    /// anchors via [`GitNotesBackend::entity_ids_anchored_to`] and reads the
-    /// authoritative local rows back.
+    /// attached to), not a stored `source_ref` field: the notes carrier never
+    /// records the anchor commit inside the record, only as the attachment.
+    /// This is what makes a note-anchored `memory add` entry findable by its
+    /// commit on the git-notes-primary path.
     async fn list_by_source_ref(
         &self,
         source_ref_prefix: &str,
@@ -89,14 +87,12 @@ impl MemoryBackend for GitNotesBackend {
             .await
     }
 
-    /// Folds every commit's records first (`folded_records`), then looks up
-    /// `id` in the *folded* result. A raw unfolded scan would return an
-    /// entity's original record verbatim even after a later state-update
-    /// (e.g. from `append_state_update`) archived it — the folded record
-    /// keeps the original `id` (the earliest-created copy is always
-    /// `fold_group`'s base) but reflects the entity's current `status` and
-    /// `superseded_by_entity_id`, which callers checking "is OLD still
-    /// active" (ADR-068 E4) depend on.
+    /// Folds every commit's records first, then looks up `id` in the folded
+    /// result. A raw unfolded scan would return an entity's original record
+    /// verbatim even after a later state-update archived it — the folded
+    /// record keeps the original `id` but reflects the entity's current
+    /// `status` and `superseded_by_entity_id`, which callers checking
+    /// whether an entry is still active depend on.
     async fn get(&self, id: NoteId) -> Result<Option<Note>> {
         let Some(id) = carrier_id(&id) else {
             return Ok(None);
@@ -130,18 +126,15 @@ impl MemoryBackend for GitNotesBackend {
         Ok(self.noted_commits().await?.len() as i64)
     }
 
-    /// Resolves `id` to its underlying record with the same strict,
-    /// per-commit read `add`/`append_record` use, so that a failed read fails
-    /// the archive rather than looking like a missing entry (a writer's own
-    /// resolve step is not the lenient batch read `get`/`folded_records` use
-    /// for listing, where one unreadable historical note must not block an
-    /// unrelated read). Then appends a `status: "archived"` state-update for
-    /// that record's entity via the shared carrier helper, targeting it by
-    /// `entity_id` rather than the rowid (ADR-068 A6). Never rewrites the
-    /// entity's existing line(s) in place: the ref is an append-only,
-    /// entity-keyed event log (see [`append_state_update`]'s doc), and a
-    /// rewrite mutates an already-written line's bytes, breaking that
-    /// invariant even on a single machine with no other clone involved.
+    /// Resolves `id` to its underlying record with the same strict, per-commit
+    /// read `add`/`append_record` use, so a failed read fails the archive
+    /// rather than looking like a missing entry (unlike the lenient batch
+    /// read `get`/`folded_records` use for listing, where one unreadable
+    /// historical note must not block an unrelated read). Then appends a
+    /// `status: "archived"` state-update for that record's entity, targeting
+    /// it by `entity_id` rather than the rowid. Never rewrites the entity's
+    /// existing line(s) in place: the ref is an append-only, entity-keyed
+    /// event log, and a rewrite would mutate an already-written line's bytes.
     async fn archive(&self, id: NoteId) -> Result<bool> {
         let Some(id) = carrier_id(&id) else {
             return Ok(false);
@@ -166,8 +159,6 @@ impl MemoryBackend for GitNotesBackend {
         super::append_state_update(self.git_root(), &base, "archived", invalid_at, None).await?;
         Ok(true)
     }
-
-    // ── Unsupported ──────────────────────────────────────────────────────────
 
     async fn search_timeline(
         &self,
