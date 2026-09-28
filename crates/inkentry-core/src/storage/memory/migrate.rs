@@ -8,8 +8,11 @@ use super::tags::normalize_tag;
 
 // Append only: number each step for the version it produces, and never
 // renumber or reorder an existing one.
-pub(super) const MEMORY_MIGRATIONS: &[(i32, MigrationStep)] =
-    &[(12, add_note_tags_and_files), (13, add_events_and_origin)];
+pub(super) const MEMORY_MIGRATIONS: &[(i32, MigrationStep)] = &[
+    (12, add_note_tags_and_files),
+    (13, add_events_and_origin),
+    (14, add_pending_anchors),
+];
 
 // The copy is Rust rather than SQL because tag normalisation is Unicode NFC.
 //
@@ -68,6 +71,14 @@ fn add_note_tags_and_files(conn: &Connection) -> Result<()> {
 fn add_events_and_origin(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../../../migrations/memory_013.sql"))
         .context("applying memory_013.sql")
+}
+
+// Step 14 has no data pass either: both tables start empty. A pre-existing
+// store never had a way to record a pending anchor, so there is nothing to
+// backfill.
+fn add_pending_anchors(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../../migrations/memory_014.sql"))
+        .context("applying memory_014.sql")
 }
 
 fn migration_clean_path(raw: &str) -> String {

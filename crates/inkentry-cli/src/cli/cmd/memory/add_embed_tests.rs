@@ -37,6 +37,7 @@ fn add_args(title: &str, body: &str) -> MemoryAddArgs {
         valid_at: None,
         supersedes: None,
         relates_to: None,
+        commit: None,
         format: "text".to_string(),
     }
 }

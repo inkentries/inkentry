@@ -349,6 +349,16 @@ fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
         );
     }
 
+    // Captured before `MemoryStore::open` migrates `db` in place, so this is
+    // genuinely the 1.1.0 binary's own value, not a post-migration echo.
+    let raw_source_refs: Vec<(String, Option<String>)> = raw(&db)
+        .prepare("SELECT title, source_ref FROM notes")
+        .expect("preparing raw source_ref read")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("reading raw source_ref")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collecting raw source_ref");
+
     let store = MemoryStore::open(&db).expect("opening a 1.1.0 store must migrate it, not refuse");
     assert_eq!(read_user_version(&raw(&db)), fresh_memory_schema_version());
 
@@ -409,6 +419,40 @@ fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
         Vec::new(),
         "a migrated store's events table starts empty"
     );
+
+    // Step 14 (ADR-099 D1): pending_anchors is new local working state, so a
+    // migrated store — which never ran a `memory add` under this build —
+    // starts with none, same as `events` above.
+    assert_eq!(
+        store
+            .pending_anchor_count()
+            .expect("counting pending anchors"),
+        0,
+        "a migrated store's pending_anchors table starts empty"
+    );
+
+    // Step 14 touches no existing column, so every entry's `source_ref` —
+    // set or absent — must read back exactly as the 1.1.0 binary wrote it.
+    // This fixture's own entries all predate `source_ref` (none are
+    // harvested), so the assertion below exercises the "still absent" case;
+    // `a_store_migrated_to_14_matches_a_fresh_store` in `schema_tests.rs`
+    // covers the shape step 14 leaves the column in either way.
+    assert!(
+        !raw_source_refs.is_empty(),
+        "the fixture must carry at least one entry, or this assertion proves nothing"
+    );
+    for (title, raw_ref) in &raw_source_refs {
+        let migrated_ref = all
+            .iter()
+            .find(|n| &n.title == title)
+            .unwrap_or_else(|| panic!("{title:?} did not survive the migration"))
+            .source_ref
+            .clone();
+        assert_eq!(
+            &migrated_ref, raw_ref,
+            "{title:?}'s source_ref must survive step 14 unchanged"
+        );
+    }
 }
 
 // The ref carries blobs from three writing eras (legacy single-JSON, multi-line
@@ -619,8 +663,17 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
 // `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
 // assertions for what step 13 adds (events exists and is empty; origin reads
 // as absent) rather than a new wing.
+//
+// Memory 13 -> 14: no, for the same reason as 12 -> 13. Schema 13 (ADR-098
+// events/origin) has not shipped either, so no released binary's store is
+// stamped 13 and there is nothing new for the 1.1.0 wing to survive moving
+// through step 14 (ADR-099 pending_anchors/patch_id_cache) that its own climb
+// through 11 -> current does not already cover.
+// `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
+// assertions for what step 14 adds (pending_anchors exists and is empty;
+// harvested entries keep their source_ref) rather than a new wing.
 const CORPUS_COVERS_INDEX_SCHEMA: i32 = 20;
-const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 13;
+const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 14;
 
 #[test]
 #[serial_test::serial]

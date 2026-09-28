@@ -97,11 +97,18 @@ pub async fn memory_sync(
     if pending > 0 {
         eprintln!("{}", pending_embedding_warning(pending));
     }
-    let edges_note = if pushed.edges_pushed > 0 {
+    let mut edges_note = if pushed.edges_pushed > 0 {
         format!(" Linked {} relationship edge(s).", pushed.edges_pushed)
     } else {
         String::new()
     };
+    // ADR-099 D5: entries claimed locally after they had already synced.
+    if pushed.anchors_pushed > 0 {
+        edges_note.push_str(&format!(
+            " Sent {} anchor update(s).",
+            pushed.anchors_pushed
+        ));
+    }
 
     if pushed.attempted == 0 {
         println!(

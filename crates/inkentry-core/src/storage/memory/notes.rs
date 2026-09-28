@@ -742,6 +742,16 @@ impl MemoryStore {
         Ok(notes)
     }
 
+    /// The single note whose `entity_id` is `entity_id`, archived or not
+    /// (ADR-099: a pending anchor's entity may already be superseded/archived
+    /// by the time a commit claims it, and claiming still applies).
+    pub fn get_by_entity_id(&self, entity_id: &str) -> Result<Option<Note>> {
+        Ok(self
+            .list_by_entity_ids(std::slice::from_ref(&entity_id.to_string()), 1, true, None)?
+            .into_iter()
+            .next())
+    }
+
     /// Mark an entry as archived (hidden from search and ask context).
     pub fn archive(&self, id: &NoteId) -> Result<bool> {
         let changed = self.conn.execute(
@@ -749,6 +759,19 @@ impl MemoryStore {
             rusqlite::params![id.as_str()],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Set an entry's `source_ref` (ADR-099 D3): the local row's projection of
+    /// its carrier anchor attachment. Overwrites whatever was there —
+    /// resolving *which* commit wins when an entry carries more than one
+    /// anchor is the caller's job (`storage::git_notes::resolve_source_ref`),
+    /// not this write's.
+    pub fn set_source_ref(&self, id: &NoteId, source_ref: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET source_ref = ?1 WHERE uuid = ?2",
+            rusqlite::params![source_ref, id.as_str()],
+        )?;
+        Ok(())
     }
 
     /// Retrieve the raw embedding blob for a note (for use by the CLI's

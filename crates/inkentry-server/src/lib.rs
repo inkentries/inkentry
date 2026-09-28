@@ -573,6 +573,7 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::delete_note,
         handlers::archive_note,
         handlers::supersede_note,
+        handlers::update_note_anchor,
         handlers::project_stats,
         handlers::harvested_shas,
         handlers::push_memory_batch,
@@ -592,6 +593,7 @@ pub fn default_conflict_threshold() -> f32 {
         handlers::CountResponse,
         handlers::NoteListResponse,
         handlers::SupersedeRequest,
+        handlers::AnchorUpdateRequest,
         handlers::BatchNoteItem,
         handlers::BatchPushRequest,
         handlers::BatchItemResult,
@@ -774,6 +776,10 @@ pub fn router_with_limits(
         .route(
             "/v1/projects/{project_id}/memory/{note_id}/supersede",
             post(handlers::supersede_note),
+        )
+        .route(
+            "/v1/projects/{project_id}/memory/{note_id}/anchor",
+            post(handlers::update_note_anchor),
         )
         .route(
             "/v1/projects/{project_id}/stats",

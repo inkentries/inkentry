@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{self, Request};
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::db::ServerDb;
@@ -373,4 +373,84 @@ async fn add_note_body_one_over_cap_returns_400() {
         http::StatusCode::BAD_REQUEST,
         "body one char over the cap (MAX+1) must be 400"
     );
+}
+
+// ADR-099 D5: POST /memory/{id}/anchor sets source_ref on an already-synced
+// entry.
+async fn post_anchor(app: axum::Router, slug: &str, note_id: &str, source_ref: &str) -> Value {
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/projects/{slug}/memory/{note_id}/anchor"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "source_ref": source_ref })).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        http::StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn anchor_update_on_a_real_note_reports_changed_true() {
+    let (app, _dim) = make_app(0.92);
+    let (status, body) = post_note(
+        app.clone(),
+        "anchor-test",
+        "an entry",
+        vec![1.0, 0.0, 0.0, 0.0],
+    )
+    .await;
+    assert_eq!(status, http::StatusCode::CREATED);
+    let id = body["id"].as_str().unwrap();
+
+    let result = post_anchor(app, "anchor-test", id, "deadbeefcafe").await;
+    assert_eq!(result["changed"], json!(true));
+}
+
+#[tokio::test]
+async fn anchor_update_on_an_unknown_note_reports_changed_false_not_an_error() {
+    let (app, _dim) = make_app(0.92);
+    // A real project (auto-created on first write) with an id that is not in it.
+    let (status, _body) = post_note(
+        app.clone(),
+        "anchor-test",
+        "an unrelated entry",
+        vec![1.0, 0.0, 0.0, 0.0],
+    )
+    .await;
+    assert_eq!(status, http::StatusCode::CREATED);
+
+    let result = post_anchor(app, "anchor-test", "not-a-real-id", "deadbeefcafe").await;
+    assert_eq!(result["changed"], json!(false));
+}
+
+#[tokio::test]
+async fn anchor_update_is_idempotent_on_repeat() {
+    let (app, _dim) = make_app(0.92);
+    let (status, body) = post_note(
+        app.clone(),
+        "anchor-test",
+        "an entry",
+        vec![1.0, 0.0, 0.0, 0.0],
+    )
+    .await;
+    assert_eq!(status, http::StatusCode::CREATED);
+    let id = body["id"].as_str().unwrap();
+
+    let first = post_anchor(app.clone(), "anchor-test", id, "sha1").await;
+    assert_eq!(first["changed"], json!(true));
+    // Resent, as the client does on every push/sync with no local record of
+    // whether the server already has it — must not error the second time.
+    let second = post_anchor(app, "anchor-test", id, "sha1").await;
+    assert_eq!(second["changed"], json!(true));
 }

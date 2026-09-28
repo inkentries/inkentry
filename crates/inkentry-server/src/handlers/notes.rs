@@ -123,6 +123,14 @@ pub struct SupersedeRequest {
     pub new_id: String,
 }
 
+/// ADR-099 D5: an entry can sync before a commit claims it; this carries the
+/// anchor once it exists.
+#[derive(Deserialize, ToSchema)]
+pub struct AnchorUpdateRequest {
+    /// The commit sha the client resolved `source_ref` to.
+    pub source_ref: String,
+}
+
 // ── Memory CRUD ───────────────────────────────────────────────────────────────
 
 /// Add a memory entry to a project. The project is auto-created on first write.
@@ -500,5 +508,37 @@ pub async fn supersede_note(
     let db = state.db.lock().await;
     let project = require_project(&db, &project_id)?;
     let changed = db.supersede_note(project.id, &note_id, &body.new_id)?;
+    Ok(Json(BoolResponse { changed }))
+}
+
+/// ADR-099 D5: set `source_ref` on an already-synced entry once a commit
+/// claims it locally. Idempotent and unconditional (unlike `archive`/
+/// `supersede`, which guard on `status = 'active'`): the client has no local
+/// record of whether a previous push already delivered this, so it resends
+/// on every push/sync, and a repeat must not error.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/memory/{note_id}/anchor",
+    params(
+        ("project_id" = String, Path, description = "Project slug"),
+        ("note_id" = String, Path, description = "Note identity (UUIDv7)"),
+    ),
+    request_body = AnchorUpdateRequest,
+    responses(
+        (status = 200, description = "Anchor result", body = BoolResponse),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 404, description = "Note not found", body = ErrorBody),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "memory"
+)]
+pub async fn update_note_anchor(
+    State(state): State<AppState>,
+    Path((project_id, note_id)): Path<(String, String)>,
+    Json(body): Json<AnchorUpdateRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let db = state.db.lock().await;
+    let project = require_project(&db, &project_id)?;
+    let changed = db.set_note_source_ref(project.id, &note_id, &body.source_ref)?;
     Ok(Json(BoolResponse { changed }))
 }
