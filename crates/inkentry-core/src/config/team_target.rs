@@ -133,10 +133,8 @@ mod tests {
         dir.path().to_path_buf()
     }
 
-    // The env pair is process-global; every test here scrubs it so an
-    // ambient INKENTRY_SERVER_URL cannot add a target the assertions don't
-    // expect. Grouped with the config-dir guard because `global_server_ca`
-    // reads INKENTRY_CONFIG_DIR too.
+    // Scrubs the process-global env pair so an ambient INKENTRY_SERVER_URL
+    // cannot add a target the assertions don't expect.
     struct EnvGuard;
 
     impl EnvGuard {

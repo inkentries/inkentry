@@ -74,9 +74,9 @@ impl ConventionExtractor {
     }
 }
 
-/// Fold dialects onto the language they share conventions with.
-/// tsx is typescript plus JSX: naming, async, testing and docs are identical,
-/// so both surface under one label instead of duplicating every record.
+// Fold dialects onto the language they share conventions with. tsx is
+// typescript plus JSX, so both surface under one label instead of
+// duplicating every record.
 fn canonical_language(lang: &str) -> &str {
     match lang {
         "tsx" => "typescript",
@@ -84,21 +84,20 @@ fn canonical_language(lang: &str) -> &str {
     }
 }
 
-/// Provenance of a record, used to break ties when merging duplicates.
+// Provenance of a record, used to break ties when merging duplicates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
-    /// A per-language rule set, or the generic set acting as a language's sole set.
+    // A per-language rule set, or the generic set acting as a language's sole set.
     LanguageSpecific,
-    /// The generic set layered on top of a language-specific set.
+    // The generic set layered on top of a language-specific set.
     Generic,
 }
 
-/// Collapse records to one per `(language, category)`.
-///
-/// Language-specific records win over generic ones. Two records of the same
-/// source cannot collide: there is one group per canonical language, each rule
-/// set labels with that group's language and emits each category at most once.
-/// Output is ordered by `(language, category)` for determinism.
+// Collapse records to one per `(language, category)`. Language-specific
+// records win over generic ones. Two records of the same source cannot
+// collide: there is one group per canonical language, and each rule set
+// emits each category at most once. Output is ordered by `(language,
+// category)` for determinism.
 fn dedup_by_language_category(tagged: Vec<(Source, ConventionRecord)>) -> Vec<ConventionRecord> {
     use std::collections::BTreeMap;
 

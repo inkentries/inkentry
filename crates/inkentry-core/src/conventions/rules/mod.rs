@@ -7,8 +7,6 @@ pub mod typescript;
 use super::ConventionRecord;
 use super::extractor::ChunkSummary;
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
-
 /// Classify a symbol name into a case style.
 /// Names shorter than 3 characters are treated as `CaseStyle::Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

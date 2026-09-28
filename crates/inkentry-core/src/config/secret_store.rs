@@ -1,11 +1,8 @@
 //! Credential-format-agnostic secret storage for the CLI.
 //!
-//! The CLI's bearer credential used to live as plaintext in
-//! `~/.config/inkentry/config.toml` (`server_key = "sk-ink-…"`). Any process
-//! running as the user could read it, and the common real-world leak is users
-//! syncing `~/.config` into a dotfiles git repo or a backup. That file is read
-//! for no credential at all any more (ADR-088 D1); secrets live in the OS
-//! secret store:
+//! Bearer credentials are kept out of `~/.config/inkentry/config.toml`: that
+//! file is readable by any process running as the user and is commonly synced
+//! to a dotfiles repo or backup. Secrets instead live in the OS secret store:
 //!
 //! * macOS  — Keychain
 //! * Linux  — Secret Service (libsecret / `org.freedesktop.secrets`)
@@ -18,8 +15,7 @@
 //! The store holds **opaque string secrets keyed by name** — it does not know
 //! or care whether a value is today's `sk-ink-…` bearer key or a future WorkOS
 //! access/refresh token. Callers pick the key name; this module
-//! just persists and retrieves the bytes. That keeps the storage layer reusable
-//! when the credential format changes.
+//! just persists and retrieves the bytes.
 //!
 //! ## Headless / CI fallback
 //!
@@ -30,11 +26,10 @@
 //! * `INKENTRY_SERVER_KEY` remains the non-interactive escape hatch and is read
 //!   directly by [`crate::config::Config::load`] — it bypasses this store
 //!   entirely.
-//! * When no keychain backend is available, [`SecretStore::default_store`]
-//!   transparently falls back to an **opt-out file store** that keeps the
-//!   pre-existing `config.toml` behaviour (a clear, non-fatal degradation rather
-//!   than an error). Set `INKENTRY_SECRET_STORE=file` to force the file backend,
-//!   or `INKENTRY_SECRET_STORE=keychain` to require the keychain (erroring if it
+//! * When no keychain backend is available, [`default_store`] transparently
+//!   falls back to a plaintext file store rather than erroring. Set
+//!   `INKENTRY_SECRET_STORE=file` to force the file backend, or
+//!   `INKENTRY_SECRET_STORE=keychain` to require the keychain (erroring if it
 //!   is unavailable instead of falling back).
 //!
 //! Secrets are **never logged** — only key names and backend kinds appear in
@@ -86,10 +81,6 @@ pub trait SecretStore: Send + Sync {
     fn kind(&self) -> &'static str;
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Keyring-backed store (OS keychain)
-// ───────────────────────────────────────────────────────────────────────────
-
 /// Process-wide cache of keychain reads, keyed by entry name.
 ///
 /// One CLI invocation can end up calling [`Config::load`](crate::config::Config::load)
@@ -111,7 +102,7 @@ fn read_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 pub struct KeyringStore;
 
 impl KeyringStore {
-    /// Build a keyring entry for `key` under the shared inkentry service.
+    // Build a keyring entry for `key` under the shared inkentry service.
     fn entry(key: &str) -> Result<keyring::Entry> {
         keyring::Entry::new(KEYRING_SERVICE, key)
             .with_context(|| format!("opening keychain entry for {KEYRING_SERVICE}/{key}"))
@@ -169,10 +160,6 @@ impl SecretStore for KeyringStore {
         "keychain"
     }
 }
-
-// ───────────────────────────────────────────────────────────────────────────
-// File-backed store (headless / CI fallback)
-// ───────────────────────────────────────────────────────────────────────────
 
 /// Plaintext-file [`SecretStore`] — the graceful fallback when no keychain is
 /// available, and the opt-in target for `INKENTRY_SECRET_STORE=file`.
@@ -234,8 +221,6 @@ impl SecretStore for FileStore {
         if table.remove(key).is_none() {
             return Ok(());
         }
-        // If the file is now empty, remove it entirely so we don't leave an
-        // empty secrets.toml lying around.
         if table.is_empty() {
             if self.path.exists() {
                 std::fs::remove_file(&self.path)
@@ -251,7 +236,7 @@ impl SecretStore for FileStore {
     }
 }
 
-/// Set `0600` permissions on Unix; a no-op on other platforms.
+// Set `0600` permissions on Unix; a no-op on other platforms.
 #[cfg(unix)]
 fn set_owner_only(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -264,10 +249,6 @@ fn set_owner_only(path: &Path) -> Result<()> {
 fn set_owner_only(_path: &Path) -> Result<()> {
     Ok(())
 }
-
-// ───────────────────────────────────────────────────────────────────────────
-// In-memory store (tests)
-// ───────────────────────────────────────────────────────────────────────────
 
 /// In-memory [`SecretStore`] for tests — no daemon, no filesystem, no keychain.
 ///
@@ -302,10 +283,6 @@ impl SecretStore for MemoryStore {
         "memory"
     }
 }
-
-// ───────────────────────────────────────────────────────────────────────────
-// Backend resolution
-// ───────────────────────────────────────────────────────────────────────────
 
 /// Resolve the default [`SecretStore`] for this host, honouring
 /// [`ENV_SECRET_STORE`].
@@ -363,8 +340,6 @@ mod tests {
     // opaque values under whatever name a caller picks.
     const TEST_KEY: &str = "a_credential";
 
-    // ── FileStore round-trip ────────────────────────────────────────────────
-
     #[test]
     fn file_store_set_get_delete_round_trip() {
         let tmp = TempDir::new().unwrap();
@@ -392,14 +367,11 @@ mod tests {
     fn file_store_delete_missing_is_ok() {
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path().join("secrets.toml"));
-        // Idempotent delete: no error even when nothing is stored.
         store.delete(TEST_KEY).unwrap();
     }
 
     #[test]
     fn file_store_is_format_agnostic_multiple_keys() {
-        // The store holds opaque values under arbitrary names, so a future
-        // access/refresh-token migration can reuse it with no changes here.
         let tmp = TempDir::new().unwrap();
         let store = FileStore::new(tmp.path().join("secrets.toml"));
         store.set("access_token", "at-123").unwrap();
@@ -412,7 +384,6 @@ mod tests {
             store.get("refresh_token").unwrap().as_deref(),
             Some("rt-456")
         );
-        // Deleting one leaves the other intact.
         store.delete("access_token").unwrap();
         assert_eq!(store.get("access_token").unwrap(), None);
         assert_eq!(
@@ -444,8 +415,6 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600, "secret file must be owner-only");
     }
 
-    // ── MemoryStore ─────────────────────────────────────────────────────────
-
     #[test]
     fn memory_store_round_trip() {
         let store = MemoryStore::default();
@@ -454,11 +423,8 @@ mod tests {
         assert_eq!(store.get(TEST_KEY).unwrap().as_deref(), Some("tok"));
         store.delete(TEST_KEY).unwrap();
         assert_eq!(store.get(TEST_KEY).unwrap(), None);
-        // Idempotent delete.
         store.delete(TEST_KEY).unwrap();
     }
-
-    // ── default_store backend selection ──────────────────────────────────────
 
     #[test]
     #[serial_test::serial(inkentry_secret_store_env)]
@@ -473,10 +439,8 @@ mod tests {
     #[test]
     #[serial_test::serial(inkentry_secret_store_env)]
     fn default_store_keychain_forced_errors_when_unavailable() {
-        // We can't guarantee a keychain in CI, so this only asserts the error
-        // path when the keychain is genuinely unavailable. When a keychain IS
-        // present (e.g. a dev macOS box), the call succeeds — both outcomes are
-        // acceptable, so we just assert it does not fall back to file.
+        // CI may or may not have a keychain; either outcome is fine as long
+        // as a forced keychain request never silently falls back to file.
         let tmp = TempDir::new().unwrap();
         unsafe { std::env::set_var(ENV_SECRET_STORE, "keychain") };
         match default_store(tmp.path()) {
@@ -496,38 +460,22 @@ mod tests {
     #[test]
     #[serial_test::serial(inkentry_secret_store_env)]
     fn default_store_auto_resolves_to_a_backend() {
-        // Auto mode must always yield *some* backend (never hard-fail), whether
-        // a keychain is present (→ keychain) or not (→ file fallback).
         let tmp = TempDir::new().unwrap();
         unsafe { std::env::remove_var(ENV_SECRET_STORE) };
         let store = default_store(tmp.path()).unwrap();
         assert!(matches!(store.kind(), "keychain" | "file"));
     }
 
-    // ── KeyringStore process-wide read cache ─────────────────────────────────
-    //
-    // `KeyringStore::get` hardcodes the real `keyring` crate backend with no
-    // way to inject a fake, so it cannot be exercised in a test at all without
-    // risking a real OS keychain access (and, on macOS, a real authorization
-    // dialog) — something this project's test suite must never do. What *is*
-    // testable in isolation is the cache primitive `KeyringStore::get`
-    // delegates to: `read_cache()`, a process-wide `key -> Option<value>` map
-    // that a value is written into once and served from on every subsequent
-    // lookup. This test exercises that shared cache directly (the same
-    // static `KeyringStore::get` reads and writes) to confirm a key already
-    // present is served without a second backend fetch, which is the
-    // invariant the fix relies on to bound keychain reads to at most one per
-    // process per key.
+    // `KeyringStore::get` hardcodes the real `keyring` crate with no way to
+    // inject a fake, so a real OS keychain access can't be risked in a test.
+    // This instead exercises the cache primitive it delegates to directly.
     #[test]
     #[serial_test::serial(inkentry_keyring_read_cache)]
     fn read_cache_serves_a_cached_key_without_a_second_fetch() {
         let key = "test_only_read_cache_probe_key";
-        // Isolate from any other run's leftovers (the map is process-global).
         read_cache().lock().unwrap().remove(key);
 
         let fetch_count = std::sync::atomic::AtomicUsize::new(0);
-        // Mirrors KeyringStore::get's own check-cache-then-fetch-then-insert
-        // flow, but with a counted stand-in for the real keychain read.
         let lookup = |k: &str| -> Option<String> {
             if let Some(cached) = read_cache().lock().unwrap().get(k) {
                 return cached.clone();
@@ -563,9 +511,6 @@ mod tests {
         read_cache().lock().unwrap().remove(key);
     }
 
-    /// A `None` result (key absent from the backend) is cached too, so a
-    /// repeated lookup for a key that does not exist also avoids a second
-    /// fetch — not just the `Some` case.
     #[test]
     #[serial_test::serial(inkentry_keyring_read_cache)]
     fn read_cache_caches_a_negative_result_too() {
