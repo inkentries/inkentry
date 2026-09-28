@@ -16,6 +16,10 @@ use crate::uuid_v7::uuid_v7_at;
 const NOTE_COLUMNS: &str = "n.sync_id, n.kind, n.title, n.body, n.tags, n.linked_files, \
                             n.created_at, n.status, s.sync_id, n.remote_id";
 
+/// How many vector-KNN hits [`ServerDb::find_candidates`] pulls before
+/// banding and capping to `MAX_CANDIDATES_PER_BAND` (ADR-100 D1/D5).
+const CANDIDATE_POOL: usize = 20;
+
 const NOTE_SOURCE: &str = "notes n LEFT JOIN notes s ON s.id = n.superseded_by";
 
 /// Typed error for an embedding-dimension mismatch on a project. Kept distinct
@@ -518,6 +522,51 @@ impl ServerDb {
         Ok((note_id, sync_id))
     }
 
+    /// [`Self::add_note`], with `resolutions` (`(kind, target_id)` pairs,
+    /// ADR-100 D2/D4) applied against the new row in the same transaction.
+    /// Rolls back the insert if a resolution errors, so a write never lands
+    /// half-resolved.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_note_with_resolutions(
+        &self,
+        project_id: i64,
+        kind: &str,
+        title: &str,
+        body: &str,
+        tags: &[String],
+        linked_files: &[String],
+        embedding: Option<&[f32]>,
+        resolutions: &[(String, String)],
+    ) -> Result<(i64, String)> {
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(i64, String)> {
+            let (rowid, sync_id) = self.add_note(
+                project_id,
+                kind,
+                title,
+                body,
+                tags,
+                linked_files,
+                embedding,
+                None,
+            )?;
+            for (rkind, target_id) in resolutions {
+                self.apply_resolution(project_id, rowid, &sync_id, rkind, target_id)?;
+            }
+            Ok((rowid, sync_id))
+        })();
+        match result {
+            Ok(v) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
     /// Bulk-lookup active notes by their cross-machine `remote_id` (the batch
     /// push idempotency key). Scoped to the project and to live rows only: an
     /// archived row with the same `remote_id` does not count as existing, so a
@@ -789,6 +838,88 @@ impl ServerDb {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(candidates)
+    }
+
+    /// The pre-write candidate pool for `POST .../memory` (ADR-100 D1/D4/D5):
+    /// vector KNN over the project's active entries, banded and capped by the
+    /// same [`inkentry_core::storage::classify_candidates`] `memory add` and
+    /// `harvest` use. `exclude_rowid` drops a self-match (the entry just
+    /// written, when re-checking after a store).
+    ///
+    /// Vector-only: unlike the local store, this schema carries no full-text
+    /// index over notes, so there is no lexical half to union in. With no
+    /// embedding this returns no candidates at all — a stricter version of
+    /// D1's "FTS only, write proceeds" fallback, since there is no FTS here
+    /// either; the write still always proceeds regardless.
+    pub fn find_candidates(
+        &self,
+        project_id: i64,
+        embedding: Option<&[f32]>,
+        exclude_rowid: Option<i64>,
+    ) -> Result<Vec<inkentry_core::storage::Candidate>> {
+        use inkentry_core::storage::{CandidateHit, classify_candidates};
+
+        let Some(vec) = embedding else {
+            return Ok(Vec::new());
+        };
+        let blob = inkentry_core::embeddings::vec_to_blob(vec);
+        let exclude = exclude_rowid.unwrap_or(-1);
+        let sql = format!(
+            "WITH knn AS (
+                 SELECT note_id, distance
+                 FROM   note_embeddings
+                 WHERE  embedding MATCH ?1 AND k = {CANDIDATE_POOL}
+             )
+             SELECT n.sync_id, n.kind, n.title, n.created_at, CAST(k.distance AS REAL)
+             FROM   knn k
+             JOIN   notes n ON n.id = k.note_id
+             WHERE  n.project_id = ?2 AND n.status = 'active' AND n.id != ?3
+             ORDER  BY k.distance"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let vector_hits = stmt
+            .query_map(rusqlite::params![blob, project_id, exclude], |row| {
+                Ok(CandidateHit {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    title: row.get(2)?,
+                    created_at: row.get(3)?,
+                    distance: Some(row.get(4)?),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(classify_candidates(vector_hits, Vec::new(), None))
+    }
+
+    /// Applies one D2/D4 resolution against an already-stored entry
+    /// (`new_rowid`/`new_sync_id`). `target_id` naming an entry outside the
+    /// reported candidate set is accepted, same as the local store: the id
+    /// only has to resolve to a real row in this project, not one of the
+    /// candidates. An unresolvable target is silently skipped — the entry
+    /// itself is already stored, and reporting a bad resolution id here would
+    /// have to invent a new error shape this endpoint does not otherwise
+    /// have.
+    pub fn apply_resolution(
+        &self,
+        project_id: i64,
+        new_rowid: i64,
+        new_sync_id: &str,
+        kind: &str,
+        target_id: &str,
+    ) -> Result<()> {
+        match kind {
+            "supersedes" => {
+                self.supersede_note(project_id, target_id, new_sync_id)?;
+            }
+            "relates_to" | "contradicts" => {
+                if let Some(target_rowid) = self.resolve_rowid(project_id, target_id)? {
+                    self.add_edge(new_rowid, target_rowid, kind)?;
+                }
+            }
+            // "distinct": records nothing, same as the CLI's --distinct-from.
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Insert a directed edge between two server notes.
