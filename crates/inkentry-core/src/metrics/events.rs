@@ -1,7 +1,6 @@
-//! Events-source metric computation (ADR-098 D3), against the local
-//! `events` table (D5). Unlike the state source, these are observations, not
-//! reproducible from a commit and a repository — they describe what actually
-//! happened on this machine.
+// Events-source metric computation, against the local `events` table. Unlike
+// the state source, these are observations, not reproducible from a commit
+// and a repository — they describe what actually happened on this machine.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -11,26 +10,24 @@ use crate::storage::memory::EventRow;
 
 use super::state::{Rate, median};
 
-/// Commands the events snapshot breaks out individually (ADR-098 D3's mock:
-/// `calls.{context,search,memory.add}`). Every other recorded command
-/// (`memory.supersede`, `harvest`, `sync`, `memory.list`, `memory.show`)
-/// still counts toward the read/write automation rates and the actor/latency/
-/// token aggregates below, just not its own named bucket.
+// Commands the events snapshot breaks out individually in `calls`. Every
+// other recorded command still counts toward the read/write automation rates
+// and the actor/latency/token aggregates below, just not its own named bucket.
 const NAMED_CALLS: &[&str] = &["context", "search", "memory.add"];
 
-/// Commands `auto.read_rate` divides over: the two retrieval entry points.
+// Commands `auto.read_rate` divides over: the two retrieval entry points.
 const READ_COMMANDS: &[&str] = &["search", "context"];
-/// Commands `auto.write_rate` divides over: the two entries that mutate
-/// memory directly (not `harvest`, which is its own actor kind, not a
-/// caller-triggered read/write in the D3 sense).
+// Commands `auto.write_rate` divides over: the two entries that mutate memory
+// directly (not `harvest`, which is its own actor kind, not a caller-triggered
+// read/write).
 const WRITE_COMMANDS: &[&str] = &["memory.add", "memory.supersede"];
 
-/// The four actor buckets `by_actor` always reports, present with a 0 count
-/// when nothing recorded under it.
+// The four actor buckets `by_actor` always reports, present with a 0 count
+// when nothing recorded under it.
 const ACTOR_BUCKETS: &[&str] = &["human", "agent", "harvest", "unknown"];
 
-/// Per-command call counts, split by declared trigger (ADR-098 D5:
-/// `explicit` | `hook` | `unknown`).
+/// Per-command call counts, split by declared trigger (`explicit` | `hook` |
+/// `unknown`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct CallCounts {
     pub total: u64,
@@ -54,15 +51,13 @@ impl CallCounts {
     }
 }
 
-/// The `events` block of an `inkentry.metrics/1` snapshot (ADR-098 D3, D7).
+/// The `events` block of an `inkentry.metrics/1` snapshot.
 ///
-/// `use.acted_on_rate` and `use.recall_miss_rate` (D3) are not computed here:
+/// `use.acted_on_rate` and `use.recall_miss_rate` are not computed here:
 /// `acted_on_rate` needs a session-end boundary this schema does not record
 /// (an event has no "session closed" signal, only a hashed `session_ref`
-/// grouping), and `recall_miss_rate` is state-derived (it needs no events at
-/// all) and already has a natural home in a later `StateMetrics` addition,
-/// not this block. Both are named in the ADR so the gap is visible rather
-/// than silently absent.
+/// grouping), and `recall_miss_rate` is state-derived — it needs no events at
+/// all, and belongs with `StateMetrics` instead.
 #[derive(Debug, Clone, Serialize)]
 pub struct EventsMetrics {
     pub window_days: u32,
@@ -76,7 +71,7 @@ pub struct EventsMetrics {
     pub auto_read_rate: Rate,
     #[serde(rename = "auto.write_rate")]
     pub auto_write_rate: Rate,
-    /// `calls.{context,search,memory.add}` (see [`NAMED_CALLS`]).
+    /// Call counts for `context`, `search` and `memory.add`.
     pub calls: BTreeMap<String, CallCounts>,
     /// Every recorded event in the window, by `actor_kind`.
     pub by_actor: BTreeMap<String, u64>,
@@ -86,7 +81,7 @@ pub struct EventsMetrics {
 
 /// Compute [`EventsMetrics`] over `rows`, which must already be the events
 /// whose `at` falls in the target window (`MemoryStore::events_in_window`),
-/// ordered oldest first — the order [`Self`]'s session-relative formulas
+/// ordered oldest first — the order the session-relative formulas
 /// (`use.sessions_with_context`, `use.search_before_write`) depend on.
 pub fn compute_events_metrics(rows: &[EventRow], window_days: u32) -> EventsMetrics {
     let sessions = group_by_session(rows);
@@ -162,8 +157,8 @@ pub fn compute_events_metrics(rows: &[EventRow], window_days: u32) -> EventsMetr
     }
 }
 
-/// `numerator` = events among `commands` whose `trigger` is `hook`;
-/// `denominator` = every event among `commands`.
+// numerator = events among `commands` whose `trigger` is `hook`; denominator =
+// every event among `commands`.
 fn automation_rate(rows: &[EventRow], commands: &[&str]) -> Rate {
     let matching: Vec<&EventRow> = rows
         .iter()
@@ -173,9 +168,9 @@ fn automation_rate(rows: &[EventRow], commands: &[&str]) -> Rate {
     Rate::new(numerator, matching.len() as u64)
 }
 
-/// Group rows by `session_ref`, preserving each session's relative order
-/// (input is already sorted by `at`). Events with no `session_ref` join no
-/// session and are excluded from every session-relative formula.
+// Preserves each session's relative order (input is already sorted by `at`).
+// Events with no `session_ref` join no session and are excluded from every
+// session-relative formula.
 fn group_by_session(rows: &[EventRow]) -> HashMap<&str, Vec<&EventRow>> {
     let mut groups: HashMap<&str, Vec<&EventRow>> = HashMap::new();
     for r in rows {

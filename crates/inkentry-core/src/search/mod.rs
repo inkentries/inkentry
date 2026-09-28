@@ -12,13 +12,12 @@ use serde::{Deserialize, Serialize};
 /// tune. 60 is the original-paper default (Cormack, Clarke & Büttcher, 2009).
 ///
 /// For code, where the FTS and vector lists overlap, `k` materially shapes the
-/// fused order. The memory side's lexical door is retired (ADR-083): its
-/// `search_hybrid` ranks a single, relevance-gated vector list, so `k` there
-/// only spaces out RRF scores rather than resolving an overlap. Across the two
-/// disjoint corpora with equal weights `k` is an additive constant that cancels
-/// from every pairwise comparison, so the cross-corpus merge degenerates to a
-/// pure rank interleave; it would regain a cross-corpus effect only under a
-/// per-corpus weight, which v1 does not ship.
+/// fused order. Memory's `search_hybrid` ranks a single, relevance-gated
+/// vector list, so `k` there only spaces out RRF scores rather than resolving
+/// an overlap. Across the two disjoint corpora with equal weights `k` is an
+/// additive constant that cancels from every pairwise comparison, so the
+/// cross-corpus merge degenerates to a pure rank interleave; it would regain a
+/// cross-corpus effect only under a per-corpus weight, which v1 does not ship.
 pub const RRF_K: f64 = 60.0;
 
 /// A single search result returned to the caller.
@@ -52,7 +51,7 @@ pub struct SearchResult {
     /// Root path of the linked project this result came from (None = primary project).
     #[serde(default)]
     pub project_path: Option<String>,
-    /// LLM-generated one-sentence summary of this chunk (None if not yet generated).
+    /// One-sentence summary of this chunk, if one has been composed.
     #[serde(default)]
     pub summary: Option<String>,
 }

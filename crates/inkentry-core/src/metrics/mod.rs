@@ -1,14 +1,13 @@
-//! ADR-098 metrics snapshot: `inkentry metrics snapshot` and the summary
+//! State-metrics snapshot: `inkentry metrics snapshot` and the summary
 //! `inkentry status` prints alongside it.
 //!
-//! Two of the three sources (D1) are implemented here. **State** is
-//! reproducible from a commit and a repository (`memory.db`, `refs/notes/
-//! inkentry`, `git log`), with no instrumentation. **Events** are
-//! observations, computed from the local `events` table (D5) a command
-//! records into after its own response is written — not reproducible from a
-//! commit alone, since they describe what actually happened on this machine.
-//! The **eval** source is never computed by the CLI (D7) and never appears
-//! here at all.
+//! Two of three sources are implemented here. **State** is reproducible from
+//! a commit and a repository (`memory.db`, `refs/notes/inkentry`, `git log`),
+//! with no instrumentation. **Events** are observations, computed from the
+//! local `events` table a command records into after its own response is
+//! written — not reproducible from a commit alone, since they describe what
+//! actually happened on this machine. The **eval** source is never computed
+//! by the CLI and never appears here at all.
 //!
 //! [`build_snapshot`]'s state block is deterministic: given the same
 //! repository state it returns byte-identical data, with no wall clock, no
@@ -54,7 +53,7 @@ pub struct EmbedderHeader {
     pub precision: &'static str,
 }
 
-/// D2's per-snapshot header: everything a chart needs to know whether two
+/// Per-snapshot header: everything a chart needs to know whether two
 /// snapshots are comparable (same embedder, same window) before it joins
 /// them.
 #[derive(Debug, Clone, Serialize)]
@@ -77,16 +76,16 @@ pub struct Snapshot {
     pub events: EventsMetrics,
 }
 
-/// The events source's own window: always 7 days (D3's `use.*`/`auto.*`
+/// The events source's own window: always 7 days (the `use.*`/`auto.*`
 /// formulas are usage-recency questions, independent of the state block's
 /// `--window-days`), ending at the same `window_end` the state block anchors
-/// to (D7: both blocks describe one snapshot).
+/// to, since both blocks describe one snapshot.
 pub const EVENTS_WINDOW_DAYS: u32 = 7;
 
-/// The window closes at the latest of HEAD's committer time, the newest entry
-/// and the newest event, never at the wall clock: the document stays a
-/// function of the repository and the store, and an entry or event recorded
-/// since the last commit is still counted.
+// Closes at the latest of HEAD's committer time, the newest entry and the
+// newest event, never at the wall clock: the snapshot stays a function of the
+// repository and the store, and an entry or event recorded since the last
+// commit is still counted.
 fn window_end(store: &MemoryStore, head_time: Option<i64>) -> Result<i64> {
     let newest_entry = store.newest_created_at()?;
     let newest_event = store.newest_event_at()?;

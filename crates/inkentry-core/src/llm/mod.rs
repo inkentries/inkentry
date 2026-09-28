@@ -1,10 +1,8 @@
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-/// A streamed token from the LLM.
 pub type Token = String;
 
-/// A single chat message (role + content).
 pub struct Message {
     pub role: String,
     pub content: String,
@@ -25,14 +23,11 @@ impl Message {
     }
 }
 
-/// Trait every LLM backend must implement.
 #[async_trait::async_trait]
 pub trait LlmBackend: Send + Sync {
-    /// Generate a completion for a list of chat messages, streaming tokens through the sender.
-    ///
-    /// `json_schema`: if provided, the backend should constrain output to this JSON schema
-    /// (passed as LM Studio `response_format.json_schema`). Backends that don't support
-    /// structured output silently ignore it.
+    /// `json_schema`, if given, constrains output to that JSON schema (passed as
+    /// LM Studio `response_format.json_schema`); a backend that doesn't support
+    /// structured output silently ignores it.
     async fn generate(
         &self,
         messages: &[Message],

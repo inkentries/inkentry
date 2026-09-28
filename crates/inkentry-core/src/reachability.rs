@@ -1,40 +1,36 @@
 //! Origins whose connection attempt recently failed.
 //!
 //! One command can ask several independent subsystems to reach the same
-//! server: a capability probe, an embed, a dialect probe, then the request the
-//! user actually asked for. Each one has its own client and its own fallback,
-//! so against an absent server each spends a full connect timeout rediscovering
-//! the same fact, and the user waits for the sum.
-//!
-//! This records that a connect to an origin failed, so the attempts after the
-//! first can skip straight to the conclusion the first one reached.
+//! server (a capability probe, an embed, a dialect probe, then the request
+//! the user actually asked for), each with its own client and fallback; against
+//! an absent server each would otherwise spend a full connect timeout
+//! rediscovering the same fact. Recording a failed connect here lets the
+//! attempts after the first skip straight to the conclusion the first reached.
 //!
 //! # This is a latency memo, never a routing input
 //!
 //! Consult it **only** to skip a redundant connection attempt. Never let it
 //! decide where memory is read or written, which backend is opened, or what
-//! mode is in effect. Under `cloud_first` the store of record is chosen from
-//! the resolved mode and `server_url` alone, and that independence from any
-//! notion of "we think we are offline" is what makes the no-silent-fallback
-//! guarantee true by construction rather than by care. A caller that skips an
-//! attempt must still fail exactly as it would have failed had it attempted,
-//! never quietly serve something else instead.
+//! mode is in effect: under `cloud_first` the store of record is chosen from
+//! the resolved mode and `server_url` alone, independent of any notion of "we
+//! think we are offline", which is what makes the no-silent-fallback guarantee
+//! true by construction. A caller that skips an attempt must still fail
+//! exactly as it would have failed had it attempted, never quietly serve
+//! something else instead.
 //!
 //! # Why entries expire
 //!
-//! Expiry is what makes the memo safe, and it is load-bearing rather than
-//! housekeeping. A recorded miss is a claim about one moment, and the process
-//! it lives in is not always short: the detached index worker polls a server's
-//! readiness for as long as a model download takes, precisely so it can watch a
-//! server that is not up yet come up. A memo that never expired would let one
-//! refused poll stand in for every later one, and the worker would abandon
-//! durable queued work for a server that came back seconds later.
+//! A recorded miss is a claim about one moment, and the process it lives in is
+//! not always short: the detached index worker polls a server's readiness for
+//! as long as a model download takes, precisely so it can watch a server that
+//! is not up yet come up. A memo that never expired would let one refused poll
+//! stand in for every later one, and the worker would abandon durable queued
+//! work for a server that came back seconds later.
 //!
 //! So an entry is worth only [`MEMO_TTL`]: long enough that the remaining
-//! attempts of one short command all land inside it, which is the whole point,
-//! and short enough that a poller re-attempts on a later iteration. Nothing
-//! refreshes an entry on a skipped attempt, so a run of skips cannot extend the
-//! window indefinitely.
+//! attempts of one short command all land inside it, and short enough that a
+//! poller re-attempts on a later iteration. Nothing refreshes an entry on a
+//! skipped attempt, so a run of skips cannot extend the window indefinitely.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -54,8 +50,8 @@ fn memo() -> &'static Mutex<HashMap<String, Instant>> {
     MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Every caller keys off the same configured server URL, so normalising the
-/// trailing slash is all that is needed to make the entries line up.
+// Every caller keys off the same configured server URL, so normalising the
+// trailing slash is all that is needed to make the entries line up.
 fn key(base_url: &str) -> &str {
     base_url.trim_end_matches('/')
 }
@@ -76,8 +72,8 @@ fn record_at(base_url: &str, at: Instant) {
 /// Whether a connection to `base_url` failed recently enough to act on.
 ///
 /// A `true` answer licenses skipping another attempt and reporting the same
-/// failure the first attempt produced. It licenses nothing else: see the
-/// module docs.
+/// failure the first attempt produced, and nothing else — never a decision
+/// about where memory is read or written or which backend is opened.
 pub fn connect_already_failed(base_url: &str) -> bool {
     memo().lock().is_ok_and(|memo| {
         memo.get(key(base_url))
@@ -134,9 +130,8 @@ mod tests {
     #[test]
     #[serial(reachability_memo)]
     fn a_trailing_slash_addresses_the_same_origin() {
-        // Callers read the same configured URL from different places, and some
-        // trim it while others do not; a miss here would silently cost the
-        // extra connect attempt this exists to skip.
+        // Some callers trim the URL and some don't; a miss here would silently
+        // cost the extra connect attempt this exists to skip.
         clear_for_test();
         record_connect_failure("https://server.example:4655/");
         assert!(connect_already_failed("https://server.example:4655"));
