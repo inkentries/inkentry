@@ -100,8 +100,8 @@ pub fn read(bytes: &[u8]) -> Result<Dump> {
     })
 }
 
-/// Split on LF, requiring the trailing one. A dump ends with a newline, and a
-/// file that does not is truncated mid-record.
+// Split on LF, requiring the trailing one. A dump ends with a newline, and a
+// file that does not is truncated mid-record.
 fn split_lines(bytes: &[u8]) -> Result<Vec<&[u8]>> {
     if bytes.is_empty() {
         bail!("the dump is empty");
@@ -156,10 +156,10 @@ fn render_counts(c: &Counts) -> String {
     )
 }
 
-/// The fold is over the per-record digests as **hex text**, in file order, and
-/// it covers the header but not the footer. Folding the raw 32-byte digests
-/// instead yields a different answer, so two conforming-looking
-/// implementations would reject each other's files.
+// The fold is over the per-record digests as hex text, in file order, and it
+// covers the header but not the footer. Folding the raw 32-byte digests
+// instead would make two conforming-looking implementations reject each
+// other's files.
 fn verify_digest(declared: &str, lines: &[&[u8]]) -> Result<()> {
     let mut fold = Sha256::new();
     for line in lines {
@@ -175,9 +175,9 @@ fn verify_digest(declared: &str, lines: &[&[u8]]) -> Result<()> {
     Ok(())
 }
 
-/// Deduplicate on `(type, from, to)`, preferring a recorded timestamp over its
-/// absence. A source that holds supersession both as a column and as an edge
-/// yields the same fact twice, and nothing else in the format catches it.
+// Deduplicate on `(type, from, to)`, preferring a recorded timestamp over its
+// absence. A source that holds supersession both as a column and as an edge
+// yields the same fact twice, and nothing else in the format catches it.
 fn dedupe(relationships: Vec<Relationship>) -> Vec<Relationship> {
     let mut seen: HashMap<(RelationshipKind, String, String), usize> = HashMap::new();
     let mut out: Vec<Relationship> = Vec::new();
@@ -216,15 +216,15 @@ fn index_by_ref(entities: &[Entity]) -> Result<HashMap<&str, usize>> {
     Ok(by_ref)
 }
 
-/// Refuse an entry whose carried identity is present but blank.
-///
-/// Each of these names the entry in the store it came from, and the format says
-/// a writer carries them rather than minting them — so each is either
-/// meaningful or absent, and `""` is neither. Nothing downstream can recover:
-/// a blank `uuid` reaches the store as a key it cannot look up and surfaces as
-/// an inserted note that vanished, and a blank `entity_id` silently collapses
-/// every entry carrying one into a single row. The type cannot carry this
-/// check, since `NoteId::from_str` accepts a whitespace-only token.
+// Refuse an entry whose carried identity is present but blank.
+//
+// Each of these names the entry in the store it came from, and a writer
+// carries them rather than minting them — so each is either meaningful or
+// absent, and `""` is neither. Nothing downstream can recover: a blank
+// `uuid` reaches the store as a key it cannot look up and surfaces as an
+// inserted note that vanished, and a blank `entity_id` silently collapses
+// every entry carrying one into a single row. The type cannot carry this
+// check, since `NoteId::from_str` accepts a whitespace-only token.
 fn refuse_blank_identities(entities: &[Entity]) -> Result<()> {
     for e in entities {
         let Entity::MemoryEntry(m) = e else { continue };
@@ -247,15 +247,14 @@ fn refuse_blank_identities(entities: &[Entity]) -> Result<()> {
     Ok(())
 }
 
-/// Refuse a dump in which two entries claim the same `uuid` or the same
-/// `remote_id`.
-///
-/// Both are stable, cross-store identities the format says a writer carries and
-/// never mints, so two records under one of them contradict each other — the
-/// same class of error as a repeated `ref`, and it belongs to the same reading
-/// pass. Without this the contradiction reaches the UNIQUE index mid-write and
-/// surfaces as SQLite's own words, which describe neither the dump nor what to
-/// do about it.
+// Refuse a dump in which two entries claim the same `uuid` or the same
+// `remote_id`.
+//
+// Both are stable, cross-store identities a writer carries and never mints,
+// so two records under one of them contradict each other — the same class
+// of error as a repeated `ref`. Without this the contradiction reaches the
+// UNIQUE index mid-write and surfaces as SQLite's own words, which describe
+// neither the dump nor what to do about it.
 fn refuse_repeated_identities(entities: &[Entity]) -> Result<()> {
     let mut uuids: HashSet<&str> = HashSet::new();
     let mut remote_ids: HashSet<&str> = HashSet::new();
@@ -283,29 +282,28 @@ fn refuse_repeated_identities(entities: &[Entity]) -> Result<()> {
     Ok(())
 }
 
-/// The result of folding entries that share a convergence key into one.
+// The result of folding entries that share a convergence key into one.
 struct Collapsed {
     entities: Vec<Entity>,
-    /// Original entity index → its index in `entities`. A folded entry maps to
-    /// the survivor it was folded into.
+    // Original entity index → its index in `entities`. A folded entry maps to
+    // the survivor it was folded into.
     remap: Vec<usize>,
     merged: usize,
 }
 
-/// Fold memory entries sharing an `entity_id` into one.
-///
-/// The store keys entries on that convergence key, `NOT NULL` and UNIQUE, so
-/// two entries carrying one key cannot both exist there. The collapse is
-/// therefore forced rather than chosen — and it is reachable from real data:
-/// the key is computed over kind/title/body, so two harvested entries differing
-/// only in `source_ref` land on it. Refusing such a dump would make a
-/// legitimate store impossible to move, on a move that happens once.
-///
-/// The survivor is the earliest-created member, ties broken by `ref`. Taking
-/// the first in file order instead would make the outcome depend on the
-/// writer's emission order, which the format explicitly leaves unconstrained.
-/// Tags and linked files are unioned add-wins from every member, matching what
-/// the store does when a fresh entry collides with one already in it.
+// Fold memory entries sharing an `entity_id` into one.
+//
+// The store keys entries on that convergence key, `NOT NULL` and UNIQUE, so
+// two entries carrying one key cannot both exist there. The collapse is
+// therefore forced rather than chosen — and it is reachable from real data:
+// the key is computed over kind/title/body, so two harvested entries
+// differing only in `source_ref` land on it.
+//
+// The survivor is the earliest-created member, ties broken by `ref`: taking
+// the first in file order instead would make the outcome depend on the
+// writer's emission order, which is unconstrained. Tags and linked files are
+// unioned add-wins from every member, matching what the store does when a
+// fresh entry collides with one already in it.
 fn collapse_by_convergence_key(mut entities: Vec<Entity>) -> Collapsed {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, e) in entities.iter().enumerate() {
@@ -386,10 +384,10 @@ fn collapse_by_convergence_key(mut entities: Vec<Entity>) -> Collapsed {
     }
 }
 
-/// Point every endpoint at the entity that survived the collapse, then drop
-/// what the redirect made meaningless: a relationship whose two endpoints
-/// folded into one entry now names that entry twice, and a redirect can make
-/// two relationships identical.
+// Point every endpoint at the entity that survived the collapse, then drop
+// what the redirect made meaningless: a relationship whose two endpoints
+// folded into one entry now names that entry twice, and a redirect can make
+// two relationships identical.
 fn redirect_to_survivors(
     relationships: Vec<ResolvedRelationship>,
     remap: &[usize],

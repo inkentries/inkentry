@@ -10,7 +10,6 @@ use super::{
 pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<ConventionRecord> {
     let mut records = Vec::new();
 
-    // ── naming.functions ─────────────────────────────────────────────────────
     let fn_names = function_names(chunks);
     let (snake, camel, pascal, screaming, total_fn) = count_cases(&fn_names);
     let (dom_style, dom_count) = dominant(snake, camel, pascal, screaming);
@@ -25,7 +24,6 @@ pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<Convention
         records.push(r);
     }
 
-    // ── docs ──────────────────────────────────────────────────────────────────
     let callable_chunks: Vec<_> = chunks
         .iter()
         .filter(|c| matches!(c.node_type.as_str(), "function" | "method"))

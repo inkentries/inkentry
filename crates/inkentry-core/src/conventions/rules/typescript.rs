@@ -25,12 +25,9 @@ impl TsPatterns {
     }
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
-
 pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<ConventionRecord> {
     let mut records = Vec::new();
 
-    // ── naming.functions ─────────────────────────────────────────────────────
     let fn_names = function_names(chunks);
     let (snake, camel, pascal, screaming, total_fn) = count_cases(&fn_names);
     let (dom_style, dom_count) = dominant(snake, camel, pascal, screaming);
@@ -45,7 +42,6 @@ pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<Convention
         records.push(r);
     }
 
-    // ── naming.types ─────────────────────────────────────────────────────────
     let ty_names = type_names(chunks);
     let (snake_t, camel_t, pascal_t, screaming_t, total_ty) = count_cases(&ty_names);
     let (dom_ty, dom_ty_count) = dominant(snake_t, camel_t, pascal_t, screaming_t);
@@ -53,17 +49,14 @@ pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<Convention
         records.push(r);
     }
 
-    // ── async ─────────────────────────────────────────────────────────────────
     if let Some(r) = async_record(chunks, lang, now) {
         records.push(r);
     }
 
-    // ── testing ───────────────────────────────────────────────────────────────
     if let Some(r) = testing_record(chunks, lang, now) {
         records.push(r);
     }
 
-    // ── docs ──────────────────────────────────────────────────────────────────
     let function_chunks: Vec<_> = chunks
         .iter()
         .filter(|c| matches!(c.node_type.as_str(), "function" | "method"))
@@ -79,8 +72,6 @@ pub fn extract(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Vec<Convention
 
     records
 }
-
-// ── Private helpers ───────────────────────────────────────────────────────────
 
 fn async_record(chunks: &[&ChunkSummary], lang: &str, now: i64) -> Option<ConventionRecord> {
     let p = patterns();

@@ -19,9 +19,9 @@ pub fn apply_server_ca(
         .with_context(|| format!("reading INKENTRY_SERVER_CA bundle at {}", path.display()))?;
     let certs = reqwest::Certificate::from_pem_bundle(&pem)
         .with_context(|| format!("parsing PEM CA bundle at {}", path.display()))?;
-    // `from_pem_bundle` yields an empty vec for a file with no PEM blocks rather
-    // than erroring — surface that as a config error, else a wrong path would
-    // silently add no trust anchor and fail TLS with a confusing message.
+    // `from_pem_bundle` yields an empty vec for a file with no PEM blocks
+    // rather than erroring; surface that as a config error instead of
+    // silently adding no trust anchor and failing TLS confusingly.
     if certs.is_empty() {
         anyhow::bail!(
             "no PEM certificates found in CA bundle at {}",
@@ -66,11 +66,10 @@ pub fn find_rustls_cause(err: &(dyn std::error::Error + 'static)) -> Option<Stri
     None
 }
 
-/// Map a `rustls::Error` to a short, human-readable cause. Certificate errors
-/// get specific text; `CaUsedAsEndEntity` (a CA:TRUE certificate presented as
-/// the server's own leaf, the exact server-setup.md client-trust trap) is
-/// detected by name inside `CertificateError::Other`, the bucket rustls maps
-/// it into (webpki's variant has no direct `CertificateError` counterpart).
+// Map a `rustls::Error` to a short, human-readable cause. `CaUsedAsEndEntity`
+// (a CA:TRUE certificate presented as the server's own leaf) is detected by
+// name inside `CertificateError::Other`, the bucket rustls maps it into
+// (webpki's variant has no direct `CertificateError` counterpart).
 pub(crate) fn describe_rustls_error(e: &rustls::Error) -> String {
     use rustls::CertificateError as CE;
     match e {
@@ -97,10 +96,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // ── Custom CA trust (INKENTRY_SERVER_CA / config `server_ca`) ─────────────
-
-    /// A throwaway self-signed CA used only to prove the PEM is parsed and
-    /// accepted as a trust anchor. Not trusted by anything real.
+    // A throwaway self-signed CA, not trusted by anything real.
     const TEST_CA_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----\n\
 MIIDFTCCAf2gAwIBAgIUdz5ZLoL+3T+MwWN0dJjElxlwsRwwDQYJKoZIhvcNAQEL\n\
 BQAwGjEYMBYGA1UEAwwPc3BlbHVuay10ZXN0LWNhMB4XDTI2MDcxMzE3MjkyMFoX\n\
@@ -123,7 +119,6 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
 
     #[test]
     fn apply_server_ca_none_is_noop() {
-        // No path → builder unchanged and still buildable.
         let client = apply_server_ca(reqwest::Client::builder(), None)
             .unwrap()
             .build();
@@ -135,8 +130,6 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
         let tmp = TempDir::new().unwrap();
         let ca = tmp.path().join("ca.pem");
         std::fs::write(&ca, TEST_CA_PEM).unwrap();
-        // A valid PEM bundle must parse and be accepted as a trust anchor; the
-        // client (verification still on) builds successfully.
         let client = apply_server_ca(reqwest::Client::builder(), Some(&ca))
             .expect("valid CA bundle should be accepted")
             .build();
@@ -158,8 +151,6 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
         assert!(apply_server_ca(reqwest::Client::builder(), Some(&ca)).is_err());
     }
 
-    // ── find_rustls_cause / describe_rustls_error ───────────────────────────
-
     // Minimal chained error, since `reqwest::Error`'s constructors are private.
     #[derive(Debug)]
     struct ChainErr(&'static str, Option<Box<dyn std::error::Error + 'static>>);
@@ -176,9 +167,9 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
         }
     }
 
-    /// A fake error whose `Display` mimics webpki's `CaUsedAsEndEntity`, since
-    /// rustls buckets that variant into `CertificateError::Other` (no direct
-    /// counterpart) and detection matches on the rendered name.
+    // A fake error whose `Display` mimics webpki's `CaUsedAsEndEntity`, since
+    // rustls buckets that variant into `CertificateError::Other` and
+    // detection matches on the rendered name.
     #[derive(Debug)]
     struct FakeCaUsedAsEndEntity;
 
@@ -192,9 +183,6 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
 
     #[test]
     fn find_rustls_cause_none_for_plain_io_error_chain() {
-        // Models a genuine connect-level failure (refused/timed out): no
-        // rustls::Error anywhere in the chain, so this must classify as
-        // `[unreachable]`, not `[tls: ...]`.
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
         let top = ChainErr(
             "error sending request for url (https://x/)",
@@ -205,8 +193,6 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
 
     #[test]
     fn find_rustls_cause_detects_rustls_error_boxed_in_io_error() {
-        // tokio-rustls reports handshake failures as an io::Error wrapping a
-        // rustls::Error: the exact shape this function must see through.
         let rustls_err = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
         let io_err = std::io::Error::other(rustls_err);
         let top = ChainErr(
@@ -256,11 +242,9 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
         assert!(cause.starts_with("TLS handshake failed:"), "got: {cause}");
     }
 
-    /// tokio-rustls's own wrapping is one `io::Error` layer deep, but the
-    /// hyper/reqwest client stack can add further `io::Error` wrapping on top
-    /// of that. `find_rustls_cause` must keep unwrapping past the first
-    /// layer: a version that only checked one level (e.g. a depth-limited
-    /// rewrite of the loop) would miss this and misclassify as `[unreachable]`.
+    // The hyper/reqwest stack can add `io::Error` wrapping on top of
+    // tokio-rustls's own layer, so `find_rustls_cause` must keep unwrapping
+    // past the first level.
     #[test]
     fn find_rustls_cause_detects_rustls_error_two_io_error_layers_deep() {
         let rustls_err = rustls::Error::InvalidCertificate(rustls::CertificateError::Expired);
@@ -276,12 +260,8 @@ CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
         assert!(cause.contains("expired"), "got: {cause}");
     }
 
-    /// A `CertificateError::Other` whose rendered text does NOT mention
-    /// `CaUsedAsEndEntity` must fall back to the generic message, not be
-    /// swept into the CA-as-leaf-specific sentence. This is the negative half
-    /// of `describe_rustls_error_names_ca_used_as_end_entity`: without it, an
-    /// overly-loose match (e.g. matching on `Other(_)` alone) would pass the
-    /// positive test but silently mislabel every other certificate error.
+    // Negative half of `describe_rustls_error_names_ca_used_as_end_entity`:
+    // guards against a match on `Other(_)` alone mislabeling every other cause.
     #[test]
     fn describe_rustls_error_other_variant_without_the_marker_string_is_generic() {
         #[derive(Debug)]

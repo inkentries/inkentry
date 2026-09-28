@@ -1,8 +1,5 @@
-//! Reading a portable dump: the format `docs/dump-format.md` specifies.
-//!
-//! That document, not this module, is the contract. It is written for readers
-//! and writers that are not this product, so where the two disagree the
-//! document wins.
+//! Reading a portable dump in the documented interchange format, written for
+//! readers and writers that are not this product.
 
 pub mod import;
 pub mod reader;

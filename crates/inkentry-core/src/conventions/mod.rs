@@ -18,7 +18,7 @@ use crate::storage::{ConventionRow, Database, RawChunkRow, has_doc_prefix};
 /// A single detected convention (logical / API type).
 ///
 /// The storage layer uses `crate::storage::ConventionRow` internally to avoid
-/// a circular module dependency.  `run_extraction` converts between them.
+/// a circular module dependency. `run_extraction` converts between them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConventionRecord {
     pub language: String,
@@ -60,7 +60,7 @@ impl From<ConventionRow> for ConventionRecord {
     }
 }
 
-/// Convert `RawChunkRow` (storage type) into `ChunkSummary` (extraction type).
+// Convert `RawChunkRow` (storage type) into `ChunkSummary` (extraction type).
 fn to_chunk_summary(row: RawChunkRow) -> ChunkSummary {
     let has_docstring = has_doc_prefix(&row.content);
     ChunkSummary {

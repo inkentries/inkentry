@@ -1,16 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Sync mode
-// ---------------------------------------------------------------------------
-
 /// Persistent, per-project control over where memory reads/writes go and whether
 /// the CLI ever contacts the cloud.
 ///
-/// Replaces the implicit "is the server reachable" branch that previously drove
-/// backend selection. The mode is resolved once from config + environment (see
-/// [`Config::resolve_mode`]) and then gates both the capability tier probe and
-/// the memory backend selector.
+/// Resolved once from config + environment (see [`Config::resolve_mode`]) and
+/// then gates both the capability tier probe and the memory backend selector.
 ///
 /// | mode          | reads          | writes                    | cloud contact            |
 /// |---------------|----------------|---------------------------|--------------------------|
@@ -18,10 +12,8 @@ use serde::{Deserialize, Serialize};
 /// | `local_first` | local          | local, then async background sync | best-effort              |
 /// | `cloud_first` | server (error if unreachable) | server (error if unreachable) | required |
 ///
-/// `cloud_first` is the **server-authoritative** option: it is a deliberate
-/// override of ADR-004's local-as-source-of-truth invariant, and an
-/// unreachable or untrusted server is a hard error. There is no silent local
-/// fallback and no local write queue.
+/// `cloud_first` is server-authoritative: an unreachable or untrusted server
+/// is a hard error, with no silent local fallback and no local write queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncMode {
@@ -82,8 +74,6 @@ impl SyncMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── SyncMode parse / as_str ───────────────────────────────────────────────
 
     #[test]
     fn sync_mode_parse_accepts_canonical_and_variant_forms() {

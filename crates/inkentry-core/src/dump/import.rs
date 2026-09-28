@@ -65,13 +65,13 @@ pub struct ImportOutcome {
     pub carrier_records: Vec<NoteRecord>,
 }
 
-/// Where each entity landed, indexed the same as `Dump::entities`, so a
-/// relationship resolves its endpoints without a second lookup.
+// Where each entity landed, indexed the same as `Dump::entities`, so a
+// relationship resolves its endpoints without a second lookup.
 enum Landed {
     Memory {
         id: NoteId,
-        /// Index into [`ImportOutcome::carrier_records`], so a supersede
-        /// relationship can reach the record for either of its endpoints.
+        // Index into `ImportOutcome::carrier_records`, so a supersede
+        // relationship can reach the record for either of its endpoints.
         carrier: usize,
     },
     Project(i64),
@@ -85,11 +85,11 @@ pub struct ImportTargets<'a> {
     pub index_db: Option<&'a std::path::Path>,
 }
 
-/// Every store this import writes to, held open in a transaction.
-///
-/// Rolls back on drop, so any `?` on the way through `apply` — a malformed
-/// relationship, a constraint, an I/O error — undoes all of them and not just
-/// the one that noticed. [`Self::commit`] is the only path that keeps a write.
+// Every store this import writes to, held open in a transaction.
+//
+// Rolls back on drop, so any `?` on the way through `apply` — a malformed
+// relationship, a constraint, an I/O error — undoes all of them and not just
+// the one that noticed. `commit` is the only path that keeps a write.
 struct OpenWrites<'a> {
     memory: Option<&'a MemoryStore>,
     registry: Option<&'a Registry>,
@@ -126,14 +126,14 @@ impl<'a> OpenWrites<'a> {
         Ok(open)
     }
 
-    /// Commit the memory store first. A commit that fails partway is the one
-    /// case this cannot make atomic — two SQLite files have no shared commit —
-    /// so the order is chosen for what a retry does: importing the same dump
-    /// again converges on the memory side (entries are keyed on a convergence
-    /// key) and on the registry side (a project is registered by root path),
-    /// while a recorded command is a plain insert that a retry would duplicate.
-    /// The one that cannot be repeated safely goes last, where a failure means
-    /// it never happened.
+    // Commit the memory store first. A commit that fails partway is the one
+    // case this cannot make atomic — two SQLite files have no shared commit —
+    // so the order is chosen for what a retry does: importing the same dump
+    // again converges on the memory side (entries are keyed on a convergence
+    // key) and on the registry side (a project is registered by root path),
+    // while a recorded command is a plain insert that a retry would duplicate.
+    // The one that cannot be repeated safely goes last, where a failure means
+    // it never happened.
     fn commit(mut self) -> Result<()> {
         if let Some(memory) = self.memory.take() {
             memory
@@ -233,11 +233,9 @@ pub fn apply(dump: &Dump, targets: &ImportTargets<'_>) -> Result<ImportOutcome> 
     })
 }
 
-/// Open the store recorded commands go to, refusing before any write if it
-/// cannot hold them.
-///
-/// The alternative — swallow the failure per row and count the record as
-/// imported anyway — is the shape this whole module exists to avoid.
+// Open the store recorded commands go to, refusing before any write if it
+// cannot hold them. The alternative — swallow the failure per row and count
+// the record as imported anyway — is the shape this module exists to avoid.
 fn open_usage_store(index_db: Option<&std::path::Path>) -> Result<rusqlite::Connection> {
     let Some(path) = index_db else {
         anyhow::bail!(
@@ -350,21 +348,20 @@ fn insert_entity(
     }
 }
 
-/// The dump's entry as the git-notes carrier records it.
-///
-/// Every field the dump carried is copied verbatim — above all `created_at`,
-/// which the carrier's fold orders on. Stamping the wall clock here (as
-/// `memory add` rightly does for an entry minted this instant) would make the
-/// same entry sort differently on every machine that imported the dump, and
-/// the fold would pick a different base copy on each.
-///
-/// `id` is the exception, because there is nothing to carry: it is the
-/// writer's machine-local rowid, which the format documents as **not** an
-/// identity, and the entry's real identity is a UUID that does not fit an
-/// `i64`. `entity_id` carries the identity instead. The offset keeps one
-/// import's records distinct from one another so the `--backend git-notes`
-/// read path does not display one id for several entries; nothing else reads
-/// it.
+// The dump's entry as the git-notes carrier records it.
+//
+// Every field the dump carried is copied verbatim — above all `created_at`,
+// which the carrier's fold orders on. Stamping the wall clock here (as
+// `memory add` rightly does for an entry minted this instant) would make the
+// same entry sort differently on every machine that imported the dump, and
+// the fold would pick a different base copy on each.
+//
+// `id` is the exception, because there is nothing to carry: it is the
+// writer's machine-local rowid, not an identity, and the entry's real
+// identity is a UUID that does not fit an `i64`. `entity_id` carries the
+// identity instead. The offset keeps one import's records distinct from one
+// another so the `--backend git-notes` read path does not display one id
+// for several entries; nothing else reads it.
 fn carrier_record(
     e: &super::record::MemoryEntry,
     entity_id: String,
@@ -526,8 +523,8 @@ mod tests {
         }))
     }
 
-    /// Import a three-entry dump wired with one relationship of each kind, and
-    /// return the carrier records it produced.
+    // Import a three-entry dump wired with one relationship of each kind, and
+    // return the carrier records it produced.
     fn carrier_records_for(kinds: &[(RelationshipKind, usize, usize)]) -> Vec<NoteRecord> {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -567,9 +564,6 @@ mod tests {
         edges
     }
 
-    /// A dump import lands the same graph on the carrier as in the store: both
-    /// carried kinds project onto the SOURCE entry's record, naming the target
-    /// by `entity_id` (ADR-086 D1).
     #[test]
     fn relates_to_and_contradicts_project_onto_the_source_carrier_record() {
         let records = carrier_records_for(&[
@@ -592,8 +586,8 @@ mod tests {
         );
     }
 
-    /// D2: supersede keeps its own field and is not also written into the edge
-    /// list, which would give import two independent paths to one row.
+    // Supersede keeps its own field rather than also being written into the
+    // edge list, which would give import two independent paths to one row.
     #[test]
     fn supersedes_is_not_duplicated_into_the_edge_list() {
         let records = carrier_records_for(&[(RelationshipKind::Supersedes, 0, 1)]);
@@ -609,10 +603,8 @@ mod tests {
         );
     }
 
-    /// ADR-098 D6: a dump entry carrying an origin lands it on both the
-    /// imported row and the carrier record it produces; one with no origin
-    /// (the common case for an existing dump-producer) reads back absent
-    /// on both, never a fabricated `unknown`.
+    // An entry with no origin reads back absent on both the row and the
+    // carrier record, never a fabricated `unknown`.
     #[test]
     fn origin_round_trips_from_the_dump_into_the_store_and_the_carrier_record() {
         register_sqlite_vec();
@@ -688,9 +680,6 @@ mod tests {
         }
     }
 
-    // The one path `crates/inkentry-cli/tests/e2e_tests/import_dump.rs` never
-    // mentions `usage` in: a dump carrying `command_usage` must land a row in
-    // `index.db`, counted in the summary.
     #[test]
     fn command_usage_entity_lands_a_row_in_index_db() {
         register_sqlite_vec();
@@ -749,9 +738,7 @@ mod tests {
         assert!(msg.contains("inkentry init"), "{msg}");
     }
 
-    // The `needs_usage` precondition in `apply` is checked, and the whole
-    // dump refused, before anything is written — matching the "no partial
-    // import" guarantee the memory-only paths already have. A memory entry
+    // The whole dump is refused before anything is written; a memory entry
     // riding along in the same dump must not land either.
     #[test]
     fn a_dump_needing_usage_storage_refuses_the_whole_import_when_no_index_db_is_supplied() {

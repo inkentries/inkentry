@@ -1,9 +1,5 @@
 use std::path::Path;
 
-// ---------------------------------------------------------------------------
-// Project-id derivation
-// ---------------------------------------------------------------------------
-
 /// Derive a stable project identifier from `project_root`.
 ///
 /// 1. Read `remote.origin.url` from the git config and normalise to
@@ -33,13 +29,12 @@ fn try_derive_from_git(root: &Path) -> Option<String> {
     Some(normalise_git_url(&url))
 }
 
-/// Minimal parser for git config: finds `url` under `[remote "origin"]`.
+// Minimal parser for git config: finds `url` under `[remote "origin"]`.
 fn extract_origin_url_from_git_config(config: &str) -> Option<String> {
     let mut in_origin = false;
     for line in config.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
-            // Section header — check if it's [remote "origin"]
             let header = trimmed.trim_start_matches('[').trim_end_matches(']');
             in_origin = header.trim() == r#"remote "origin""#;
         } else if in_origin
@@ -52,9 +47,8 @@ fn extract_origin_url_from_git_config(config: &str) -> Option<String> {
     None
 }
 
-/// Normalise a git remote URL to `host/owner/repo` (no scheme, no `.git`).
-///
-/// Handles `https://`, `ssh://`, and SCP-style `git@host:owner/repo.git`.
+// Normalise a git remote URL to `host/owner/repo` (no scheme, no `.git`).
+// Handles `https://`, `ssh://`, and SCP-style `git@host:owner/repo.git`.
 fn normalise_git_url(url: &str) -> String {
     let without_scheme = if let Some(pos) = url.find("://") {
         &url[pos + 3..]
@@ -66,7 +60,6 @@ fn normalise_git_url(url: &str) -> String {
     } else {
         without_scheme
     };
-    // SCP colon → slash
     let normalised = without_user.replacen(':', "/", 1);
     let normalised = normalised.strip_suffix(".git").unwrap_or(&normalised);
     normalised.to_lowercase()
@@ -82,8 +75,6 @@ fn derive_local_fallback(root: &Path) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
-    // ── normalise_git_url ────────────────────────────────────────────────────
 
     #[test]
     fn normalise_https_url() {
@@ -109,8 +100,6 @@ mod tests {
         );
     }
 
-    // ── derive_project_id: no git repo → local/ fallback ─────────────────────
-
     #[test]
     fn derive_project_id_non_git_dir_returns_local_prefix() {
         let tmp = TempDir::new().unwrap();
@@ -119,8 +108,6 @@ mod tests {
         // blake3 hex is 64 chars
         assert_eq!(id.len(), "local/".len() + 64);
     }
-
-    // ── derive_project_id: git repo with origin ───────────────────────────────
 
     #[test]
     fn derive_project_id_git_repo_with_origin() {
@@ -132,9 +119,8 @@ mod tests {
             "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://github.com/inkentries/inkentry.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
         )
         .unwrap();
-        // derive_project_id falls back to local/ when gix::discover fails on
-        // a minimal fake repo, but the git-config parser should find the URL.
-        // We test the git-config parser directly instead:
+        // gix::discover fails on this minimal fake repo, so this exercises the
+        // git-config parser directly rather than derive_project_id itself.
         let config = std::fs::read_to_string(repo_dir.join(".git").join("config")).unwrap();
         let url = extract_origin_url_from_git_config(&config).unwrap();
         assert_eq!(normalise_git_url(&url), "github.com/inkentries/inkentry");
