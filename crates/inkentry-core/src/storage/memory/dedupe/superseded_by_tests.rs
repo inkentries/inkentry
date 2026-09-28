@@ -1,15 +1,12 @@
 // `superseded_by` reference-resolution edge cases across duplicate-`entity_id`
 // groups: adoption self-loop/dangling guards, deletion-order safety, and
-// cross-group reference resolution (see the module doc on `dedupe/mod.rs`
-// for the five rounds of adversarial hardening this covers).
+// cross-group reference resolution.
 
 use super::test_support::{note_count, open_store, sup};
 use super::*;
 
-// Adversarial: adoption of a loser's superseded_by does not guard against
-// the value pointing at the survivor itself, unlike the rewrite path
-// (AC19), which drops self-loops to NULL. A self-referencing
-// superseded_by is nonsensical regardless of the ADR's text.
+// A loser's superseded_by pointing at the survivor itself must not be
+// adopted verbatim: a self-referencing superseded_by is nonsensical.
 #[test]
 fn adoption_must_not_selfloop_when_a_loser_points_at_the_survivor() {
     let store = open_store();
@@ -35,12 +32,9 @@ fn adoption_must_not_selfloop_when_a_loser_points_at_the_survivor() {
     );
 }
 
-// Adversarial: a loser's superseded_by pointing at a FELLOW loser (not
-// the survivor) gets blindly adopted onto the survivor, even though that
-// target is deleted later in the same transaction. `notes.superseded_by`
-// has a live FK (no ON DELETE clause), so the adoption write leaves the
-// survivor pointing at a row this same transaction then deletes: FOREIGN
-// KEY constraint error, whole run fails instead of collapsing cleanly.
+// A loser's superseded_by pointing at a fellow loser (not the survivor) must
+// still collapse cleanly rather than leave a live FK reference to a row this
+// same transaction deletes.
 #[test]
 fn adoption_must_not_dangle_when_a_loser_points_at_a_fellow_loser() {
     let store = open_store();
@@ -69,8 +63,6 @@ fn adoption_must_not_dangle_when_a_loser_points_at_a_fellow_loser() {
          then tries to delete.",
         result.as_ref().err()
     );
-    // A future fix must not merely trade the hard error for a silent
-    // dangling pointer.
     if result.is_ok() {
         let note = store.get(&survivor).unwrap().unwrap();
         if let Some(target) = note.superseded_by.as_ref() {
@@ -83,15 +75,9 @@ fn adoption_must_not_dangle_when_a_loser_points_at_a_fellow_loser() {
     }
 }
 
-// Adversarial (re-verification): the survivor's OWN pre-existing
-// superseded_by points at a fellow in-group loser (survivor -> loser,
-// the third permutation after loser -> survivor and loser -> loser
-// above). Adoption correctly filters the in-group value and falls
-// through to a genuine external candidate. But the rewrite loop below
-// recomputes notes_pointing_at(loser_x) against the stale
-// pre-transaction snapshot, re-discovers the same edge as a self-edge,
-// and clears it to NULL *after* adoption already set the correct
-// external value, clobbering it.
+// The survivor's own pre-existing superseded_by points at a fellow in-group
+// loser: it must be filtered from adoption and fall through to a genuine
+// external candidate elsewhere in the group, not be clobbered back to NULL.
 #[test]
 fn adoption_survivor_own_in_group_pointer_does_not_clobber_fallthrough_adoption() {
     let store = open_store();
@@ -131,10 +117,9 @@ fn adoption_survivor_own_in_group_pointer_does_not_clobber_fallthrough_adoption(
     );
 }
 
-// Adversarial (re-verification): 3+ losers, first candidate in iteration
-// order is intra-group-dangling, a later candidate is genuinely
-// external. Confirms fall-through works when the in-group pointer is on
-// a loser, not the survivor.
+// 3+ losers, with the first candidate in iteration order intra-group-dangling
+// and a later one genuinely external: fall-through must still work when the
+// in-group pointer is on a loser, not the survivor.
 #[test]
 fn fallthrough_adoption_skips_intragroup_dangling_candidate_and_adopts_later_external_one() {
     let store = open_store();
@@ -171,9 +156,8 @@ fn fallthrough_adoption_skips_intragroup_dangling_candidate_and_adopts_later_ext
     );
 }
 
-// Adversarial (re-verification): only intra-group candidates exist (no
-// external value at all). Adoption must resolve to None, not error or
-// keep a bad in-group value.
+// With only intra-group candidates (no external value at all), adoption
+// must resolve to None, not error or keep a bad in-group value.
 #[test]
 fn adoption_resolves_to_none_when_every_candidate_is_intragroup() {
     let store = open_store();
@@ -205,13 +189,9 @@ fn adoption_resolves_to_none_when_every_candidate_is_intragroup() {
     );
 }
 
-// Adversarial (round 3): a LATER-created loser's own superseded_by points
-// at an EARLIER-created fellow loser. Neither adoption nor the rewrite
-// loop touches this value (correctly excluded from both), so it sits
-// until deletion time. Deletion runs in created_at ASC order, so it
-// tries to delete loser_early - still referenced by loser_late - before
-// loser_late (the referencing row) is gone: live FK enforcement rejects
-// it with a constraint error.
+// A later-created loser's own superseded_by points at an earlier-created
+// fellow loser: deletion runs in created_at ASC order, so this must not
+// break when loser_early is deleted while loser_late still references it.
 #[test]
 fn later_loser_pointing_at_earlier_fellow_loser_must_not_break_deletion_order() {
     let store = open_store();
@@ -243,12 +223,9 @@ fn later_loser_pointing_at_earlier_fellow_loser_must_not_break_deletion_order() 
     );
 }
 
-// Adversarial (round 3): the same deletion-order hazard, roles swapped -
-// two losers point AT EACH OTHER (a 2-cycle), survivor points at
-// nothing. Neither value is external, so nothing is adopted or
-// rewritten, but whichever loser is deleted first is still referenced by
-// the other, not-yet-deleted loser: fails regardless of created_at
-// order, not just the "later points at earlier" direction.
+// The same deletion-order hazard with roles swapped: two losers point at
+// each other (a 2-cycle), so whichever is deleted first is still
+// referenced by the other, regardless of created_at order.
 #[test]
 fn mutually_referencing_fellow_losers_must_not_break_deletion_order() {
     let store = open_store();
@@ -277,11 +254,9 @@ fn mutually_referencing_fellow_losers_must_not_break_deletion_order() {
     );
 }
 
-// Adversarial (round 3): a 4-note group with a mix of intra-group and
-// external superseded_by values, including a chain (loser -> loser ->
-// external). Confirms resolution still picks a deterministic external
-// value, counts stay accurate, and the deletion loop doesn't choke on
-// the in-group chain reference.
+// A 4-note group with a mix of intra-group and external superseded_by
+// values, including a chain (loser -> loser -> external): resolution must
+// still pick a deterministic external value and keep counts accurate.
 #[test]
 fn four_note_group_with_mixed_intragroup_and_external_pointers_resolves_deterministically() {
     let store = open_store();
@@ -359,16 +334,10 @@ fn four_note_group_with_mixed_intragroup_and_external_pointers_resolves_determin
     );
 }
 
-// Adversarial (round-4 re-verification): TWO groups in the same call,
-// where group B's member has its own superseded_by pointing at a member
-// of group A (processed earlier). `group: &[Note]` is a fixed
-// pre-transaction snapshot; the rewrite loop reads live (via
-// notes_pointing_at), so it sees prior groups' writes, but adoption
-// resolution reads the group member's superseded_by off that same stale
-// snapshot - it can't see that group A's earlier processing already
-// repointed/deleted its target. Result: group B's adoption tries to
-// write a value pointing at a row group A already deleted in this same
-// transaction, causing an FK error.
+// Two groups in the same call, where group B's member has its own
+// superseded_by pointing at a member of group A (processed earlier): group
+// B's resolution must not write a value pointing at a row group A's
+// processing already deleted in this same transaction.
 #[test]
 fn external_row_that_is_itself_a_duplicate_in_a_different_group_is_resolved_correctly_across_groups()
  {
@@ -415,18 +384,15 @@ fn external_row_that_is_itself_a_duplicate_in_a_different_group_is_resolved_corr
     }
 }
 
-// AC24 (structural): dedupe is never reachable except via this method.
-// Covered by construction: `MemoryStore::open` only creates (or verifies)
-// the schema, and no path from it reaches `dedupe_entity_ids`.
+// Dedupe is never reachable except via this method: `MemoryStore::open` only
+// creates or verifies the schema, and no path from it reaches
+// `dedupe_entity_ids`.
 
-// Adversarial (round-5 re-verification, whole-run restructuring): a
-// CHAINED cross-group reference. Group A's survivor points at a loser of
-// group B; group B's survivor independently points at a loser of group
-// C. `loser_to_survivor` is a flat one-hop map (group membership
-// partitions disjointly, so no doomed id maps to another doomed id), so
-// each edge must resolve in exactly one redirect to the concrete target
-// group's survivor, never chasing through what that survivor's own
-// field happens to point at.
+// A chained cross-group reference: group A's survivor points at a loser of
+// group B; group B's survivor independently points at a loser of group C.
+// Each edge must resolve in exactly one redirect to the concrete target
+// group's survivor, never chasing through what that survivor's own field
+// happens to point at.
 #[test]
 fn chained_cross_group_reference_resolves_one_hop_not_to_intermediate_loser() {
     let store = open_store();
@@ -476,17 +442,10 @@ fn chained_cross_group_reference_resolves_one_hop_not_to_intermediate_loser() {
     );
 }
 
-// Adversarial (round-5 re-verification): an ordinary note that is a
-// member of no duplicate group at all, whose superseded_by points at a
-// loser belonging to some other group being collapsed in this same run.
-// `rewrite_cross_references`'s "every non-survivor row" framing must
-// genuinely include this row: its id is absent from `note_group_of`
-// entirely (unlike a fellow loser's, which is present), so the
-// `same_group` check must not mistake "absent from the map" for "same
-// group" (e.g. via a mismatched default or an `unwrap_or` that coerces
-// both sides to a shared sentinel). Three unrelated duplicate groups are
-// present so there's a real chance for an id collision to expose that
-// bug.
+// An ordinary note that is a member of no duplicate group at all, whose
+// superseded_by points at a loser belonging to some other group being
+// collapsed in this same run, must still be rewritten: its absence from
+// group membership must not be mistaken for "same group".
 #[test]
 fn ordinary_note_outside_every_group_pointing_at_a_loser_is_rewritten_and_counted() {
     let store = open_store();
@@ -533,15 +492,10 @@ fn ordinary_note_outside_every_group_pointing_at_a_loser_is_rewritten_and_counte
     );
 }
 
-// Adversarial (round-5 re-verification): three duplicate groups whose
-// survivors form a reference CYCLE through each other's losers (A -> B's
-// loser, B -> C's loser, C -> A's loser). `loser_to_survivor` is
-// computed once, structurally, before any group is processed, so no
-// group's resolution can depend on processing order. The identical
-// relational shape is built under two different physical created_at
-// orderings (which changes `duplicate_groups`' vector order, since that
-// follows each group's earliest-member created_at) to prove the map's
-// construction is genuinely order-independent.
+// Three duplicate groups whose survivors form a reference cycle through each
+// other's losers (A -> B's loser, B -> C's loser, C -> A's loser) must
+// resolve identically regardless of which group's earliest member sorts
+// first, proving the resolution map's construction is order-independent.
 #[test]
 fn three_group_reference_cycle_resolves_identically_under_two_processing_orders() {
     // Variant 1: groups created in A, B, C order.
@@ -627,24 +581,10 @@ fn three_group_reference_cycle_resolves_identically_under_two_processing_orders(
     assert_eq!(c2.superseded_by, sup(&survivor_a2));
 }
 
-// Adversarial (round-5 re-verification): hand-derive every summary count
-// for a multi-group scenario and assert exact match, not just "no crash".
-//   group A: survivor_a, loser_a1, loser_a2. loser_a1 -> loser_a2 is a
-//     same-group reference: inert clean-up, cleared but NOT counted in
-//     supersede_edges_repointed. survivor_a's own field -> loser_c1 (a
-//     DIFFERENT group's loser): resolves to survivor_c, not a
-//     self-edge-drop, and also not counted in supersede_edges_repointed
-//     (that counter covers rewrite_cross_references's non-survivor rows
-//     only; the survivor's own adoption is a separate mechanism).
-//   group B: survivor_b, loser_b1. Nothing points at anything.
-//   group C: survivor_c, loser_c1. Nothing points at anything.
-//   ordinary (no group at all): points at loser_b1 -> resolves to
-//     survivor_b, IS counted (genuinely external, non-same-group).
-// Hand count: total_notes=8, duplicate_groups=3, rows_collapsed=4 (2+1+1),
-// tags_merged=0, linked_files_merged=0, supersede_edges_repointed=1 (only
-// `ordinary`'s edge; loser_a1's same-group edge to loser_a2 is excluded),
-// supersede_self_edges_dropped=0 (survivor_a's own field resolves to a
-// genuine external target, survivor_c, not to itself).
+// A multi-group scenario with a same-group chain (loser_a1 -> loser_a2), a
+// cross-group survivor pointer (survivor_a -> loser_c1), and an ordinary note
+// outside every group (-> loser_b1): every summary count must match
+// hand-derived expectations exactly, not just avoid a crash.
 #[test]
 fn hand_derived_summary_counts_match_multi_group_scenario_exactly() {
     let store = open_store();
@@ -708,18 +648,11 @@ fn hand_derived_summary_counts_match_multi_group_scenario_exactly() {
     assert_eq!(note_count(&store), 4, "8 - 4 collapsed = 4 remaining rows");
 }
 
-// Test-engineer adversarial: fold-group tie-breaking boundary. The merge
-// rule says "survivor = earliest created_at" but not what happens when
-// two rows in a group share the exact same created_at (plausible for a
-// batch import or two calls landing in the same unixepoch() second).
-// `all_notes_for_dedup` orders `ORDER BY created_at ASC` with no
-// secondary key, so a tie's resolution order is query-plan-dependent,
-// not guaranteed stable by the SQL standard. The storage surrogate
-// (`notes.id`) is pinned as an explicit secondary tie-break, so the
-// first-inserted row is the survivor by documented invariant rather than
-// by accident of the query planner. The surrogate is not observable from
-// here, so this asserts the outcome it produces: identity, not ordering,
-// across repeated runs.
+// Two rows in a group can share the exact same created_at (a batch import,
+// or two calls landing in the same second). The query orders by created_at
+// ASC with no secondary key, so SQL alone doesn't guarantee a stable tie
+// order; the storage surrogate (`notes.id`) breaks the tie, so the
+// first-inserted row is the survivor on every run, not by query-plan accident.
 #[test]
 fn tied_created_at_breaks_deterministically_on_the_first_inserted_row() {
     for _ in 0..5 {
@@ -767,17 +700,13 @@ fn tied_created_at_breaks_deterministically_on_the_first_inserted_row() {
     }
 }
 
-// Test-engineer adversarial: dedupe interacting with rows built via
-// `add_note_superseding` (ADR-068 fifth amendment E1), not just
-// `add_note`/`add_note_with_created_at` as every prior test in this file
-// does. With `idx_notes_entity_id` dropped (see `test_support::open_store`),
-// two independent `add_note_superseding` calls for byte-identical content
-// (each superseding a different OLD row) create two distinct rows sharing
-// one entity_id: a duplicate group whose members both carry an *inbound*
-// edge from an OLD row's own superseded_by. Verifies `dedupe_entity_ids`
-// repoints those inbound edges to the survivor exactly like any other
-// external reference, proving E1's supersede path and the third
-// amendment's dedupe compose correctly.
+// Dedupe interacting with rows built via `add_note_superseding`, not just
+// `add_note`/`add_note_with_created_at`. Two independent
+// `add_note_superseding` calls for byte-identical content (each superseding
+// a different OLD row) create a duplicate group whose members both carry an
+// *inbound* edge from an OLD row's own superseded_by; dedupe must repoint
+// those inbound edges to the survivor exactly like any other external
+// reference.
 #[test]
 fn duplicate_group_built_via_add_note_superseding_repoints_old_rows_to_survivor() {
     let store = open_store();

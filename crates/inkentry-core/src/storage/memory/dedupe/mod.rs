@@ -1,19 +1,14 @@
-// Collapse duplicate-`entity_id` groups already resident in `memory.db`.
-// Backs `inkentry memory dedupe`. See ADR-068's third amendment for the merge
-// rule: survivor = earliest `created_at`; `tags`/`linked_files` union
-// add-wins; archived sticks.
+// Collapse duplicate-`entity_id` groups in `memory.db` (`inkentry memory
+// dedupe`). Never invoked automatically — collapsing is destructive.
 //
-// Invariant: no live row may reference a loser once it's deleted, whether
-// the reference is in-group or cross-group. `loser_to_survivor` (every id
-// being deleted this run, mapped to its group's survivor) is computed once
-// up front from the pre-transaction snapshot, so it stays valid regardless
-// of processing order. All `superseded_by` rewrites happen before any
-// delete: each group's own survivor resolves first, then every other row,
-// then losers are deleted in any order.
+// No live row may reference a loser once it's deleted. `loser_to_survivor`
+// (every id being deleted, mapped to its group's survivor) is computed once
+// from the pre-transaction snapshot, so it stays valid regardless of
+// processing order. Every `superseded_by` rewrite happens before any delete,
+// so losers can then be deleted in any order.
 //
 // One transaction for the whole run: any error rolls back, `memory.db`
-// stays unchanged. Never called automatically (`open`, `init`, `add`, ...):
-// collapsing is destructive, so it only runs via explicit `memory dedupe`.
+// stays unchanged.
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -22,12 +17,10 @@ use std::collections::{HashMap, HashSet};
 use super::{MemoryStore, Note, NoteId};
 use crate::storage::entity_id::note_entity_id;
 
-// Summary of one `dedupe_entity_ids` run (or dry-run estimate).
 #[derive(Debug, Default, Serialize, PartialEq, Eq)]
 pub struct DedupeSummary {
     pub total_notes: usize,
     pub duplicate_groups: usize,
-    // Losers collapsed (rows removed).
     pub rows_collapsed: usize,
     pub tags_merged: usize,
     pub linked_files_merged: usize,
@@ -37,9 +30,8 @@ pub struct DedupeSummary {
 
 #[cfg(test)]
 thread_local! {
-    // Fires after the (0-indexed) n-th group has been fully applied, before
-    // COMMIT. Proves the whole-run rollback guarantee under a real
-    // multi-group transaction, not just the empty/no-op case.
+    // Fires after group n's writes, before COMMIT: proves rollback under a
+    // real multi-group transaction, not just the no-op case.
     static FAULT_AFTER_GROUP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
@@ -65,9 +57,8 @@ fn fault_due(_i: usize) -> bool {
 
 #[cfg(test)]
 thread_local! {
-    // Finer-grained than FAULT_AFTER_GROUP: fires after the (0-indexed) n-th
-    // loser within the current group is fully deleted, before the next
-    // loser in the same group is touched. Proves rollback holds mid-group.
+    // Fires after loser n is deleted, before the next: proves rollback
+    // holds mid-group too, not just at a group boundary.
     static FAULT_AFTER_LOSER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
@@ -92,19 +83,17 @@ fn loser_fault_due(_i: usize) -> bool {
 }
 
 impl MemoryStore {
-    // Collapse every duplicate `entity_id` group in one all-or-nothing
-    // transaction. `dry_run` computes the same summary via read-only queries
-    // and writes nothing.
+    // `dry_run` computes the same summary via read-only queries and writes
+    // nothing.
     pub fn dedupe_entity_ids(&self, dry_run: bool) -> Result<DedupeSummary> {
         let all = self
             .all_notes_for_dedup()
             .context("reading notes for dedupe")?;
         let total_notes = all.len();
 
-        // Index into `all` rather than moving the `Note`: `all` (including
-        // non-duplicate notes) is needed again below for the cross-reference
-        // rewrite pass. `all_notes_for_dedup` orders by created_at ASC, so
-        // each group's first element is already the survivor.
+        // Index into `all` rather than moving it: `all` is needed again below
+        // for the cross-reference pass. `all_notes_for_dedup` orders by
+        // created_at ASC, so each group's first element is already the survivor.
         let mut group_indices: Vec<Vec<usize>> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
         for (i, n) in all.iter().enumerate() {
@@ -135,12 +124,8 @@ impl MemoryStore {
             .map(|idxs| idxs.iter().map(|&i| &all[i]).collect())
             .collect();
 
-        // Whole-run facts, computed once up front (see module doc).
-        // loser_to_survivor: every id deleted this run -> its group's
-        // survivor. Purely structural (derived from group membership), so
-        // it's identical regardless of processing order.
-        // note_group_of: id -> group index, used only to classify a rewrite
-        // as "external" for reporting, not for correctness.
+        // note_group_of classifies a rewrite as "external" for the summary
+        // only; it plays no role in correctness.
         let mut loser_to_survivor: HashMap<NoteId, NoteId> = HashMap::new();
         let mut note_group_of: HashMap<NoteId, usize> = HashMap::new();
         let mut survivor_ids: HashSet<NoteId> = HashSet::new();
@@ -173,18 +158,17 @@ impl MemoryStore {
         self.execute_batch("BEGIN IMMEDIATE")
             .context("beginning dedupe transaction")?;
         let result: Result<()> = (|| {
-            // Phase 1: per group, merge tags/linked_files/status and resolve
-            // the survivor's final superseded_by, from the pre-transaction
-            // snapshot only (never a live read) so group order doesn't matter.
+            // Phase 1: merge each group's tags/linked_files/status and
+            // resolve its survivor's superseded_by, from the pre-transaction
+            // snapshot only, so group order doesn't matter.
             for (i, group) in duplicate_groups.iter().enumerate() {
                 self.collapse_group_survivor(group, &loser_to_survivor, &mut summary, true)?;
                 if fault_due(i) {
                     anyhow::bail!("injected test fault after group {i}");
                 }
             }
-            // Phase 2: rewrite every other row (ordinary note or loser of any
-            // group) whose field still points at a doomed id, before any
-            // loser is deleted, so phase 3 can delete in any order safely.
+            // Phase 2: rewrite every row still pointing at a doomed id,
+            // before any loser is deleted, so phase 3 can delete in any order.
             self.rewrite_cross_references(
                 &all,
                 &survivor_ids,
@@ -193,8 +177,8 @@ impl MemoryStore {
                 &mut summary,
                 true,
             )?;
-            // Phase 3: delete every loser, any order - phase 2 already
-            // cleared every live reference to these ids.
+            // Phase 3: delete every loser; phase 2 already cleared every
+            // live reference to them.
             for group in &duplicate_groups {
                 for (li, loser) in group[1..].iter().enumerate() {
                     let loser_id = &loser.id;
@@ -222,17 +206,11 @@ impl MemoryStore {
         }
     }
 
-    // Plan (and, when `apply`, execute) one duplicate group's
-    // tags/linked_files/status merge and its survivor's final
-    // `superseded_by`. `group` is created_at-ASC ordered; `group[0]` is the
-    // survivor.
-    //
-    // Dry-run and real-run share this path so their counts always agree;
-    // only the trailing writes are skipped when `!apply`.
-    //
-    // Does not touch any other row or delete anything (see
-    // `rewrite_cross_references` and phase 3 in `dedupe_entity_ids`) - kept
-    // separate so no group's processing can interact with another's.
+    // Plans (and, when `apply`, executes) one group's tags/linked_files/status
+    // merge and its survivor's final `superseded_by`. `group[0]` is the
+    // survivor (created_at ASC). Dry-run and real-run share this path so
+    // their counts always agree; only the trailing writes are skipped when
+    // `!apply`. Touches nothing outside the group.
     fn collapse_group_survivor(
         &self,
         group: &[&Note],
@@ -265,11 +243,10 @@ impl MemoryStore {
         // status: archived sticks
         let any_archived = group.iter().any(|n| n.status == "archived");
 
-        // superseded_by: resolve against every id doomed this run, not just
-        // this group. A candidate redirects through loser_to_survivor to its
-        // group's survivor (no-op if not doomed). If that target is *this*
-        // group's own survivor, it's self-referential and dropped; otherwise
-        // it's a genuine external value (possibly another group's survivor).
+        // A candidate resolves through loser_to_survivor to its group's
+        // survivor (a no-op if not doomed). A target equal to this group's
+        // own survivor is self-referential and dropped; anything else is
+        // genuine external.
         let resolve = |v: &NoteId| -> Option<NoteId> {
             let target = loser_to_survivor.get(v).unwrap_or(v);
             if target == survivor_id {
@@ -295,9 +272,8 @@ impl MemoryStore {
                 );
             }
         }
-        // supersede_self_edges_dropped counts only the survivor's own value
-        // resolving to nothing; losers' references are handled (and not
-        // counted) by rewrite_cross_references, since those rows are deleted.
+        // Counts only the survivor's own value resolving to nothing;
+        // losers' references are handled (uncounted) by rewrite_cross_references.
         let survivor_self_edge_dropped =
             matches!(survivor.superseded_by.as_ref().map(&resolve), Some(None));
         if survivor_self_edge_dropped {
@@ -310,7 +286,6 @@ impl MemoryStore {
             return Ok(());
         }
 
-        // apply phase (real run only)
         if !new_tags.is_empty() || !new_files.is_empty() {
             self.union_tags_and_files(survivor_id, &new_tags, &new_files)?;
         }
@@ -322,8 +297,7 @@ impl MemoryStore {
                 self.set_superseded_by(survivor_id, &val)?;
             }
             None if survivor.superseded_by.is_some() => {
-                // Resolved to nothing (self-referential) with no external
-                // fallback in the group: clear rather than leave stale.
+                // No external fallback in the group: clear rather than leave stale.
                 self.clear_superseded_by(survivor_id)?;
             }
             _ => {}
@@ -332,13 +306,9 @@ impl MemoryStore {
         Ok(())
     }
 
-    // Rewrite every row that is not itself a survivor (an ordinary note or
-    // a loser of any group) whose `superseded_by` still points at an id
-    // being deleted this run. Targets resolve through `loser_to_survivor`,
-    // so a rewrite can only land on a surviving id, never another doomed one.
-    //
-    // Runs once, globally, before any loser is deleted (see module doc for
-    // why this ordering is the actual invariant).
+    // Rewrites every non-survivor row whose `superseded_by` still points at a
+    // doomed id, resolved through `loser_to_survivor` so a rewrite always
+    // lands on a surviving id. Runs once, globally, before any loser is deleted.
     fn rewrite_cross_references(
         &self,
         all_notes: &[Note],
@@ -359,8 +329,8 @@ impl MemoryStore {
             let Some(target) = loser_to_survivor.get(v) else {
                 continue; // not a doomed id: nothing to do
             };
-            // In-group rewrites are inert clean-up (target is deleted
-            // regardless), so only cross-group rewrites count as a "repoint".
+            // In-group rewrites are inert clean-up; only cross-group
+            // rewrites count as a repoint.
             let same_group = matches!(
                 (note_group_of.get(note_id), note_group_of.get(v)),
                 (Some(a), Some(b)) if a == b

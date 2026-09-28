@@ -32,8 +32,6 @@ fn add(store: &MemoryStore, title: &str) -> NoteId {
         .0
 }
 
-// ── foreign keys ─────────────────────────────────────────────────────────────
-
 #[test]
 fn foreign_key_enforcement_is_on_for_every_connection() {
     let (_dir, store) = store();
@@ -118,8 +116,6 @@ fn deleting_an_entry_takes_its_embedding_with_it() {
          keyed on a rowid no row holds"
     );
 }
-
-// ── identity ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn the_identity_column_is_not_null_and_uniquely_indexed() {
@@ -237,8 +233,6 @@ fn a_second_entry_cannot_claim_an_existing_identity() {
     assert!(err.to_string().contains("UNIQUE"), "{err}");
 }
 
-// ── what the schema no longer needs ──────────────────────────────────────────
-
 #[test]
 fn the_convergence_key_is_unique_from_the_first_row() {
     let (_dir, store) = store();
@@ -288,11 +282,10 @@ fn a_store_from_an_older_product_is_refused_rather_than_half_migrated() {
     );
 }
 
-// A store from a *released* product carries a stamp, and `user_version` is one
-// counter per file shared with every stamp the old ladder wrote. Restarting
-// this build's numbering below those made every such store read as "from the
-// future", so three shipped releases were told to upgrade — advice that can
-// never work, on the one move a user makes once.
+// A store from a released product carries a stamp, and `user_version` is one
+// counter per file shared with every stamp the old ladder wrote. This build's
+// numbering must stay above those, or such a store reads as "from the
+// future" and is wrongly told to upgrade — advice that can never work.
 #[test]
 fn a_store_stamped_by_a_released_binary_is_sent_to_export_and_import() {
     register_sqlite_vec();
@@ -325,11 +318,9 @@ fn a_store_stamped_by_a_released_binary_is_sent_to_export_and_import() {
     }
 }
 
-// ── migration parity ─────────────────────────────────────────────────────────
-
-/// Every non-internal `sqlite_master` row (tables, indexes, triggers, virtual
-/// tables), normalised so incidental whitespace differences in a `CREATE`
-/// statement's text don't register as a schema difference.
+// Every non-internal `sqlite_master` row (tables, indexes, triggers, virtual
+// tables), normalised so incidental whitespace differences in a `CREATE`
+// statement's text don't register as a schema difference.
 fn sqlite_master_signature(conn: &rusqlite::Connection) -> Vec<(String, String, String)> {
     let mut stmt = conn
         .prepare(
@@ -419,13 +410,13 @@ fn a_store_migrated_from_schema_version_11_matches_a_fresh_store() {
     );
 }
 
-/// A version-11 store with awkward legacy data — mixed-case and duplicate
-/// tags, tags with spaces/underscores, an empty tag item, a comma-containing
-/// value (unrecoverably ambiguous under the old comma-joined format, so it
-/// splits exactly as the pre-migration reader did), an absolute path, a `./`
-/// prefix, a path outside the root, and NULL/empty-string columns — must
-/// migrate without failing, land in `note_tags`/`note_files`, stay
-/// searchable by tag through `memory_fts`, and lose the two old columns.
+// A version-11 store with awkward legacy data — mixed-case and duplicate
+// tags, tags with spaces/underscores, an empty tag item, a comma-containing
+// value (unrecoverably ambiguous under the old comma-joined format, so it
+// splits exactly as the pre-migration reader did), an absolute path, a `./`
+// prefix, a path outside the root, and NULL/empty-string columns — must
+// migrate without failing, land in `note_tags`/`note_files`, stay
+// searchable by tag through `memory_fts`, and lose the two old columns.
 #[test]
 fn migrating_awkward_legacy_tags_and_files_data() {
     register_sqlite_vec();
@@ -551,9 +542,9 @@ fn migrating_awkward_legacy_tags_and_files_data() {
     );
 }
 
-/// A store that fails midway through step 12 (after the tables exist, before
-/// the rest of the step runs) must be left at schema version 11 with the old
-/// shape intact — the ladder's own transaction rolls the whole step back.
+// A store that fails midway through step 12 (after the tables exist, before
+// the rest of the step runs) must be left at schema version 11 with the old
+// shape intact — the ladder's own transaction rolls the whole step back.
 #[test]
 fn a_store_that_fails_midway_through_step_12_is_left_at_version_11() {
     use super::migrate::inject_failure_after_creating_tables;
@@ -604,7 +595,7 @@ fn a_store_that_fails_midway_through_step_12_is_left_at_version_11() {
     assert!(has_tags_column, "the old columns must still be present");
 }
 
-// ── step 13 (ADR-098 D5/D6): events table + origin columns ─────────────────────
+// Step 13: events table + origin columns.
 
 #[test]
 fn step_13_on_a_fresh_store_creates_an_empty_events_table_and_readable_origin_columns() {
@@ -637,7 +628,7 @@ fn step_13_on_a_12_stamped_store_with_rows_adds_events_and_leaves_existing_rows_
         ))
         .unwrap();
         // Climb only as far as step 12, leaving the store stamped exactly
-        // where a real ADR-101-migrated store would sit before this step
+        // where a real step-12-migrated store would sit before this step
         // ever runs.
         apply_ladder(&conn, 11, 12, super::migrate::MEMORY_MIGRATIONS, "test.db").unwrap();
         conn.execute(
@@ -674,7 +665,7 @@ fn step_13_on_a_12_stamped_store_with_rows_adds_events_and_leaves_existing_rows_
     );
 }
 
-// ── step 14 (ADR-099 D1): pending_anchors + patch_id_cache ─────────────────────
+// Step 14: pending_anchors + patch_id_cache.
 
 #[test]
 fn step_14_on_a_fresh_empty_store_creates_empty_pending_anchors_and_patch_id_cache() {
@@ -706,7 +697,7 @@ fn step_14_on_a_13_stamped_store_with_rows_adds_the_two_tables_and_leaves_existi
         ))
         .unwrap();
         // Climb only as far as step 13, leaving the store stamped exactly
-        // where a real ADR-098-migrated store would sit before this step
+        // where a real step-13-migrated store would sit before this step
         // ever runs.
         apply_ladder(&conn, 11, 13, super::migrate::MEMORY_MIGRATIONS, "test.db").unwrap();
         conn.execute(

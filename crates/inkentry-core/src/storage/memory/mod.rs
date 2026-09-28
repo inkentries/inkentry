@@ -34,33 +34,25 @@ mod schema_tests;
 #[cfg(test)]
 mod tests;
 
-/// Version stamped into `PRAGMA user_version` by [`MemoryStore::open`].
-///
-/// A store stamped above [`LAST_LEGACY_SCHEMA_VERSION`] and below this is
-/// migrated forward in place by the ladder in `migrate.rs`, one version at a
-/// time, up to this constant. A fresh store takes the same road: it is created
-/// from the frozen `memory_001_initial.sql` at [`INITIAL_SCHEMA_VERSION`] and
-/// climbs the ladder from there, so there is exactly one way to reach the
-/// current shape.
-///
-/// It continues the old ladder's numbering rather than restarting at 1, and
-/// that is the whole point of [`LAST_LEGACY_SCHEMA_VERSION`]: `user_version`
-/// is one i32 per file, shared with every stamp that ladder ever wrote, so a
-/// fresh numbering would make an old product's store read as a *newer* one.
+// A store stamped above `LAST_LEGACY_SCHEMA_VERSION` and below this is
+// migrated forward in place, one version at a time. A fresh store is created
+// from the frozen `memory_001_initial.sql` at `INITIAL_SCHEMA_VERSION` and
+// climbs the same ladder, so there is exactly one way to reach the current
+// shape.
+//
+// Continues the old ladder's numbering rather than restarting at 1:
+// `user_version` is one i32 per file, shared with every stamp that ladder
+// ever wrote, so a fresh numbering would make an old product's store read
+// as a *newer* one.
 pub(super) const MEMORY_SCHEMA_VERSION: i32 = 14;
 
-/// The highest `user_version` the pre-rename migration ladder ever stamped,
-/// across every released binary (0.9.6 stamped 9; 0.9.7 and 0.9.8 stamped
-/// 10).
-///
-/// A store carrying any stamp at or below this was written by an older
-/// product and must be told to export and import — not migrated, since the
-/// pre-11 ladder was removed at the spelunk-to-inkentry rename and nothing
-/// migrates it forward. Nothing may reclaim this range: `MEMORY_SCHEMA_VERSION`
-/// only ever moves up from here.
+// The highest `user_version` the pre-rename migration ladder ever stamped. A
+// store carrying any stamp at or below this was written by an older product
+// and must be told to export and import, not migrated. Nothing may reclaim
+// this range: `MEMORY_SCHEMA_VERSION` only ever moves up from here.
 pub(super) const LAST_LEGACY_SCHEMA_VERSION: i32 = 10;
 
-/// The version `memory_001_initial.sql` creates, and the one it is frozen at.
+// The version `memory_001_initial.sql` creates, and the one it is frozen at.
 pub(super) const INITIAL_SCHEMA_VERSION: i32 = LAST_LEGACY_SCHEMA_VERSION + 1;
 
 const _: () = assert!(
@@ -71,13 +63,10 @@ const _: () = assert!(
 
 pub struct MemoryStore {
     pub(super) conn: Connection,
-    /// The directory linked-file paths (ADR-101 D3) are resolved against:
-    /// the grandparent of `memory.db` (its parent is `.inkentry/`), so a
-    /// path stored as `src/lib.rs` means `<project_root>/src/lib.rs`. Falls
-    /// back to the process's current directory for a store with no real
-    /// on-disk location (`:memory:`, used by tests) — the same fallback D3
-    /// specifies for a project that is not a git repository, since neither
-    /// case can be checked against anything more authoritative.
+    // Linked-file paths resolve against this: the grandparent of `memory.db`,
+    // so `src/lib.rs` means `<project_root>/src/lib.rs`. Falls back to the
+    // current directory when there is no real on-disk location (`:memory:`,
+    // used by tests).
     project_root: PathBuf,
 }
 
@@ -92,9 +81,9 @@ pub struct MemoryEdge {
 #[derive(Debug, Serialize)]
 pub struct Note {
     pub id: NoteId,
-    /// The entry's portable identity: `sha256` over its kind, title and body
-    /// (ADR-068), the same on every machine that holds the entry. `id` is this
-    /// store's own token for it and is minted per machine (ADR-093 D1).
+    /// The entry's portable identity: a hash over its kind, title and body,
+    /// the same on every machine that holds the entry. `id` is this store's
+    /// own token for it, minted per machine.
     pub entity_id: String,
     pub kind: String,
     pub title: String,
@@ -105,36 +94,36 @@ pub struct Note {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<NoteId>,
-    /// Git commit SHA for harvested entries; NULL for manually created entries.
+    /// Git commit SHA for harvested entries; `None` for manually created entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
-    /// When this entry became valid (unix epoch). None = treat as created_at.
+    /// When this entry became valid (unix epoch). `None` means treat as `created_at`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_at: Option<i64>,
-    /// When this entry was invalidated/superseded (unix epoch). None = still valid.
+    /// When this entry was invalidated/superseded (unix epoch). `None` means still valid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invalid_at: Option<i64>,
-    /// Semantic distance — only populated by search(), None otherwise.
+    /// Semantic distance; only populated by [`MemoryStore::search`], `None` otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance: Option<f64>,
-    /// Fused relevance score — only populated by hybrid search, None otherwise.
+    /// Fused relevance score; only populated by hybrid search, `None` otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
-    /// Set only for notes returned via cross-project dep pass. None for local notes.
-    /// Contains the dep project's display name (final path component of root_path).
+    /// Set only for notes returned from a linked project; `None` for local
+    /// notes. The linked project's display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_project: Option<String>,
-    /// Set alongside source_project: the dep project's root path, for disambiguation
-    /// when two linked projects share a display name.
+    /// Set alongside `source_project`: the linked project's root path, for
+    /// disambiguation when two linked projects share a display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_project_path: Option<String>,
-    /// Canonical cross-machine id (uuid) when synced to a remote; None for
-    /// never-synced local rows. Carried from the remote wire (ADR-059 D2).
+    /// Canonical cross-machine id when synced to a remote; `None` for
+    /// never-synced local rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_id: Option<String>,
-    /// Who or what produced this entry (ADR-098 D6). `None` means no caller
-    /// declared an actor when the entry was written — read as `unknown`,
-    /// never as "known to be human". Not part of `entity_id`.
+    /// Who or what produced this entry. `None` means no caller declared an
+    /// actor when the entry was written — read as unknown, never as "known
+    /// to be human". Not part of `entity_id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<super::origin::Origin>,
 }
@@ -155,13 +144,8 @@ impl MemoryStore {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("opening memory DB at {}", path.display()))?;
-        // Enforcement is declared here rather than inherited from whichever
-        // SQLite the workspace links against: the bundled build happens to
-        // compile foreign keys on by default, and a data-integrity guarantee
-        // resting on a vendored dependency's compile flag disappears silently
-        // the day someone builds against a system SQLite. `PRAGMA foreign_keys`
-        // is per-connection and cannot live in the schema file, so it runs on
-        // every open.
+        // Declared per-connection rather than inherited from the linked
+        // SQLite's compile flags, which the schema file cannot set.
         conn.execute_batch("PRAGMA foreign_keys = ON")
             .context("enabling foreign-key enforcement")?;
         super::apply_test_page_cap(&conn)?;
@@ -172,17 +156,12 @@ impl MemoryStore {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let store = Self { conn, project_root };
         store.create_schema()?;
-        // WAL for the same reason `index.db` uses it (see `storage/db.rs`): in
-        // the default rollback-journal mode every autocommit write is a journal
-        // file create + fsync + delete, and the sync paths commit once per row
-        // (`add_note`, `apply_remote_note`, `set_remote_id`). On NTFS that
-        // per-row barrier measured ~0.26s, making sync cost scale with row
-        // count rather than request count.
+        // WAL avoids a journal file create+fsync+delete on every autocommit
+        // write; the sync paths commit once per row, so this matters.
         //
-        // Set *after* `create_schema`, never before: journal mode is persisted
-        // in the file header, so setting it up front would convert a store this
-        // build refuses — and refusing a store that does not fit the schema
-        // without half-converting it is the whole point of `create_schema`.
+        // Set after `create_schema`, never before: journal mode persists in
+        // the file header, so setting it earlier would convert a store this
+        // build ought to refuse instead.
         store
             .conn
             .execute_batch("PRAGMA journal_mode = WAL")
@@ -190,20 +169,12 @@ impl MemoryStore {
         Ok(store)
     }
 
-    /// Create the memory schema on a new file, migrate one already stamped
-    /// between [`LAST_LEGACY_SCHEMA_VERSION`] and [`MEMORY_SCHEMA_VERSION`], or
-    /// accept one already at the current version.
-    ///
-    /// A fresh store is created from the frozen `memory_001_initial.sql` at
-    /// [`INITIAL_SCHEMA_VERSION`] and then migrated like any other.
-    /// Anything else is refused rather than half-covered with a shape its rows
-    /// do not fit, unless it falls in the migratable range — and *which*
-    /// refusal matters, because the two say opposite things. A store from an
-    /// older product must be told to export and import; only a store from a
-    /// genuinely newer build can be told to upgrade. The old ladder's stamps
-    /// are what separate them, which is why this build's stamp continues that
-    /// numbering instead of restarting. The ladder itself is
-    /// `storage::migration_ladder`.
+    // Creates the schema on a new file, migrates one stamped between
+    // LAST_LEGACY_SCHEMA_VERSION and MEMORY_SCHEMA_VERSION, or accepts one
+    // already current. Anything else is refused rather than half-covered
+    // with a shape its rows don't fit. Which refusal matters: a store from
+    // an older product is told to export and import; only a genuinely
+    // newer build is told to upgrade.
     fn create_schema(&self) -> Result<()> {
         let version: i32 = self
             .conn
@@ -249,11 +220,9 @@ impl MemoryStore {
             );
         }
 
-        // Creation and its stamp commit together. Split across two
-        // transactions, a crash between them would leave a fully-formed store
-        // carrying no stamp — which the check above, correctly, refuses.
-        // `user_version` is a header i32 and is transactional; the value here
-        // is a code-controlled constant.
+        // Creation and its stamp commit together: split in two, a crash
+        // between them would leave a fully-formed but unstamped store,
+        // which the check above refuses.
         self.conn
             .execute_batch(&format!(
                 "BEGIN;\n{}\nPRAGMA user_version = {INITIAL_SCHEMA_VERSION};\nCOMMIT;",
@@ -269,7 +238,7 @@ impl MemoryStore {
         )
     }
 
-    /// True when the file has no user tables.
+    // True when the file has no user tables.
     fn is_empty_file(&self) -> Result<bool> {
         let n: i64 = self
             .conn
@@ -283,8 +252,8 @@ impl MemoryStore {
         Ok(n == 0)
     }
 
-    /// The storage surrogate for an exported identity, or `None` when no such
-    /// entry exists. Private: the integer never leaves this module.
+    // The storage surrogate for an exported identity, or `None` when no such
+    // entry exists. The integer never leaves this module.
     pub(super) fn rowid_for(&self, id: &NoteId) -> Result<Option<i64>> {
         use rusqlite::OptionalExtension;
         Ok(self
@@ -297,7 +266,7 @@ impl MemoryStore {
             .optional()?)
     }
 
-    /// The exported identity for a storage surrogate.
+    // The exported identity for a storage surrogate.
     pub(super) fn uuid_for_rowid(&self, rowid: i64) -> Result<Option<NoteId>> {
         use rusqlite::OptionalExtension;
         use std::str::FromStr;
