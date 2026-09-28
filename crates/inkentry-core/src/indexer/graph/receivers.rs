@@ -1,22 +1,22 @@
-//! The receiver calls a file can place: through the enclosing type's own
-//! self-reference, or through a qualifier that statically names a type or
-//! module of this file. Any other receiver's type decides which method runs.
+// The receiver calls a file can place: through the enclosing type's own
+// self-reference, or through a qualifier that statically names a type or
+// module of this file. Any other receiver's type decides which method runs.
 
 use std::collections::HashMap;
 
 use tree_sitter::Node;
 
-/// What a call's receiver or qualifier names.
+// What a call's receiver or qualifier names.
 pub(super) enum Receiver<'t> {
-    /// The enclosing type's own self-reference: the type's key. For Go, also
-    /// the method whose receiver it must still be.
+    // The enclosing type's own self-reference: the type's key. For Go, also
+    // the method whose receiver it must still be.
     SelfOf {
         owner: String,
         go_method: Option<Node<'t>>,
     },
-    /// A bare type name, which the file must define and not shadow.
+    // A bare type name, which the file must define and not shadow.
     TypeName(&'t str),
-    /// Rust `self::`, the current module: a file-scope function.
+    // Rust `self::`, the current module: a file-scope function.
     Module,
     Other,
 }
@@ -88,9 +88,9 @@ pub(super) fn classify<'t>(receiver: Node<'t>, src: &'t [u8], language: &str) ->
     }
 }
 
-/// The type whose body `node` sits in, as a key that matches across the
-/// several places one type's methods can be written (Rust `impl` blocks, Go
-/// methods, which sit at file level and name their type in the receiver).
+// The type whose body `node` sits in, as a key that matches across the
+// several places one type's methods can be written (Rust `impl` blocks, Go
+// methods, which sit at file level and name their type in the receiver).
 pub(super) fn owner(node: Node<'_>, src: &[u8], language: &str) -> Option<String> {
     let text = |n: Node<'_>| n.utf8_text(src).ok().map(str::to_owned);
     let mut ancestor = node.parent();
@@ -117,7 +117,7 @@ pub(super) fn owner(node: Node<'_>, src: &[u8], language: &str) -> Option<String
     None
 }
 
-/// The types declared at the top of the file, by name, keyed like [`owner`].
+// The types declared at the top of the file, by name, keyed like `owner`.
 pub(super) fn file_types(root: Node<'_>, src: &[u8]) -> HashMap<String, String> {
     const DECLARATIONS: &[&str] = &[
         "class_definition",
@@ -160,7 +160,7 @@ fn enclosing<'t>(node: Node<'t>, kinds: &[&str]) -> Option<Node<'t>> {
     None
 }
 
-/// A non-arrow function between `this` and its method binds its own `this`.
+// A non-arrow function between `this` and its method binds its own `this`.
 fn this_rebound_in_js(this: Node<'_>) -> bool {
     let mut ancestor = this.parent();
     while let Some(n) = ancestor {
@@ -178,7 +178,7 @@ fn this_rebound_in_js(this: Node<'_>) -> bool {
     false
 }
 
-/// `this` in an anonymous class body means the anonymous type.
+// `this` in an anonymous class body means the anonymous type.
 fn inside_anonymous_class(this: Node<'_>, language: &str) -> bool {
     language == "java"
         && enclosing(this, &["class_body", "class_declaration"]).is_some_and(|body| {
@@ -189,9 +189,9 @@ fn inside_anonymous_class(this: Node<'_>, language: &str) -> bool {
         })
 }
 
-/// The method whose own `self`/`cls` parameter this receiver still is: the
-/// nearest function or lambda declaring that name, provided it is a method
-/// of a class and nothing in it reassigns the name.
+// The method whose own `self`/`cls` parameter this receiver still is: the
+// nearest function or lambda declaring that name, provided it is a method
+// of a class and nothing in it reassigns the name.
 fn python_method_binding<'t>(receiver: Node<'t>, name: &str, src: &[u8]) -> Option<Node<'t>> {
     let mut ancestor = receiver.parent();
     while let Some(n) = ancestor {

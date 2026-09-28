@@ -1,9 +1,9 @@
-//! Where a definition is reachable by its bare name: the rule a call must
-//! meet before the file that defines a callable can claim it.
+// Where a definition is reachable by its bare name: the rule a call must
+// meet before the file that defines a callable can claim it.
 
 use tree_sitter::Node;
 
-/// Declarations that open a function body.
+// Declarations that open a function body.
 const FUNCTION_KINDS: &[&str] = &[
     "function_item",
     "function_definition",
@@ -23,7 +23,7 @@ const FUNCTION_KINDS: &[&str] = &[
     "lambda_literal",
 ];
 
-/// Declarations whose body holds members rather than statements.
+// Declarations whose body holds members rather than statements.
 pub(super) const TYPE_KINDS: &[&str] = &[
     "class_definition",
     "class_declaration",
@@ -43,9 +43,9 @@ pub(super) const TYPE_KINDS: &[&str] = &[
     "object",
 ];
 
-/// Languages where a bare call inside a type's body reaches that type's
-/// methods through an implicit receiver. Elsewhere a method needs `self`,
-/// `this` or a qualified path, so a bare name never reaches one.
+// Languages where a bare call inside a type's body reaches that type's
+// methods through an implicit receiver. Elsewhere a method needs `self`,
+// `this` or a qualified path, so a bare name never reaches one.
 fn implicit_receiver(language: &str) -> bool {
     matches!(
         language,
@@ -53,7 +53,7 @@ fn implicit_receiver(language: &str) -> bool {
     )
 }
 
-/// The range a bare call must sit in to reach a definition.
+// The range a bare call must sit in to reach a definition.
 #[derive(Clone, Copy)]
 pub(super) enum Reach {
     File,
@@ -71,8 +71,8 @@ impl Reach {
     }
 }
 
-/// `def` is the name node of a callable definition; `method` says the locals
-/// query captured it as one.
+// `def` is the name node of a callable definition; `method` says the locals
+// query captured it as one.
 pub(super) fn reach_of(def: Node<'_>, method: bool, language: &str) -> Reach {
     // An out-of-line member (`void A::run() {}`) belongs to a type this file
     // may not even contain.
@@ -88,7 +88,6 @@ pub(super) fn reach_of(def: Node<'_>, method: bool, language: &str) -> Reach {
     let mut ancestor = def.parent();
     // The tree's root is the file, whatever its kind (Python's is `module`).
     while let Some(n) = ancestor.filter(|n| n.parent().is_some()) {
-        // The declaration `def` names is not what contains it.
         if !names(n, def) {
             if FUNCTION_KINDS.contains(&n.kind()) {
                 return Reach::Within(n.start_byte(), n.end_byte());
@@ -106,8 +105,8 @@ pub(super) fn reach_of(def: Node<'_>, method: bool, language: &str) -> Reach {
     Reach::File
 }
 
-/// Whether `def` is the name `declaration` declares: its `name` or
-/// `declarator`, or (Kotlin, which has no such fields) a direct child.
+// Whether `def` is the name `declaration` declares: its `name` or
+// `declarator`, or (Kotlin, which has no such fields) a direct child.
 fn names(declaration: Node<'_>, def: Node<'_>) -> bool {
     let holds = |field: &str| {
         declaration

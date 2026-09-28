@@ -100,8 +100,6 @@ fn absent_optional_fields_read_as_absent_not_as_empty() {
     assert_eq!(e2.source_ref, None);
 }
 
-// ── integrity: every one of these refuses the whole file ─────────────────────
-
 #[test]
 fn an_altered_byte_anywhere_is_refused() {
     let original = String::from_utf8(spec_example()).unwrap();
@@ -234,8 +232,6 @@ fn an_empty_store_is_a_valid_dump() {
     assert!(read.relationships.is_empty());
 }
 
-// ── ordering and deduplication ───────────────────────────────────────────────
-
 #[test]
 fn relationships_may_precede_the_entities_they_name() {
     let rel = r#"{"record":"relationship","type":"relates_to","from":"x2","to":"x1"}"#;
@@ -367,8 +363,6 @@ fn two_entries_carrying_the_same_blank_identity_are_reported_as_blank() {
     let err = read(&dump).expect_err("an empty uuid is not an identity");
     assert!(err.to_string().contains("blank uuid"), "{err}");
 }
-
-// ── entries that share a convergence key ─────────────────────────────────────
 
 #[test]
 fn entries_sharing_a_convergence_key_are_folded_into_the_earliest_and_counted() {

@@ -11,7 +11,6 @@ pub fn compute_pagerank(
         return HashMap::new();
     }
 
-    // 1. Collect unique nodes
     let mut nodes: Vec<String> = Vec::new();
     let mut node_index: HashMap<String, usize> = HashMap::new();
 
@@ -31,9 +30,7 @@ pub fn compute_pagerank(
         return HashMap::new();
     }
 
-    // 2. Build adjacency: out_edges[i] = list of target indices
     let mut out_edges: Vec<Vec<usize>> = vec![vec![]; n];
-    // in_edges[i] = list of source indices
     let mut in_edges: Vec<Vec<usize>> = vec![vec![]; n];
 
     for (from, to) in edges {
@@ -45,14 +42,12 @@ pub fn compute_pagerank(
         }
     }
 
-    // 3. Initialise scores: 1.0 / n for each node
     let init_score = 1.0_f32 / n as f32;
     let mut scores: Vec<f32> = vec![init_score; n];
 
     let base = (1.0 - damping) / n as f32;
     let dangling_indices: Vec<usize> = (0..n).filter(|&i| out_edges[i].is_empty()).collect();
 
-    // 4. Iterate
     for _ in 0..iterations {
         let dangling_sum: f32 = dangling_indices.iter().map(|&i| scores[i]).sum();
         let dangling_contrib = damping * dangling_sum / n as f32;
@@ -69,7 +64,6 @@ pub fn compute_pagerank(
         scores = new_scores;
     }
 
-    // 5. Return final scores
     nodes
         .into_iter()
         .enumerate()

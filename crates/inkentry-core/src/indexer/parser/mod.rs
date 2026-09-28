@@ -73,11 +73,11 @@ pub fn detect_language(path: &std::path::Path) -> Option<&'static str> {
     }
 }
 
-/// Inputs larger than this are chunked by sliding window instead of parsed.
-/// Guards against adversarial inputs that make tree-sitter's GLR parser
-/// allocate exponential memory (e.g. deeply-nested pointer declarators): the
-/// parse's time budget only bounds CPU time, and memory can spike before its
-/// first progress callback fires.
+// Inputs larger than this are chunked by sliding window instead of parsed.
+// Guards against adversarial inputs that make tree-sitter's GLR parser
+// allocate exponential memory (e.g. deeply-nested pointer declarators): the
+// parse's time budget only bounds CPU time, and memory can spike before its
+// first progress callback fires.
 pub(crate) const MAX_PARSE_BYTES: usize = 512 * 1024;
 
 pub(crate) fn ts_language_pub(name: &str) -> Result<tree_sitter::Language> {
@@ -87,7 +87,6 @@ pub(crate) fn ts_language_pub(name: &str) -> Result<tree_sitter::Language> {
 /// Detect text-format languages (markdown, plain text, notebooks) from file path.
 /// These are handled without tree-sitter.
 pub fn detect_text_language(path: &std::path::Path) -> Option<&'static str> {
-    // Check extension first
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         return match ext.to_lowercase().as_str() {
             "md" | "mdx" | "markdown" => Some("markdown"),
@@ -135,10 +134,6 @@ pub fn is_binary_file(path: &std::path::Path) -> bool {
     }
     false
 }
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 pub struct SourceParser;
 
@@ -232,26 +227,26 @@ impl SourceParser {
     }
 }
 
-/// A gap with fewer letters and digits than this is left out: a closing `}`
-/// or `end`, a lone `private`. Measured over the whole gap (within one
-/// container), so a run of short lines (`has_many :fees`, one per line) still
-/// qualifies.
+// A gap with fewer letters and digits than this is left out: a closing `}`
+// or `end`, a lone `private`. Measured over the whole gap (within one
+// container), so a run of short lines (`has_many :fees`, one per line) still
+// qualifies.
 const MIN_GAP_WORD_CHARS: usize = 16;
 
-/// Window every stretch of `source` no chunk covers, so code outside a matched
-/// node is still indexed: module-level statements and constants, and the body
-/// of a container too large to keep whole (whose own chunk is suppressed in
-/// favour of its members), such as a Rails model's associations and
-/// validations. A chunk's docstring counts as covering the lines above it.
-///
-/// A stretch is cut where it crosses the boundary of a suppressed container,
-/// so every window lies in one container or none; the one exception is a
-/// container's bare header, which stays with the nested container it opens.
-/// The window holding a container's declaration is named after it, with its
-/// own `parent_scope`, as the container's re-windowed chunk would be. Windows
-/// between its members stay unnamed: there can be dozens (`private`,
-/// `delegate`, `attr_reader`), and one name on all of them crowds the
-/// container's members out of any query naming it.
+// Window every stretch of `source` no chunk covers, so code outside a matched
+// node is still indexed: module-level statements and constants, and the body
+// of a container too large to keep whole (whose own chunk is suppressed in
+// favour of its members), such as a Rails model's associations and
+// validations. A chunk's docstring counts as covering the lines above it.
+//
+// A stretch is cut where it crosses the boundary of a suppressed container,
+// so every window lies in one container or none; the one exception is a
+// container's bare header, which stays with the nested container it opens.
+// The window holding a container's declaration is named after it, with its
+// own `parent_scope`, as the container's re-windowed chunk would be. Windows
+// between its members stay unnamed: there can be dozens (`private`,
+// `delegate`, `attr_reader`), and one name on all of them crowds the
+// container's members out of any query naming it.
 fn fill_gaps(
     source: &str,
     file_path: &str,

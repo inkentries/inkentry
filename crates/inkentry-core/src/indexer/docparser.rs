@@ -8,10 +8,6 @@
 
 use super::chunker::{Chunk, ChunkKind, sliding_window};
 
-// ---------------------------------------------------------------------------
-// Public dispatch
-// ---------------------------------------------------------------------------
-
 /// Parse a binary document and return embeddable chunks.
 /// `language` must be `"docx"` or `"spreadsheet"`.
 pub fn parse_doc(bytes: &[u8], file_path: &str, language: &str) -> Vec<Chunk> {
@@ -25,11 +21,6 @@ pub fn parse_doc(bytes: &[u8], file_path: &str, language: &str) -> Vec<Chunk> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DOCX
-// ---------------------------------------------------------------------------
-
-/// Extract text from a DOCX file and return as sliding-window chunks.
 fn parse_docx(bytes: &[u8], file_path: &str) -> Vec<Chunk> {
     let doc = match docx_rs::read_docx(bytes) {
         Ok(d) => d,
@@ -49,7 +40,6 @@ fn parse_docx(bytes: &[u8], file_path: &str) -> Vec<Chunk> {
     sliding_window(&lines.join("\n"), file_path, "docx", None, None, None)
 }
 
-/// Recursively collect plain text lines from document children.
 fn collect_doc_text(children: &[docx_rs::DocumentChild], out: &mut Vec<String>) {
     for child in children {
         match child {
@@ -89,7 +79,6 @@ fn collect_doc_text(children: &[docx_rs::DocumentChild], out: &mut Vec<String>) 
     }
 }
 
-/// Extract plain text from a single paragraph's runs.
 fn para_text(p: &docx_rs::Paragraph) -> String {
     p.children
         .iter()
@@ -116,12 +105,7 @@ fn run_text(run: &docx_rs::Run) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Spreadsheets (XLSX / XLS / ODS via calamine)
-// ---------------------------------------------------------------------------
-
-/// Extract spreadsheet data and return one chunk per sheet (or sliding-window
-/// chunks for sheets with more than 120 rows).
+// One chunk per sheet, or sliding-window chunks for sheets over 120 rows.
 fn parse_spreadsheet(bytes: &[u8], file_path: &str) -> Vec<Chunk> {
     use calamine::{Reader, open_workbook_auto_from_rs};
     use std::io::Cursor;

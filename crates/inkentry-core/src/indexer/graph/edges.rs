@@ -614,9 +614,9 @@ pub(super) fn swift_edges<'t>(node: &tree_sitter::Node<'t>, src: &[u8]) -> Vec<C
     out
 }
 
-/// Extract a type name from a node wrapping a `user_type` → `type_identifier`
-/// (Kotlin `delegation_specifier`, Swift `inheritance_specifier`). Falls back to
-/// a directly-nested `type_identifier`.
+// Extract a type name from a node wrapping a `user_type` → `type_identifier`
+// (Kotlin `delegation_specifier`, Swift `inheritance_specifier`). Falls back to
+// a directly-nested `type_identifier`.
 fn user_type_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
@@ -650,8 +650,8 @@ fn user_type_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     None
 }
 
-/// Return the method name from a Swift `navigation_expression` (`obj.method`),
-/// i.e. the `simple_identifier` inside its `navigation_suffix`.
+// Return the method name from a Swift `navigation_expression` (`obj.method`),
+// i.e. the `simple_identifier` inside its `navigation_suffix`.
 fn navigation_suffix_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
