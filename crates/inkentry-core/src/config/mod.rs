@@ -34,52 +34,39 @@ pub use tls::{apply_server_ca, find_rustls_cause};
 
 /// Default TCP port for `inkentry-server`.
 ///
-/// 4655 spells `inkl` on a phone keypad; the team-deployment convention is
-/// 4658 (`inkt`). The former default, 7777, is registered on developer machines
-/// by Unreal-engine dedicated servers, Terraria and ARK, whose claim on it
-/// predates ours (ADR-089).
+/// 4655 spells `inkl` on a phone keypad; team deployments conventionally use
+/// 4658 (`inkt`).
 pub const DEFAULT_SERVER_PORT: u16 = 4655;
 
 /// How long a client may spend establishing a connection to a configured
-/// server before the server is reported unreachable.
+/// server before it is reported unreachable.
 ///
-/// Short on purpose, and unrelated to the per-request budgets, which stay long
-/// because a real transfer or a server-side embed legitimately runs for
-/// minutes once the connection is up. Without this bound an unreachable host
-/// instead burns the whole request budget, since a firewall that drops rather
-/// than refuses leaves the connect attempt with nothing to fail on.
-///
-/// This is the bound for a request that carries real work. The liveness probes
-/// derive their own from it rather than reusing it directly, because each has
-/// to keep connecting distinguishable from waiting for a reply: the capability
-/// probe gives connecting half of its own short budget, and the dialect probe
-/// keeps a reply budget of twice this. A miss that cannot be told apart from a
-/// slow answer cannot safely be recorded as unreachable.
-///
-/// Note this covers the TLS handshake as well as the TCP connect, so it is a
-/// budget for a round trip or two to the server rather than for a bare SYN. Two
-/// seconds is generous for that on a healthy link, including a distant one, but
-/// it is the number to revisit if a legitimately slow WAN server is ever
-/// reported as unreachable.
+/// Short by design: a real transfer or server-side embed can legitimately run
+/// for minutes once connected, but a firewall that drops rather than refuses a
+/// connection would otherwise burn the whole request budget with nothing to
+/// fail on. Covers the TLS handshake as well as the bare TCP connect.
+/// Liveness probes derive their own timeouts from this value rather than
+/// reuse it, since a probe must tell "still connecting" apart from "waiting
+/// for a reply".
 pub const REMOTE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[cfg(test)]
 use tempfile::TempDir;
 
-/// Serde default helper: `true`.
 fn default_true() -> bool {
     true
 }
 
-/// The `[index]` config table: controls the built-in index-time file filter that
-/// skips generated/vendored/minified/machine-data files (see
-/// `inkentry_core::indexer::filter`). Distinct from the unconditional
-/// sensitive-file exclusion (`.env`, keys), which is not configurable here.
+/// The `[index]` config table: controls the built-in index-time file filter
+/// that skips generated/vendored/minified/machine-data files (see
+/// [`crate::indexer::filter`]). Distinct from the unconditional sensitive-file
+/// exclusion (`.env`, keys), which is not configurable here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Extra gitignore-syntax exclude lines layered on top of the built-ins.
-    /// A `!pattern` line re-includes a path the defaults would drop (last match
-    /// wins). Cannot re-include a sensitive file (that layer is separate).
+    /// A `!pattern` line re-includes a path the defaults would drop (last
+    /// match wins). Cannot re-include a sensitive file (that layer is
+    /// separate).
     #[serde(default)]
     pub exclude: Vec<String>,
     /// Whether to apply the built-in default exclude set. Default `true`.
@@ -101,8 +88,8 @@ impl Default for IndexConfig {
     }
 }
 
-/// Per-field override of [`IndexConfig`] from a project `.inkentry/config.toml`.
-/// Every field is `Option` so an absent key leaves the layered value untouched.
+// Per-field override of `IndexConfig` from a project `.inkentry/config.toml`.
+// Every field is `Option` so an absent key leaves the layered value untouched.
 #[derive(Debug, Default, Deserialize)]
 struct ProjectIndexConfig {
     exclude: Option<Vec<String>>,
@@ -110,43 +97,35 @@ struct ProjectIndexConfig {
     detect_generated: Option<bool>,
 }
 
-/// Fields that can be set in `.inkentry/config.toml` (project-level, checked-in).
-/// Only contains fields safe to share with the team (no secrets).
-///
-/// `server_key` is deliberately absent (ADR-071 D4): a credential in a
-/// committed file is in the repo's history for good and readable by anyone
-/// with repo access. A file that still has a `server_key` line keeps working
-/// for its other fields, and is named on stderr so its owner knows there is
-/// something to rotate. Use `inkentry auth set-key --server <url>` instead.
-/// The personal config is read the same way (ADR-088 D1), via
-/// [`personal_config_credential_warning`].
-///
-/// Every *other* key the file is not read for is named on stderr instead of
-/// dropped in silence. The keys this struct declares are mirrored in
-/// [`PROJECT_CONFIG_KEYS`], which the warning reads; adding a field here means
-/// adding it there.
+// Fields settable in `.inkentry/config.toml` (project-level, checked-in). Only
+// fields safe to share with the team (no secrets).
+//
+// No `server_key` field: a credential in a committed file is in the repo's
+// history for good. A file that still has one keeps working for its other
+// fields and is named on stderr so its owner knows to rotate it (use
+// `inkentry auth set-key --server <url>` instead); the personal config is read
+// the same way, via `personal_config_credential_warning`.
+//
+// Every other key the file is not read for is likewise named on stderr rather
+// than dropped in silence. The keys here are mirrored in
+// `PROJECT_CONFIG_KEYS`, which the warning reads; adding a field here means
+// adding it there too.
 #[derive(Debug, Default, Deserialize)]
 struct ProjectConfig {
-    /// Canonical server URL (preferred).
     server_url: Option<String>,
-    /// Opt into the hosted inkentry cloud. Mutually exclusive with `server_url`.
+    // Mutually exclusive with `server_url`.
     cloud: Option<bool>,
     project_id: Option<String>,
-    /// Organization to pin this repo to (ADR-074 D2): a WorkOS org id, a slug,
-    /// or a local org UUID. Not a secret, so it belongs in the committed file
-    /// next to `project_id`.
+    // A WorkOS org id, a slug, or a local org UUID. Not a secret, so it
+    // belongs in the committed file next to `project_id`.
     org: Option<String>,
-    /// Base URL of the inference endpoint. A team pointing at one approved
-    /// provider states it once here rather than in every developer's own file.
-    /// The credential it is presented to is not a config key in either file.
+    // A team pointing at one approved provider states it once here rather
+    // than in every developer's own file. The credential it is presented to
+    // is not a config key in either file.
     llm_url: Option<String>,
-    /// Path to a PEM CA bundle to trust in addition to the built-in roots, for a
-    /// team server presenting a self-signed / internal-CA certificate.
     server_ca: Option<String>,
-    /// How this project's memory is governed. Overrides a personal
-    /// value; `INKENTRY_MODE` still wins over both.
+    // Overrides a personal value; `INKENTRY_MODE` still wins over both.
     mode: Option<SyncMode>,
-    /// `[index]` table: per-field override of the built-in file filter.
     index: Option<ProjectIndexConfig>,
 }
 
@@ -163,41 +142,34 @@ pub struct Config {
     pub llm_model: Option<String>,
 
     /// Base URL of an OpenAI-compatible chat completions endpoint (a local
-    /// LM Studio / Ollama, or a self-hosted gateway), passed on to the
+    /// LM Studio / Ollama, or a self-hosted gateway), passed to the
     /// auto-spawned `inkentry-server` so it gains LLM capability.
     ///
     /// Settable in either file, with `.inkentry/config.toml` winning over the
-    /// personal one and `INKENTRY_LLM_URL` winning over both. A team endpoint
-    /// is usually one approved provider rather than a developer's own machine,
-    /// so it is a project-wide fact worth committing, and anyone running a
-    /// local model still outranks it from their personal file or the
-    /// environment. The credential the endpoint is presented to does not
-    /// follow it into either file (`inkentry auth set-key --llm` or
-    /// `INKENTRY_LLM_KEY`): a committed credential is in the repository's
-    /// history for good (ADR-071 D4).
+    /// personal one, and `INKENTRY_LLM_URL` winning over both. The credential
+    /// presented to this endpoint is never itself a config field (`inkentry
+    /// auth set-key --llm` or `INKENTRY_LLM_KEY`).
     #[serde(default)]
     pub llm_url: Option<String>,
 
-    // ── inkentry-server (optional) ─────────────────────────────────────────────
-    /// URL of the inkentry-server instance, e.g. `https://inkentry.internal.example.com`
-    /// (or `http://127.0.0.1:<DEFAULT_SERVER_PORT>` for loopback; non-loopback
-    /// `http://` is rejected).
-    /// When set, the CLI operates in Tier 1 (server-connected) mode, enabling
-    /// semantic search and embedding.
-    /// Set in `.inkentry/config.toml` (project-level) or via `INKENTRY_SERVER_URL` only:
-    /// [`Config::load_with_store`] discards any value from the global personal
-    /// config, since a team server is a project-wide choice, not a
-    /// per-developer one.
+    /// URL of the inkentry-server instance, e.g.
+    /// `https://inkentry.internal.example.com` (or
+    /// `http://127.0.0.1:<DEFAULT_SERVER_PORT>` for loopback; non-loopback
+    /// `http://` is rejected). When set, the CLI operates in Tier 1
+    /// (server-connected) mode, enabling semantic search and embedding.
+    ///
+    /// Settable only via `.inkentry/config.toml` or `INKENTRY_SERVER_URL`: a
+    /// value from the personal config is discarded, since a team server is a
+    /// project-wide choice, not a per-developer one.
     #[serde(default)]
     pub server_url: Option<String>,
 
-    /// When true, this project uses the hosted inkentry cloud. Cloud is a fixed
-    /// service, so it is a flag rather than a URL: the CLI targets the
-    /// compile-time cloud URL ([`server_keys::DEFAULT_CLOUD_URL`], a development
-    /// build may override it), and the access token travels only to the host it
-    /// was issued for. Mutually exclusive with `server_url`, which names a
-    /// self-hosted team server. Set in `.inkentry/config.toml` (project-level)
-    /// only; a personal value is discarded, like `server_url`.
+    /// When true, this project uses the hosted inkentry cloud, targeting the
+    /// compile-time cloud URL ([`server_keys::DEFAULT_CLOUD_URL`]). Mutually
+    /// exclusive with `server_url`, which names a self-hosted team server.
+    ///
+    /// Settable only in `.inkentry/config.toml`; a personal value is
+    /// discarded, like `server_url`.
     #[serde(default)]
     pub cloud: bool,
 
@@ -207,41 +179,38 @@ pub struct Config {
     #[serde(default)]
     pub project_id: Option<String>,
 
-    /// Path to a PEM CA bundle trusted (in addition to the built-in roots) when
-    /// connecting to a team `server_url` whose certificate is signed by a
-    /// self-signed or internal CA. Verification stays ON — this only adds a
-    /// trust anchor, it does not disable checks.
-    /// `INKENTRY_SERVER_CA` overrides this; set in either config file.
+    /// Path to a PEM CA bundle trusted in addition to the built-in roots, for a
+    /// team `server_url` whose certificate is signed by a self-signed or
+    /// internal CA. Verification stays on — this only adds a trust anchor, it
+    /// does not disable checks.
+    ///
+    /// `INKENTRY_SERVER_CA` overrides this; settable in either config file.
     #[serde(default)]
     pub server_ca: Option<String>,
 
     /// Sync mode: `offline` / `local_first` / `cloud_first`.
     ///
-    /// Settable in **either** config file, with `.inkentry/config.toml`
-    /// (project-level) winning over `~/.config/inkentry/config.toml`
-    /// (personal), and `INKENTRY_MODE` winning over both. Unlike
-    /// `server_url`, a personal value is *not* discarded: this field names no
-    /// host and can only choose among behaviours toward the server the project
-    /// already picked, so a personal value cannot send anything anywhere the
-    /// project config did not already permit.
+    /// Settable in either config file, with `.inkentry/config.toml` winning
+    /// over the personal one, and `INKENTRY_MODE` winning over both. Unlike
+    /// `server_url`, a personal value is not discarded: this field only
+    /// chooses a behaviour toward whatever server the project config already
+    /// named, so it cannot send anything anywhere the project config did not
+    /// already permit.
     ///
-    /// Stored as `Option` so the serde default can preserve today's behaviour:
-    /// when absent, [`Config::resolve_mode`] derives the effective mode from
-    /// `server_url` (no `server_url` ⇒ `offline`; `server_url` present ⇒
-    /// `local_first`). An explicit value here pins the mode, and
-    /// `INKENTRY_NO_SERVER=1` forces `offline` regardless.
-    /// Always read it through [`Config::resolve_mode`], never directly.
+    /// Stored as `Option` so an absent value can derive the effective mode
+    /// from `server_url` instead of pinning one — see [`Config::resolve_mode`],
+    /// which is the only place this field should be read.
     #[serde(default)]
     pub mode: Option<SyncMode>,
 
-    /// URL of a server used **only** for inference (embeddings + LLM), never for
-    /// memory storage. Populated at runtime (not from config files) by
-    /// `Tier::effective_config()` when a loopback server is auto-discovered: the
-    /// auto-discovered server is an inference cache over the local `memory.db`,
-    /// not a second memory store (ADR-004). Inference clients prefer this field
-    /// and fall back to `server_url`; the memory backend selector
-    /// (`open_memory_backend`) ignores it entirely, so an auto-discovered server
-    /// never diverts memory CRUD away from the project's local `memory.db`.
+    /// URL of a server used only for inference (embeddings + LLM), never for
+    /// memory storage. Populated at runtime, not from config files, when a
+    /// loopback server is auto-discovered.
+    ///
+    /// Inference clients prefer this field and fall back to `server_url`; the
+    /// memory backend selector ignores it entirely, so an auto-discovered
+    /// server never diverts memory CRUD away from the project's local
+    /// `memory.db`.
     #[serde(skip)]
     pub inference_url: Option<String>,
 
@@ -252,92 +221,73 @@ pub struct Config {
     #[serde(default = "Config::default_llm_context_length")]
     pub llm_context_length: usize,
 
-    /// When true (the default), `inkentry memory add` also appends the new entry
-    /// as a line of JSON in `refs/notes/inkentry` on HEAD.
-    ///
-    /// This keeps memory close to commits and is consistent with the product's
-    /// "memory travels with code" messaging.  Set `store_in_git_notes = false`
-    /// in your config to opt out.
+    /// When true (the default), `inkentry memory add` also appends the new
+    /// entry as a line of JSON in `refs/notes/inkentry` on HEAD. Set
+    /// `store_in_git_notes = false` to opt out.
     ///
     /// Failure to write the git note is non-fatal: a warning is logged and the
     /// primary SQLite write is unaffected.
     #[serde(default = "Config::default_store_in_git_notes")]
     pub store_in_git_notes: bool,
 
-    /// Organization this repo is pinned to (ADR-074 D2). Accepts the same forms
-    /// `org switch` does — a WorkOS org id, a slug, or a local org UUID — and
-    /// selects which cached WorkOS session cloud requests use, above the cache's
-    /// `active` pointer. Not a secret: an org identifier is exactly as shareable
-    /// as the `project_id` it sits beside, so it lives in the committed
-    /// `.inkentry/config.toml`, never in the secret store. `INKENTRY_ORG`
-    /// overrides it at load; an explicit `login --org` / `org switch` scopes an
-    /// invocation above even this by making that org the cache's active one. The
-    /// WorkOS session itself lives in the org-token cache (see
-    /// [`org_tokens`](crate::config::org_tokens)).
+    /// Organization this repo is pinned to. Accepts the same forms `org
+    /// switch` does — a WorkOS org id, a slug, or a local org UUID — and
+    /// selects which cached WorkOS session cloud requests use, above the
+    /// cache's `active` pointer.
+    ///
+    /// Not a secret, so it lives in the committed `.inkentry/config.toml`,
+    /// never the secret store. `INKENTRY_ORG` overrides it at load; an
+    /// explicit `--org` flag outranks even that. The WorkOS session itself
+    /// lives in the org-token cache (see [`org_tokens`](crate::config::org_tokens)).
     #[serde(default)]
     pub org: Option<String>,
 
     /// `[index]` table: built-in index-time file filter settings. Project
-    /// `.inkentry/config.toml` overrides the global value per field (see
-    /// [`Config::load_with_store`]).
+    /// `.inkentry/config.toml` overrides the global value per field.
     #[serde(default)]
     pub index: IndexConfig,
 
-    /// ADR-098 D5/D6: the caller's self-declaration
+    /// The caller's self-declaration
     /// (`INKENTRY_TRIGGER`/`INKENTRY_ACTOR`/`INKENTRY_SESSION_REF`/
     /// `INKENTRY_TOOL`/`INKENTRY_MODEL`), read once from the environment at
     /// [`Config::load`] — never from a config file, and never guessed from a
-    /// TTY check. `#[serde(skip)]` for the same reason [`Self::inference_url`]
-    /// is: a per-invocation fact, not something a config file could sensibly
-    /// pin for every future run.
+    /// TTY check.
     #[serde(skip)]
     pub caller: CallerDeclaration,
 }
 
 /// One organization's WorkOS session.
 ///
-/// Written by `inkentry login` / `inkentry org switch` and rotated by the token
-/// refresh path, cached per organization in the secret store keyed by
-/// `org_id` (ADR-074; see [`org_tokens`](crate::config::org_tokens)). A legacy
-/// plaintext `[auth]` table is migrated into that cache and stripped on the
-/// first load that finds one.
+/// Written by `inkentry login` / `inkentry org switch` and rotated by the
+/// token refresh path, cached per organization in the secret store keyed by
+/// `org_id` (see [`org_tokens`](crate::config::org_tokens)). A legacy
+/// plaintext `[auth]` table is migrated into this shape on the first load
+/// that finds one.
 ///
-/// Every field is `#[serde(default)]`, so a partial session never fails the
-/// whole load. A login without an org (no `org_id`) or a trimmed table must not
-/// brick commands that need no credentials. An absent field is read as its
-/// "unset" form, which the consumers already treat sensibly:
-/// * missing `access_token` ⇒ empty ⇒ not logged in (no bearer resolved, see
-///   [`server_keys::bearer_for`]);
-/// * missing `expires_at` ⇒ `0` ⇒ [`AuthTokens::is_expired_at`] reports
-///   expired, so an unknown expiry can never read as "still valid";
-/// * missing `org_id` ⇒ empty ⇒ no organisation scoping (the same empty-string
-///   sentinel the login/refresh paths already use);
-/// * missing `cloud_origin` ⇒ empty ⇒ no bearer released, since the token then
-///   names no host it may be sent to (see [`server_keys::bearer_for`]).
+/// Every field is `#[serde(default)]`, so a partial session — a login without
+/// an org, or a hand-trimmed table — never fails the whole load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthTokens {
     /// Short-lived WorkOS access token, sent as `Authorization: Bearer`.
-    /// Empty (or absent) means "not logged in": no bearer is resolved.
+    /// Empty (or absent) means not logged in: no bearer is resolved.
     #[serde(default)]
     pub access_token: String,
-    /// Long-lived rotating refresh token. Exchanged directly at WorkOS
-    /// `/user_management/authenticate` (refresh grant) to rotate the
-    /// access token or switch organisation. Empty when the table predates a
-    /// login or was hand-trimmed; the refresh path then simply cannot rotate.
+    /// Long-lived rotating refresh token, exchanged directly at WorkOS's
+    /// refresh grant to rotate the access token or switch organisation.
     #[serde(default)]
     pub refresh_token: String,
     /// Absolute expiry of `access_token`, as a Unix timestamp (seconds).
     /// Absent ⇒ `0`, which [`AuthTokens::is_expired_at`] treats as expired.
     #[serde(default)]
     pub expires_at: i64,
-    /// WorkOS organisation the tokens are scoped to. Empty when logged in
-    /// without an org (`--org` omitted); no scoping is applied.
+    /// WorkOS organisation the tokens are scoped to. Empty means logged in
+    /// without an org: no scoping is applied.
     #[serde(default)]
     pub org_id: String,
     /// Normalized origin of the cloud host these tokens were issued for. The
     /// access token is released only to this origin (see
-    /// [`server_keys::bearer_for`]), so the cloud URL a request is aimed at
-    /// cannot direct a token issued for one host to another. Empty resolves to
+    /// [`server_keys::bearer_for`]), so a request aimed at a different cloud
+    /// URL cannot be sent a token issued for another host. Empty resolves to
     /// no bearer.
     #[serde(default)]
     pub cloud_origin: String,
@@ -351,11 +301,8 @@ impl AuthTokens {
         self.is_expired_at(chrono::Utc::now().timestamp())
     }
 
-    /// Expiry check against an explicit `now` (Unix seconds) — testable form of
-    /// [`AuthTokens::is_expired`]. Treats the token as expired 30 s early.
-    ///
-    /// A missing `expires_at` deserialises to `0`, so this reports expired for
-    /// any realistic `now`: an unknown expiry is never read as "still valid".
+    /// [`is_expired`](Self::is_expired) against an explicit `now` (Unix
+    /// seconds). Treats the token as expired 30 s early.
     pub fn is_expired_at(&self, now: i64) -> bool {
         const SKEW_SECS: i64 = 30;
         now >= self.expires_at - SKEW_SECS
@@ -396,13 +343,8 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Cheaply check whether the personal config sets `llm_model`, without
+    /// Cheaply checks whether the personal config sets `llm_model`, without
     /// resolving the bearer credential or touching the secret store.
-    ///
-    /// Callers that only need this one field (the CLI's pre-parse help gate,
-    /// run ahead of and in addition to the real [`Config::load`]) must not pay
-    /// for a full load, which pulls the secret store into the process for a
-    /// value they never use.
     pub fn llm_model_configured(path: Option<&Path>) -> bool {
         let global_path = match path {
             Some(p) => p.to_path_buf(),
@@ -422,15 +364,10 @@ impl Config {
     ///   3. `.inkentry/config.toml` discovered by walking up from CWD (project-level, team-wide)
     ///   4. Environment variables: `INKENTRY_SERVER_URL`, `INKENTRY_PROJECT_ID`
     ///
-    /// `server_url` is the one field step 2 is not allowed to set (see the
-    /// `server_url` field doc): a team server is a project-wide decision, so
-    /// only the checked-in project config or an explicit env var may supply
-    /// it, never a single developer's personal file. `mode` layers the normal
-    /// way over all four steps; step 3 names on stderr any key it is
-    /// not read for.
-    ///
-    /// `INKENTRY_SERVER_KEY` takes no part in this load. It is a bearer, not a
-    /// config field, and is read at request time by
+    /// `server_url` is the one field step 2 cannot set: a team server is a
+    /// project-wide decision, so only the checked-in project config or an
+    /// explicit env var may supply it. `INKENTRY_SERVER_KEY` takes no part in
+    /// this load — it is a bearer, resolved at request time by
     /// [`server_keys::bearer_for`].
     ///
     /// Pass `path` to override the global config location (used by `--config` flag).
@@ -439,27 +376,22 @@ impl Config {
         Self::load_with_store(path, store.as_ref())
     }
 
-    /// Same as [`Config::load`] but with an injected [`SecretStore`].
-    ///
-    /// The load itself reads no secret at all: the store is threaded through so
-    /// a test can assert exactly that against an instrumented double, and so a
-    /// test never risks reaching the host keychain if that ever stops holding.
+    /// Same as [`Config::load`] but with an injected [`SecretStore`], so a
+    /// test can assert that the load reads no secret without touching the
+    /// host keychain.
     pub fn load_with_store(path: Option<&Path>, store: &dyn SecretStore) -> Result<Self> {
         let project_root = std::env::current_dir().ok();
         Self::load_with_store_from(path, store, project_root.as_deref())
     }
 
-    /// Like [`load_with_store`], but the project-level `.inkentry/config.toml` is
-    /// discovered by walking up from `project_root` rather than the process CWD.
-    /// `None` skips project discovery entirely: a `.inkentry/config.toml` checked
-    /// in to this repo must not leak into a hermetic unit-test load. Production
-    /// always passes the CWD via [`load_with_store`].
+    // Like `load_with_store`, but project discovery walks up from
+    // `project_root` instead of the CWD. `None` skips discovery entirely, so a
+    // hermetic test load never picks up this repo's own `.inkentry/config.toml`.
     pub(crate) fn load_with_store_from(
         path: Option<&Path>,
         store: &dyn SecretStore,
         project_root: Option<&Path>,
     ) -> Result<Self> {
-        // ── 1. Load global personal config ───────────────────────────────────
         let global_path = match path {
             Some(p) => p.to_path_buf(),
             None => inkentry_config_dir().join("config.toml"),
@@ -471,12 +403,10 @@ impl Config {
             if let Some(warning) = personal_config_credential_warning(&raw, &global_path) {
                 eprintln!("{warning}");
             }
-            // ADR-074 migration: lift a legacy plaintext `[auth]` session into
-            // the org-token cache and strip it from the file. 1.1 is the removal
-            // window, so this is migrate-then-strip with no indefinite dual-read.
-            // Best-effort: a store that cannot be written (a locked keychain)
-            // must not brick every command, so the session is left in place to be
-            // retried on a later load rather than lost.
+            // Migrate a legacy plaintext [auth] session into the org-token
+            // cache and strip it from the file. Best-effort: a store that
+            // cannot be written (a locked keychain) must not brick every
+            // command, so the session is left in place to retry on a later load.
             if let Some(legacy) = legacy_auth_tokens(&raw)
                 && let Err(e) = migrate_legacy_auth(store, &global_path, &legacy)
             {
@@ -490,20 +420,17 @@ impl Config {
         } else {
             Config::default()
         };
-        // A personal global config must never be able to point the CLI at a
-        // team server on its own: everyone on a project needs the same
-        // server_url, which only the checked-in project config or an env var
-        // can guarantee. Discard whatever the global file set here; step 2
-        // below is the only file-based source allowed to populate it. The cloud
-        // opt-in is a project-wide choice for the same reason.
+        // A personal config must never point the CLI at a team server on its
+        // own: everyone on a project needs the same server_url, which only the
+        // project config or an env var can guarantee. The cloud opt-in is
+        // project-wide for the same reason.
         cfg.server_url = None;
         cfg.cloud = false;
 
-        // ── 2. Merge project-level config (.inkentry/config.toml) ─────────────
-        // `ProjectConfig` has no `server_key` field (ADR-071 D4): a checked-in
-        // file never carries a credential. A file that still has one keeps
-        // working for its other fields; every key this file is not read for,
-        // credentials included, is named on stderr.
+        // `ProjectConfig` has no `server_key` field: a checked-in file never
+        // carries a credential. A file that still has one keeps working for
+        // its other fields; every unread key, credentials included, is named
+        // on stderr.
         if let Some(root) = project_root
             && let Some(proj_path) = find_project_config(root)
         {
@@ -535,7 +462,7 @@ impl Config {
             if let Some(v) = proj.llm_url {
                 cfg.llm_url = Some(v);
             }
-            // `[index]` overrides the global value per field: an absent key in the
+            // Overrides the global value per field: an absent key in the
             // project table leaves the global (or default) value in place.
             if let Some(pidx) = proj.index {
                 if let Some(v) = pidx.exclude {
@@ -550,20 +477,18 @@ impl Config {
             }
         }
 
-        // ── 3. Environment variable overrides ────────────────────────────────
         if let Ok(v) = std::env::var("INKENTRY_SERVER_URL") {
             cfg.server_url = Some(v);
         }
         if let Ok(v) = std::env::var("INKENTRY_PROJECT_ID") {
             cfg.project_id = Some(v);
         }
-        // `INKENTRY_ORG` outranks the project `org` pin (ADR-074 D2); an explicit
-        // `--org` flag outranks even this, but that is a per-command argument, not
-        // a config field, so it is applied at the call site via [`org_tokens::resolve_session`].
+        // INKENTRY_ORG outranks the project `org` pin; an explicit --org flag
+        // outranks even this, but is applied at the call site (see
+        // `org_tokens::resolve_session`), not here.
         if let Ok(v) = std::env::var(org_tokens::ENV_ORG) {
             cfg.org = Some(v);
         }
-        // Env wins over either config file (personal or project-level).
         if let Ok(v) = std::env::var("INKENTRY_SERVER_CA") {
             cfg.server_ca = Some(v);
         }
@@ -573,10 +498,8 @@ impl Config {
         if let Ok(v) = std::env::var(llm_key::ENV_LLM_MODEL) {
             cfg.llm_model = Some(v);
         }
-        // INKENTRY_MODE overrides the configured sync mode. An
-        // unrecognised value is a hard error — silently falling back to a
-        // default would defeat the deterministic-mode guarantee the Founder
-        // needs to separate OSS-local test runs from cloud dogfood runs.
+        // An unrecognised value is a hard error: silently falling back to a
+        // default would defeat the point of a deterministic mode switch.
         if let Ok(v) = std::env::var("INKENTRY_MODE") {
             let parsed = SyncMode::parse(&v).with_context(|| {
                 format!(
@@ -587,9 +510,8 @@ impl Config {
             cfg.mode = Some(parsed);
         }
 
-        // `cloud = true` targets the hosted cloud at the fixed URL. It is how a
-        // project opts into cloud; `server_url` names a self-hosted team server,
-        // and the two cannot both apply.
+        // `cloud = true` targets the hosted cloud; `server_url` names a
+        // self-hosted team server. The two cannot both apply.
         if cfg.cloud {
             if cfg.server_url.is_some() {
                 anyhow::bail!(
@@ -601,18 +523,16 @@ impl Config {
             cfg.server_url = Some(server_keys::cloud_url());
         }
 
-        // ADR-098 D5/D6: read once here, never from either config file and
-        // never re-derived per command, so every command in this process
-        // shares one declaration.
+        // Read once here, never from a config file and never re-derived per
+        // command, so every command in this process shares one declaration.
         cfg.caller = CallerDeclaration::from_env();
 
         Ok(cfg)
     }
 
-    /// Resolve the effective bearer for a request to `server_url` (ADR-071
-    /// D2), using the host's default secret store. See
-    /// [`Config::bearer_for_with_store`] for the resolution rules and the
-    /// testable, store-injected form.
+    /// Resolve the effective bearer for a request to `server_url`, using the
+    /// host's default secret store. See [`Config::bearer_for_with_store`] for
+    /// the resolution rules.
     pub fn bearer_for(&self, server_url: &str) -> Result<Option<String>> {
         let store = secret_store::default_store(&inkentry_config_dir())?;
         self.bearer_for_with_store(server_url, store.as_ref())
@@ -621,11 +541,11 @@ impl Config {
     /// Same as [`Config::bearer_for`] but with an injected [`SecretStore`]
     /// (tests, and callers that already resolved a store).
     ///
-    /// `INKENTRY_SERVER_KEY` outranks everything and is checked before the store
-    /// is touched at all, so an env-supplied key costs no keychain read. The
-    /// cloud credential is the resolved org's cached session (ADR-074 D3); it and
-    /// the self-hosted server-key kind are then branched on `server_url`'s origin
-    /// by [`server_keys::bearer_for`].
+    /// `INKENTRY_SERVER_KEY` outranks everything and is checked before the
+    /// store is touched at all, so an env-supplied key costs no keychain
+    /// read. The cloud credential is the resolved org's cached session; it
+    /// and the self-hosted server-key kind are then branched on
+    /// `server_url`'s origin by [`server_keys::bearer_for`].
     pub fn bearer_for_with_store(
         &self,
         server_url: &str,
@@ -639,9 +559,9 @@ impl Config {
     }
 
     /// The cached WorkOS session this invocation resolves to — its pinned
-    /// ([`Config::org`]) or the cache's active org (ADR-074 D3) — read from
-    /// `store`. `None` when not logged in for that org. Used by the refresh and
-    /// org-switch paths that need the whole session, not just the bearer.
+    /// ([`Config::org`]) or the cache's active org — read from `store`. `None`
+    /// when not logged in for that org. Used by the refresh and org-switch
+    /// paths that need the whole session, not just the bearer.
     pub fn cloud_session_with_store(&self, store: &dyn SecretStore) -> Result<Option<AuthTokens>> {
         org_tokens::resolve_session(store, self.org.as_deref())
     }
@@ -655,44 +575,43 @@ impl Config {
 }
 
 /// Resolve the host's default [`SecretStore`], honouring [`secret_store::ENV_SECRET_STORE`].
-///
-/// The public entry point for CLI commands that need to read or write the
-/// per-origin key map directly (`inkentry auth set-key` / `list-servers` /
-/// `remove-key`), the same resolution [`Config::load`] and
-/// [`Config::bearer_for`] use internally.
+/// The entry point for CLI commands that need to read or write the per-origin
+/// key map directly (`inkentry auth set-key` / `list-servers` / `remove-key`),
+/// the same resolution [`Config::load`] and [`Config::bearer_for`] use
+/// internally.
 pub fn default_secret_store() -> Result<Box<dyn SecretStore>> {
     secret_store::default_store(&inkentry_config_dir())
 }
 
-/// Cache `tokens` as the active org's WorkOS session (ADR-074 D4) in the host's
-/// default secret store — what `inkentry login` / `inkentry org switch` persist
-/// once a session is minted. `slug` records the human identifier so a repo can
-/// later pin `org = "<slug>"`.
+/// Cache `tokens` as the active org's WorkOS session in the host's default
+/// secret store — what `inkentry login` / `inkentry org switch` persist once a
+/// session is minted. `slug` records the human identifier so a repo can later
+/// pin `org = "<slug>"`.
 pub fn store_active_session(tokens: &AuthTokens, slug: Option<&str>) -> Result<()> {
     let store = default_secret_store()?;
     org_tokens::set_active(store.as_ref(), tokens, slug)
 }
 
-/// Write `tokens` back into their own org's cached slot without moving the active
-/// pointer or touching any sibling org (ADR-074 D3) — the refresh rotation
+/// Write `tokens` back into their own org's cached slot without moving the
+/// active pointer or touching any sibling org — the refresh rotation
 /// persistence, against the host's default secret store.
 pub fn update_org_session(tokens: &AuthTokens) -> Result<()> {
     let store = default_secret_store()?;
     org_tokens::update_in_place(store.as_ref(), tokens)
 }
 
-/// Deserialize a legacy plaintext `[auth]` table out of a raw `config.toml`, or
-/// `None` when the file has none. Used only on the migration path (ADR-074).
+// Deserialize a legacy plaintext [auth] table out of a raw config.toml, or
+// None when the file has none. Used only on the migration path.
 fn legacy_auth_tokens(raw: &str) -> Option<AuthTokens> {
     let table = raw.parse::<toml::Table>().ok()?;
     let auth = table.get("auth")?.clone();
     auth.try_into::<AuthTokens>().ok()
 }
 
-/// Move a legacy `[auth]` session into the org-token cache and strip the table
-/// from `config_path` (ADR-074 migration). The cache write happens first so a
-/// failure to rewrite the file after it leaves the session recoverable and the
-/// next load simply re-runs an idempotent migration.
+// Move a legacy [auth] session into the org-token cache and strip the table
+// from `config_path`. The cache write happens first so a failure to rewrite
+// the file afterward leaves the session recoverable and the next load simply
+// re-runs an idempotent migration.
 fn migrate_legacy_auth(
     store: &dyn SecretStore,
     config_path: &Path,
@@ -702,16 +621,15 @@ fn migrate_legacy_auth(
     persist::remove_auth_tokens_from(config_path)
 }
 
-/// Build the warning line for a loopback `server_url` with no port, or
-/// `None` when no warning applies. Pure so it's unit-testable without
-/// capturing stderr; `Config::validate_with_project` prints the result.
-///
-/// A loopback `server_url` missing a port can never be the auto-discovered
-/// local daemon (which always binds a specific port, [`DEFAULT_SERVER_PORT`]): it is a
-/// near-certain leftover misconfiguration, most often a stale `server_url`
-/// after a team-server value was pared down to a bare host. This is a
-/// warning, not a validation error: unlike a non-loopback plaintext
-/// `http://` URL, it isn't a security problem, just a likely mistake.
+// Warning line for a loopback `server_url` with no port, or `None` when none
+// applies. Pure so it's unit-testable without capturing stderr;
+// `Config::validate_with_project` prints the result.
+//
+// A loopback `server_url` missing a port can never be the auto-discovered
+// local daemon, which always binds a specific port (DEFAULT_SERVER_PORT): a
+// near-certain leftover misconfiguration. This is a warning, not a validation
+// error: unlike a non-loopback plaintext `http://` URL, it isn't a security
+// problem, just a likely mistake.
 fn portless_loopback_server_url_warning(url: &str) -> Option<String> {
     if !is_loopback_url_missing_port(url) {
         return None;
@@ -724,14 +642,10 @@ fn portless_loopback_server_url_warning(url: &str) -> Option<String> {
     ))
 }
 
-/// Build an actionable error for a `config.toml` that failed to parse.
-///
-/// The bare `.context("parsing config.toml")` this replaces was unusable: an
-/// [`anyhow::Error`]'s `Display` shows only its top context, so the file path
-/// and the toml crate's own diagnostic (the offending key/line) never reached
-/// the user. This produces a single self-contained message that names the
-/// **file**, embeds the toml diagnostic that pinpoints the **offending key**,
-/// and states the **remedy**.
+// Actionable error for a config.toml that failed to parse: names the file,
+// embeds the toml diagnostic pinpointing the offending key, and states the
+// remedy. A bare `.context("parsing config.toml")` loses the file path and the
+// toml diagnostic, since `anyhow::Error`'s `Display` shows only its top context.
 fn config_parse_error(path: &Path, source: toml::de::Error) -> anyhow::Error {
     anyhow::anyhow!(
         "could not parse the inkentry config file {path}:\n{source}\n\
@@ -740,13 +654,10 @@ fn config_parse_error(path: &Path, source: toml::de::Error) -> anyhow::Error {
     )
 }
 
-/// Parse the global personal `config.toml`, turning any failure into an
-/// actionable error (see [`config_parse_error`]).
-///
-/// An unrecognised `mode` is singled out so the message names the bad value
-/// and lists the accepted set explicitly — the same guidance as the
-/// `INKENTRY_MODE` env-var error — rather than relying on however serde/toml
-/// happens to render the underlying enum error.
+// Parse the global personal config.toml, turning any failure into an
+// actionable error (see `config_parse_error`). An unrecognised `mode` is
+// singled out so the message names the bad value and lists the accepted set,
+// rather than relying on however serde/toml renders the enum error.
 fn parse_global_config(raw: &str, path: &Path) -> Result<Config> {
     toml::from_str::<Config>(raw).map_err(|source| {
         if let Some(bad) = bad_mode_value(raw) {
@@ -761,8 +672,8 @@ fn parse_global_config(raw: &str, path: &Path) -> Result<Config> {
     })
 }
 
-/// Parse a project-level `.inkentry/config.toml`, with the same `mode`
-/// diagnostic [`parse_global_config`] gives the personal file.
+// Parse a project-level .inkentry/config.toml, with the same `mode`
+// diagnostic as `parse_global_config`.
 fn parse_project_config(raw: &str, path: &Path) -> Result<ProjectConfig> {
     toml::from_str::<ProjectConfig>(raw).map_err(|source| {
         if let Some(bad) = bad_mode_value(raw) {
@@ -777,9 +688,9 @@ fn parse_project_config(raw: &str, path: &Path) -> Result<ProjectConfig> {
     })
 }
 
-/// The keys `.inkentry/config.toml` is read for. Single source of
-/// truth for the merge in [`Config::load_with_store_from`] and for
-/// [`project_config_key_warnings`], so the two cannot drift.
+// The keys `.inkentry/config.toml` is read for. Single source of truth for the
+// merge in `load_with_store_from` and for `project_config_key_warnings`, so
+// the two cannot drift.
 const PROJECT_CONFIG_KEYS: &[&str] = &[
     "server_url",
     "cloud",
@@ -791,19 +702,17 @@ const PROJECT_CONFIG_KEYS: &[&str] = &[
     "index",
 ];
 
-/// Keys the project config has no field for that name a credential (ADR-071
-/// D4). These get their own wording rather than the generic one: the file is
-/// committed, so the value is already in the repository's history and no
-/// change to the client can take it back. Rotation is the only remedy, and a
-/// line at load time is the one thing that reaches the person holding the file.
+// Keys the project config has no field for that name a credential. These get
+// their own wording: the file is committed, so the value is already in the
+// repository's history and no client change can take it back. Rotation is the
+// only remedy.
 const PROJECT_CONFIG_CREDENTIAL_KEYS: &[&str] = &["server_key"];
 
-/// Warnings for keys present in a project `.inkentry/config.toml` that it is
-/// not read for. Pure so the wording is unit-testable without
-/// capturing stderr; [`Config::load_with_store_from`] prints the result.
-///
-/// A malformed file yields nothing: the typed parse alongside this already
-/// fails with a diagnostic that points at the offending line.
+// Warnings for keys present in a project .inkentry/config.toml that it is not
+// read for. Pure so the wording is unit-testable without capturing stderr;
+// `Config::load_with_store_from` prints the result. A malformed file yields
+// nothing: the typed parse alongside this already fails with a diagnostic
+// pointing at the offending line.
 fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
     let Ok(table) = raw.parse::<toml::Table>() else {
         return Vec::new();
@@ -831,12 +740,10 @@ fn project_config_key_warnings(raw: &str, path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Warning for a `server_key` still present in the personal
-/// `~/.config/inkentry/config.toml` (ADR-088 D1). The field is not read, and
-/// the value it names has been sitting in a plaintext file, so rotation is the
-/// remedy and `inkentry auth set-key` is where the replacement goes. Pure so
-/// the wording is unit-testable without capturing stderr;
-/// [`Config::load_with_store_from`] prints the result.
+// Warning for a `server_key` still present in the personal
+// ~/.config/inkentry/config.toml. The field is not read, and the value it
+// names has been sitting in a plaintext file, so rotation is the remedy and
+// `inkentry auth set-key` is where the replacement goes.
 fn personal_config_credential_warning(raw: &str, path: &Path) -> Option<String> {
     let table = raw.parse::<toml::Table>().ok()?;
     table.contains_key("server_key").then(|| {
@@ -849,9 +756,8 @@ fn personal_config_credential_warning(raw: &str, path: &Path) -> Option<String> 
     })
 }
 
-/// If `raw` sets `mode` to a string that is not a valid [`SyncMode`], return
-/// that offending value. Runs only on the error path, so the extra parse is
-/// off the happy path.
+// If `raw` sets `mode` to a string that is not a valid SyncMode, return that
+// value. Runs only on the error path.
 fn bad_mode_value(raw: &str) -> Option<String> {
     let table = raw.parse::<toml::Table>().ok()?;
     let value = table.get("mode")?.as_str()?;
@@ -861,24 +767,21 @@ fn bad_mode_value(raw: &str) -> Option<String> {
 impl Config {
     /// Validate cross-field constraints. Call after `load()`.
     ///
-    /// When `server_url` points to a loopback address (`127.0.0.1`, `localhost`, `::1`),
-    /// `project_id` is allowed to be absent — it will be derived at runtime by
-    /// `Config::resolve_project_id()` (see spelunk-cloud/spelunk#307 / section D of spelunk-cloud/spelunk#303).
+    /// When `server_url` points to a loopback address (`127.0.0.1`,
+    /// `localhost`, `::1`), `project_id` is allowed to be absent — it is
+    /// derived at runtime by [`Config::resolve_project_id`].
     pub fn validate(&self) -> Result<()> {
         self.validate_with_project(self.project_id.is_some())
     }
 
     /// Like [`validate`](Self::validate) but lets the caller assert that a
-    /// project identity is available from a source outside the config — e.g. an
-    /// explicit `inkentry sync --project <slug>` flag.
+    /// project identity is available from a source outside the config — e.g.
+    /// an explicit `inkentry sync --project <slug>` flag.
     ///
-    /// `inkentry sync` supplies its slug lazily (the project is created on first
-    /// sync; ADR / founder decision 2026-07-01), so at config-validation time
-    /// `project_id` may legitimately be `None` while `--project` carries the
-    /// slug. Pass `project_available = true` in that case so the non-loopback
-    /// `server_url` requirement is satisfied without a persisted `project_id`.
-    /// The actual slug resolution (and the halt-with-guidance when *no* slug is
-    /// available) is done by the sync command itself.
+    /// Pass `project_available = true` when the caller resolves its own
+    /// project slug lazily, so the non-loopback `server_url` requirement is
+    /// satisfied without a persisted `project_id`. The actual slug resolution
+    /// is done by the caller.
     pub fn validate_with_project(&self, project_available: bool) -> Result<()> {
         if let Some(url) = &self.server_url
             && !project_available
@@ -898,34 +801,28 @@ impl Config {
         Ok(())
     }
 
-    /// Return the effective project id.
-    ///
-    /// If `project_id` is set in config/env, returns it as-is.  Otherwise
-    /// derives one from `project_root` via `derive_project_id()`.
+    /// The effective project id: `project_id` as set, or one derived from
+    /// `project_root` via [`derive_project_id`].
     pub fn resolve_project_id(&self, project_root: &Path) -> String {
         self.project_id
             .clone()
             .unwrap_or_else(|| derive_project_id(project_root))
     }
 
-    /// Return the URL to use for inference (embeddings + LLM), if any.
+    /// The URL to use for inference (embeddings + LLM), if any.
     ///
     /// Always prefers `inference_url` (set for an auto-discovered loopback
-    /// server, ADR-004). Whether it also falls back to `server_url` depends on
-    /// [`Config::resolve_mode`] (2026-07-23 founder decision, ADR-004
-    /// revision):
+    /// server). Whether it also falls back to `server_url` depends on
+    /// [`Config::resolve_mode`]:
     ///
-    /// - `cloud_first`: falls back to `server_url` — the explicitly-configured
-    ///   remote owns both inference and memory.
-    /// - `local_first` / `offline`: **never** falls back to `server_url`. An
-    ///   explicit `server_url` in these modes is a sync replica only; inference
-    ///   always prefers the local loopback embedder, which `inference_url`
-    ///   alone carries. Returning `server_url` here was the root cause of a
-    ///   past bug: a `local_first` project with a cloud `server_url`
-    ///   sent embed requests to `{server_url}/index/embed`, which 404s (cloud
-    ///   API has no such route) instead of ever reaching the local embedder.
+    /// - `cloud_first`: falls back to `server_url` — the explicit remote owns
+    ///   both inference and memory.
+    /// - `local_first` / `offline`: never falls back to `server_url`. An
+    ///   explicit `server_url` in these modes is a sync replica only;
+    ///   inference always prefers the local loopback embedder, which
+    ///   `inference_url` alone carries.
     ///
-    /// Memory storage selection does **not** use this — see `open_memory_backend`.
+    /// Memory storage selection does not use this — see `open_memory_backend`.
     pub fn resolve_inference_url(&self) -> Option<&str> {
         if self.resolve_mode() == SyncMode::CloudFirst {
             self.inference_url.as_deref().or(self.server_url.as_deref())
@@ -937,16 +834,15 @@ impl Config {
     /// Resolve the effective sync mode.
     ///
     /// Precedence (highest first):
-    /// 1. `INKENTRY_NO_SERVER=1` (or `true`/`yes`) → [`SyncMode::Offline`] — a hard
-    ///    kill-switch that wins over everything else.
+    /// 1. `INKENTRY_NO_SERVER=1` (or `true`/`yes`) → [`SyncMode::Offline`], a
+    ///    hard kill switch that wins over everything else.
     /// 2. An explicit `mode` in config / `INKENTRY_MODE` (already folded into
     ///    `self.mode` by [`Config::load`]).
-    /// 3. Serde default: no `server_url` ⇒ [`SyncMode::Offline`]; `server_url`
-    ///    present ⇒ [`SyncMode::LocalFirst`]. This preserves today's behaviour
-    ///    for configs written before this field existed.
+    /// 3. No `server_url` ⇒ [`SyncMode::Offline`]; `server_url` present ⇒
+    ///    [`SyncMode::LocalFirst`].
     ///
-    /// This is the single source of truth for the mode — backend selection and
-    /// the tier probe both call it rather than reading `self.mode` directly.
+    /// The single source of truth for the mode — backend selection and the
+    /// tier probe both call it rather than reading `self.mode` directly.
     pub fn resolve_mode(&self) -> SyncMode {
         if no_server_env_set() {
             return SyncMode::Offline;
@@ -954,7 +850,6 @@ impl Config {
         if let Some(mode) = self.mode {
             return mode;
         }
-        // With no explicit mode, a configured server_url is a replica.
         if self.server_url.is_some() {
             SyncMode::LocalFirst
         } else {
@@ -968,8 +863,8 @@ mod tests {
     use super::*;
     use secret_store::MemoryStore;
 
-    /// `Config::load` with a fresh in-memory secret store, so credential tests
-    /// never touch the host keychain or `~/.config/inkentry/secrets.toml`.
+    // A fresh in-memory secret store, so credential tests never touch the host
+    // keychain.
     fn load_hermetic(path: &Path) -> Result<Config> {
         load_hermetic_with(path, &MemoryStore::default())
     }
@@ -980,7 +875,6 @@ mod tests {
         Config::load_with_store_from(Some(path), store, None)
     }
 
-    /// Unset all inkentry-related env vars to prevent cross-test contamination.
     fn clear_inkentry_env() {
         unsafe {
             std::env::remove_var("INKENTRY_SERVER_URL");
@@ -999,8 +893,6 @@ mod tests {
         cfg.bearer_for_with_store(server_keys::DEFAULT_CLOUD_URL, store)
             .unwrap()
     }
-
-    // ── resolve_mode defaults ─────────────────────────────────────────────────
 
     #[test]
     #[serial_test::serial]
@@ -1039,7 +931,6 @@ mod tests {
     #[serial_test::serial]
     fn resolve_mode_no_server_env_forces_offline() {
         clear_inkentry_env();
-        // Even an explicit cloud_first mode is overridden by the kill-switch.
         let cfg = Config {
             server_url: Some("http://team.example.com:4655".to_string()),
             project_id: Some("team/proj".to_string()),
@@ -1093,12 +984,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn config_with_pruned_keys_still_parses() {
-        // Guards the forward-compat contract for pre-0.9 config.toml files:
-        // `Config` carries no `deny_unknown_fields`, so keys pruned as dead
-        // (batch_size, models_dir, api_base_url, lmstudio_base_url, plans_dir,
-        // specs_dir, embedding_model) are ignored rather than rejected. Adding
-        // `deny_unknown_fields` would break every existing user config, so
-        // this must stay green.
+        // `Config` has no `deny_unknown_fields`: pruned dead keys are ignored,
+        // not rejected, so old config files keep loading.
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -1118,17 +1005,14 @@ embedding_model = "some-other-model"
         .unwrap();
 
         let cfg = load_hermetic(&config_path).unwrap();
-        // Live keys still resolve; the removed keys are simply dropped.
         assert_eq!(cfg.mode, Some(SyncMode::LocalFirst));
     }
-
-    // ── breaking change: the deprecated memory_server_* keys are gone ───────
 
     #[test]
     #[serial_test::serial]
     fn deprecated_memory_server_keys_are_ignored() {
-        // The old aliases were removed pre-1.0: these keys no longer populate
-        // server_url/server_key and are silently dropped as unknown.
+        // The old aliases no longer populate server_url/server_key and are
+        // silently dropped as unknown.
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -1152,11 +1036,8 @@ project_id = "my-proj"
     #[test]
     #[serial_test::serial]
     fn a_personal_config_server_key_is_read_for_nothing_and_left_where_it_is() {
-        // ADR-088 D1: the plaintext key is not a tier any more. It resolves
-        // nowhere, it is not lifted into the secret store, and the file is not
-        // rewritten behind the user's back (the stderr line, covered by
-        // `a_server_key_in_the_personal_config_is_named_so_it_can_be_rotated`,
-        // is the whole of what happens).
+        // The plaintext key resolves nowhere, is not lifted into the secret
+        // store, and the file is not rewritten behind the user's back.
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -1199,8 +1080,6 @@ project_id = "my-proj"
         assert_eq!(cfg.project_id, None);
     }
 
-    // ── validate() cross-field constraints ───────────────────────────────────
-
     #[test]
     fn validate_fails_when_server_url_set_without_project_id() {
         let cfg = Config {
@@ -1239,8 +1118,6 @@ project_id = "my-proj"
         assert!(cfg.validate().is_ok());
     }
 
-    // ── validate() loopback exemption (spelunk-cloud/spelunk#316) ──────────────────────────
-
     #[test]
     fn validate_passes_for_loopback_url_without_project_id() {
         for url in &[
@@ -1270,13 +1147,8 @@ project_id = "my-proj"
         assert!(cfg.validate().is_err());
     }
 
-    // ── portless_loopback_server_url_warning ─────────────────────────────────
-
     #[test]
     fn portless_loopback_server_url_warning_fires_for_bare_localhost() {
-        // The exact field-observed misconfig: `server_url = "http://localhost"`
-        // with no port, silently accepted and used instead of the healthy
-        // auto-discovered daemon on 4655.
         let warning = portless_loopback_server_url_warning("http://localhost")
             .expect("a portless loopback server_url must produce a warning");
         assert!(warning.contains("http://localhost"), "got: {warning}");
@@ -1307,9 +1179,8 @@ project_id = "my-proj"
 
     #[test]
     fn validate_still_passes_for_a_portless_loopback_server_url() {
-        // The warning is advisory, not a hard error: a portless loopback
-        // server_url is still a *valid* transport (is_loopback_url_missing_port
-        // is orthogonal to validate_transport_url's scheme/security check).
+        // Advisory, not a hard error: a portless loopback server_url is still
+        // a valid transport.
         let cfg = Config {
             server_url: Some("http://localhost".to_string()),
             project_id: None,
@@ -1321,13 +1192,10 @@ project_id = "my-proj"
         );
     }
 
-    // ── validate_with_project() — --project satisfies the requirement ──────────
-
     #[test]
     fn validate_with_project_true_passes_non_loopback_without_project_id() {
-        // First-run `inkentry sync --project <slug>`: a non-loopback server_url is
-        // set, no project_id is persisted, but the caller asserts a project slug
-        // is available from --project. This must pass (previously blocked sync).
+        // First-run `inkentry sync --project <slug>`: no project_id is
+        // persisted, but the caller asserts a slug is available from --project.
         let cfg = Config {
             server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: None,
@@ -1338,7 +1206,6 @@ project_id = "my-proj"
 
     #[test]
     fn validate_with_project_false_still_fails_non_loopback_without_project_id() {
-        // No --project and no configured project_id → the requirement still bites.
         let cfg = Config {
             server_url: Some("http://inkentry.internal:4655".to_string()),
             project_id: None,
@@ -1364,8 +1231,6 @@ project_id = "my-proj"
         assert!(without_id.validate().is_err());
     }
 
-    // ── resolve_project_id ───────────────────────────────────────────────────
-
     #[test]
     fn resolve_project_id_returns_set_value_when_present() {
         let tmp = TempDir::new().unwrap();
@@ -1381,11 +1246,9 @@ project_id = "my-proj"
         let tmp = TempDir::new().unwrap();
         let cfg = Config::default();
         let id = cfg.resolve_project_id(tmp.path());
-        // Should be the local/ fallback since tmp dir is not a git repo.
+        // The local/ fallback, since tmp dir is not a git repo.
         assert!(id.starts_with("local/"), "got {id}");
     }
-
-    // ── resolve_inference_url (ADR-004) ──────────────────────────────────────
 
     #[test]
     fn resolve_inference_url_prefers_inference_url() {
@@ -1401,9 +1264,8 @@ project_id = "my-proj"
     #[test]
     #[serial_test::serial]
     fn resolve_inference_url_falls_back_to_server_url_in_cloud_first() {
-        // Explicit team/cloud server in `cloud_first` mode: only server_url
-        // set; it serves inference too (founder decision 2026-07-23 — the
-        // ONLY mode where a configured server_url owns inference).
+        // Explicit team/cloud server in cloud_first mode: only server_url set;
+        // it serves inference too, the only mode where that happens.
         clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
@@ -1420,12 +1282,9 @@ project_id = "my-proj"
     #[test]
     #[serial_test::serial]
     fn resolve_inference_url_local_first_never_falls_back_to_server_url() {
-        // Regression guard: `local_first` (the default
-        // mode once `server_url` is set, with no explicit `mode` key) must
-        // NOT fall back to `server_url` for inference — that is exactly the
-        // routing that sent embed requests to a cloud `server_url`'s
-        // nonexistent `/index/embed` route and produced the 404s. An
-        // explicit `server_url` here is a sync replica only.
+        // local_first (the default once server_url is set) must never fall
+        // back to server_url for inference; an explicit server_url there is a
+        // sync replica only.
         clear_inkentry_env();
         let cfg = Config {
             inference_url: None,
@@ -1459,10 +1318,9 @@ project_id = "my-proj"
     #[test]
     #[serial_test::serial]
     fn resolve_inference_url_inference_url_wins_over_server_url() {
-        // Defensive: if both are somehow set, inference must use the dedicated
-        // inference_url (memory backend selection still uses server_url).
-        // Holds in every mode; exercised here in cloud_first, the one mode
-        // where server_url would otherwise be a candidate too.
+        // Defensive: if both are set, inference_url wins; exercised in
+        // cloud_first, the one mode where server_url would otherwise be a
+        // candidate too.
         clear_inkentry_env();
         let cfg = Config {
             inference_url: Some("http://127.0.0.1:4655".to_string()),
@@ -1472,10 +1330,6 @@ project_id = "my-proj"
         };
         assert_eq!(cfg.resolve_inference_url(), Some("http://127.0.0.1:4655"));
     }
-
-    // ── env var overrides ────────────────────────────────────────────────────
-    //
-    // Env var tests are #[serial] because they mutate process-global state.
 
     #[test]
     #[serial_test::serial]
@@ -1564,9 +1418,9 @@ project_id = "my-proj"
     #[test]
     #[serial_test::serial]
     fn env_inkentry_memory_server_url_is_ignored() {
-        // Breaking change: the deprecated INKENTRY_MEMORY_SERVER_URL env fallback
-        // was removed. Setting it alone must NOT populate server_url. (Not in
-        // clear_inkentry_env's unset list since nothing reads it — clean up here.)
+        // The removed INKENTRY_MEMORY_SERVER_URL alias must not populate
+        // server_url. Not in clear_inkentry_env's unset list since nothing
+        // reads it; cleared here instead.
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
@@ -1581,8 +1435,6 @@ project_id = "my-proj"
         }
         assert_eq!(cfg.server_url, None);
     }
-
-    // ── .inkentry/config.toml project-level merge ─────────────────────────────
 
     #[test]
     #[serial_test::serial]
@@ -1616,11 +1468,9 @@ project_id = "team/proj"
         assert_eq!(cfg.project_id, Some("team/proj".to_string()));
     }
 
-    // ── `mode` in the project config ──────────────────────────────────────────
-
     // Write a personal config and a project `.inkentry/config.toml`, then load
     // with project discovery anchored at the project root. `None` writes no
-    // project file at all, which is not the same as writing an empty one.
+    // project file at all — not the same as an empty one.
     fn load_layered(personal: &str, project: Option<&str>) -> (TempDir, Result<Config>) {
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("global.toml");
@@ -1642,8 +1492,6 @@ project_id = "team/proj"
     #[test]
     #[serial_test::serial]
     fn project_config_mode_takes_effect() {
-        // The defect: a team writes server_url, project_id and mode together in
-        // the checked-in config and gets local_first anyway, with no warning.
         clear_inkentry_env();
         let (_tmp, cfg) = load_layered(
             "",
@@ -1658,8 +1506,6 @@ mode = "cloud_first"
         assert_eq!(cfg.mode, Some(SyncMode::CloudFirst));
         assert_eq!(cfg.resolve_mode(), SyncMode::CloudFirst);
     }
-
-    // ── org pin precedence (ADR-074 D2) ─────────────────────────────────────
 
     #[test]
     #[serial_test::serial]
@@ -1679,8 +1525,8 @@ mode = "cloud_first"
         assert_eq!(cfg.unwrap().org.as_deref(), Some("from-env"));
     }
 
-    // The lower half of D2's precedence: a pinned org resolves over the cache's
-    // `active` pointer, and with no pin the active session is used.
+    // A pinned org resolves over the cache's `active` pointer; with no pin,
+    // active is used.
     #[test]
     #[serial_test::serial]
     fn bearer_resolves_the_pinned_org_over_active() {
@@ -1717,12 +1563,11 @@ mode = "cloud_first"
     #[test]
     #[serial_test::serial]
     fn mode_precedence_across_personal_project_and_env() {
-        // Every combination of the three sources, asserted as one table so a
-        // change to any single layer cannot pass by agreeing with the others.
-        // The project column is three-valued: `None` is no file at all,
-        // `Some("")` a file that sets no `mode`, and that middle case is what
-        // proves a project config does not blank a personal value merely by
-        // existing.
+        // Every combination of the three sources, as one table so a change to
+        // any single layer can't pass by agreeing with the others. The
+        // project column is three-valued: `None` is no file, `Some("")` a
+        // file that sets no `mode` — proving a project config's mere
+        // presence doesn't blank a personal value.
         const OFF: Option<SyncMode> = Some(SyncMode::Offline);
         const LOCAL: Option<SyncMode> = Some(SyncMode::LocalFirst);
         const CLOUD: Option<SyncMode> = Some(SyncMode::CloudFirst);
@@ -1796,8 +1641,6 @@ mode = "cloud_first"
         assert_eq!(resolved, SyncMode::Offline);
     }
 
-    // ── keys the project config does not read ─────────────────────────────────
-
     fn project_warnings(raw: &str) -> Vec<String> {
         project_config_key_warnings(raw, Path::new("/repo/.inkentry/config.toml"))
     }
@@ -1827,9 +1670,9 @@ mode = "cloud_first"
 
     #[test]
     fn a_credential_in_the_project_config_is_named_so_it_can_be_rotated() {
-        // The file is committed, so the value is already in the repository's
-        // history. Dropping it silently leaves the only person who can rotate
-        // it unaware there is anything to rotate.
+        // The file is committed, so the value is already in the repo's
+        // history; dropping it silently would leave nobody aware there's
+        // something to rotate.
         let warnings = project_warnings(
             "server_url = \"https://team.example\"\nserver_key = \"team-shared-key\"\n",
         )
@@ -1843,8 +1686,6 @@ mode = "cloud_first"
             "`server_key` must say to rotate it, got: {warnings}"
         );
     }
-
-    // ── keys the personal config does not read ───────────────────────────────
 
     fn personal_warning(raw: &str) -> Option<String> {
         personal_config_credential_warning(raw, Path::new("/home/dev/.config/inkentry/config.toml"))
@@ -1959,8 +1800,6 @@ mode = "cloud_first"
         assert!(err.contains(SyncMode::valid_values()), "got: {err}");
     }
 
-    // ── legacy [auth] migration into the org-token cache (ADR-074) ──────────────
-
     fn sample_tokens() -> AuthTokens {
         AuthTokens {
             access_token: "at-sample".to_string(),
@@ -1971,8 +1810,8 @@ mode = "cloud_first"
         }
     }
 
-    // Seed a legacy plaintext `[auth]` table into a config file — the shape the
-    // pre-ADR-074 client wrote, and what the migration path lifts out.
+    // Seed a legacy plaintext [auth] table — the shape the migration path
+    // lifts out.
     fn write_legacy_auth(path: &Path, tokens: &AuthTokens) {
         let mut doc = if path.exists() {
             std::fs::read_to_string(path)
@@ -1994,8 +1833,6 @@ mode = "cloud_first"
             .contains_key("auth")
     }
 
-    // A legacy `[auth]` table is migrated into the cache on load, resolves as the
-    // cloud bearer, and is stripped from the file (no indefinite dual-read).
     #[test]
     #[serial_test::serial]
     fn legacy_auth_is_migrated_into_the_cache_and_stripped_from_disk() {
@@ -2007,24 +1844,19 @@ mode = "cloud_first"
         let store = MemoryStore::default();
         let cfg = load_hermetic_with(&path, &store).unwrap();
 
-        // Resolves as the cloud bearer, now sourced from the cache.
         assert_eq!(cloud_bearer(&cfg, &store).as_deref(), Some("at-sample"));
         let session = org_tokens::resolve_session(&store, None).unwrap().unwrap();
         assert_eq!(session.refresh_token, "rt-sample");
         assert_eq!(session.org_id, "org_sample");
-        // The plaintext table is gone from the file.
         assert!(
             !file_has_auth_table(&path),
             "migration must strip the [auth] table from disk"
         );
     }
 
-    // ── migration tolerates a partial/hand-trimmed [auth] table ─────────────────
-    //
-    // Hand-editing the config is a documented workflow and a login without an org
-    // leaves `org_id` empty, so a trimmed `[auth]` table must migrate rather than
-    // brick the load. Each field is tolerated when absent (missing token ⇒ not
-    // logged in, missing expiry ⇒ expired, missing org ⇒ no scoping).
+    // Hand-editing the config is documented, and a login without an org
+    // leaves org_id empty, so a trimmed [auth] table must migrate rather than
+    // brick the load.
 
     #[test]
     #[serial_test::serial]
@@ -2103,9 +1935,8 @@ mode = "cloud_first"
         );
     }
 
-    // The reported failure mode: an otherwise-fine config with a bare `[auth]`
-    // header (every field trimmed away) must still load rather than error, and
-    // the empty table is stripped.
+    // A bare [auth] header (every field trimmed away) must still load rather
+    // than error, and the empty table is stripped.
     #[test]
     #[serial_test::serial]
     fn bare_auth_header_does_not_brick_load() {
@@ -2125,10 +1956,8 @@ mode = "cloud_first"
         );
     }
 
-    // ── actionable parse-error messages ────────────────────────────────────────
-
-    // An unrecognised `mode` names the bad value AND lists the valid modes AND
-    // the file, mirroring the `INKENTRY_MODE` env-var message.
+    // An unrecognised `mode` names the bad value and lists the valid modes and
+    // the file, mirroring the INKENTRY_MODE env-var message.
     #[test]
     #[serial_test::serial]
     fn invalid_mode_value_error_names_value_modes_and_file() {
@@ -2170,7 +1999,6 @@ mode = "cloud_first"
         );
     }
 
-    /// `INKENTRY_SERVER_KEY` (CI) overrides a migrated cloud session.
     #[test]
     #[serial_test::serial]
     fn env_server_key_wins_over_cloud_session() {
@@ -2194,9 +2022,8 @@ mode = "cloud_first"
         );
     }
 
-    // The cloud session (cloud kind) and a stored per-origin key (self-hosted
-    // kind) resolve independently by target origin (ADR-071 D2): they do not
-    // compete in a single flat precedence chain.
+    // The cloud session and a stored per-origin key resolve independently by
+    // target origin: they don't compete in one flat precedence chain.
     #[test]
     #[serial_test::serial]
     fn cloud_session_and_per_origin_key_resolve_by_kind_not_precedence() {
@@ -2271,7 +2098,6 @@ mode = "cloud_first"
         );
     }
 
-    /// Expiry uses a 30 s skew margin.
     #[test]
     fn auth_tokens_expiry_with_skew() {
         let t = sample_tokens(); // expires_at = 4_000_000_000
@@ -2283,7 +2109,7 @@ mode = "cloud_first"
     #[test]
     #[serial_test::serial]
     fn project_level_config_ignores_deprecated_memory_server_url() {
-        // Breaking change: the removed alias no longer resolves in project config.
+        // The removed alias no longer resolves in project config.
         clear_inkentry_env();
         let tmp = TempDir::new().unwrap();
         let proj_dir = tmp.path().join("project");
@@ -2345,13 +2171,11 @@ project_id = "team/new"
         assert_eq!(cfg.project_id, Some("team/new".to_string()));
     }
 
-    // ── keychain secret store migration / precedence ─────────────────────────
-    //
-    // These exercise the credential paths through an injected `MemoryStore`, so
-    // no real keychain or Secret Service daemon is required (CI-safe).
+    // Exercised through an injected MemoryStore, so no real keychain or Secret
+    // Service daemon is required.
 
-    // A credential stored via `auth set-key` lands ONLY in the secret store
-    // and never in `config.toml`: the core acceptance criterion.
+    // A credential stored via `auth set-key` lands only in the secret store,
+    // never in config.toml.
     #[test]
     #[serial_test::serial]
     fn stored_credential_is_in_store_not_in_config_file() {
@@ -2380,7 +2204,6 @@ project_id = "team/new"
         );
     }
 
-    /// Env-var precedence: `INKENTRY_SERVER_KEY` wins over a stored credential.
     #[test]
     #[serial_test::serial]
     fn env_server_key_wins_over_store() {
@@ -2404,9 +2227,8 @@ project_id = "team/new"
         unsafe { std::env::remove_var("INKENTRY_SERVER_KEY") };
     }
 
-    // ADR-071 D4: a `server_key` line in the project-level, checked-in
-    // `.inkentry/config.toml` is read for nothing at any tier, and the
-    // committed file is left exactly as it is.
+    // A `server_key` line in the checked-in project config is read for
+    // nothing at any tier, and the file is left exactly as it is.
     #[test]
     #[serial_test::serial]
     fn project_config_server_key_field_is_read_for_nothing() {
@@ -2449,7 +2271,7 @@ project_id = "team/new"
         );
         // Never touches the personal secret store.
         assert_eq!(store.get(server_keys::KEY_SERVER_KEYS_MAP).unwrap(), None);
-        // The checked-in file itself is left untouched (D4 does not rewrite it).
+        // The checked-in file itself is left untouched.
         assert!(
             std::fs::read_to_string(&proj_cfg)
                 .unwrap()
@@ -2457,9 +2279,8 @@ project_id = "team/new"
         );
     }
 
-    /// No-keychain fallback contract: the file-backed store stands in for a
-    /// keychain when none exists, so `bearer_for` resolves the credential
-    /// identically. This mirrors what `default_store` does on a headless host.
+    // The file-backed store stands in for a keychain on a headless host;
+    // `default_store` falls back to it the same way.
     #[test]
     #[serial_test::serial]
     fn file_store_fallback_resolves_credential_like_keychain() {
@@ -2481,8 +2302,6 @@ project_id = "team/new"
         );
     }
 
-    /// No credential anywhere (empty config, empty store, no env) ⇒ no bearer,
-    /// and no hard failure — the headless/unauthenticated path stays graceful.
     #[test]
     #[serial_test::serial]
     fn no_credential_anywhere_yields_none_without_error() {
@@ -2500,11 +2319,8 @@ project_id = "team/new"
         );
     }
 
-    /// A `SecretStore` test double that counts `get` calls per key, wrapping a
-    /// `MemoryStore`. Used to assert that `load_with_store` never reads the
-    /// personal store when a higher-precedence credential (env var or
-    /// `[auth]` token) already resolves the bearer — a value that would only
-    /// be discarded must never cost a keychain round-trip on real hosts.
+    // Counts `get` calls per key, wrapping a MemoryStore. Used to assert that
+    // a higher-precedence credential never costs a keychain round-trip.
     #[derive(Default)]
     struct CountingStore {
         inner: MemoryStore,
@@ -2531,9 +2347,8 @@ project_id = "team/new"
         }
     }
 
-    /// `INKENTRY_SERVER_KEY` outranks the personal store, so the store must
-    /// never be asked for `server_key` at all — not just overridden after the
-    /// fact. Regression test for the redundant-keychain-read fix.
+    // The store must never be asked for server_key at all, not just
+    // overridden after the fact.
     #[test]
     #[serial_test::serial]
     fn env_server_key_skips_store_read_entirely() {
@@ -2559,11 +2374,9 @@ project_id = "team/new"
         );
     }
 
-    /// The cloud session now lives in the secret store (ADR-074), so resolving
-    /// the cloud bearer necessarily reads the store — the opposite of the
-    /// pre-ADR-074 invariant, where the token sat in the config file. The env-var
-    /// escape hatch is what still skips the store entirely (see
-    /// `env_server_key_skips_store_read_entirely`).
+    // The cloud session lives in the secret store, so resolving the cloud
+    // bearer necessarily reads it. The env-var escape hatch still skips the
+    // store entirely (see env_server_key_skips_store_read_entirely).
     #[test]
     #[serial_test::serial]
     fn cloud_bearer_resolves_from_the_store_after_migration() {
@@ -2587,20 +2400,10 @@ project_id = "team/new"
         );
     }
 
-    // ── llm_model_configured (pre-parse help gate) ────────────────────────────
-    //
-    // `llm_model_configured` takes no `SecretStore` at all — its signature is
-    // `fn(path: Option<&Path>) -> bool`, so there is no store to inject or
-    // instrument. Reading its body confirms it only calls
-    // `std::fs::read_to_string` + `toml::from_str`, with no reference to
-    // `secret_store`/`SecretStore`/`default_store` anywhere: it is
-    // structurally incapable of constructing a secret store. These tests
-    // cover its actual file-parsing contract, which is what the CLI's
-    // pre-parse help gate depends on now that it no longer calls the full
-    // `Config::load`.
+    // `llm_model_configured` takes no SecretStore — its signature is
+    // `fn(path: Option<&Path>) -> bool` — so it is structurally incapable of
+    // touching the secret store. These tests cover its file-parsing contract.
 
-    /// Resolves purely from the config file on disk: present + non-empty
-    /// `llm_model` ⇒ true, absent ⇒ false, missing file ⇒ false (no error).
     #[test]
     fn llm_model_configured_reads_only_the_config_file() {
         let tmp = TempDir::new().unwrap();
@@ -2620,7 +2423,6 @@ project_id = "team/new"
     #[test]
     #[serial_test::serial]
     fn server_ca_env_overrides_config() {
-        // Env `INKENTRY_SERVER_CA` wins over the personal/global config value.
         let tmp = TempDir::new().unwrap();
         let global = tmp.path().join("config.toml");
         std::fs::write(&global, "server_ca = \"/from/config.pem\"\n").unwrap();
@@ -2644,8 +2446,6 @@ project_id = "team/new"
 
         assert_eq!(cfg.server_ca.as_deref(), Some("/from/config.pem"));
     }
-
-    // ── llm_url / llm_model ──────────────────────────────────────────────────
 
     #[test]
     #[serial_test::serial]
@@ -2715,7 +2515,6 @@ project_id = "team/new"
     #[test]
     fn the_llm_credential_does_not_follow_its_url_into_the_project_config() {
         // The endpoint is a project-wide fact; the key presented to it is not.
-        // A committed credential is in the repository's history for good.
         let warnings =
             project_warnings("llm_url = \"http://gateway.example:1234\"\nllm_key = \"sk-live\"\n")
                 .join("\n");
@@ -2852,9 +2651,8 @@ project_id = "team/new"
         );
     }
 
-    // Broader than the guard above, which only names the LLM key: the ordinary
-    // load path reads no secret at all, so any store read added later goes red
-    // here rather than only a credential-shaped one.
+    // Broader than the guard above: the ordinary load path reads no secret at
+    // all, so any read added later goes red here too.
     #[test]
     #[serial_test::serial]
     fn config_load_reads_nothing_at_all_from_an_injected_store() {
@@ -2888,11 +2686,9 @@ project_id = "team/new"
         );
     }
 
-    // `Config::load` resolves its own store, so the RecordingStore guards above
-    // cannot observe that path at all: a store read added there would go
-    // unnoticed, and on macOS would be a keychain authorization on every
-    // command. An unparseable secrets.toml makes any read fail whatever the
-    // backend, so loading successfully is the proof.
+    // `Config::load` resolves its own store, so the RecordingStore guards
+    // above can't observe that path. An unparseable secrets.toml makes any
+    // read fail regardless of backend, so loading successfully is the proof.
     #[test]
     #[serial_test::serial]
     fn the_public_load_entry_point_reads_no_secret_either() {

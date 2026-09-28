@@ -1,28 +1,26 @@
-//! Per-organization WorkOS session cache (ADR-074 D1/D3/D4).
+//! Per-organization WorkOS session cache.
 //!
 //! The WorkOS session — a short-lived access token and a long-lived, rotating
 //! refresh token — lives in the secret store rather than on disk: any process
 //! running as the user can read `~/.config`, and the common leak is a
-//! `~/.config` synced into a dotfiles repo. This is the WorkOS analogue of
-//! ADR-071's `server_keys` arrangement: one secret-store entry ([`KEY_ORG_TOKENS`])
-//! whose payload is a JSON object holding one session per organization, keyed by
-//! WorkOS org id, plus an `active` pointer naming the org an invocation uses when
-//! nothing else selects one (ADR-074 D2's lowest-precedence tier). One entry,
-//! not one per org, so granting keychain access once covers every organization.
+//! `~/.config` synced into a dotfiles repo. One secret-store entry
+//! ([`KEY_ORG_TOKENS`]) holds a JSON object with one session per organization,
+//! keyed by WorkOS org id, plus an `active` pointer naming the org an
+//! invocation uses when nothing else selects one. One entry, not one per org,
+//! so granting keychain access once covers every organization.
 //!
 //! The [`SecretStore`] stays an opaque get/set/delete; the JSON shape and the
-//! org-keying live here in the config layer (ADR-074 D1).
+//! org-keying live here in the config layer.
 //!
 //! Each cached session records the `cloud_origin` it was issued for, so the
-//! access token is released only to that origin (ADR-095). The ADR-074 example
-//! predates ADR-095 and omits that field; it is stored here because dropping it
-//! would let a cloud-URL override redirect a stored token to a host it was never
+//! access token is released only to that origin: dropping that field would
+//! let a cloud-URL override redirect a stored token to a host it was never
 //! issued for.
 //!
-//! Resolution and refresh never leave one org's entry (ADR-074 D3): an expired
-//! session is refreshed with its own refresh token, scoped to its own org, and
-//! written back to its own slot, so a long-running agent scoped to org A is
-//! never disturbed by a switch to org B elsewhere on the same machine.
+//! Resolution and refresh never leave one org's entry: an expired session is
+//! refreshed with its own refresh token, scoped to its own org, and written
+//! back to its own slot, so a long-running agent scoped to org A is never
+//! disturbed by a switch to org B elsewhere on the same machine.
 
 use std::collections::BTreeMap;
 
@@ -32,23 +30,23 @@ use serde::{Deserialize, Serialize};
 use super::AuthTokens;
 use super::secret_store::SecretStore;
 
-/// Secret-store entry name holding every organization's WorkOS session
-/// (ADR-074 D1). One entry, not one per org, for the same reason ADR-071 D1
-/// gives: a distinct keychain item per org would re-prompt for access on every
-/// new client, and one item, once granted, covers all of them.
+/// Secret-store entry name holding every organization's WorkOS session. One
+/// entry, not one per org: a distinct keychain item per org would re-prompt
+/// for access on every new client, while one item, once granted, covers all
+/// of them.
 pub const KEY_ORG_TOKENS: &str = "org_tokens";
 
-/// Environment variable that pins the organization for one invocation, above the
-/// project `org` and below an explicit `--org` flag (ADR-074 D2).
+/// Environment variable that pins the organization for one invocation, above
+/// the project `org` and below an explicit `--org` flag.
 pub const ENV_ORG: &str = "INKENTRY_ORG";
 
-/// One organization's cached WorkOS session — the value in the D1 map, keyed by
-/// WorkOS org id (so the org id itself is not stored inside the value).
-///
-/// `slug` records the human identifier the session was last onboarded or
-/// switched under, so a repo can pin `org = "<slug>"` (ADR-074 D2) and be
-/// resolved offline, and so `org list` (D4) can print it. It is optional: a
-/// session onboarded by a path that never saw a slug has none.
+// One organization's cached WorkOS session — the value in the map, keyed by
+// WorkOS org id (so the org id itself is not stored inside the value).
+//
+// `slug` records the human identifier the session was last onboarded or
+// switched under, so a repo can pin `org = "<slug>"` and be resolved offline,
+// and so `org list` can print it. Optional: a session onboarded by a path
+// that never saw a slug has none.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 struct OrgSession {
     #[serde(default)]
@@ -63,11 +61,10 @@ struct OrgSession {
     slug: Option<String>,
 }
 
-/// The whole cache payload behind [`KEY_ORG_TOKENS`] (ADR-074 D1).
-///
-/// `active` names the org an invocation with no higher-precedence pin resolves
-/// to (D2's fourth tier). `orgs` maps WorkOS org id to that org's session. A
-/// `BTreeMap` keeps the on-disk JSON key order stable across writes.
+// The whole cache payload behind KEY_ORG_TOKENS. `active` names the org an
+// invocation with no higher-precedence pin resolves to. `orgs` maps WorkOS
+// org id to that org's session. A BTreeMap keeps the on-disk JSON key order
+// stable across writes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Cache {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,8 +73,7 @@ struct Cache {
     orgs: BTreeMap<String, OrgSession>,
 }
 
-/// One cached organization, for `org list` (ADR-074 D4). Never carries token
-/// material.
+/// One cached organization, for `org list`. Never carries token material.
 pub struct CachedOrg {
     /// WorkOS org id (the cache key).
     pub org_id: String,
@@ -96,13 +92,11 @@ fn read_cache(store: &dyn SecretStore) -> Result<Cache> {
     }
 }
 
-/// Persist `cache`, or delete the entry outright when it holds nothing (no
-/// active pointer and no orgs).
-///
-/// The empty case is handled here rather than in each caller so a fully
-/// logged-out user never leaves an entry holding `{}` behind: in a keychain UI,
-/// which shows names and not values, that reads as a credential that was never
-/// removed (mirrors ADR-090 D5 for `server_keys`).
+// Persist `cache`, or delete the entry outright when it holds nothing (no
+// active pointer and no orgs). Handled here rather than in each caller so a
+// fully logged-out user never leaves an entry holding `{}` behind: in a
+// keychain UI, which shows names not values, that reads as a credential that
+// was never removed.
 fn write_cache(store: &dyn SecretStore, cache: &Cache) -> Result<()> {
     if cache.active.is_none() && cache.orgs.is_empty() {
         return store.delete(KEY_ORG_TOKENS);
@@ -131,10 +125,10 @@ fn session_from(tokens: &AuthTokens, slug: Option<String>) -> OrgSession {
     }
 }
 
-/// The cache key an identifier names, if the cache holds one: a WorkOS org id
-/// used directly as a key, or a stored slug matched to its key. A local org
-/// UUID has no offline mapping (slugs are stored, UUIDs are not), so it resolves
-/// only when it happens to equal a key.
+// The cache key an identifier names, if the cache holds one: a WorkOS org id
+// used directly as a key, or a stored slug matched to its key. A local org
+// UUID has no offline mapping (slugs are stored, UUIDs are not), so it
+// resolves only when it happens to equal a key.
 fn key_for(cache: &Cache, ident: &str) -> Option<String> {
     if cache.orgs.contains_key(ident) {
         return Some(ident.to_string());
@@ -146,11 +140,11 @@ fn key_for(cache: &Cache, ident: &str) -> Option<String> {
         .map(|(key, _)| key.clone())
 }
 
-/// The org id this invocation resolves to: the `pin` (a WorkOS org id, an exact
-/// cache key, or a stored slug) when given, else the cache's `active`
-/// (ADR-074 D2). A pin that resolves to no cached entry returns `None` and never
-/// falls back to `active`, so a config-pinned org is never silently served
-/// another org's token.
+// The org id this invocation resolves to: the `pin` (a WorkOS org id, an
+// exact cache key, or a stored slug) when given, else the cache's `active`.
+// A pin that resolves to no cached entry returns `None` and never falls back
+// to `active`, so a config-pinned org is never silently served another org's
+// token.
 fn resolve_org_id_in(cache: &Cache, pin: Option<&str>) -> Option<String> {
     match pin {
         Some(ident) => key_for(cache, ident),
@@ -158,8 +152,8 @@ fn resolve_org_id_in(cache: &Cache, pin: Option<&str>) -> Option<String> {
     }
 }
 
-/// The cached WorkOS session this invocation resolves to (its pinned or active
-/// org), or `None` when not logged in for that org (ADR-074 D3.1).
+/// The cached WorkOS session this invocation resolves to (its pinned or
+/// active org), or `None` when not logged in for that org.
 pub fn resolve_session(store: &dyn SecretStore, pin: Option<&str>) -> Result<Option<AuthTokens>> {
     let cache = read_cache(store)?;
     Ok(resolve_org_id_in(&cache, pin).and_then(|id| {
@@ -170,9 +164,9 @@ pub fn resolve_session(store: &dyn SecretStore, pin: Option<&str>) -> Result<Opt
     }))
 }
 
-/// Store `tokens` under their org id and point `active` at it — what `login` and
-/// `org switch` do once a session is minted (ADR-074 D4). `slug` records the
-/// human identifier; when `None`, any slug already stored for this org is kept.
+/// Store `tokens` under their org id and point `active` at it — what `login`
+/// and `org switch` do once a session is minted. `slug` records the human
+/// identifier; when `None`, any slug already stored for this org is kept.
 pub fn set_active(store: &dyn SecretStore, tokens: &AuthTokens, slug: Option<&str>) -> Result<()> {
     let mut cache = read_cache(store)?;
     let slug = slug
@@ -186,9 +180,9 @@ pub fn set_active(store: &dyn SecretStore, tokens: &AuthTokens, slug: Option<&st
 }
 
 /// Update `tokens.org_id`'s slot in place, preserving `active` and the stored
-/// slug — the refresh write-back (ADR-074 D3.3). It never reads or writes a
-/// sibling org's slot and never moves the active pointer, so rotating org A's
-/// single-use token leaves org B untouched.
+/// slug — the refresh write-back. It never reads or writes a sibling org's
+/// slot and never moves the active pointer, so rotating org A's single-use
+/// token leaves org B untouched.
 pub fn update_in_place(store: &dyn SecretStore, tokens: &AuthTokens) -> Result<()> {
     let mut cache = read_cache(store)?;
     let slug = cache.orgs.get(&tokens.org_id).and_then(|s| s.slug.clone());
@@ -199,15 +193,15 @@ pub fn update_in_place(store: &dyn SecretStore, tokens: &AuthTokens) -> Result<(
 }
 
 /// Whether `ident` (a WorkOS org id or a stored slug) already has a cached
-/// entry. `org switch` uses this to stay local when the target is cached
-/// (ADR-074 D4), calling WorkOS only to onboard an org with no entry.
+/// entry. `org switch` uses this to stay local when the target is cached,
+/// calling WorkOS only to onboard an org with no entry.
 pub fn contains(store: &dyn SecretStore, ident: &str) -> Result<bool> {
     Ok(key_for(&read_cache(store)?, ident).is_some())
 }
 
-/// Point `active` at `ident`'s already-cached entry with no token change — the
-/// local `org switch` (ADR-074 D4). Returns `false` when the org is not cached,
-/// so the caller falls through to the network onboarding path.
+/// Point `active` at `ident`'s already-cached entry with no token change —
+/// the local `org switch`. Returns `false` when the org is not cached, so the
+/// caller falls through to the network onboarding path.
 pub fn set_active_local(store: &dyn SecretStore, ident: &str) -> Result<bool> {
     let mut cache = read_cache(store)?;
     let Some(key) = key_for(&cache, ident) else {
@@ -223,8 +217,8 @@ pub fn active(store: &dyn SecretStore) -> Result<Option<String>> {
     Ok(read_cache(store)?.active)
 }
 
-/// Every cached org for `org list` (ADR-074 D4), sorted by org id, with the
-/// active one flagged. Never returns token material.
+/// Every cached org for `org list`, sorted by org id, with the active one
+/// flagged. Never returns token material.
 pub fn list(store: &dyn SecretStore) -> Result<Vec<CachedOrg>> {
     let cache = read_cache(store)?;
     let active = cache.active.clone();
@@ -245,8 +239,8 @@ pub fn count(store: &dyn SecretStore) -> Result<usize> {
     Ok(read_cache(store)?.orgs.len())
 }
 
-/// Clear every cached org (bare `inkentry logout`, ADR-074 D4). Returns how many
-/// orgs were cleared.
+/// Clear every cached org (bare `inkentry logout`). Returns how many orgs
+/// were cleared.
 pub fn clear_all(store: &dyn SecretStore) -> Result<usize> {
     let removed = read_cache(store)?.orgs.len();
     store
@@ -255,9 +249,9 @@ pub fn clear_all(store: &dyn SecretStore) -> Result<usize> {
     Ok(removed)
 }
 
-/// Clear only `ident`'s entry (`inkentry logout --org`, ADR-074 D4), leaving
-/// every other cached org's session intact. Clears `active` when it named the
-/// removed org, so nothing points at a session that no longer exists. Returns
+/// Clear only `ident`'s entry (`inkentry logout --org`), leaving every other
+/// cached org's session intact. Clears `active` when it named the removed
+/// org, so nothing points at a session that no longer exists. Returns
 /// whether an entry was removed.
 pub fn clear_org(store: &dyn SecretStore, ident: &str) -> Result<bool> {
     let mut cache = read_cache(store)?;
@@ -273,11 +267,10 @@ pub fn clear_org(store: &dyn SecretStore, ident: &str) -> Result<bool> {
 }
 
 /// Lift a legacy plaintext `[auth]` session into the cache the first time a
-/// config with one is loaded (ADR-074 migration): store it under its own org id
-/// and, when the cache has no active pointer yet, make it active. An org already
-/// present in the cache is left as-is — the cache is authoritative once
-/// populated, so a re-run after a partial migration never clobbers a fresher
-/// session.
+/// config with one is loaded: store it under its own org id and, when the
+/// cache has no active pointer yet, make it active. An org already present in
+/// the cache is left as-is — the cache is authoritative once populated, so a
+/// re-run after a partial migration never clobbers a fresher session.
 pub fn migrate_legacy(store: &dyn SecretStore, legacy: &AuthTokens) -> Result<()> {
     let mut cache = read_cache(store)?;
     cache
@@ -304,8 +297,6 @@ mod tests {
             cloud_origin: "https://api.inkentry.com".to_string(),
         }
     }
-
-    // ── set_active / resolve_session ────────────────────────────────────────
 
     #[test]
     fn set_active_stores_session_and_points_active_at_it() {
@@ -378,8 +369,6 @@ mod tests {
         assert!(resolve_session(&store, Some("org_a")).unwrap().is_none());
     }
 
-    // ── per-org isolation on refresh (ADR-074 D3) ───────────────────────────
-
     #[test]
     fn update_in_place_rotates_one_org_and_leaves_the_sibling_and_active_untouched() {
         let store = MemoryStore::default();
@@ -416,8 +405,6 @@ mod tests {
         );
     }
 
-    // ── org switch: local when cached (ADR-074 D4) ──────────────────────────
-
     #[test]
     fn set_active_local_points_at_a_cached_org_without_a_token_change() {
         let store = MemoryStore::default();
@@ -444,8 +431,6 @@ mod tests {
         // active is unchanged.
         assert_eq!(active(&store).unwrap().as_deref(), Some("org_a"));
     }
-
-    // ── logout: all and one (ADR-074 D4) ────────────────────────────────────
 
     #[test]
     fn clear_all_removes_every_org_and_reports_the_count() {
@@ -501,8 +486,6 @@ mod tests {
         assert_eq!(count(&store).unwrap(), 1);
     }
 
-    // ── org list prints no token material (ADR-074 D4) ──────────────────────
-
     #[test]
     fn list_returns_orgs_with_active_flagged_and_no_token_material() {
         let store = MemoryStore::default();
@@ -530,8 +513,6 @@ mod tests {
         assert!(!rendered.contains("at-b"));
         assert!(!rendered.contains("rt-b"));
     }
-
-    // ── migration (ADR-074) ─────────────────────────────────────────────────
 
     #[test]
     fn migrate_legacy_stores_the_session_and_makes_it_active() {
@@ -562,8 +543,6 @@ mod tests {
         );
         assert_eq!(active(&store).unwrap().as_deref(), Some("org_b"));
     }
-
-    // ── D1 on-the-wire JSON shape ───────────────────────────────────────────
 
     #[test]
     fn cache_payload_shape_is_active_plus_per_org_sessions() {
