@@ -1,41 +1,37 @@
-//! Client-side handling for a server that sheds a write with `429`.
-//!
-//! Every memory write that makes the server embed — `POST /memory` and
-//! `POST /memory/batch` — runs under the server's bounded embed admission
-//! queue, so a write can come back `429 Too Many Requests` with a
-//! `Retry-After` instead of being queued. That condition is transient and
-//! self-clearing: the permit is released the moment the in-flight embed
-//! finishes. Failing the caller on the first one would abort a whole
-//! `inkentry sync` over a few hundred milliseconds of server contention.
-//!
-//! Mirrors the `429` handling `inkentry index`'s embed phase already applies
-//! to `POST /index/embed`, with a far smaller retry budget: a sync is one
-//! interactive command a user is waiting on, not a long background pass, so it
-//! must give up and report rather than sit indefinitely on a saturated server.
+// Client-side handling for a server that sheds a write with `429`.
+//
+// Every memory write that makes the server embed runs under the server's
+// bounded embed admission queue, so a write can come back `429 Too Many
+// Requests` with a `Retry-After` instead of being queued. That condition is
+// transient and self-clearing: the permit is released the moment the
+// in-flight embed finishes. Failing the caller on the first one would abort
+// a whole `inkentry sync` over a few hundred milliseconds of server
+// contention. A sync is interactive, though, so its retry budget is far
+// smaller than `inkentry index`'s embed phase gives itself: it must give up
+// and report rather than sit indefinitely on a saturated server.
 
 use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-/// Wait before retrying a `429` that carries no usable `Retry-After`. Matches
-/// the server's own `EMBED_BUSY_RETRY_AFTER_SECS`, so a server that omits the
-/// header is retried on the cadence it would have asked for anyway.
+// Wait before retrying a `429` that carries no usable `Retry-After`. Matches
+// the server's own default, so a server that omits the header is retried on
+// the cadence it would have asked for anyway.
 const DEFAULT_SATURATION_RETRY: Duration = Duration::from_secs(5);
 
-/// Total sends per request, the first attempt included — so three retries.
-/// Deliberately small: the admission queue drains in embed-time, so a write
-/// that is still shed on the fourth try is contending with something that will
-/// not clear in the seconds an interactive `sync` may spend waiting.
+// Total sends per request, the first attempt included. Deliberately small:
+// the admission queue drains in embed-time, so a write still shed on the
+// fourth try is contending with something that will not clear in the
+// seconds an interactive `sync` may spend waiting.
 const SATURATION_ATTEMPTS: usize = 4;
 
-/// Ceiling on the cumulative sleeping one request may do across its retries.
-/// [`SATURATION_ATTEMPTS`] alone bounds nothing in wall-clock terms, since the
-/// wait comes from a header the server controls; this bounds the case of a
-/// server asking for a wait far longer than a user would sit through.
+// Ceiling on the cumulative sleeping one request may do across its retries.
+// `SATURATION_ATTEMPTS` alone bounds nothing in wall-clock terms, since the
+// wait comes from a header the server controls.
 const SATURATION_WAIT_BUDGET: Duration = Duration::from_secs(60);
 
-/// How hard a request retries a `429` before it becomes a caller-visible error.
+// How hard a request retries a `429` before it becomes a caller-visible error.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RetryPolicy {
     attempts: usize,
@@ -54,8 +50,8 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// A policy with the waits collapsed, so a test can exercise the retry
-    /// path without spending the production cadence in real sleeps.
+    // A policy with the waits collapsed, so a test can exercise the retry
+    // path without spending the production cadence in real sleeps.
     #[cfg(test)]
     pub(super) fn immediate(attempts: usize) -> Self {
         Self {
@@ -66,15 +62,10 @@ impl RetryPolicy {
     }
 }
 
-/// Send `request`, retrying while the server answers `429`.
-///
-/// `send` is called afresh per attempt because a `reqwest` request is consumed
-/// by sending it; the closure rebuilds and re-serialises the same body.
-/// Anything other than a `429` — success, or any other error status — is
-/// returned to the caller untouched, so status handling stays where it was.
-///
-/// `label` names the request in both the retry notice and the give-up error
-/// (`"POST /memory/batch"`).
+// Sends `request`, retrying while the server answers `429`. `send` is called
+// afresh per attempt because a `reqwest` request is consumed by sending it;
+// the closure rebuilds and re-serialises the same body. Anything other than
+// a `429` is returned to the caller untouched.
 pub(super) async fn send_retrying_while_shed<F, Fut>(
     policy: &RetryPolicy,
     label: &str,
@@ -112,9 +103,9 @@ where
     }
 }
 
-/// The response's `Retry-After` as whole seconds. `None` when the header is
-/// absent or is not a plain integer — inkentry servers only ever send
-/// delta-seconds, never the HTTP-date form the RFC also allows.
+// The response's `Retry-After` as whole seconds. `None` when the header is
+// absent or is not a plain integer — inkentry servers only ever send
+// delta-seconds, never the HTTP-date form the RFC also allows.
 fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
     resp.headers()
         .get(reqwest::header::RETRY_AFTER)

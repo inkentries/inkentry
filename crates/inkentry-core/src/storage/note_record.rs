@@ -48,31 +48,29 @@ pub struct NoteRecord {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub superseded_by_entity_id: Option<String>,
     /// This entry's outgoing `relates_to` and `contradicts` edges, each naming
-    /// its target by `entity_id`. Outgoing only: `memory_edges` is directed, so
-    /// carrying each edge once from its source reconstructs the table exactly,
+    /// its target by `entity_id`. Outgoing only: the edge table is directed,
+    /// so carrying each edge once from its source reconstructs it exactly,
     /// and a second copy on the target would be a second place to disagree.
     /// `supersedes` never appears here; it stays on `superseded_by_entity_id`.
-    /// Additive under `schema_version` 1: an older reader ignores the key.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub edges: Vec<CarriedEdge>,
-    /// Who or what produced this entry (ADR-098 D6). Optional and additive:
-    /// absent means no caller declared an actor, read as `unknown`; an older
-    /// blob predating this field reads the same way, via the reader's
-    /// unknown-key tolerance.
+    /// Who or what produced this entry. Optional and additive: absent means
+    /// no caller declared an actor, read as `unknown`; an older blob
+    /// predating this field reads the same way, via the reader's unknown-key
+    /// tolerance.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub origin: Option<super::origin::Origin>,
-    /// ADR-099 D3: `Some("anchor")` marks this record as an anchor attachment
-    /// rather than an ordinary write or state-update — the record still
-    /// carries `base`'s full content (kind/title/body/etc, via
-    /// `entity_update_record`) so an old reader that does not know this field
-    /// folds it exactly as any other copy. `None` (every record before this
-    /// ADR) means "not an anchor record".
+    /// `Some("anchor")` marks this record as an anchor attachment rather than
+    /// an ordinary write or state-update — the record still carries the
+    /// base entry's full content (kind/title/body/etc), so an old reader
+    /// that does not know this field folds it exactly as any other copy.
+    /// `None` means "not an anchor record".
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub op: Option<String>,
     /// `git patch-id --stable` of the commit this anchor record is attached
     /// to, computed once at claim time and stored rather than recomputed
-    /// later (D3: the original commit object may be gone from a clone by
-    /// then). `None` for a merge commit, which carries no patch-id, or when
+    /// later, since the original commit object may be gone from a clone by
+    /// then. `None` for a merge commit, which carries no patch-id, or when
     /// `op` is not `"anchor"`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub patch_id: Option<String>,
@@ -108,8 +106,7 @@ impl NoteRecord {
 
 /// The git-notes carrier's record id, as the opaque token it is.
 ///
-/// ADR-059 froze the carrier format, and its `id` field is an integer that the
-/// carrier itself documents as non-identity. It is rendered rather than
+/// The carrier's `id` field is a non-identity integer, rendered rather than
 /// reinterpreted: minting a UUID here would produce a different one on every
 /// read, since the carrier has nowhere to persist it.
 pub fn carrier_token(id: i64) -> NoteId {
@@ -185,7 +182,6 @@ mod tests {
         }
     }
 
-    /// (d) A record with a `remote_id` serializes the key and round-trips.
     #[test]
     fn note_record_round_trips_with_remote_id() {
         let mut rec = base_record();
@@ -198,22 +194,18 @@ mod tests {
         assert_eq!(back.remote_id, rec.remote_id);
     }
 
-    /// (d) A record without a `remote_id` omits the key, and an old blob that
-    /// never had the key still deserializes (reads as `None`).
     #[test]
     fn note_record_round_trips_without_remote_id() {
         let rec = base_record();
         let json = serde_json::to_string(&rec).expect("serialize");
         assert!(!json.contains("remote_id"), "key omitted when None: {json}");
 
-        // Old blob shape: no remote_id key at all.
         let old = r#"{"schema_version":1,"id":7,"kind":"note","title":"t","body":"b","tags":[],"linked_files":[],"created_at":1,"status":"active"}"#;
         let back: NoteRecord = serde_json::from_str(old).expect("deserialize old blob");
         assert_eq!(back.remote_id, None, "absent key reads as None");
         assert_eq!(back.id, 7);
     }
 
-    /// A record carrying both identity fields round-trips.
     #[test]
     fn note_record_round_trips_with_entity_id() {
         let mut rec = base_record();
@@ -229,8 +221,6 @@ mod tests {
         assert_eq!(back.superseded_by_entity_id, rec.superseded_by_entity_id);
     }
 
-    /// The edge list is omitted when empty and carries `(kind, target
-    /// entity_id)` pairs verbatim when not.
     #[test]
     fn edges_are_omitted_when_empty_and_round_trip_when_present() {
         let rec = base_record();
@@ -250,8 +240,6 @@ mod tests {
         assert_eq!(back.edges, rec.edges);
     }
 
-    /// Every record written before edges existed has no `edges` key; it must
-    /// read exactly as before, with an empty list.
     #[test]
     fn a_blob_without_the_edges_key_reads_as_no_edges() {
         let old = r#"{"schema_version":1,"id":7,"kind":"note","title":"t","body":"b","tags":[],"linked_files":[],"created_at":1,"status":"active","entity_id":"e7"}"#;
@@ -260,9 +248,8 @@ mod tests {
         assert_eq!(back.schema_version, 1);
     }
 
-    /// The reader side of the additive contract: a key this build does not
-    /// know is ignored, which is what lets a field be added under the same
-    /// `schema_version` without every older reader refusing the note.
+    // An unknown key is ignored, letting a field be added without a
+    // `schema_version` bump.
     #[test]
     fn an_unknown_extra_key_is_ignored() {
         let future = r#"{"schema_version":1,"id":7,"kind":"note","title":"t","body":"b","tags":[],"linked_files":[],"created_at":1,"status":"active","edges":[{"kind":"relates_to","to_entity_id":"e1"}],"not_yet_invented":{"x":1}}"#;
@@ -274,7 +261,6 @@ mod tests {
         );
     }
 
-    /// (D6) A record carrying an origin serializes it and round-trips.
     #[test]
     fn note_record_round_trips_with_origin() {
         use crate::config::caller::ActorKind;
@@ -293,10 +279,6 @@ mod tests {
         assert_eq!(back.origin, rec.origin);
     }
 
-    /// (D6) A record without an origin omits the key, and an old blob that
-    /// never had the key still deserializes (reads as `None` — the same
-    /// unknown-key tolerance every other additive field in this carrier
-    /// relies on).
     #[test]
     fn note_record_round_trips_without_origin() {
         let rec = base_record();
@@ -311,8 +293,6 @@ mod tests {
         assert_eq!(back.origin, None, "absent key reads as None");
     }
 
-    /// origin plays no part in identity: two records that differ only in
-    /// origin resolve to the same entity_id.
     #[test]
     fn origin_does_not_change_entity_id() {
         use crate::config::caller::ActorKind;
@@ -331,8 +311,6 @@ mod tests {
         );
     }
 
-    /// A legacy blob with no `entity_id` key recomputes the same id a fresh
-    /// writer would have stored — absence is fully recoverable.
     #[test]
     fn legacy_blob_recomputes_entity_id() {
         let legacy = r#"{"schema_version":1,"id":1,"kind":"decision","title":"HTTP layer","body":"use axum","tags":["x"],"linked_files":["a.rs"],"created_at":123,"status":"active"}"#;
@@ -344,7 +322,6 @@ mod tests {
             "cc308a1ca5d849191e1710cc9def561377a9ef37e4fcb895e5aa3b1896e43603"
         );
 
-        // A record that stores the field resolves to the identical value.
         let mut fresh = base_record();
         fresh.kind = "decision".to_string();
         fresh.title = "HTTP layer".to_string();
@@ -353,9 +330,8 @@ mod tests {
         assert_eq!(fresh.resolve_entity_id(), back.resolve_entity_id());
     }
 
-    /// The bug this fixes: a re-`init` renumbers the rowid, so two different
-    /// entries can carry the same `id` in one notes ref. Their `entity_id`s
-    /// must still distinguish them.
+    // A re-`init` renumbers the rowid, so two different entries can carry the
+    // same `id` in one notes ref; their `entity_id`s must still distinguish them.
     #[test]
     fn colliding_rowids_have_distinct_entity_ids() {
         let mut first = base_record();

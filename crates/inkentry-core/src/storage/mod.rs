@@ -8,7 +8,6 @@ pub mod note_record;
 pub mod origin;
 pub mod remote;
 
-// Storage sub-modules: each holds impl blocks for Database or standalone types.
 mod chunks;
 mod conventions;
 mod files;
@@ -60,13 +59,12 @@ pub use stats::{DriftCandidate, EmbedTokenStats, IndexStats, LanguageStat, Stale
 use anyhow::Result;
 use std::path::Path;
 
-/// Cap a freshly-opened connection's page count when
-/// `INKENTRY_TEST_MAX_PAGE_COUNT` is set, so the crash-safety integration
-/// suite can force a deterministic `SQLITE_FULL` on the next write without a
-/// size-capped filesystem or a custom VFS. `max_page_count` is a
-/// per-connection setting (SQLite does not persist it to the file), so this
-/// must run on every `open`, not once ever. A no-op for every real user: the
-/// var is never set outside the test harness.
+// Caps a freshly-opened connection's page count when
+// `INKENTRY_TEST_MAX_PAGE_COUNT` is set, so the crash-safety integration
+// suite can force a deterministic `SQLITE_FULL` on the next write without a
+// size-capped filesystem or a custom VFS. `max_page_count` is a
+// per-connection setting, not persisted to the file, so this must run on
+// every `open`. A no-op for every real user.
 pub(crate) fn apply_test_page_cap(conn: &rusqlite::Connection) -> Result<()> {
     if let Ok(raw) = std::env::var("INKENTRY_TEST_MAX_PAGE_COUNT")
         && let Ok(n) = raw.parse::<i64>()
@@ -76,12 +74,12 @@ pub(crate) fn apply_test_page_cap(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-/// Block until killed, iff `INKENTRY_TEST_CRASH_POINT` names this exact point.
-/// Used by the crash-safety integration suite to land a real `SIGKILL` inside
-/// a chosen write window instead of racing wall-clock timing: the child
-/// prints a marker then blocks on a stdin read the harness never satisfies,
-/// so the harness can block on the marker line and then kill with the
-/// process provably parked at that window. A no-op for every real user.
+// Blocks until killed, iff `INKENTRY_TEST_CRASH_POINT` names this exact
+// point. Used by the crash-safety integration suite to land a real `SIGKILL`
+// inside a chosen write window instead of racing wall-clock timing: the
+// child prints a marker then blocks on a stdin read the harness never
+// satisfies, so the harness can kill it with the process provably parked at
+// that window. A no-op for every real user.
 pub(crate) fn pause_for_crash_test(point: &str) {
     let Ok(target) = std::env::var("INKENTRY_TEST_CRASH_POINT") else {
         return;
@@ -95,23 +93,10 @@ pub(crate) fn pause_for_crash_test(point: &str) {
     let _ = std::io::Read::read(&mut std::io::stdin(), &mut buf);
 }
 
-/// Escape a user-supplied string for use in a SQLite LIKE pattern.
-///
-/// SQLite's LIKE operator treats `%`, `_`, and the chosen escape character as
-/// special. If the caller appends or prepends wildcards around an
-/// otherwise-literal value (e.g. `'%' || ?1` for suffix matching), any `%` or
-/// `_` that appears inside the user's string would be misinterpreted as
-/// additional wildcards, causing over-matching.
-///
-/// This function escapes `\`, `%`, and `_` with a backslash so that
-/// `LIKE … ESCAPE '\'` treats them as literal characters.
-///
-/// # Example
-/// ```ignore
-/// let pat = format!("%{}", escape_like(user_path));
-/// stmt.query(rusqlite::params![pat])?;
-/// // SQL: WHERE path LIKE ?1 ESCAPE '\'
-/// ```
+// Escapes `\`, `%`, and `_` in a user-supplied string with a backslash, so a
+// caller building a SQLite `LIKE … ESCAPE '\'` pattern around it (e.g. `'%' ||
+// ?1` for suffix matching) doesn't have a literal `%` or `_` in the value
+// misread as an additional wildcard.
 pub(super) fn escape_like(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -126,10 +111,8 @@ pub(super) fn escape_like(s: &str) -> String {
     out
 }
 
-/// Open the appropriate memory backend.
+/// Open the appropriate memory backend: one canonical store per project.
 ///
-/// Selection rule (ADR-004 — one canonical store per project; the
-/// resolved sync mode replaces the implicit "is `server_url` set" branch):
 /// 1. `backend_override = Some("git-notes")` → `GitNotesBackend`.
 /// 2. [`SyncMode::CloudFirst`](crate::config::SyncMode::CloudFirst) **and** an
 ///    explicit `server_url` → `RemoteMemoryBackend`. `cloud_first` is the
@@ -143,8 +126,8 @@ pub(super) fn escape_like(s: &str) -> String {
 ///
 /// This function keys on the resolved mode plus `cfg.server_url`. An
 /// auto-discovered loopback server is inference-only and routes through
-/// `cfg.inference_url` instead (see `Tier::effective_config`), so it never
-/// diverts memory CRUD away from the project's local `memory.db`.
+/// `cfg.inference_url` instead, so it never diverts memory CRUD away from
+/// the project's local `memory.db`.
 pub async fn open_memory_backend(
     cfg: &crate::config::Config,
     mem_path: &Path,
@@ -159,15 +142,10 @@ pub async fn open_memory_backend(
     // the cloud; `offline` and `local_first` resolve to the local store.
     let route_remote = cfg.resolve_mode() == SyncMode::CloudFirst;
     if let Some(url) = cfg.server_url.as_ref().filter(|_| route_remote) {
-        // The cloud-routing path attaches
-        // `Authorization: Bearer {server_key}` to every memory request
-        // (`RemoteMemoryBackend::authed`). A non-loopback plaintext `http://`
-        // `server_url` would send that bearer in the clear. Reject it here: the
-        // single production choke point that dominates that exposure, before any
-        // request is built, mirroring `ServerInferenceClient::from_config`.
-        // Loopback `http://` and any `https://` still pass; there is no opt-out
-        // (Johan, 2026-07-02). A library returns the error rather than
-        // `process::exit`; the CLI surfaces it and exits non-zero.
+        // The cloud-routing path attaches a bearer to every memory request;
+        // reject a non-loopback plaintext `http://` `server_url` here, the
+        // one choke point that catches it before any request is built. A
+        // library returns the error rather than exiting; the CLI surfaces it.
         crate::config::validate_transport_url(url).map_err(anyhow::Error::msg)?;
         return open_remote_memory_backend(cfg, url).await;
     }
@@ -176,34 +154,26 @@ pub async fn open_memory_backend(
     )?)))
 }
 
-/// Build the cloud-routing memory backend (REST client) for an already
-/// **transport-validated** `url`, using the host's default secret store to
-/// resolve the bearer (see [`open_remote_memory_backend_with_store`] for the
-/// store-injectable seam tests use).
-///
-/// Split out of [`open_memory_backend`] as the test seam for the cloud-routing
-/// branch. Production reaches it only after `open_memory_backend` has enforced
-/// [`crate::config::validate_transport_url`], so a non-loopback plaintext
-/// `http://` url is rejected before any bearer is sent.
+// Builds the cloud-routing memory backend (REST client) for an already
+// transport-validated `url`, using the host's default secret store to
+// resolve the bearer. Production reaches it only after `open_memory_backend`
+// has enforced `validate_transport_url`, so a non-loopback plaintext `http://`
+// url is rejected before any bearer is sent.
 async fn open_remote_memory_backend(
     cfg: &crate::config::Config,
     url: &str,
 ) -> Result<Box<dyn MemoryBackend + Send>> {
-    // Bearer resolved per-origin (ADR-071 D2): `url` may be a self-hosted team
-    // server (`cloud_first` mode routes any configured `server_url`, not only
-    // the cloud one), and a cloud login must never leak to a self-hosted
-    // server, so the origin decides which credential kind is consulted. An
-    // installed `SessionRefresher` re-resolves it, rotated, before first use.
+    // Bearer resolved per-origin: `url` may be a self-hosted team server
+    // (`cloud_first` routes any configured `server_url`, not only the cloud
+    // one), and a cloud login must never leak to a self-hosted server, so the
+    // origin decides which credential kind is consulted.
     let bearer = cfg.bearer_for(url)?;
     open_remote_memory_backend_with_bearer(cfg, url, bearer).await
 }
 
-/// Same as [`open_remote_memory_backend`] but with an injected
-/// [`SecretStore`](crate::config::secret_store::SecretStore), so tests can
-/// drive the cloud-routing seam without touching the real default secret
-/// store. Tests that must drive the non-loopback branch against a
-/// plaintext-http mock (wiremock addressed via `0.0.0.0`) call this directly to
-/// bypass the transport guard the production entry point enforces.
+// Same as `open_remote_memory_backend` but with an injected secret store, so
+// tests can drive the cloud-routing seam without the real default store, and
+// bypass the transport guard to reach a plaintext-http mock.
 #[cfg(test)]
 async fn open_remote_memory_backend_with_store(
     cfg: &crate::config::Config,
@@ -235,16 +205,12 @@ async fn open_remote_memory_backend_with_bearer(
     .timeout(std::time::Duration::from_secs(30))
     .build()?;
 
-    // `project_id` goes on the wire exactly as configured, slug or UUID.
-    // Both peers accept either: the OSS team server stores whatever string it
-    // is given as `projects.slug`, and cloud-api's project path params resolve
-    // a slug or a UUID (cloud-api 66fd265). `CloudSyncClient` has always passed
-    // it through this way.
+    // `project_id` goes on the wire exactly as configured, slug or UUID; both
+    // peers accept either.
     //
-    // Which memory dialect that peer speaks is settled once, here, rather than
-    // branched on inside every CRUD method. Any uncertain probe resolves to the
-    // team-server dialect, which is what this function returned unconditionally
-    // before the probe existed.
+    // Which memory dialect that peer speaks is settled once, here, rather
+    // than branched on inside every CRUD method. An uncertain probe resolves
+    // to the team-server dialect.
     let bearer = match remote::installed_refresher() {
         Some(refresher) => remote::Bearer::renewable(bearer, refresher, cfg, url),
         None => remote::Bearer::fixed(bearer),
@@ -265,13 +231,9 @@ async fn open_remote_memory_backend_with_bearer(
     }
 }
 
-// ── Tests for escape_like ─────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::escape_like;
-
-    // Bug #406 — unit tests for the LIKE-metacharacter escape helper.
 
     #[test]
     fn percent_is_escaped() {
@@ -285,7 +247,6 @@ mod tests {
 
     #[test]
     fn backslash_is_escaped_first() {
-        // The backslash escape character itself must be doubled.
         assert_eq!(escape_like("foo\\bar"), "foo\\\\bar");
     }
 
@@ -296,7 +257,6 @@ mod tests {
 
     #[test]
     fn all_three_metacharacters_combined() {
-        // "a%b_c\d" → "a\%b\_c\\d"
         assert_eq!(escape_like("a%b_c\\d"), "a\\%b\\_c\\\\d");
     }
 
@@ -305,8 +265,6 @@ mod tests {
         assert_eq!(escape_like(""), "");
     }
 }
-
-// ── Backend selection honours the resolved sync mode ──────────────────────────
 
 #[cfg(test)]
 mod backend_selection_tests;
