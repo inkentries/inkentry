@@ -1,32 +1,31 @@
-//! Cross-process lock serializing the `refs/notes/inkentry` read-modify-write.
-//!
-//! Git's own ref locking cannot help here: the loss happens at the content
-//! layer, not the ref layer, and racing writers each hold the ref lock
-//! legitimately in turn. See issue #185 and ADR-069 (D6).
-//!
-//! Contention policy is the caller's, per ADR-069 D8: a writer that is handed
-//! [`LockAttempt::Contended`] must fail, never write unlocked; idempotent
-//! callers (the read-path merge, publish) skip and report.
+// Cross-process lock serializing the refs/notes/inkentry read-modify-write.
+//
+// Git's own ref locking cannot help here: the loss happens at the content
+// layer, not the ref layer, and racing writers each hold the ref lock
+// legitimately in turn.
+//
+// Contention policy is the caller's: a writer handed LockAttempt::Contended
+// must fail, never write unlocked; idempotent callers (the read-path merge,
+// publish) skip and report.
 
 use anyhow::Result;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Lock file name, created inside the git **common** dir.
+// Lock file name, created inside the git common dir.
 const LOCK_FILE_NAME: &str = "inkentry-notes.lock";
 
 /// Bounded wait before giving up on a contended lock.
 ///
 /// The OS releases an advisory lock when its holder exits, so there is no
-/// crashed-holder case to time out for. Reaching this means either a stuck
-/// live holder or a queue of legitimate writers on a slow machine (observed
-/// on CI: 8 serialized appends exceed 5s when process spawns are expensive).
-/// Either way expiry is reported to the caller, never silently downgraded
-/// (ADR-069 D8); a failed writer retries, a wedged holder is a bug.
+/// crashed-holder case to time out for: reaching this budget means either a
+/// stuck live holder or a queue of legitimate writers on a slow machine.
+/// Either way expiry is reported to the caller, never silently downgraded; a
+/// failed writer retries, a wedged holder is a bug.
 pub const LOCK_WAIT_BUDGET: Duration = Duration::from_secs(5);
 
-/// Poll interval while the lock is held by another process.
+// Poll interval while the lock is held by another process.
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Holds the notes lock for its lifetime; the lock is released on drop.
@@ -44,11 +43,11 @@ impl NotesLock {
     }
 }
 
-/// One attempt to take the notes lock (ADR-069 D8).
+/// One attempt to take the notes lock.
 ///
 /// The non-acquired arms are distinct because they demand different answers
-/// from a writer: `Contended` means serialization exists and someone else has
-/// it, so writing anyway is the #185 data loss; `Unusable` means serialization
+/// from a writer: `Contended` means serialization exists and someone else
+/// has it, so writing anyway risks data loss; `Unusable` means serialization
 /// cannot exist here at all.
 #[must_use]
 #[derive(Debug)]
@@ -64,11 +63,11 @@ pub enum LockAttempt {
     Unusable { path: PathBuf, reason: String },
 }
 
-/// Resolve the lock path: `<git-common-dir>/inkentry-notes.lock`.
-///
-/// The **common** dir, not the per-worktree git dir: worktrees share one
-/// `refs/notes/inkentry`, so a per-worktree lock would fail to serialize the
-/// actual contenders.
+// Resolves the lock path: <git-common-dir>/inkentry-notes.lock.
+//
+// The common dir, not the per-worktree git dir: worktrees share one
+// refs/notes/inkentry, so a per-worktree lock would fail to serialize the
+// actual contenders.
 async fn notes_lock_path(git_root: Option<&Path>) -> Result<PathBuf> {
     // `--path-format=absolute` (git >= 2.31) answers absolute from a main and
     // a linked worktree alike, so every contender computes one identity.
@@ -103,13 +102,12 @@ async fn notes_lock_path(git_root: Option<&Path>) -> Result<PathBuf> {
     Ok(common_dir.join(LOCK_FILE_NAME))
 }
 
-/// Join a relative `--git-common-dir` answer against the caller's `git_root`.
-///
-/// A `None` git_root must never be resolved against the ambient process CWD:
-/// that CWD can change between the git subprocess that produced `raw` and
-/// this call, on any thread, in any process running inkentry-cli's test
-/// binary or the CLI itself. Erroring here forces every caller to supply an
-/// explicit root instead of racing.
+// Joins a relative --git-common-dir answer against the caller's git_root.
+//
+// A None git_root must never be resolved against the ambient process CWD:
+// that CWD can change between the git subprocess that produced raw and this
+// call, on any thread, in any process. Erroring here forces every caller to
+// supply an explicit root instead of racing.
 fn resolve_relative_common_dir(raw: &Path, git_root: Option<&Path>) -> Result<PathBuf> {
     match git_root {
         Some(root) => Ok(root.join(raw)),
@@ -122,8 +120,8 @@ fn resolve_relative_common_dir(raw: &Path, git_root: Option<&Path>) -> Result<Pa
     }
 }
 
-/// The single absolute path in `rev-parse --path-format=absolute` output, or
-/// `None` when the output is an echoed unknown flag (git < 2.31).
+// The single absolute path in `rev-parse --path-format=absolute` output, or
+// None when the output is an echoed unknown flag (git < 2.31).
 fn parse_absolute_dir(out: &str) -> Option<PathBuf> {
     let mut lines = out.lines().filter(|l| !l.trim().is_empty());
     let first = lines.next()?.trim();
@@ -185,9 +183,9 @@ pub async fn lock_notes(git_root: Option<&Path>) -> Result<LockAttempt> {
 mod tests {
     use super::*;
 
-    /// git < 2.31 echoes the unknown flag back with exit 0, so the fallback
-    /// trigger is the output shape, not the exit code. Trusting the exit code
-    /// would aim the lock at a path spelled `--path-format=absolute`.
+    // git < 2.31 echoes the unknown flag back with exit 0, so the fallback
+    // trigger is the output shape, not the exit code. Trusting the exit code
+    // would aim the lock at a path spelled `--path-format=absolute`.
     #[test]
     fn echoed_flag_output_is_rejected() {
         assert_eq!(parse_absolute_dir("--path-format=absolute\n.git\n"), None);

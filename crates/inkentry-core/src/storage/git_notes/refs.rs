@@ -1,16 +1,15 @@
-//! In-process reads of inkentry's notes-ref OIDs — no git subprocess.
-//!
-//! ADR-077 D2 gates the read-path merge and import on whether the notes refs
-//! moved since the last import, and that gate must be cheap: the steady-state
-//! read has to spawn zero git subprocesses. ADR-069 D5 measured the same trade
-//! for the merge — a `git rev-parse` guard costs ~8ms, an in-process read of
-//! the ref file ~17µs — and chose the in-process read.
-//!
-//! So this resolves the git common dir by walking up for `.git` (a dir, or a
-//! `gitdir:` pointer file for a linked worktree) and reads the ref straight
-//! from the loose ref file or `packed-refs`. Notes refs live in the **common**
-//! dir, shared across worktrees, which is where the merge and the fetch write
-//! them.
+// In-process reads of inkentry's notes-ref OIDs — no git subprocess.
+//
+// The read-path merge and import gate on whether the notes refs moved since
+// the last import, and that gate must be cheap: the steady-state read has
+// to spawn zero git subprocesses. A `git rev-parse` guard costs ~8ms, an
+// in-process read of the ref file ~17µs.
+//
+// So this resolves the git common dir by walking up for `.git` (a dir, or
+// a `gitdir:` pointer file for a linked worktree) and reads the ref
+// straight from the loose ref file or `packed-refs`. Notes refs live in the
+// common dir, shared across worktrees, which is where the merge and the
+// fetch write them.
 
 use std::path::{Path, PathBuf};
 
@@ -18,11 +17,11 @@ use super::{INKENTRY_NOTES_REF, INKENTRY_TRACKING_REF};
 
 /// The git ref store for a repo, resolved in-process for reading notes-ref OIDs.
 pub struct NotesRefs {
-    /// Directory holding `refs/` and `packed-refs`, shared across worktrees.
+    // Directory holding refs/ and packed-refs, shared across worktrees.
     common_dir: PathBuf,
-    /// The worktree directory that contained `.git`, for callers that need a
-    /// `git_root` to hand the subprocess helpers (merge / import). `None` when
-    /// `start` sat directly on a bare/`.git` directory with no parent worktree.
+    // The worktree directory that contained .git, for callers that need a
+    // git_root to hand the subprocess helpers (merge / import). None when
+    // start sat directly on a bare/.git directory with no parent worktree.
     workdir: Option<PathBuf>,
 }
 
@@ -90,7 +89,7 @@ impl NotesRefs {
         self.read_ref(INKENTRY_TRACKING_REF)
     }
 
-    /// Read one ref's OID: a loose ref file first, then `packed-refs`.
+    // Reads one ref's OID: a loose ref file first, then packed-refs.
     fn read_ref(&self, refname: &str) -> Option<String> {
         // Loose ref: `<common>/refs/notes/inkentry`. Split on '/' and push each
         // component so the path is correct on Windows too.
@@ -128,8 +127,8 @@ impl NotesRefs {
     }
 }
 
-/// Read a git dir's `commondir` pointer (present only in linked worktrees),
-/// resolving a relative value against the git dir.
+// Reads a git dir's commondir pointer (present only in linked worktrees),
+// resolving a relative value against the git dir.
 fn read_commondir(git_dir: &Path) -> Option<PathBuf> {
     let content = std::fs::read_to_string(git_dir.join("commondir")).ok()?;
     let rest = content.trim();
