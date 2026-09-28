@@ -1,16 +1,11 @@
-//! Indexer coverage for C#, Kotlin, and Swift.
-//!
-//! Asserts that `SourceParser::parse` produces the expected semantic chunks and
-//! that `EdgeExtractor::extract` produces the expected import/call/inheritance
-//! edges, mirroring the pattern established for the original 14 languages and the
-//! batch-1 php/ruby coverage.
+// Indexer coverage for C#, Kotlin, and Swift: `SourceParser::parse` produces
+// the expected semantic chunks, and `EdgeExtractor::extract` produces the
+// expected import/call/inheritance edges.
 
 use inkentry_core::indexer::graph::{EdgeExtractor, EdgeKind};
 use inkentry_core::indexer::parser::detect_language;
 use inkentry_core::indexer::{ChunkKind, SourceParser};
 use std::path::Path;
-
-// ── fixtures ─────────────────────────────────────────────────────────────────
 
 const CSHARP_SRC: &str = r#"using System;
 using System.Collections.Generic;
@@ -101,8 +96,6 @@ extension Service {
 func topLevel() -> Int { return 42 }
 "#;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 fn names_of(chunks: &[inkentry_core::indexer::Chunk], kind: ChunkKind) -> Vec<String> {
     let want = kind.to_string();
     chunks
@@ -118,8 +111,6 @@ fn has_edge(edges: &[inkentry_core::indexer::graph::Edge], target: &str, kind: E
         .any(|e| e.target_name == target && e.kind == kind)
 }
 
-// ── extension detection ────────────────────────────────────────────────────
-
 #[test]
 fn detects_csharp_kotlin_swift_extensions() {
     assert_eq!(detect_language(Path::new("Service.cs")), Some("csharp"));
@@ -127,8 +118,6 @@ fn detects_csharp_kotlin_swift_extensions() {
     assert_eq!(detect_language(Path::new("build.kts")), Some("kotlin"));
     assert_eq!(detect_language(Path::new("Service.swift")), Some("swift"));
 }
-
-// ── C# chunks ────────────────────────────────────────────────────────────────
 
 #[test]
 fn csharp_chunks_types_and_members() {
@@ -174,8 +163,6 @@ fn csharp_chunks_types_and_members() {
     );
 }
 
-// ── C# edges ─────────────────────────────────────────────────────────────────
-
 #[test]
 fn csharp_edges_usings_calls_inheritance() {
     let edges = EdgeExtractor::extract(CSHARP_SRC, "Service.cs", "csharp").unwrap();
@@ -212,8 +199,6 @@ fn csharp_edges_usings_calls_inheritance() {
         "expected supertype IGreeter"
     );
 }
-
-// ── Kotlin chunks ──────────────────────────────────────────────────────────
 
 #[test]
 fn kotlin_chunks_classes_objects_functions() {
@@ -256,8 +241,6 @@ fn kotlin_chunks_classes_objects_functions() {
     );
 }
 
-// ── Kotlin edges ─────────────────────────────────────────────────────────────
-
 #[test]
 fn kotlin_edges_imports_calls_inheritance() {
     let edges = EdgeExtractor::extract(KOTLIN_SRC, "Service.kt", "kotlin").unwrap();
@@ -289,8 +272,6 @@ fn kotlin_edges_imports_calls_inheritance() {
         "expected supertype Greeter"
     );
 }
-
-// ── Swift chunks ─────────────────────────────────────────────────────────────
 
 #[test]
 fn swift_chunks_types_protocols_functions_inits() {
@@ -341,8 +322,6 @@ fn swift_chunks_types_protocols_functions_inits() {
         "expected initializer captured as `init`"
     );
 }
-
-// ── Swift edges ──────────────────────────────────────────────────────────────
 
 #[test]
 fn swift_edges_imports_calls_inheritance() {

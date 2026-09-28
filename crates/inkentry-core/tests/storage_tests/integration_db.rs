@@ -1,14 +1,12 @@
-//! Integration tests for `inkentry_core::storage::Database`.
-//!
-//! These tests open real (in-memory) SQLite databases with the sqlite-vec
-//! extension loaded.  They must run serially because sqlite3_auto_extension
-//! is process-global.
+// Integration tests for `inkentry_core::storage::Database`.
+//
+// These tests open real (in-memory) SQLite databases with the sqlite-vec
+// extension loaded. They must run serially because sqlite3_auto_extension
+// is process-global.
 
 use crate::common;
 use inkentry_core::indexer::graph::{Edge, EdgeKind};
 use serial_test::serial;
-
-// ── helpers ──────────────────────────────────────────────────────────────────
 
 fn zero_vec(dim: usize) -> Vec<f32> {
     vec![0.0; dim]
@@ -19,8 +17,6 @@ fn unit_vec(dim: usize, pos: usize) -> Vec<f32> {
     v[pos] = 1.0;
     v
 }
-
-// ── files ────────────────────────────────────────────────────────────────────
 
 #[test]
 #[serial]
@@ -52,8 +48,6 @@ fn file_hash_returns_none_for_unknown() {
     assert!(db.file_hash("does/not/exist.rs").unwrap().is_none());
 }
 
-// ── chunks ───────────────────────────────────────────────────────────────────
-
 #[test]
 #[serial]
 fn insert_and_delete_chunks() {
@@ -74,12 +68,9 @@ fn insert_and_delete_chunks() {
     assert!(chunk_id > 0);
 
     db.delete_chunks_for_file(file_id).unwrap();
-    // After deletion, chunks_by_ids should return empty.
     let results = db.chunks_by_ids(&[chunk_id]).unwrap();
     assert!(results.is_empty());
 }
-
-// ── embeddings + KNN search ──────────────────────────────────────────────────
 
 // Must match the dimension in migrations/002_vectors.sql (F2LLM-v2-330M, 896-dim).
 const DIM: usize = inkentry_core::embeddings::EMBEDDING_DIM;
@@ -89,7 +80,6 @@ const DIM: usize = inkentry_core::embeddings::EMBEDDING_DIM;
 fn knn_returns_closest_vector_first() {
     let db = common::open_test_db();
 
-    // Insert two chunks with distinct embeddings.
     let fid = db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
     let cid1 = db
         .insert_chunk(
@@ -120,7 +110,6 @@ fn knn_returns_closest_vector_first() {
     db.insert_embedding(cid1, &unit_vec(DIM, 0)).unwrap();
     db.insert_embedding(cid2, &unit_vec(DIM, 1)).unwrap();
 
-    // Query near position 0 → alpha should be closer.
     let results = db.search_similar(&unit_vec(DIM, 0), 2).unwrap();
 
     assert_eq!(results.len(), 2);
@@ -132,11 +121,11 @@ fn knn_returns_closest_vector_first() {
     );
 }
 
-/// int8 quantisation regression (PR #441 / inkentry-oss#9): `insert_embedding`
-/// stores vectors in the `int8[896]` column and `search_similar` must (a) preserve
-/// ranking through quantisation and (b) rescale the raw int8 L2 distance back to
-/// the f32 scale via `INT8_SCALE`. A forgotten rescale leaves distances ~127×
-/// too large — caught by the magnitude bounds below.
+// int8 quantisation regression: `insert_embedding` stores vectors in the
+// `int8[896]` column and `search_similar` must (a) preserve ranking through
+// quantisation and (b) rescale the raw int8 L2 distance back to the f32
+// scale via `INT8_SCALE`. A forgotten rescale leaves distances ~127× too
+// large — caught by the magnitude bounds below.
 #[test]
 #[serial]
 fn int8_knn_preserves_ranking_and_rescales_distance() {
@@ -200,8 +189,6 @@ fn knn_limit_is_respected() {
     assert!(results.len() <= 3);
 }
 
-// ── graph edges ───────────────────────────────────────────────────────────────
-
 #[test]
 #[serial]
 fn replace_edges_round_trips() {
@@ -226,7 +213,6 @@ fn replace_edges_round_trips() {
     ];
     db.replace_edges("src/main.rs", &edges).unwrap();
 
-    // edges_for_symbol("helper") should include the call edge from main.
     let found = db.edges_for_symbol("helper").unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].source_name.as_deref(), Some("main"));
@@ -247,7 +233,6 @@ fn replace_edges_removes_stale_edges() {
     }];
     db.replace_edges("src/a.rs", &e1).unwrap();
 
-    // Re-index the file with different edges — old ones should be gone.
     let e2 = vec![Edge {
         source_file: "src/a.rs".into(),
         source_name: None,

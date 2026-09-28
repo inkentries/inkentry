@@ -7,7 +7,6 @@ pub mod dates;
 /// at `root` directly. The fallback covers the case where `root` is exactly the
 /// worktree root even when gix cannot fully open the repository.
 pub fn resolve_main_worktree_root(root: &std::path::Path) -> std::path::PathBuf {
-    // ── gix path ─────────────────────────────────────────────────────────────
     // gix::discover walks up from root, so it works whether root is the
     // worktree root itself or a subdirectory inside it.
     if let Ok(repo) = gix::discover(root) {
@@ -27,7 +26,6 @@ pub fn resolve_main_worktree_root(root: &std::path::Path) -> std::path::PathBuf 
         return root.to_path_buf();
     }
 
-    // ── fallback: parse .git file at root directly ────────────────────────
     let git = root.join(".git");
     if !git.is_file() {
         return root.to_path_buf();
@@ -60,9 +58,8 @@ pub fn resolve_main_worktree_root(root: &std::path::Path) -> std::path::PathBuf 
 /// `None` outside a git repository.
 ///
 /// Unlike [`resolve_main_worktree_root`], this does **not** climb to the main
-/// worktree — it is `git rev-parse --git-dir`'s answer. ADR-099 D1 anchors a
-/// pending memory entry to the worktree it was written in, which is the only
-/// thing separating one agent's pending entries from another's once
+/// worktree — it is `git rev-parse --git-dir`'s answer, which is what
+/// separates one agent's pending memory entries from another's once
 /// `.inkentry/memory.db` (shared by every linked worktree) is in play.
 pub fn current_worktree_git_dir(path: &std::path::Path) -> Option<std::path::PathBuf> {
     gix::discover(path)
@@ -237,8 +234,6 @@ pub fn worktree_modified_files() -> std::collections::HashSet<String> {
 mod tests {
     use super::*;
 
-    // ── resolve_main_worktree_root ────────────────────────────────────────────
-
     #[test]
     fn resolve_main_worktree_root_linked_worktree() {
         let tmp = tempfile::tempdir().unwrap();
@@ -280,19 +275,11 @@ mod tests {
         assert_eq!(resolved, tmp.path());
     }
 
-    // ── canonicalize ───────────────────────────────────────────────────────
-
-    /// `canonicalize`'s whole reason to exist is de-UNCing: it must never
-    /// return the verbatim `\\?\`-prefixed form that `std::fs::canonicalize`
-    /// produces on Windows for a real, existing directory. A caller that
-    /// builds one path through this wrapper and another through
-    /// `std::fs::canonicalize`/`Path::canonicalize` directly is comparing two
-    /// different spellings of the same directory - `PathBuf` equality (and
-    /// `assert_eq!`) then fails even though both name the identical real
-    /// path. This is exactly the mismatch that broke the hooks-dir tests in
-    /// `crates/inkentry-cli/src/cli/cmd/hooks.rs`: a test built its "expected"
-    /// value via the raw std canonicalize while production went through this
-    /// wrapper.
+    // `canonicalize`'s whole reason to exist is de-UNCing: it must never
+    // return the verbatim `\\?\`-prefixed form that `std::fs::canonicalize`
+    // produces on Windows for a real, existing directory, or a path built
+    // through this wrapper and one built through `std::fs::canonicalize`
+    // directly compare unequal despite naming the identical real path.
     #[test]
     #[cfg(windows)]
     fn canonicalize_never_returns_the_verbatim_unc_prefix() {
@@ -320,8 +307,6 @@ mod tests {
         assert_eq!(canonicalize(&std_form), wrapped_form);
     }
 
-    // ── normalize_index_path ──────────────────────────────────────────────────
-
     #[test]
     fn normalize_index_path_converts_backslashes() {
         assert_eq!(normalize_index_path("src\\lib.rs"), "src/lib.rs");
@@ -330,8 +315,6 @@ mod tests {
         assert_eq!(normalize_index_path("src/lib.rs"), "src/lib.rs");
         assert_eq!(normalize_index_path("lib.rs"), "lib.rs");
     }
-
-    // ── fts5_quote_literal ───────────────────────────────────────────────────
 
     #[test]
     fn fts5_quote_plain_term() {
@@ -376,8 +359,6 @@ mod tests {
         let quoted = fts5_quote_literal(term);
         assert_eq!(quoted, "\"beforeafter\"");
     }
-
-    // ── strip_ansi ────────────────────────────────────────────────────────────
 
     #[test]
     fn strips_csi_colour() {

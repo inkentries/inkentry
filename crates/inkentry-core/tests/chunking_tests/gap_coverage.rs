@@ -1,6 +1,6 @@
-// Code outside every matched node used to be dropped whenever a file had at
-// least one match: module-level statements, and the body of a container too
-// large to keep whole, whose own chunk is suppressed in favour of its members.
+// Code outside every matched node must still be indexed: module-level
+// statements, and the body of a container too large to keep whole, whose own
+// chunk is suppressed in favour of its members.
 
 use inkentry_core::indexer::{Chunk, SourceParser};
 

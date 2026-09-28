@@ -2,16 +2,14 @@ use anyhow::Result;
 
 use super::Database;
 
-/// BM25 weights for `chunks_fts`'s columns, in declaration order: name, path,
-/// docstring, summary, content. Measured on a known-item evaluation (ADR-103);
-/// they mostly lift the first result rather than recall at ten.
+// BM25 weights for `chunks_fts`'s columns, in declaration order: name, path,
+// docstring, summary, content. They mostly lift the first result rather than
+// recall at ten.
 const FTS_COLUMN_WEIGHTS: (f64, f64, f64, f64, f64) = (6.0, 2.0, 2.0, 2.0, 1.0);
 
 impl Database {
-    /// K-nearest-neighbour search using sqlite-vec.
-    ///
-    /// Takes the raw float query vector; it is int8-quantised here to match the
-    /// `embeddings` `int8[896]` column (see `embeddings::vec_to_int8_blob`).
+    /// K-nearest-neighbour search using sqlite-vec. The raw float query vector
+    /// is int8-quantised to match the `embeddings` table's `int8[896]` column.
     /// Returns results ordered by ascending distance (closest first).
     pub fn search_similar(
         &self,
@@ -78,13 +76,12 @@ impl Database {
 
     /// FTS5 full-text search. Returns results ranked by BM25 (best match first).
     ///
-    /// The query is built by [`crate::search::lexical::code_fts_query`]: its
-    /// words (and the parts of any compound identifier) are scored as
-    /// **independent terms**, so a chunk containing more of them ranks above
-    /// one containing fewer, regardless of order or adjacency. The index is
-    /// stemmed (`porter unicode61`) and BM25 weighs a hit in the symbol name
-    /// above one in the path, docstring or summary, and those above one in the
-    /// body ([`FTS_COLUMN_WEIGHTS`]).
+    /// The query's words (and the parts of any compound identifier) are
+    /// scored as **independent terms**, so a chunk containing more of them
+    /// ranks above one containing fewer, regardless of order or adjacency.
+    /// The index is stemmed (`porter unicode61`) and BM25 weighs a hit in the
+    /// symbol name above one in the path, docstring or summary, and those
+    /// above one in the body.
     ///
     /// `distance` is the raw BM25 score, which FTS5 makes more negative for a
     /// better match, so lower is better here as it is for vector search.
@@ -163,13 +160,11 @@ impl Database {
             by_id.entry(result.chunk_id).or_insert(result);
         }
 
-        // `scores` is a HashMap, so its iteration order is reseeded per instance
-        // and differs between two calls in ONE process. RRF ties are the norm,
-        // not the exception — with disjoint lists, vector rank i and text rank i
-        // always score identically — so a sort keyed on score alone would leave
-        // most of the result order to that reseeding. The tie-break makes the
-        // order total, and keys it on the corpus position rather than the rowid
-        // so two machines indexing the same tree agree.
+        // `scores` is a HashMap, whose iteration order is reseeded per instance,
+        // and RRF ties are the norm (disjoint lists put vector rank i and text
+        // rank i at identical scores), so a sort on score alone would leave
+        // order to that reseeding. Tie-break on corpus position, not rowid, so
+        // two machines indexing the same tree agree.
         let mut ranked: Vec<(i64, f64)> = scores.into_iter().collect();
         ranked.sort_by(|a, b| {
             b.1.total_cmp(&a.1)
@@ -191,15 +186,10 @@ impl Database {
     }
 }
 
-/// Source position of a chunk, as the final sort key for equal scores.
-///
-/// Deliberately not the bare `chunk_id`: that rowid is assigned by indexing
-/// order, so two machines indexing the same tree can disagree on it. The full
-/// span is a property of the source. `end_line` earns its place because the
-/// walker emits a matched node and then recurses into it, so a nested node
-/// beginning on its parent's line yields two chunks sharing `(path,
-/// start_line)` that only the end distinguishes. The id settles the residual
-/// case of two chunks over one identical span.
+// Not the bare chunk_id: that rowid is assigned by indexing order and can
+// differ between machines. end_line matters too, since a nested node
+// starting on its parent's line shares (path, start_line) with the parent;
+// the id settles the residual tie of two chunks over one identical span.
 fn tie_break_key(
     by_id: &std::collections::HashMap<i64, crate::search::SearchResult>,
     chunk_id: i64,
@@ -214,7 +204,7 @@ mod tests {
     use super::super::Database;
     use std::sync::OnceLock;
 
-    /// Register the sqlite-vec extension exactly once per test process.
+    // Register the sqlite-vec extension exactly once per test process.
     fn register_sqlite_vec() {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
@@ -263,14 +253,9 @@ mod tests {
             .expect("insert chunk")
     }
 
-    // `ts_walker` emits a matched node and then recurses into it, so a nested
-    // node beginning on its parent's line yields two chunks that share
-    // (path, start_line) and differ only in end_line — `impl Foo { fn bar() ->
-    // u32 { 1 }` followed by a closing brace parses to Impl 1..2 and Function
-    // 1..1. The span must therefore outrank the rowid, which is assigned by
-    // indexing order and disagrees between machines. Both fixtures insert the
-    // wider span FIRST, so rowid order is the opposite of span order and a key
-    // that stopped at start_line would return them the other way round.
+    // A nested node beginning on its parent's line shares (path, start_line)
+    // with the parent, differing only in end_line. Both fixtures insert the
+    // wider span first, so rowid order is the opposite of span order.
     #[test]
     fn search_text_breaks_ties_on_end_line_before_rowid() {
         let db = open_db();
@@ -326,11 +311,9 @@ mod tests {
         );
     }
 
-    // Issue #47. A chunk reachable only by vector and a chunk reachable only by
-    // text land at the same rank in their respective lists, so RRF scores them
-    // identically — the pervasive tie in hybrid search. Before the tie-break,
-    // the winner was decided by `HashMap` iteration order, which is reseeded per
-    // instance and so differed between two calls in ONE process.
+    // A vector-only hit and a text-only hit land at the same rank in their
+    // respective lists, so RRF scores them identically — the pervasive tie in
+    // hybrid search.
     #[test]
     fn search_hybrid_breaks_rrf_ties_by_source_position() {
         let db = open_db();
@@ -356,7 +339,7 @@ mod tests {
         ];
 
         // Repeated in-process: each call builds a fresh HashMap with a fresh
-        // hash seed, which is exactly what used to reshuffle the tied pairs.
+        // hash seed, so a lingering seed-dependent order shows up as flakiness.
         for i in 0..40 {
             let hits = db
                 .search_hybrid("rrftieterm", &query_vec, 10)
@@ -388,23 +371,11 @@ mod tests {
             .expect("collect")
     }
 
-    // Issue #47's remaining acceptance criterion: the property must hold on a
-    // PARTIALLY EMBEDDED index — the normal state in the first hours after
-    // indexing, and where the instability is largest.
-    //
-    // The fixture reproduces that state the way a real drain leaves it rather
-    // than by merely seeding few rows. `embed_phase` walks the
-    // `chunks_missing_embeddings()` queue with a cursor and commits one batch
-    // per transaction, so an interrupted drain leaves vectors on an exact
-    // PREFIX of that queue order — never-embedded band first, then graph_rank
-    // DESC, mtime DESC, id — with the tail bare. One drained chunk is then
-    // flagged `embed_pending = 1`, the re-embed band that co-exists with the
-    // warmup tail. Both properties are asserted, so the fixture cannot quietly
-    // decay into "a small index".
-    //
-    // This is the disjoint-list case at its sharpest: the vector list holds
-    // only the drained prefix, chosen by centrality and recency rather than by
-    // relevance to this query, while the text list holds every match. Chunks
+    // Models a partially embedded index: an interrupted drain leaves vectors on
+    // an exact prefix of the real embed queue order (never-embedded band
+    // first, then graph_rank DESC, mtime DESC, id), with one drained chunk
+    // flagged embed_pending = 1 to add the re-embed band. The vector list then
+    // holds only that prefix while the text list holds every match, so chunks
     // reachable through exactly one list collide on identical RRF scores.
     #[test]
     fn search_hybrid_is_byte_identical_on_a_partially_embedded_index() {
@@ -509,11 +480,9 @@ mod tests {
             "fixture must produce at least one exact RRF tie, else the tie-break is untested"
         );
 
-        // 64 calls. Each builds a fresh HashMap, and `RandomState` reseeds per
-        // instance, so an unbroken tie is an independent coin flip per call:
-        // surviving 64 of them has probability 2^-64. The pre-fix code in
-        // practice diverges on the first or second call; 64 is headroom, not a
-        // tight bound.
+        // 64 calls: `RandomState` reseeds per instance, so an unbroken tie is
+        // an independent coin flip per call, giving a false pass probability
+        // of 2^-64.
         let baseline = serde_json::to_string(
             &db.search_hybrid("warmupterm", &query_vec, 10)
                 .expect("hybrid ok"),
@@ -547,10 +516,6 @@ mod tests {
         );
     }
 
-    /// A search term containing FTS5-special punctuation (unbalanced `"`,
-    /// a bare `:`, and boolean-looking keywords) must never surface a raw
-    /// FTS5 parse error — it should be treated as a literal string and either
-    /// return matches or an empty result, but always `Ok`.
     #[test]
     fn search_text_with_punctuation_never_errors() {
         let db = open_db();
@@ -581,12 +546,9 @@ mod tests {
         }
     }
 
-    /// A query term containing an embedded NUL byte must not surface a raw
-    /// FTS5 "unterminated string" parse error. `fts5_quote_literal` strips
-    /// embedded `\0` before quoting, since FTS5's own query-string parser
-    /// treats `\0` as an early string terminator (distinct from SQLite's
-    /// NUL-safe text binding), which would otherwise hide the closing `"` we
-    /// append.
+    // `fts5_quote_literal` strips embedded `\0` before quoting: FTS5's own
+    // query-string parser treats `\0` as an early string terminator, which
+    // would otherwise hide the closing `"` this appends.
     #[test]
     fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
         let db = open_db();
@@ -600,8 +562,6 @@ mod tests {
         );
     }
 
-    /// A literal-quoted term still matches real content containing that
-    /// literal substring, so quoting doesn't silently break search relevance.
     #[test]
     fn search_text_quoted_colon_term_still_matches() {
         let db = open_db();
@@ -614,11 +574,7 @@ mod tests {
         );
     }
 
-    /// A term shaped like an FTS5 column filter (`content:...`) must be
-    /// treated as a literal string to search for, not interpreted as
-    /// targeting the `content` column. Quoted, it should behave like any
-    /// other safe literal search (no match on an unrelated nonsense term,
-    /// no error).
+    // `content:...` must not be interpreted as an FTS5 column filter.
     #[test]
     fn search_text_column_filter_syntax_is_literal_not_a_filter() {
         let db = open_db();
@@ -629,10 +585,8 @@ mod tests {
         assert!(result.unwrap().is_empty());
     }
 
-    // The documented `--mode text` contract is BM25 over independent terms: a
-    // multi-word query ranks chunks that contain the terms regardless of their
-    // order or adjacency. Before the fix the whole query was matched as a single
-    // quoted FTS5 phrase, so word order alone decided whether there was a hit.
+    // `--mode text` scores independent terms: a multi-word query must match
+    // regardless of word order or adjacency.
     #[test]
     fn search_text_scores_terms_independent_of_order() {
         let db = open_db();
@@ -641,8 +595,6 @@ mod tests {
             "We chose a token bucket over a leaky bucket because bursts are expected.",
         );
 
-        // The natural order and every reordering must hit the one chunk that
-        // contains all the terms — order and adjacency must not decide the hit.
         for q in [
             "leaky bucket",
             "bucket leaky",
@@ -659,10 +611,8 @@ mod tests {
         }
     }
 
-    // Partial-overlap ranking: a chunk containing more of the query terms ranks
-    // above one containing fewer, and the fewer-term chunk still appears (OR /
-    // bag-of-words semantics, ranked by BM25) rather than being dropped — which
-    // is what phrase matching did.
+    // A chunk containing more query terms ranks above one containing fewer;
+    // the fewer-term chunk still appears (bag-of-words, not phrase matching).
     #[test]
     fn search_text_ranks_more_term_overlap_higher() {
         let db = open_db();
@@ -821,8 +771,8 @@ mod tests {
         assert!(db.search_text("vanishingterm", 10).expect("ok").is_empty());
     }
 
-    // Every index run rewrites `graph_rank` on every chunk; re-tokenising each
-    // one for it was pure cost. `total_changes` counts the rows a trigger
+    // Every index run rewrites `graph_rank` on every chunk, so re-tokenising
+    // for it would be pure cost. `total_changes` counts the rows a trigger
     // writes too, so a fired trigger would show up as more than one change.
     #[test]
     fn an_unrelated_column_update_does_not_rewrite_the_full_text_row() {

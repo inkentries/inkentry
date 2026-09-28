@@ -8,8 +8,8 @@ pub struct IndexStats {
     pub file_count: i64,
     pub chunk_count: i64,
     pub embedding_count: i64,
-    /// Chunks left to full-text search alone (ADR-104) that hold no vector.
-    /// One that kept a vector from before the rule counts as embedded instead.
+    /// Chunks marked text-only that hold no vector. One that already has a
+    /// vector counts as embedded instead.
     pub text_only_count: i64,
     pub last_indexed: Option<i64>,
 }
@@ -106,7 +106,7 @@ impl Database {
         })
     }
 
-    /// Token-weighted embed-queue totals (see [`EmbedTokenStats`]).
+    /// Token-weighted embed-queue totals.
     pub fn embed_token_stats(&self) -> Result<EmbedTokenStats> {
         let total_tokens: i64 = self.conn.query_row(
             "SELECT COALESCE(SUM(c.token_count), 0)
@@ -372,9 +372,8 @@ mod tests {
         assert!(sampled.stale_paths.is_empty());
     }
 
-    // Root resolution is the whole bug: the same fresh index probed against the
-    // WRONG root (a different project's cwd) sees every file as missing/changed.
-    // This is exactly what the cross-project `links check` used to do.
+    // Probing the same fresh index against the WRONG root (a different
+    // project's cwd) reports every file as missing/changed.
     #[test]
     fn wrong_root_misreports_every_file_as_stale() {
         let db = open_db();
@@ -402,7 +401,6 @@ mod tests {
         seed_indexed_file(&db, root.path(), "a.rs", b"fn a() {}\n");
         seed_indexed_file(&db, root.path(), "b.rs", b"fn b() {}\n");
 
-        // Modify a.rs, delete b.rs.
         std::fs::write(root.path().join("a.rs"), b"fn a() { changed }\n").unwrap();
         std::fs::remove_file(root.path().join("b.rs")).unwrap();
 
@@ -420,8 +418,7 @@ mod tests {
         );
     }
 
-    // An empty index is fresh, never stale (guards the 0-file edge case behind
-    // the CI gate).
+    // An empty index is fresh, never stale — the 0-file edge case.
     #[test]
     fn empty_index_is_fresh() {
         let db = open_db();

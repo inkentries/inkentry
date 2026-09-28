@@ -1,6 +1,6 @@
-// Consolidated chunking/tokenization test binary: groups the previously
-// separate chunker, language-support, and token-budget test files into one
-// integration test crate to cut per-binary link overhead.
+// One chunking/tokenization test binary, not several: groups the chunker,
+// language-support, and token-budget test files to cut per-binary link
+// overhead.
 
 #[path = "chunking_tests/adversarial_chunker.rs"]
 mod adversarial_chunker;

@@ -1,15 +1,11 @@
-//! Indexer coverage for PHP and Ruby.
-//!
-//! Asserts that `SourceParser::parse` produces the expected semantic chunks and
-//! that `EdgeExtractor::extract` produces the expected import/call/inheritance
-//! edges, mirroring the pattern established for the original 14 languages.
+// Indexer coverage for PHP and Ruby: `SourceParser::parse` produces the
+// expected semantic chunks, and `EdgeExtractor::extract` produces the
+// expected import/call/inheritance edges.
 
 use inkentry_core::indexer::graph::{EdgeExtractor, EdgeKind};
 use inkentry_core::indexer::parser::detect_language;
 use inkentry_core::indexer::{ChunkKind, SourceParser};
 use std::path::Path;
-
-// ── fixtures ─────────────────────────────────────────────────────────────────
 
 const PHP_SRC: &str = r#"<?php
 require 'lib.php';
@@ -63,8 +59,6 @@ def top_level
 end
 "#;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 fn names_of(chunks: &[inkentry_core::indexer::Chunk], kind: ChunkKind) -> Vec<String> {
     let want = kind.to_string();
     chunks
@@ -80,8 +74,6 @@ fn has_edge(edges: &[inkentry_core::indexer::graph::Edge], target: &str, kind: E
         .any(|e| e.target_name == target && e.kind == kind)
 }
 
-// ── extension detection ────────────────────────────────────────────────────
-
 #[test]
 fn detects_php_and_ruby_extensions() {
     assert_eq!(detect_language(Path::new("index.php")), Some("php"));
@@ -90,8 +82,6 @@ fn detects_php_and_ruby_extensions() {
     assert_eq!(detect_language(Path::new("Rakefile.rake")), Some("ruby"));
     assert_eq!(detect_language(Path::new("gem.gemspec")), Some("ruby"));
 }
-
-// ── PHP chunks ─────────────────────────────────────────────────────────────
 
 #[test]
 fn php_chunks_functions_classes_interfaces_traits() {
@@ -124,23 +114,18 @@ fn php_chunks_functions_classes_interfaces_traits() {
     );
 }
 
-// ── PHP edges ──────────────────────────────────────────────────────────────
-
 #[test]
 fn php_edges_imports_calls_inheritance() {
     let edges = EdgeExtractor::extract(PHP_SRC, "svc.php", "php").unwrap();
 
-    // require 'lib.php'
     assert!(
         has_edge(&edges, "lib.php", EdgeKind::Imports),
         "expected require import of lib.php"
     );
-    // use App\Models\User;
     assert!(
         has_edge(&edges, "App\\Models\\User", EdgeKind::Imports),
         "expected namespace use import"
     );
-    // helper() and greet() calls (builtins are skipped, these are user fns)
     assert!(
         has_edge(&edges, "helper", EdgeKind::Calls),
         "expected call to helper()"
@@ -149,12 +134,10 @@ fn php_edges_imports_calls_inheritance() {
         has_edge(&edges, "greet", EdgeKind::Calls),
         "expected call to greet()"
     );
-    // $this->run() member call
     assert!(
         has_edge(&edges, "run", EdgeKind::Calls),
         "expected member call run()"
     );
-    // class Service extends Base implements Greeter
     assert!(
         has_edge(&edges, "Base", EdgeKind::Extends),
         "expected extends Base"
@@ -164,8 +147,6 @@ fn php_edges_imports_calls_inheritance() {
         "expected implements Greeter"
     );
 }
-
-// ── Ruby chunks ────────────────────────────────────────────────────────────
 
 #[test]
 fn ruby_chunks_methods_classes_modules() {
@@ -195,13 +176,10 @@ fn ruby_chunks_methods_classes_modules() {
     );
 }
 
-// ── Ruby edges ─────────────────────────────────────────────────────────────
-
 #[test]
 fn ruby_edges_requires_calls_mixins_inheritance() {
     let edges = EdgeExtractor::extract(RUBY_SRC, "svc.rb", "ruby").unwrap();
 
-    // require 'set' / require_relative 'helper'
     assert!(
         has_edge(&edges, "set", EdgeKind::Imports),
         "expected require import of set"
@@ -210,17 +188,15 @@ fn ruby_edges_requires_calls_mixins_inheritance() {
         has_edge(&edges, "helper", EdgeKind::Imports),
         "expected require_relative import of helper"
     );
-    // include Util → mixin (Implements)
+    // `include` mixes in a module as an Implements edge.
     assert!(
         has_edge(&edges, "Util", EdgeKind::Implements),
         "expected include Util mixin edge"
     );
-    // class Service < Base
     assert!(
         has_edge(&edges, "Base", EdgeKind::Extends),
         "expected extends Base"
     );
-    // do_work(1) and Util.log("x") calls (puts is a builtin → skipped)
     assert!(
         has_edge(&edges, "do_work", EdgeKind::Calls),
         "expected call to do_work"

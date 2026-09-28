@@ -3,7 +3,6 @@ use inkentry_core::search::tokens::estimate_tokens;
 use proptest::prelude::*;
 
 proptest! {
-    // Every chunk's content must be a substring of the original source.
     #[test]
     fn chunks_are_substrings_of_source(source in "([a-z ]+\n){1,50}") {
         let chunks = sliding_window(&source, "test.txt", "text", None, None, None);
@@ -49,7 +48,6 @@ proptest! {
         }
     }
 
-    // Empty source always yields no chunks.
     #[test]
     fn empty_source_yields_no_chunks(_ in 0u8..=0) {
         let chunks = sliding_window("", "test.txt", "text", None, None, None);

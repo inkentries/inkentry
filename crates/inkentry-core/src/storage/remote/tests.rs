@@ -9,10 +9,8 @@ fn backend(project_id: &str) -> RemoteMemoryBackend {
     }
 }
 
-/// `derive_local_fallback` / `normalise_git_url` slugs contain `/`; the
-/// segment must be percent-encoded so axum routes the whole slug into
-/// `{project_id}` instead of splitting on `/` (→ 404). See inkentry
-/// decision #106 (mirrors IMP-1's fix in inkentry-cli/server_client.rs).
+// A slug can contain `/`, so it must be percent-encoded or axum splits the
+// path on it and routes nothing into `{project_id}` (404).
 #[test]
 fn url_percent_encodes_local_fallback_slug() {
     let b = backend("local/9f2a8b3c4d5e6f70");
@@ -31,10 +29,8 @@ fn url_percent_encodes_github_remote_slug() {
     );
 }
 
-/// Round-trip: percent-decoding the encoded segment must yield the
-/// original slug, since the slug is the persistence key
-/// (`projects.slug` UNIQUE) and must reach `require_project`/
-/// `upsert_project` exactly as `derive_project_id` produced it.
+// The slug is the persistence key (`projects.slug` UNIQUE), so
+// percent-decoding the encoded segment must yield it back exactly.
 #[test]
 fn encode_project_id_round_trips_through_percent_decode() {
     for slug in ["local/9f2a8b3c4d5e6f70", "github.com/inkentries/inkentry"] {
@@ -55,39 +51,9 @@ fn url_leaves_simple_slug_unchanged() {
     );
 }
 
-/// Regression test for the v0.8.0 IMP-3 retest sweep (spelunk-cloud/spelunk
-/// agent-comms/handoffs/qa-v080-test-plan.md, Fix 3).
-///
-/// `POST /v1/projects/{id}/memory/search` on the real server expects
-/// `{"query": <text>, "limit": <n>}` — the server embeds the query itself
-/// (see `inkentry_server::handlers::SearchRequest` /
-/// `inkentry-server/src/handlers.rs::search_notes`, which calls
-/// `body.query` through its embedder).
-///
-/// `RemoteMemoryBackend::search` instead serialises a pre-computed
-/// `{"embedding": [f32...], "limit": <n>}` body (see `SearchRequest` in
-/// this file). Because the server's `query` field is a required `String`
-/// (no `#[serde(default)]`), axum's `Json<SearchRequest>` extractor
-/// rejects the mismatched body with `422 Unprocessable Entity` *before*
-/// `search_notes` ever runs — so `memory search` / `memory timeline`
-/// (which both funnel through `RemoteMemoryBackend::search`) always fail
-/// with a 422 against a real inkentry-server, never returning results.
-///
-/// This was masked pre-IMP-3 because `memory search`/`timeline` short-
-/// circuited on `cfg.server_url.is_none()` with a "requires
-/// inkentry-server" error before ever issuing the HTTP request — IMP-3
-/// fixed that gating (so loopback auto-discovered servers are honoured),
-/// which is what newly exposes this pre-existing client/server payload
-/// mismatch end-to-end.
-///
-/// This test asserts the wire body sent by the client is shaped the way
-/// the real server's `SearchRequest` requires (`query` + `limit`, no
-/// `embedding` field). It currently FAILS — the client sends `embedding`
-/// instead of `query` — capturing the bug for the implementer to fix
-/// (either by changing `RemoteMemoryBackend::SearchRequest` to send
-/// `{query, limit}` and dropping the local KNN step, or by adding an
-/// `embedding`-accepting variant server-side; that decision belongs to
-/// the implementer / architect, not this test).
+// The real server embeds the query itself, so `POST .../memory/search`
+// requires `{"query": <text>, "limit": <n>}`; the client must send that
+// shape rather than a precomputed embedding.
 #[tokio::test]
 async fn search_sends_query_text_not_precomputed_embedding() {
     use wiremock::matchers::{body_partial_json, method, path};
@@ -95,9 +61,6 @@ async fn search_sends_query_text_not_precomputed_embedding() {
 
     let server = MockServer::start().await;
 
-    // Mirrors the real server's contract: a body containing a `query`
-    // string field (and NOT requiring `embedding`) is what
-    // `inkentry-server::handlers::search_notes` actually accepts.
     Mock::given(method("POST"))
         .and(path("/v1/projects/local%2Fabc123/memory/search"))
         .and(body_partial_json(
@@ -114,11 +77,10 @@ async fn search_sends_query_text_not_precomputed_embedding() {
         bearer: Bearer::fixed(None),
     };
 
-    // `MemoryBackend::search` takes both a pre-computed query embedding
-    // blob (used by local backends for KNN) *and* the raw query text
-    // (used by the remote backend, which has no local embedder and must
-    // let the server embed server-side — see spelunk-cloud/spelunk#359). The remote
-    // backend ignores `query_blob` and sends `query` on the wire.
+    // `MemoryBackend::search` takes both a pre-computed query embedding blob
+    // (used by local backends for KNN) and the raw query text; the remote
+    // backend, which has no local embedder, ignores the blob and sends the
+    // query text on the wire.
     let query_blob = crate::embeddings::vec_to_blob(&[0.1_f32, 0.2, 0.3]);
     let result = backend.search(&query_blob, "timezone", 3, None).await;
 
@@ -136,23 +98,12 @@ async fn search_sends_query_text_not_precomputed_embedding() {
     );
 }
 
-// ── CLI to peer: query parameters this server does not accept ────────────────
-//
-// Pins live drift rather than desired behaviour. `inkentry_server::handlers::
-// ListQuery` deserialises four names from `GET /memory`: `kind`, `limit`,
-// `archived`, `offset`. Axum's `Query` extractor ignores anything else, so the
-// two parameters below are accepted by the transport, dropped by the handler,
-// and never reported to the caller.
-//
-// The `source_ref` case is the one with teeth: `has_source_ref` decides whether
-// a commit has already been harvested purely from whether the filtered list
-// came back non-empty. With the filter dropped, the server answers with the
-// project's newest entries regardless of the sha asked about, so the answer is
-// "yes" for every commit as soon as the project holds any memory at all.
-//
-// When the server grows these parameters (or the client stops sending them),
-// this test is the thing that has to change, and its failure is the reminder
-// that `has_source_ref` was reading a filtered list that was never filtered.
+// `GET /memory` only recognises `kind`, `limit`, `archived`, `offset`; axum's
+// `Query` extractor silently drops anything else, including `as_of` and
+// `source_ref` below. That makes `has_source_ref` decide whether a commit was
+// already harvested purely from whether the (unfiltered) list came back
+// non-empty, so the server answers "yes" for every commit once the project
+// holds any memory at all.
 #[tokio::test]
 async fn list_sends_query_parameters_the_oss_server_silently_drops() {
     use wiremock::matchers::{method, path};
@@ -209,13 +160,10 @@ async fn list_sends_query_parameters_the_oss_server_silently_drops() {
     );
 }
 
-// ── Wire-shape tolerance ─────────────────────────────────────────────────────
-//
 // The read endpoints must accept both shapes a team server can send: the
-// object envelope a server at or after the ADR-076 wire-contract fix returns
-// (`{entries, total}` / `{shas}`), and the bare array an older server still in
-// the version-skew support window returns. Accepting both is what keeps a
-// newer CLI working against an older team server. See docs/version-skew.md.
+// object envelope (`{entries, total}` / `{shas}`), and the bare array an
+// older server still returns. Accepting both keeps a newer CLI working
+// against an older team server.
 
 fn note_json(title: &str) -> serde_json::Value {
     serde_json::json!({
@@ -339,18 +287,15 @@ async fn harvested_shas_accepts_both_shapes() {
     assert!(shas.contains("def"), "got: {shas:?}");
 }
 
-// ── 429 admission shedding on the write path ─────────────────────────────────
-
 #[tokio::test]
 async fn add_retries_a_shed_429_instead_of_failing_the_write() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // `POST /memory` embeds server-side when the caller supplies no vector, so
-    // it runs under the server's bounded embed admission queue and a full queue
-    // sheds it with a 429 that clears as soon as the in-flight embed finishes.
-    // A `memory add` must ride that out rather than reporting a failed write.
-    // `Retry-After: 0` keeps the test's real sleep at zero.
+    // A full server-side embed admission queue sheds `POST /memory` with a
+    // 429 that clears once the in-flight embed finishes; `memory add` must
+    // ride that out rather than reporting a failed write. `Retry-After: 0`
+    // keeps the test's real sleep at zero.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/projects/proj/memory"))
@@ -386,9 +331,7 @@ async fn add_retries_a_shed_429_instead_of_failing_the_write() {
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
-// ADR-088 D3: nothing is migrated into the per-origin map on the way out, so a
-// user upgrading from the flat entry meets an auth failure. It must name the
-// one command that restores service rather than a bare 401.
+// A rejected credential must name the fix rather than surface a bare 401.
 #[tokio::test]
 async fn a_rejected_credential_names_the_set_key_command() {
     use wiremock::matchers::{method, path};
@@ -415,8 +358,6 @@ async fn a_rejected_credential_names_the_set_key_command() {
         "must name the fix, got: {err}"
     );
 }
-
-// ── an unreachable server is named as such, on both the read and write path ───
 
 // A loopback address with nothing listening: bind an ephemeral port, read it
 // back, then drop the listener. Connecting there is refused immediately, so a
@@ -530,8 +471,6 @@ async fn a_slow_but_connected_server_is_not_reported_as_unreachable() {
     );
 }
 
-// ── entity id lookup ─────────────────────────────────────────────────────────
-
 // The team server's listing pages by offset, so this backend walks it to
 // exhaustion to resolve a handle, reading every page until one comes back empty.
 
@@ -601,9 +540,9 @@ async fn team_backend_listing(
     (server, backend)
 }
 
-// A store larger than one page is walked to the end rather than cut off, so the
-// team backend reports a complete result, never a bounded one: an absent handle
-// is a definite empty result, not the old "looked only so far" hedge.
+// A store larger than one page is walked to the end rather than cut off, so
+// the team backend reports a complete result, never a bounded one: an absent
+// handle is a definite empty result.
 #[tokio::test]
 async fn a_multi_page_store_is_walked_to_a_complete_result() {
     let (_server, backend) = team_backend_listing(5, "newest").await;

@@ -1,7 +1,7 @@
 // A function bound to a module-level `const`/`let`/`var` is how most JS/TS
-// functions and nearly all React components are written. Without a chunk of
-// its own, a file that also held an interface or type lost the component's
-// lines from the index entirely.
+// functions and nearly all React components are written; each needs its own
+// chunk, or a file that also holds an interface or type loses those lines
+// from the index entirely.
 
 use inkentry_core::indexer::{Chunk, SourceParser};
 
