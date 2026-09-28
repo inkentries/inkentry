@@ -38,20 +38,16 @@ pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
     Ok(support.get_ts_language())
 }
 
-// ---------------------------------------------------------------------------
-// Per-language semantic node configurations
-// ---------------------------------------------------------------------------
-
-/// Describes a node type that should become a chunk.
+// Describes a node type that should become a chunk.
 pub(super) struct NodeSpec {
-    /// tree-sitter node kind string
+    // tree-sitter node kind string
     pub kind: &'static str,
-    /// The chunk kind to assign
+    // The chunk kind to assign
     pub chunk_kind: ChunkKind,
-    /// Field name to use for the symbol name (e.g. "name")
+    // Field name to use for the symbol name (e.g. "name")
     pub name_field: Option<&'static str>,
-    /// Further condition a node of `kind` must meet, for kinds that are only
-    /// sometimes a chunk.
+    // Further condition a node of `kind` must meet, for kinds that are only
+    // sometimes a chunk.
     pub guard: Option<fn(&tree_sitter::Node<'_>) -> bool>,
 }
 
@@ -68,9 +64,9 @@ pub(super) fn s(
     }
 }
 
-/// A module-level `const`/`let`/`var` binding of a function, which is how most
-/// JS/TS functions and nearly all React components are written
-/// (`export const Picker = (props) => { … }`). Named by the binding.
+// A module-level `const`/`let`/`var` binding of a function, which is how most
+// JS/TS functions and nearly all React components are written
+// (`export const Picker = (props) => { … }`). Named by the binding.
 fn function_binding(kind: &'static str) -> NodeSpec {
     NodeSpec {
         guard: Some(is_module_level_function_binding),
@@ -225,16 +221,16 @@ pub(super) fn node_specs(language: &str) -> Vec<NodeSpec> {
     }
 }
 
-/// Maximum AST recursion depth.  Deeply-nested or pathological parse trees
-/// (common with adversarial inputs) would otherwise overflow the stack.
+// Maximum AST recursion depth. Deeply-nested or pathological parse trees
+// (common with adversarial inputs) would otherwise overflow the stack.
 const MAX_WALK_DEPTH: usize = 512;
 
-/// Maximum number of chunks collected in a single walk.  A file with millions
-/// of matched AST nodes (possible with adversarial input) would otherwise
-/// allocate unbounded memory.
+// Maximum number of chunks collected in a single walk. A file with millions
+// of matched AST nodes (possible with adversarial input) would otherwise
+// allocate unbounded memory.
 const MAX_CHUNKS: usize = 100_000;
 
-/// Immutable per-file context threaded through the AST walk.
+// Immutable per-file context threaded through the AST walk.
 pub(super) struct WalkCtx<'a> {
     pub src: &'a [u8],
     pub file_path: &'a str,
@@ -242,17 +238,17 @@ pub(super) struct WalkCtx<'a> {
     pub specs: &'a [NodeSpec],
 }
 
-/// A named container whose own chunk was suppressed for being oversized, so
-/// the lines of its body that no member chunk covers are left to `fill_gaps`.
-/// Carries the identity the container's chunk would have had.
+// A named container whose own chunk was suppressed for being oversized, so
+// the lines of its body that no member chunk covers are left to `fill_gaps`.
+// Carries the identity the container's chunk would have had.
 pub(super) struct SuppressedScope {
     pub name: String,
     pub parent_scope: Option<String>,
-    /// 1-based and inclusive; starts at the container's doc comment or
-    /// decorators, if any.
+    // 1-based and inclusive; starts at the container's doc comment or
+    // decorators, if any.
     pub start_line: usize,
     pub end_line: usize,
-    /// The line of its own declaration (`class Invoice < …`).
+    // The line of its own declaration (`class Invoice < …`).
     pub decl_line: usize,
 }
 
@@ -265,10 +261,10 @@ impl SuppressedScope {
 #[derive(Default)]
 pub(super) struct Walked {
     pub chunks: Vec<Chunk>,
-    /// In walk order, so a container precedes every container nested in it.
+    // In walk order, so a container precedes every container nested in it.
     pub scopes: Vec<SuppressedScope>,
-    /// 1-based inclusive line spans of test code the syntax marks as such,
-    /// from the marking attribute to the end of the item it applies to.
+    // 1-based inclusive line spans of test code the syntax marks as such,
+    // from the marking attribute to the end of the item it applies to.
     pub test_spans: Vec<(usize, usize)>,
 }
 
@@ -421,9 +417,9 @@ fn walk_node_inner(
     }
 }
 
-/// The span a Rust test attribute marks: `#[cfg(test)]`, `#[test]` or a
-/// runner's `#[tokio::test]` on the item after it, or `#![cfg(test)]` on the
-/// module or file that holds it.
+// The span a Rust test attribute marks: `#[cfg(test)]`, `#[test]` or a
+// runner's `#[tokio::test]` on the item after it, or `#![cfg(test)]` on the
+// module or file that holds it.
 fn rust_test_span(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<(usize, usize)> {
     let inner = match node.kind() {
         "attribute_item" => false,
@@ -471,11 +467,11 @@ fn rust_test_span(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<(usize, us
     Some((start.start_position().row + 1, item.end_position().row + 1))
 }
 
-/// Re-window an oversized node's text into sliding-window sub-chunks, offsetting
-/// each sub-chunk's line span by the node's 0-based `start_row`. The node's
-/// identity (`name`/`docstring`/`parent_scope`) is threaded onto every sub-chunk
-/// so a re-windowed node keeps its symbol name and docstring in the embedding
-/// text instead of degrading to `title: none`.
+// Re-window an oversized node's text into sliding-window sub-chunks, offsetting
+// each sub-chunk's line span by the node's 0-based `start_row`. The node's
+// identity (`name`/`docstring`/`parent_scope`) is threaded onto every sub-chunk
+// so a re-windowed node keeps its symbol name and docstring in the embedding
+// text instead of degrading to `title: none`.
 #[allow(clippy::too_many_arguments)]
 fn push_windowed(
     content: &str,
@@ -500,7 +496,7 @@ fn push_windowed(
     }
 }
 
-/// Language-aware name extraction for a chunk node.
+// Language-aware name extraction for a chunk node.
 pub(super) fn extract_name(
     node: &tree_sitter::Node<'_>,
     src: &[u8],
@@ -537,8 +533,8 @@ pub(super) fn extract_name(
     }
 }
 
-/// Whether `value` is a function, or a call wrapping one directly as an
-/// argument (`memo(() => …)`, `forwardRef((props, ref) => …)`).
+// Whether `value` is a function, or a call wrapping one directly as an
+// argument (`memo(() => …)`, `forwardRef((props, ref) => …)`).
 fn is_function_value(value: &tree_sitter::Node<'_>) -> bool {
     const FUNCTIONS: &[&str] = &[
         "arrow_function",
@@ -592,10 +588,10 @@ fn function_binding_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<Str
         .map(str::to_owned)
 }
 
-/// Extract the declared name from a Kotlin declaration node. tree-sitter-kotlin
-/// (the `-sg` grammar) does not expose a `name` field: classes/interfaces/enums
-/// and named objects carry their name as a `type_identifier` child, and functions
-/// as a `simple_identifier` child. A `companion object` has no name — returns None.
+// Extract the declared name from a Kotlin declaration node. tree-sitter-kotlin
+// (the `-sg` grammar) does not expose a `name` field: classes/interfaces/enums
+// and named objects carry their name as a `type_identifier` child, and functions
+// as a `simple_identifier` child. A `companion object` has no name — returns None.
 fn kotlin_decl_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let want = match node.kind() {
         "class_declaration" | "object_declaration" => "type_identifier",
@@ -612,7 +608,7 @@ fn kotlin_decl_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> 
     None
 }
 
-/// Swift `init_declaration` nodes have no name field; label them `init`.
+// Swift `init_declaration` nodes have no name field; label them `init`.
 fn swift_init_name(node: &tree_sitter::Node<'_>) -> Option<String> {
     if node.kind() == "init_declaration" {
         Some("init".to_owned())
@@ -621,8 +617,8 @@ fn swift_init_name(node: &tree_sitter::Node<'_>) -> Option<String> {
     }
 }
 
-/// Return the selector text from a CSS `rule_set` node, or the @-keyword for
-/// at-rules, to use as the chunk name.
+// Return the selector text from a CSS `rule_set` node, or the @-keyword for
+// at-rules, to use as the chunk name.
 fn css_chunk_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
@@ -638,9 +634,9 @@ fn css_chunk_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     None
 }
 
-/// Return the `src`/`id` attribute value of an HTML chunk element as its name,
-/// falling back to the tag name.  tree-sitter-html uses child kinds
-/// (`attribute_name`, `attribute_value`) rather than named fields.
+// Return the `src`/`id` attribute value of an HTML chunk element as its name,
+// falling back to the tag name. tree-sitter-html uses child kinds
+// (`attribute_name`, `attribute_value`) rather than named fields.
 fn html_chunk_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(start_tag) = node.child(i as u32) {
@@ -681,15 +677,15 @@ fn html_chunk_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     None
 }
 
-/// Extract the function name from a C/C++ `function_definition` node, which
-/// nests the name inside a declarator rather than exposing a direct `name` field.
+// Extract the function name from a C/C++ `function_definition` node, which
+// nests the name inside a declarator rather than exposing a direct `name` field.
 fn c_function_name<'a>(node: &tree_sitter::Node<'a>, src: &'a [u8]) -> Option<String> {
     // function_definition → declarator → … → identifier
     let decl = node.child_by_field_name("declarator")?;
     find_identifier(decl, src)
 }
 
-/// Maximum recursion depth for identifier search inside declarator subtrees.
+// Maximum recursion depth for identifier search inside declarator subtrees.
 const MAX_IDENT_DEPTH: usize = 64;
 
 pub(super) fn find_identifier(node: tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
@@ -713,8 +709,8 @@ fn find_identifier_inner(node: tree_sitter::Node<'_>, src: &[u8], depth: usize) 
     None
 }
 
-/// Build an HCL block name from its type identifier and string labels.
-/// e.g. `resource "aws_instance" "main"` → `"resource.aws_instance.main"`.
+// Build an HCL block name from its type identifier and string labels.
+// e.g. `resource "aws_instance" "main"` → `"resource.aws_instance.main"`.
 fn hcl_block_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for i in 0..node.child_count() {
@@ -741,7 +737,7 @@ fn hcl_block_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     }
 }
 
-/// Return the text of the first `*_name` child node (used for proto grammars).
+// Return the text of the first `*_name` child node (used for proto grammars).
 fn proto_named_child(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
@@ -753,7 +749,7 @@ fn proto_named_child(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String>
     None
 }
 
-/// Return the text of the first `object_reference` child (used for SQL DDL nodes).
+// Return the text of the first `object_reference` child (used for SQL DDL nodes).
 fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
@@ -765,29 +761,29 @@ fn sql_object_name(node: &tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     None
 }
 
-/// Return the comment node that immediately precedes `node` (skipping
-/// whitespace), if any.
-///
-/// Rust attributes (`#[derive(...)]`) are real siblings, skipped in the loop
-/// below. Python wraps decorator+def in one `decorated_definition` node, and
-/// JS/TS wraps an exported declaration in an `export_statement` whose first
-/// child is the `export` keyword, so in both the walk must start from that
-/// parent instead of `node` (`doc_anchor`). TS/Java attach
-/// decorators as a child, so neither case applies there. Ruby's
-/// `private def foo; end` visibility idiom (and lookalikes like `memoize def
-/// foo; end`) parses the def as a `method` node nested two levels inside a
-/// `call` (`private(def foo; end)`), so the walk must start from that `call`
-/// ancestor instead of the `method` node. Gated on the `method` being the
-/// argument_list's only child so an unrelated comment above a multi-arg call
-/// that merely happens to carry a `def` as one of several arguments (e.g.
-/// `some_call(other_arg, def foo; end)`) doesn't get misattached to `foo`.
-///
-/// Some grammars (Python `class_definition`/`function_definition`, Ruby
-/// `class`/`module`) attach a leading comment as a child of the enclosing
-/// `block`'s own parent, immediately before the `body` field, rather than as
-/// the first child inside the block. That bites only the first documented
-/// member of a body: when `start` has no sibling of its own (nothing else in
-/// its block precedes it), check one level up for that comment-as-child case.
+// Return the comment node that immediately precedes `node` (skipping
+// whitespace), if any.
+//
+// Rust attributes (`#[derive(...)]`) are real siblings, skipped in the loop
+// below. Python wraps decorator+def in one `decorated_definition` node, and
+// JS/TS wraps an exported declaration in an `export_statement` whose first
+// child is the `export` keyword, so in both the walk must start from that
+// parent instead of `node` (`doc_anchor`). TS/Java attach
+// decorators as a child, so neither case applies there. Ruby's
+// `private def foo; end` visibility idiom (and lookalikes like `memoize def
+// foo; end`) parses the def as a `method` node nested two levels inside a
+// `call` (`private(def foo; end)`), so the walk must start from that `call`
+// ancestor instead of the `method` node. Gated on the `method` being the
+// argument_list's only child so an unrelated comment above a multi-arg call
+// that merely happens to carry a `def` as one of several arguments (e.g.
+// `some_call(other_arg, def foo; end)`) doesn't get misattached to `foo`.
+//
+// Some grammars (Python `class_definition`/`function_definition`, Ruby
+// `class`/`module`) attach a leading comment as a child of the enclosing
+// `block`'s own parent, immediately before the `body` field, rather than as
+// the first child inside the block. That bites only the first documented
+// member of a body: when `start` has no sibling of its own (nothing else in
+// its block precedes it), check one level up for that comment-as-child case.
 pub(super) fn preceding_comment<'a>(node: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
     let start = doc_anchor(node);
     match start.prev_sibling() {
@@ -796,8 +792,8 @@ pub(super) fn preceding_comment<'a>(node: &tree_sitter::Node<'a>) -> Option<tree
     }
 }
 
-/// The node a doc comment sits directly above: `node` itself, or the wrapper
-/// that carries its decorators, `export` keyword or Ruby visibility call.
+// The node a doc comment sits directly above: `node` itself, or the wrapper
+// that carries its decorators, `export` keyword or Ruby visibility call.
 fn doc_anchor<'a>(node: &tree_sitter::Node<'a>) -> tree_sitter::Node<'a> {
     match node.parent() {
         Some(parent) if matches!(parent.kind(), "decorated_definition" | "export_statement") => {
@@ -813,8 +809,8 @@ fn doc_anchor<'a>(node: &tree_sitter::Node<'a>) -> tree_sitter::Node<'a> {
     }
 }
 
-/// The first line comment of the unbroken run ending at `comment`: Ruby and
-/// Python give each `#` line a node of its own.
+// The first line comment of the unbroken run ending at `comment`: Ruby and
+// Python give each `#` line a node of its own.
 fn comment_block_start(comment: tree_sitter::Node<'_>) -> tree_sitter::Node<'_> {
     let mut first = comment;
     while let Some(prev) = first.prev_sibling() {

@@ -1,5 +1,4 @@
-//! Which chunks get a vector, and which are left to full-text search alone
-//! (ADR-104).
+//! Which chunks get a vector, and which are left to full-text search alone.
 //!
 //! Embedding is the slow part of indexing, and on a real repository most of
 //! the tokens it spends buy little recall: test code is found by the names it

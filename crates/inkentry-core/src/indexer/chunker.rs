@@ -50,9 +50,8 @@ pub struct Chunk {
     pub docstring: Option<String>,
     /// Enclosing scope (e.g. `impl MyStruct` for a method).
     pub parent_scope: Option<String>,
-    /// Composed structural summary (set after indexing, not during parsing).
-    /// Deterministic and offline — see [`summariser`]; it replaced an
-    /// LLM-written one-sentence summary before 1.0.
+    /// Composed structural summary, set after indexing rather than during
+    /// parsing. Deterministic and offline — see [`summariser`].
     ///
     /// [`summariser`]: crate::indexer::summariser
     pub summary: Option<String>,
@@ -64,8 +63,7 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    /// The text that gets passed to the embedding model.
-    /// Uses EmbeddingGemma's recommended document retrieval format:
+    /// The text passed to the embedding model, in document retrieval format:
     /// `title: {title | "none"} | text: {content}`
     ///
     /// When a summary is present, it is prepended:
@@ -103,14 +101,8 @@ pub fn set_chunk_token_cap(tokens: usize) {
 
 /// Identifier for the chunk-boundary-affecting knobs, stamped into a DB's
 /// `index_meta` so a later run can detect that its stored chunks were cut
-/// under a different configuration (see `Database::ensure_chunker_config`).
-/// Fold any future boundary-affecting knob into this string too.
-///
-/// `rules` counts changes to which nodes become chunks. 2: JS/TS function
-/// bindings are chunks, and code outside every chunk is windowed rather than
-/// dropped. 3: the window holding the declaration of a container too large to
-/// keep whole is named after it, and windows are cut at container boundaries.
-/// 4: chunks inside Rust test code are marked `in_test_code`.
+/// under a different configuration. Bump `rules` whenever a change alters
+/// which nodes become chunks or where windows are cut.
 pub fn chunker_config_id() -> String {
     format!("max_chunk_tokens={};rules=4", chunk_token_cap())
 }
@@ -130,11 +122,10 @@ pub fn chunked_by_tree<'a>(chunks: impl IntoIterator<Item = &'a Chunk>) -> bool 
 /// for re-windowing oversized semantic nodes).
 ///
 /// Each window accumulates whole lines while the running estimate stays within
-/// [`MAX_CHUNK_TOKENS`], then starts a new window with ~12.5% token overlap
-/// (matching the historical 15/120-line ratio). A single line that alone
-/// exceeds the budget becomes its own window — this guarantees forward progress
-/// on pathological long-line content (e.g. minified/generated code), which a
-/// fixed line-count window never bounded.
+/// [`MAX_CHUNK_TOKENS`], then starts a new window with ~12.5% token overlap.
+/// A single line that alone exceeds the budget becomes its own window — this
+/// guarantees forward progress on pathological long-line content (e.g.
+/// minified/generated code), which a fixed line-count window never bounded.
 ///
 /// `name`, `docstring`, and `parent_scope` are the identity of the source node
 /// being windowed (or `None` for a whole-file fallback); they are copied onto
@@ -164,7 +155,7 @@ pub fn sliding_window(
 
     // `estimate_tokens` is `chars/4`, so the budget in characters mirrors the
     // token budget without introducing a second constant. Overlap targets
-    // ~12.5% of the budget (the historical 15/120-line ratio), in tokens.
+    // ~12.5% of the budget, in tokens.
     let budget_chars: usize = chunk_token_cap() * 4;
     let overlap_chars: usize = budget_chars / 8;
 
@@ -174,9 +165,8 @@ pub fn sliding_window(
     let mut start = 0usize;
 
     while start < lines.len() {
-        // Accumulate whole lines until the next one would exceed the budget.
-        // The first line is always taken, so a single over-budget line becomes
-        // its own window (forward progress on pathological long-line content).
+        // The first line is always taken, so an over-budget line still makes
+        // forward progress as its own window.
         let mut end = start;
         let mut acc = 0usize; // characters accumulated in the current window
         while end < lines.len() {

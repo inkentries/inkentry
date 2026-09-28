@@ -29,10 +29,6 @@ mod visibility;
 use anyhow::Result;
 use std::collections::HashSet;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EdgeKind {
     Imports,
@@ -84,16 +80,16 @@ pub struct Edge {
     pub target_file: Option<String>,
 }
 
-/// An edge a language helper found at one node, before resolution.
+// An edge a language helper found at one node, before resolution.
 pub(super) struct Candidate<'t> {
     target: String,
     kind: EdgeKind,
-    /// The callee token of an unqualified, receiver-less call: the only call
-    /// shape a lexical binding can decide.
+    // The callee token of an unqualified, receiver-less call: the only call
+    // shape a lexical binding can decide.
     bare_callee: Option<tree_sitter::Node<'t>>,
-    /// For `receiver.method(…)`, the receiver and the method's name.
+    // For `receiver.method(…)`, the receiver and the method's name.
     receiver: Option<(tree_sitter::Node<'t>, String)>,
-    /// A path's own edge (`Foo` in `Foo::new()`): the path token.
+    // A path's own edge (`Foo` in `Foo::new()`): the path token.
     path: Option<tree_sitter::Node<'t>>,
 }
 
@@ -142,10 +138,6 @@ impl<'t> Candidate<'t> {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 pub struct EdgeExtractor;
 
@@ -207,10 +199,6 @@ struct Ctx<'a> {
 
 type SeenKey = (Option<String>, String, String, Option<String>);
 
-// ---------------------------------------------------------------------------
-// Tree walker
-// ---------------------------------------------------------------------------
-
 fn walk(
     node: tree_sitter::Node<'_>,
     ctx: &Ctx<'_>,
@@ -218,7 +206,6 @@ fn walk(
     out: &mut Vec<Edge>,
     seen: &mut HashSet<SeenKey>,
 ) {
-    // Track the enclosing function/class as we descend.
     let new_scope = enclosing_scope(&node, ctx.src, ctx.language);
     let eff = new_scope.as_deref().or(enclosing);
 
@@ -231,7 +218,7 @@ fn walk(
     }
 }
 
-/// If `node` introduces a named scope (function, class, …) return its name.
+// If `node` introduces a named scope (function, class, …) return its name.
 fn enclosing_scope(node: &tree_sitter::Node<'_>, src: &[u8], language: &str) -> Option<String> {
     let field = match (language, node.kind()) {
         ("rust", "function_item") => "name",
@@ -276,8 +263,8 @@ fn enclosing_scope(node: &tree_sitter::Node<'_>, src: &[u8], language: &str) -> 
         .map(str::to_owned)
 }
 
-/// Resolve a Kotlin scope name from an unnamed child of the given kind
-/// (`type_identifier` for classes/objects, `simple_identifier` for functions).
+// Resolve a Kotlin scope name from an unnamed child of the given kind
+// (`type_identifier` for classes/objects, `simple_identifier` for functions).
 fn kotlin_scope_name(node: &tree_sitter::Node<'_>, src: &[u8], child_kind: &str) -> Option<String> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32)
@@ -289,7 +276,7 @@ fn kotlin_scope_name(node: &tree_sitter::Node<'_>, src: &[u8], child_kind: &str)
     None
 }
 
-/// Emit edges (if any) produced by `node`, deduplicating via `seen`.
+// Emit edges (if any) produced by `node`, deduplicating via `seen`.
 fn collect(
     node: &tree_sitter::Node<'_>,
     ctx: &Ctx<'_>,

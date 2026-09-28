@@ -1,6 +1,6 @@
-//! Intra-file name binding: which definition a call's callee token denotes in
-//! its lexical scope, read off the file's own tree with the vendored locals
-//! query (`@local.scope` / `@local.definition.*`).
+// Intra-file name binding: which definition a call's callee token denotes in
+// its lexical scope, read off the file's own tree with the vendored locals
+// query (`@local.scope` / `@local.definition.*`).
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -8,19 +8,19 @@ use std::time::{Duration, Instant};
 
 use tree_sitter::StreamingIterator;
 
-/// The locals pass runs once per file on a tree that already parsed within
-/// the parse budget; this bounds the query itself on a pathological tree.
+// The locals pass runs once per file on a tree that already parsed within
+// the parse budget; this bounds the query itself on a pathological tree.
 const QUERY_BUDGET: Duration = Duration::from_secs(2);
 
-/// What a callee resolves to within its file.
+// What a callee resolves to within its file.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Resolution {
-    /// A definition in this file, or a file-level binding a function or
-    /// class expression initialises.
+    // A definition in this file, or a file-level binding a function or
+    // class expression initialises.
     SameFile,
-    /// A parameter or local variable: the call cannot reach a repo definition.
+    // A parameter or local variable: the call cannot reach a repo definition.
     Suppress,
-    /// An in-file alias of an imported name, which the edge targets instead.
+    // An in-file alias of an imported name, which the edge targets instead.
     Alias(String),
     Unresolved,
 }
@@ -50,66 +50,66 @@ fn def_kind(capture: &str) -> Option<DefKind> {
 struct PendingDef<'t> {
     node: tree_sitter::Node<'t>,
     kind: DefKind,
-    /// Captured as `@local.definition.method`.
+    // Captured as `@local.definition.method`.
     method: bool,
-    /// An explicit `(#set! definition.<kind>.scope …)` on the pattern.
+    // An explicit `(#set! definition.<kind>.scope …)` on the pattern.
     hoist: Option<String>,
-    /// The node the same match captured as `@local.scope`, if any.
+    // The node the same match captured as `@local.scope`, if any.
     own_scope: Option<usize>,
 }
 
 struct Callable {
-    /// Where a bare call reaches it.
+    // Where a bare call reaches it.
     reach: super::visibility::Reach,
-    /// The type it is a member of, keyed by [`super::receivers::owner`].
+    // The type it is a member of, keyed by `super::receivers::owner`.
     owner: Option<String>,
 }
 
-/// The shape of a call, which decides what the file's scopes can say about it.
+// The shape of a call, which decides what the file's scopes can say about it.
 pub(super) enum Callee<'t> {
-    /// Unqualified and receiver-less: the callee token.
+    // Unqualified and receiver-less: the callee token.
     Bare(tree_sitter::Node<'t>),
-    /// `receiver.method(…)` or `Qualifier::method(…)`.
+    // `receiver.method(…)` or `Qualifier::method(…)`.
     Receiver {
         receiver: tree_sitter::Node<'t>,
         method: &'t str,
     },
-    /// The type or module named by a path (`Foo` in `Foo::new()`).
+    // The type or module named by a path (`Foo` in `Foo::new()`).
     Path(tree_sitter::Node<'t>),
     Other,
 }
 
 struct Def {
     kind: DefKind,
-    /// For a value, whether every binding of it here is initialised by a
-    /// function, lambda or class expression.
+    // For a value, whether every binding of it here is initialised by a
+    // function, lambda or class expression.
     defines: bool,
-    /// For an import that renames what it imports, the original name.
+    // For an import that renames what it imports, the original name.
     aliased: Option<String>,
 }
 
 pub(super) struct FileScopes {
-    /// Scope index by the id of the node that opens it; index 0 is the file.
+    // Scope index by the id of the node that opens it; index 0 is the file.
     scope_of_node: HashMap<usize, usize>,
     parent: Vec<usize>,
-    /// Scopes a nested scope's names never see: a Python class body is not
-    /// enclosing for the methods defined in it.
+    // Scopes a nested scope's names never see: a Python class body is not
+    // enclosing for the methods defined in it.
     class_body: Vec<bool>,
     defs: HashMap<(usize, String), Def>,
-    /// Every callable this file defines, by name.
+    // Every callable this file defines, by name.
     callables: HashMap<String, Vec<Callable>>,
-    /// Whether a call token can denote a variable at all. In Ruby, Java and
-    /// PHP a call always names a method or function, whatever a same-named
-    /// local holds.
+    // Whether a call token can denote a variable at all. In Ruby, Java and
+    // PHP a call always names a method or function, whatever a same-named
+    // local holds.
     calls_reach_values: bool,
     language: String,
-    /// The types declared at the top of the file, by name.
+    // The types declared at the top of the file, by name.
     file_types: HashMap<String, String>,
 }
 
 impl FileScopes {
-    /// `None` when `language` has no locals query or the query overran its
-    /// budget: the file's edges then stay unresolved.
+    // `None` when `language` has no locals query or the query overran its
+    // budget: the file's edges then stay unresolved.
     pub(super) fn analyse(tree: &tree_sitter::Tree, src: &[u8], language: &str) -> Option<Self> {
         let query = super::queries::locals_query(language)?;
         let root = tree.root_node();
@@ -269,7 +269,7 @@ impl FileScopes {
         0
     }
 
-    /// Resolve a call to `name`.
+    // Resolve a call to `name`.
     pub(super) fn resolve(&self, callee: Callee<'_>, name: &str, src: &[u8]) -> Resolution {
         let node = match callee {
             Callee::Bare(node) => node,
@@ -303,9 +303,9 @@ impl FileScopes {
         self.reached_by_bare_name(node, name)
     }
 
-    /// Whether `receiver.method(…)` reaches a method this file defines: through
-    /// the enclosing type's own, unrebound self-reference, or a qualifier that
-    /// statically names one of this file's types or its own module.
+    // Whether `receiver.method(…)` reaches a method this file defines: through
+    // the enclosing type's own, unrebound self-reference, or a qualifier that
+    // statically names one of this file's types or its own module.
     fn receiver_reaches(&self, receiver: tree_sitter::Node<'_>, method: &str, src: &[u8]) -> bool {
         use super::receivers::{Receiver, classify};
         let defines = |owner: Option<&str>| {
