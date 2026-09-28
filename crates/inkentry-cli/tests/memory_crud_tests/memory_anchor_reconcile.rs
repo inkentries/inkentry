@@ -51,6 +51,11 @@ fn init_repo(dir: &Path) {
     isolate_git_config();
     std::fs::create_dir_all(dir).unwrap();
     git(dir, &["init", "-q", "-b", "main"]);
+    // Repo-local identity: the binary under test runs with HOME redirected
+    // and no global config, and git will not auto-detect an email on a host
+    // without a domain name, which is what a CI runner is.
+    git(dir, &["config", "user.email", "test@example.com"]);
+    git(dir, &["config", "user.name", "Test"]);
     // `.inkentry/` (memory.db, index.db) must never be part of the commits
     // these tests manufacture: a `git reset --hard`/cherry-pick would then
     // rewrite or delete the live stores as a side effect of moving history.
