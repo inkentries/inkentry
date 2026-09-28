@@ -2,11 +2,11 @@
 //!
 //! The `summary:` slot in [`Chunk::embedding_text`] bridges retrieval
 //! vocabulary — natural-language words a query would use, sitting next to the
-//! code they point at. It is composed here from signals already present after
-//! parse: no model, no key, no network. The composition is **byte-identical**
-//! for the same chunk and edges on every run, which is what underwrites
-//! idempotent resume (an interrupted re-embed must not produce a different
-//! vector for the same input) and the public "same query, same answer".
+//! code they point at — composed here from signals already present after
+//! parse, with no model, key or network involved. The composition is
+//! **byte-identical** for the same chunk and edges on every run: an
+//! interrupted re-embed must not produce a different vector for the same
+//! input.
 //!
 //! [`Chunk::embedding_text`]: crate::indexer::Chunk::embedding_text
 
@@ -15,24 +15,20 @@ use std::collections::HashSet;
 use crate::search::tokens::estimate_tokens;
 
 /// Provenance tag for the embedding-input composition scheme, stamped into a
-/// DB's `index_meta` alongside `embedding_model` and `chunker_config`. A change
-/// signals that existing vectors predate the current composition and must be
-/// re-embedded in place. Bump this when the composed `summary:` text changes in
-/// a way that invalidates stored vectors (including a change to the tier-3 MMR
-/// `λ`, which is folded into this one scheme).
+/// DB's `index_meta` alongside `embedding_model` and `chunker_config`. Bump
+/// this whenever a change to the composed `summary:` text (including the
+/// tier-3 MMR `λ`, folded into this one scheme) invalidates stored vectors.
 pub const SUMMARY_SCHEME: &str = "structural_v1";
 
-/// Hard cap on the composed `summary:` slot, in estimated tokens. Sized to the
-/// one-sentence LLM summary it replaces — the same order of magnitude as one
-/// sentence, never several times it. The cap bounds two failure modes: the
-/// acute one (a long summary displacing the code tail at the embedder's context
-/// boundary) and the chronic one (a bloated summary diluting the pooled vector
-/// toward prose and away from code).
+/// Hard cap on the composed `summary:` slot, in estimated tokens — the same
+/// order of magnitude as the one-sentence LLM summary it replaces, never
+/// several times it. Bounds a long summary displacing the code tail at the
+/// embedder's context boundary, and a bloated summary diluting the pooled
+/// vector toward prose and away from code.
 pub const SUMMARY_TOKEN_CAP: usize = 96;
 
-/// Upper bound on salient literals folded into one summary, and on the bytes
-/// scanned for them — keeps a crafted/generated chunk from driving unbounded
-/// work.
+// Bounds on salient-literal extraction so a crafted/generated chunk can't drive
+// unbounded work.
 const MAX_SALIENT_LITERALS: usize = 6;
 const MAX_LITERAL_SCAN_CHARS: usize = 64 * 1024;
 
@@ -48,8 +44,8 @@ const MAX_LITERAL_SCAN_CHARS: usize = 64 * 1024;
 /// 3. split callee names, in the graph's deterministic order;
 /// 4. salient literals — error/log strings, last (noisiest, secret-bearing).
 ///
-/// `callees` must already be in a deterministic order (the graph's SQL
-/// `ORDER BY target_name`), never hash-iteration order.
+/// `callees` must already be in deterministic order; the caller supplies the
+/// graph's SQL `ORDER BY target_name`, never hash-iteration order.
 pub fn compose_structural_summary(
     name: &str,
     docstring: Option<&str>,
@@ -65,10 +61,8 @@ pub fn compose_structural_summary(
     assemble(&ingredients, SUMMARY_TOKEN_CAP)
 }
 
-/// Append ingredients in order while the running token estimate stays within
-/// `cap`; stop at the first ingredient that would overflow (dropping it and all
-/// lower-priority ones whole). Empty ingredients are skipped, not terminal, so
-/// a missing docstring never suppresses the split name below it.
+// Empty ingredients are skipped, not terminal, so a missing docstring never
+// suppresses the split name below it.
 fn assemble(ingredients: &[String], cap: usize) -> String {
     let mut composed = String::new();
     for ing in ingredients {
@@ -88,10 +82,9 @@ fn assemble(ingredients: &[String], cap: usize) -> String {
     composed
 }
 
-/// The first sentence of a docstring, with interior whitespace collapsed to
-/// single spaces. A sentence ends at the first `.`/`!`/`?` followed by
-/// whitespace or end-of-string; a docstring with no such terminator yields the
-/// whole (whitespace-collapsed) text.
+// A sentence ends at the first `.`/`!`/`?` followed by whitespace or
+// end-of-string; a docstring with no such terminator yields the whole
+// (whitespace-collapsed) text.
 fn first_sentence(doc: &str) -> String {
     let text = collapse_whitespace(doc);
     if text.is_empty() {
@@ -111,10 +104,9 @@ fn first_sentence(doc: &str) -> String {
     text[..end].to_string()
 }
 
-/// Split an identifier into lower-cased words across `snake_case`, `kebab-case`,
-/// path (`::`, `.`) and `camelCase`/`PascalCase` boundaries.
-/// `retry_with_backoff` → "retry with backoff"; `EdgeExtractor` → "edge
-/// extractor".
+// Splits on `snake_case`, `kebab-case`, path (`::`, `.`) and
+// `camelCase`/`PascalCase` boundaries: `retry_with_backoff` -> "retry with
+// backoff"; `EdgeExtractor` -> "edge extractor".
 fn split_identifier(ident: &str) -> String {
     let mut words: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -141,10 +133,8 @@ fn split_identifier(ident: &str) -> String {
     words.join(" ")
 }
 
-/// Split every callee identifier into words, in input order, dropping duplicate
-/// words while preserving first occurrence. Input order is the caller's
-/// responsibility (the graph's deterministic SQL order); dedup uses a set for
-/// membership only, never for output ordering.
+// Dedups words while preserving first-occurrence order; the set is for
+// membership only, never for output ordering.
 fn split_callees(callees: &[String]) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -158,11 +148,10 @@ fn split_callees(callees: &[String]) -> String {
     out.join(" ")
 }
 
-/// Salient double-quoted string literals in the chunk — message-like strings
-/// (containing a space) that a natural-language query might echo. Scanned in
-/// source order, deduplicated, bounded in count and scan length. This ingredient
-/// is last because it is the noisiest and the most likely to carry a secret;
-/// the caller secret-scans the composed summary before storing it.
+// Message-like double-quoted literals (containing a space) that a
+// natural-language query might echo; last because they're the noisiest and
+// the most likely to carry a secret (the caller secret-scans the composed
+// summary before storing it).
 fn salient_literals(content: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -197,7 +186,6 @@ fn salient_literals(content: &str) -> String {
     out.join(" ")
 }
 
-/// Collapse every run of whitespace to a single space and trim the ends.
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -214,8 +202,6 @@ mod tests {
             &["connect".to_string(), "sleep".to_string()],
             r#"fn f() { log::warn!("giving up after retries"); }"#,
         );
-        // Docstring sentence first, then split name, then split callees, then
-        // the salient literal — each ingredient's position preserved.
         let doc_at = summary
             .find("Retries an operation")
             .expect("docstring first");
@@ -234,8 +220,6 @@ mod tests {
 
     #[test]
     fn never_exceeds_the_token_cap() {
-        // Every ingredient oversized: a long docstring, a long name, many
-        // callees, many literals. The composed slot must still fit the cap.
         let docstring = "word ".repeat(500);
         let callees: Vec<String> = (0..500).map(|i| format!("callee_number_{i}")).collect();
         let content: String = (0..500)
@@ -256,10 +240,7 @@ mod tests {
 
     #[test]
     fn overflow_drops_lower_priority_ingredients_whole() {
-        // A docstring sized to nearly fill the cap leaves room for the split
-        // name but not the callees: the higher-priority ingredients are retained
-        // whole, the lower ones dropped whole (not truncated mid-ingredient).
-        // 60 "alpha" words + a period ≈ 90 tokens; +name fits, +callees would
+        // 60 "alpha" words + a period ≈ 90 tokens: +name fits, +callees would
         // overflow the 96-token cap.
         let docstring = format!("{}.", "alpha ".repeat(60).trim());
         let summary = compose_structural_summary(
@@ -304,10 +285,6 @@ mod tests {
 
     #[test]
     fn callee_output_order_follows_input_order_not_a_hashed_collection() {
-        // The same set of callees supplied in different orders yields different
-        // (order-preserving) output — proving the composer takes ordering from
-        // its input, never from a hashed collection's iteration. The caller
-        // supplies the graph's deterministic SQL order.
         let a = split_callees(&["alpha".to_string(), "beta".to_string()]);
         let b = split_callees(&["beta".to_string(), "alpha".to_string()]);
         assert_eq!(a, "alpha beta");
@@ -356,10 +333,7 @@ mod tests {
 
     #[test]
     fn composed_summary_carries_a_secret_literal_for_the_scan_to_catch() {
-        // The salient-literals ingredient can fold a credential into the
-        // composed summary; the pass scans the *composed* string (not just the
-        // raw chunk) before storing, and stores "" on a hit. Prove the composed
-        // string carries the literal and that `contains_secret` flags it.
+        // The secret scan runs on the composed summary, not just the raw chunk.
         let summary = compose_structural_summary(
             "load_key",
             None,

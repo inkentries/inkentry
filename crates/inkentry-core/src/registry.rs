@@ -12,10 +12,6 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct Project {
     pub id: i64,
@@ -23,10 +19,6 @@ pub struct Project {
     pub db_path: PathBuf,
     pub registered_at: i64,
 }
-
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
 
 pub struct Registry {
     conn: Connection,
@@ -47,8 +39,6 @@ impl Registry {
         Ok(reg)
     }
 
-    /// Execute a raw SQL batch on the registry connection.
-    ///
     /// Exposed for transaction management by a caller that has to keep this
     /// store and another in step — `inkentry import`, whose refusal covers
     /// every store the dump touches, not only `memory.db`.
@@ -81,9 +71,7 @@ impl Registry {
         Ok(())
     }
 
-    // ── Registration ──────────────────────────────────────────────────────────
-
-    /// Register (or update) a project.  Returns the project's id.
+    /// Register (or update) a project. Returns the project's id.
     pub fn register(&self, root: &Path, db: &Path) -> Result<i64> {
         let root_str = root.to_string_lossy();
         let db_str = db.to_string_lossy();
@@ -106,8 +94,6 @@ impl Registry {
         Ok(id)
     }
 
-    // ── Lookup ────────────────────────────────────────────────────────────────
-
     /// Find the closest ancestor of `start` that is a registered project root.
     /// If none found in the registry, falls back to filesystem walk looking for
     /// `.inkentry/index.db` and auto-registers what it finds.
@@ -115,8 +101,6 @@ impl Registry {
     /// If `start` is inside a git linked worktree, the walk begins from the
     /// main worktree root so commands run inside a worktree find the shared DB.
     pub fn find_project_for_path(&self, start: &Path) -> Result<Option<Project>> {
-        // If start is inside a git linked worktree, resolve to the main
-        // worktree root so the shared index is found without a symlink.
         let search_root = crate::utils::resolve_main_worktree_root(start);
 
         // 1. Registry walk-up (most specific first)
@@ -168,7 +152,6 @@ impl Registry {
         Ok(None)
     }
 
-    /// Find a project by its exact root path.
     pub fn find_by_root(&self, root: &Path) -> Result<Option<Project>> {
         let root_str = root.to_string_lossy().to_string();
         self.conn
@@ -189,9 +172,7 @@ impl Registry {
             .context("querying registry by root")
     }
 
-    // ── Dependencies ──────────────────────────────────────────────────────────
-
-    /// Return all dep DB paths for a project (direct deps only).
+    /// Direct dependencies of `project_id` only.
     pub fn get_deps(&self, project_id: i64) -> Result<Vec<Project>> {
         let mut stmt = self
             .conn
@@ -229,7 +210,6 @@ impl Registry {
         Ok(())
     }
 
-    /// Remove a dependency.
     pub fn remove_dep(&self, from_id: i64, dep_id: i64) -> Result<()> {
         self.conn
             .execute(
@@ -239,8 +219,6 @@ impl Registry {
             .context("removing dependency")?;
         Ok(())
     }
-
-    // ── Listing ───────────────────────────────────────────────────────────────
 
     /// Return all registered projects, ordered by root_path.
     pub fn all_projects(&self) -> Result<Vec<Project>> {
@@ -295,8 +273,6 @@ impl Registry {
             .context("reading reverse-dep rows")
     }
 
-    // ── Autoclean ─────────────────────────────────────────────────────────────
-
     /// Remove all registry entries whose root path no longer exists on disk.
     /// Returns the list of removed root paths.
     pub fn autoclean(&self) -> Result<Vec<String>> {
@@ -344,10 +320,6 @@ impl Registry {
         Ok(removed)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Project context resolution
-// ---------------------------------------------------------------------------
 
 /// Resolved project context for the current working directory.
 ///
@@ -413,9 +385,9 @@ pub fn resolve_project_context(
     })
 }
 
-/// Returns true if `path` exists but contains only a `.inkentry` subdirectory —
-/// i.e. it is a git worktree remnant where everything tracked was removed but
-/// the gitignored `.inkentry` folder was left behind.
+// True when `path` exists but contains only a `.inkentry` subdirectory — a
+// git worktree remnant where everything tracked was removed but the
+// gitignored `.inkentry` folder was left behind.
 fn inkentry_only_remnant(path: &std::path::Path) -> bool {
     let Ok(mut entries) = std::fs::read_dir(path) else {
         return false;
@@ -425,10 +397,6 @@ fn inkentry_only_remnant(path: &std::path::Path) -> bool {
         _ => false,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn registry_path() -> Result<PathBuf> {
     // `INKENTRY_REGISTRY_DIR` overrides the registry location. This exists for
@@ -461,20 +429,14 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
 
-    /// Point `registry_path()` at a fresh tempdir for the duration of the
-    /// closure and open a `Registry` against it. `#[serial]` on each test
-    /// guards the shared `INKENTRY_REGISTRY_DIR` env var — these tests must
-    /// not run concurrently with each other.
+    // `#[serial]` on each test guards the shared `INKENTRY_REGISTRY_DIR` env
+    // var — these tests must not run concurrently with each other.
     fn with_test_registry<F: FnOnce(&Registry, &std::path::Path)>(f: F) {
         let tmp = TempDir::new().unwrap();
         // SAFETY: guarded by #[serial] — no other thread in this test binary
@@ -485,12 +447,6 @@ mod tests {
         unsafe { std::env::remove_var("INKENTRY_REGISTRY_DIR") };
     }
 
-    /// `autoclean` must refuse to `remove_dir_all` through a symlinked
-    /// `.inkentry` directory left behind at a "remnant" project root (a
-    /// worktree whose tracked files were removed but whose gitignored
-    /// `.inkentry` dir survived). A symlink there — attacker-planted or from a
-    /// poisoned registry row — must not turn routine cleanup into an
-    /// arbitrary recursive delete outside the project root.
     #[cfg(unix)]
     #[test]
     #[serial]
@@ -536,9 +492,6 @@ mod tests {
         });
     }
 
-    /// Sanity check: autoclean still removes a genuine (non-symlinked)
-    /// `.inkentry`-only remnant, so the symlink guard doesn't regress the
-    /// existing cleanup behaviour.
     #[test]
     #[serial]
     fn autoclean_removes_real_remnant_dir() {

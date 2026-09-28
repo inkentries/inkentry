@@ -1,5 +1,5 @@
-// Backend selection under the resolved sync mode: which store `open_memory_backend`
-// picks, what reaches the wire, and what it refuses to route at.
+// Which store `open_memory_backend` picks under each resolved sync mode, and
+// what it refuses to route at.
 
 use super::open_memory_backend;
 use crate::config::{Config, SyncMode};
@@ -63,15 +63,11 @@ async fn local_first_mode_routes_local() {
     assert_eq!(be.backend_kind(), "sqlite");
 }
 
-// The configuration this suite exists to pin is a non-loopback team server,
-// and loopback-ness is the axis every `cloud_first` transport rule keys on,
-// so these tests must not be satisfied by a `127.0.0.1` peer. wiremock binds
-// `127.0.0.1`; the same listener addressed as `0.0.0.0` is classified
-// non-loopback while the OS still routes to it, so the real branch is driven
-// with no live network or DNS.
-//
-// Connecting to `0.0.0.0` raises `WSAEADDRNOTAVAIL` on Windows, hence the
-// `cfg_attr(windows, ignore)` on every test that uses it.
+// wiremock binds `127.0.0.1`; addressed as `0.0.0.0` the same listener is
+// classified non-loopback while the OS still routes to it, so the
+// non-loopback branch is driven with no live network or DNS. Connecting to
+// `0.0.0.0` raises `WSAEADDRNOTAVAIL` on Windows, hence `cfg_attr(windows,
+// ignore)` on every test that uses it.
 fn non_loopback_alias(server: &MockServer) -> String {
     let url = server.uri().replace("127.0.0.1", "0.0.0.0");
     assert!(
@@ -100,17 +96,16 @@ fn cloud_first_cfg(url: &str, project_id: &str) -> Config {
     }
 }
 
-// Production reaches this seam only after `open_memory_backend` has
-// enforced `validate_transport_url`, which the `0.0.0.0` plaintext alias
-// would not clear. The injected store keeps bearer resolution off the
-// developer's real secret store.
+// Skips `open_memory_backend`'s `validate_transport_url`, which the `0.0.0.0`
+// plaintext alias would not clear. The injected store keeps bearer resolution
+// off the developer's real secret store.
 async fn open_seam(cfg: &Config, url: &str) -> Result<Box<dyn super::MemoryBackend + Send>> {
     let store = crate::config::secret_store::MemoryStore::default();
     super::open_remote_memory_backend_with_store(cfg, url, &store).await
 }
 
-// Paths requested, minus the peer probe: it is issued on every open by design
-// and is not what these assertions are pinning.
+// Paths requested, minus the peer probe: it is issued on every open by
+// design and is not what these assertions are pinning.
 async fn memory_paths(server: &MockServer) -> Vec<String> {
     requested_paths(server)
         .await
@@ -130,16 +125,11 @@ async fn requested_paths(server: &MockServer) -> Vec<String> {
 }
 
 // The configured `project_id` is the project key, so opening the backend never
-// looks one up. `GET /v1/projects` is the retired slug-to-UUID resolver: a
-// self-hosted server answers it in a shape the resolver could not deserialize,
-// so reintroducing it would break the documented `cloud_first` configuration at
-// open and take every memory command with it. That is the harm this names.
-//
-// A `GET /v1/health` peer probe IS issued, to pick the memory dialect. It
-// cannot cause the same harm, because every failure to answer it resolves to
-// the self-hosted dialect: the mocks below mount no `/v1/health`, so each of
-// these tests exercises that fallback and proves the self-hosted path is
-// reached exactly as it was before the probe existed.
+// looks one up: a self-hosted server answers `GET /v1/projects` in a shape
+// this crate cannot deserialize, so calling it would break every self-hosted
+// `cloud_first` config at open. A `GET /v1/health` peer probe IS issued, to
+// pick the memory dialect; unanswered (no `/v1/health` mocked below), it
+// falls back to the self-hosted dialect, which is what these tests exercise.
 async fn assert_no_project_lookup(server: &MockServer) {
     let paths = requested_paths(server).await;
     assert!(
@@ -152,10 +142,9 @@ async fn assert_no_project_lookup(server: &MockServer) {
 #[serial_test::serial]
 async fn cloud_first_mode_routes_remote() {
     clear_env();
-    // This goes through the PUBLIC `open_memory_backend`, which resolves
-    // the bearer via `Config::bearer_for`: the host's *default* secret
-    // store. Isolate `HOME` + force the file backend so this never reads
-    // or writes the developer's real `~/.config/inkentry`.
+    // `open_memory_backend` resolves the bearer via `Config::bearer_for` — the
+    // host's *default* secret store. Isolate `HOME` + force the file backend
+    // so this never reads or writes the developer's real `~/.config/inkentry`.
     let home = tempfile::TempDir::new().unwrap();
     let original_home = std::env::var("HOME").ok();
     unsafe {
@@ -163,10 +152,9 @@ async fn cloud_first_mode_routes_remote() {
         std::env::set_var("INKENTRY_SECRET_STORE", "file");
     }
 
-    // Port 0 can never have a listener, which is the point: the open path
-    // *does* health-probe, so a real port here sends the developer's own
-    // daemon a burst of requests on every test run (inkentry-oss^5). Only the
-    // routing decision is under test, and it is reached either way.
+    // Port 0 can never have a listener: the open path health-probes, so a
+    // real port here would send the developer's own daemon requests on every
+    // test run. Only the routing decision is under test, reached either way.
     let cfg = cloud_first_cfg("http://127.0.0.1:0", "team/proj");
     let be = open_memory_backend(&cfg, std::path::Path::new(":memory:"), None)
         .await
@@ -186,8 +174,6 @@ async fn cloud_first_mode_routes_remote() {
         "cloud_first (server-authoritative) routes memory CRUD to the cloud"
     );
 }
-
-// ── Project id reaches the server exactly as configured ───────────────────
 
 #[tokio::test]
 #[serial_test::serial]
@@ -314,9 +300,8 @@ async fn cloud_first_uppercase_uuid_is_not_normalised() {
     assert_no_project_lookup(&server).await;
 }
 
-// A repo that reached the hosted API before the passthrough still carries the
-// resolver's cache file, which maps the slug to a different string. Nothing
-// reads it any more: the configured `project_id` is the only project key, and
+// A leftover resolver cache file mapping the slug to a different string must
+// change nothing: the configured `project_id` is the only project key, and
 // the file is not rewritten either.
 #[tokio::test]
 #[serial_test::serial]
@@ -452,14 +437,11 @@ async fn offline_non_loopback_stays_local_and_silent() {
     );
 }
 
-// ── The documented self-hosted cloud_first config ─────────────────────────
-
 // The three keys documented for a self-hosted `cloud_first` server
-// (`server_url` + `project_id` + `mode`), pointed at a mock that serves the
-// OSS team server's route shapes. `server_url` is the mock's non-loopback
-// alias rather than the documented `https://` host, which is the only
-// substitution: the branch under test keys on non-loopback-ness, not on the
-// scheme.
+// (`server_url` + `project_id` + `mode`). `server_url` is the mock's
+// non-loopback alias rather than the documented `https://` host, which is the
+// only substitution: the branch under test keys on non-loopback-ness, not on
+// the scheme.
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(windows, ignore)]
@@ -467,10 +449,9 @@ async fn documented_self_hosted_cloud_first_config_round_trips() {
     clear_env();
     let server = MockServer::start().await;
 
-    // The OSS team server's `GET /v1/projects` body: a bare array, not the
-    // `{"projects": [...]}` object the deleted resolver expected. Mounted
-    // so that a stray lookup would be recorded rather than 404, making the
-    // "never requested" assertion below meaningful.
+    // A bare array, not `{"projects": [...]}`: mounted so a stray lookup is
+    // recorded rather than 404, making the "never requested" assertion below
+    // meaningful.
     Mock::given(method("GET"))
         .and(path("/v1/projects"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
@@ -644,10 +625,9 @@ async fn no_slug_cache_env_var_is_inert() {
     );
 }
 
-// ADR-071 D2: the bearer is resolved per-origin, so a cloud login must not be
-// what reaches a self-hosted `server_url`. Dropping the slug resolver must not
-// disturb that: the mock only answers a request carrying the key registered
-// for this origin.
+// The bearer is resolved per-origin, so a cloud login must not be what
+// reaches a self-hosted `server_url`: the mock only answers a request
+// carrying the key registered for this origin.
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(windows, ignore)]
@@ -676,8 +656,7 @@ async fn memory_requests_carry_the_per_origin_bearer() {
 }
 
 // A `cloud_first` config with a non-loopback plaintext `http://` `server_url`
-// must be rejected by `open_memory_backend` before any bearer token is sent,
-// over the memory REST calls (`RemoteMemoryBackend::authed`).
+// must be rejected by `open_memory_backend` before any bearer token is sent.
 // Mirrors `server_client::transport_validator_rejects_non_loopback_http`.
 #[tokio::test]
 #[serial_test::serial]
@@ -706,10 +685,9 @@ async fn cloud_first_rejects_non_loopback_http() {
     assert!(msg.contains("https"), "error must name the fix; got: {msg}");
 }
 
-// The same guard, against authorities that only look like loopback. These
-// reached the remote backend before the authority was parsed rather than
-// prefix-matched, which put the bearer on the wire in the clear to the host
-// after the `@` or the suffix.
+// The same guard, against authorities that only look like loopback: the
+// authority must be parsed, not prefix-matched, or the bearer goes on the
+// wire in the clear to the host after the `@` or the suffix.
 #[tokio::test]
 #[serial_test::serial]
 async fn cloud_first_rejects_spoofed_loopback_http() {
@@ -757,8 +735,6 @@ async fn no_server_kill_switch_forces_local() {
     );
     unsafe { std::env::remove_var("INKENTRY_NO_SERVER") };
 }
-
-// ── the peer probe picks the dialect, and never strands the self-hosted one ──
 
 #[tokio::test]
 #[serial_test::serial]
@@ -822,13 +798,10 @@ async fn an_unanswerable_health_probe_keeps_the_self_hosted_dialect() {
     assert_eq!(be.backend_kind(), "remote");
 }
 
-// ── the unreachable memo is never a routing input ────────────────────────────
-
-// The memo exists so a command that already found the server absent can skip
-// redundant connection attempts. If it ever reached backend selection, "the
-// server looks down" would start choosing the local store, which is precisely
-// the silent fallback `cloud_first` refuses to do. These pin that selection is
-// identical with the memo set and unset.
+// If the connect-failure memo ever reached backend selection, "the server
+// looks down" would start choosing the local store — the silent fallback
+// `cloud_first` refuses to do. These pin selection identical with the memo
+// set and unset.
 
 #[tokio::test]
 #[serial_test::serial(reachability_memo)]
@@ -890,17 +863,11 @@ async fn a_memoised_unreachable_server_does_not_change_local_first_either() {
     );
 }
 
-// ── the connect bound applies on loopback too ────────────────────────────────
-
-// Accept TCP on loopback and then say nothing, holding every connection open.
-// A client that never bounds connecting waits out its whole request budget
-// here, because the TCP connect succeeds and the TLS handshake it is waiting on
-// never arrives. Returns the bound port.
-//
-// This is the portable stand-in for the reported failure. A firewall that drops
-// a SYN cannot be simulated in a test, but it costs a client the same thing: an
-// attempt with nothing to fail on. The connect bound covers the handshake as
-// well as the TCP connect, so this exercises it.
+// Accepts TCP on loopback and then says nothing, holding every connection
+// open: the TCP connect succeeds but the TLS handshake it waits on never
+// arrives, so a client that never bounds connecting waits out its whole
+// request budget. A portable stand-in for a firewall dropping a SYN, which
+// cannot be simulated in a test but costs a client the same thing.
 fn spawn_stalling_loopback_listener() -> u16 {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stall listener");
     let port = listener.local_addr().expect("local_addr").port();
@@ -920,9 +887,8 @@ fn spawn_stalling_loopback_listener() -> u16 {
 #[tokio::test]
 #[serial_test::serial(reachability_memo)]
 async fn the_memory_client_bounds_connecting_to_a_stalled_loopback_server() {
-    // The reported failure was a loopback team server that never answered, so
-    // an exemption for loopback would have left exactly that case unbounded.
-    // Without the bound this waits out the 30s request budget instead.
+    // A loopback exemption on the connect bound would leave a stalled
+    // loopback server unbounded, waiting out the full 30s request budget.
     register_sqlite_vec();
     crate::reachability::clear_for_test();
 

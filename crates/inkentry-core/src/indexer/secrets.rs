@@ -1,26 +1,15 @@
-//! Lightweight secret scanner used during indexing.
+//! Secret scanner run during indexing: chunks matching a known credential
+//! pattern are dropped before embedding.
 //!
-//! Chunks whose content matches known secret patterns are dropped before
-//! embedding so credentials never enter the vector index.
-//!
-//! Patterns are deliberately conservative (high precision, some false
-//! negatives) to avoid blocking legitimate code that discusses secrets
-//! conceptually (e.g., documentation, tests with placeholder values).
-//!
-//! **This scanner is best-effort defense-in-depth, not a security boundary.**
-//! A finite set of regexes cannot catch every possible credential format, and
-//! it is not the mechanism that keeps code private. The actual boundary is
-//! that code never leaves the local machine unless a team `server_url` is
-//! explicitly configured (see `docs/adr/004-unified-memory-storage.md`); this
-//! scanner only reduces the chance of a credential being embedded/stored (and,
-//! on that explicit-server path, transmitted) by accident. Treat a clean scan
-//! as "nothing matched a known pattern", never as a guarantee that no secret
-//! is present.
+//! Best-effort defense-in-depth, not a security boundary: patterns are
+//! deliberately conservative (high precision, some false negatives) so
+//! legitimate code discussing secrets conceptually isn't blocked, and a clean
+//! scan means no known pattern matched, not that no secret is present.
 
 use regex::Regex;
 use std::sync::OnceLock;
 
-/// Returns `true` if `text` appears to contain a secret that should not be indexed.
+/// Returns `true` if `text` matches a known credential pattern.
 pub fn contains_secret(text: &str) -> bool {
     patterns().iter().any(|re| re.is_match(text))
 }
@@ -34,7 +23,7 @@ fn patterns() -> &'static Vec<Regex> {
             r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
             // AWS access key IDs
             r"AKIA[0-9A-Z]{16}",
-            // AWS secret access keys (base64, 40 chars after a key= / secret= assignment)
+            // AWS secret access keys
             r#"(?i)aws[_\-]?secret[_\-]?(?:access[_\-]?)?key["']?\s*[:=]\s*["']?[A-Za-z0-9+/]{40}"#,
             // Generic high-confidence key/secret assignments with a long value
             r#"(?i)(?:api[_\-]?key|auth[_\-]?token|secret[_\-]?key|access[_\-]?token|private[_\-]?key)\s*[:=]\s*["']?[A-Za-z0-9\-_.~+/]{32,}["']?"#,
@@ -44,9 +33,9 @@ fn patterns() -> &'static Vec<Regex> {
             r"gh[pousr]_[A-Za-z0-9]{36,}",
             // Slack tokens
             r"xox[baprs]-[0-9A-Za-z\-]{10,}",
-            // Generic JWT (three base64url segments)
+            // Generic JWT
             r"ey[A-Za-z0-9\-_]{10,}\.ey[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}",
-            // OpenAI API keys (sk- followed by 48+ alphanumeric/dash/underscore chars)
+            // OpenAI API keys
             r"sk-[A-Za-z0-9\-_]{48,}",
             // Anthropic API keys
             r"sk-ant-[A-Za-z0-9\-_]{40,}",
@@ -54,7 +43,7 @@ fn patterns() -> &'static Vec<Regex> {
             r"sk_(?:live|test)_[A-Za-z0-9]{24,}",
             // NPM automation tokens
             r"npm_[A-Za-z0-9]{36,}",
-            // Database URLs with embedded passwords (postgres, mysql, mongodb)
+            // Database URLs with embedded passwords
             r"(?i)(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^:@\s]+:[^@\s]{8,}@",
             // GCP API keys
             r"AIza[0-9A-Za-z\-_]{35}",
@@ -62,7 +51,7 @@ fn patterns() -> &'static Vec<Regex> {
             r"SG\.[\w\-]{22}\.[\w\-]{43}",
             // Twilio API key SIDs
             r"SK[0-9a-fA-F]{32}",
-            // npm auth token assignments (.npmrc style: //registry/:_authToken=...)
+            // npm auth token assignments (.npmrc-style)
             r#"(?i)_authToken\s*[:=]\s*["']?[A-Za-z0-9\-_.~+/]{20,}["']?"#,
             // Azure Storage / Service Bus connection strings
             r"(?i)(?:DefaultEndpointsProtocol|Endpoint)=[^;\s]+;\s*(?:AccountName|SharedAccessKeyName)=[^;\s]+;\s*(?:AccountKey|SharedAccessKey)=[A-Za-z0-9+/]{20,}={0,2}",
@@ -73,7 +62,7 @@ fn patterns() -> &'static Vec<Regex> {
     })
 }
 
-// Call once at startup to compile regexes eagerly rather than on first chunk.
+// Compiles regexes eagerly instead of on first use.
 pub fn init() {
     let _ = patterns();
 }
@@ -211,8 +200,7 @@ mod tests {
 
     #[test]
     fn git_sha_not_flagged() {
-        // A bare 40-char hex git SHA with no assignment context must not trip
-        // any pattern (we deliberately did not add a blanket hex-40 rule).
+        // No blanket hex-40 rule: a bare SHA with no assignment context doesn't match.
         assert!(!contains_secret(
             "commit 8f14e45fceea167a5a36dedd4bea2543dc1c8b40 fixed the bug"
         ));

@@ -7,9 +7,9 @@
 //! write time, and [`code_fts_query`] splits the query the same way, so both
 //! sides of a match agree on what a word is.
 
-/// Words that carry no signal in a code-search query. BM25's IDF already
-/// discounts them, but under OR semantics each one still admits every chunk
-/// containing it as a candidate and adds a little score to it.
+// Words that carry no signal in a code-search query. BM25's IDF already
+// discounts them, but under OR semantics each one still admits every chunk
+// containing it as a candidate and adds a little score to it.
 const STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "code", "do", "does", "find", "for", "from",
     "function", "get", "how", "in", "into", "is", "it", "its", "of", "on", "or", "set", "that",
@@ -26,9 +26,9 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
         .filter(|w| !w.is_empty())
 }
 
-/// Split one identifier into its lowercased parts: on `_`, at a lower-to-upper
-/// boundary (`parseConfig`), before the last capital of an acronym run
-/// (`HTTPServer` -> `http`, `server`), and between letters and digits.
+// Split one identifier into its lowercased parts: on `_`, at a lower-to-upper
+// boundary (`parseConfig`), before the last capital of an acronym run
+// (`HTTPServer` -> `http`, `server`), and between letters and digits.
 fn split_identifier(word: &str) -> Vec<String> {
     let mut parts = Vec::new();
     for segment in word.split('_') {
