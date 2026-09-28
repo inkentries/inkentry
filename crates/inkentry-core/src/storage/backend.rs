@@ -61,6 +61,37 @@ impl EntityIdLookup {
     }
 }
 
+/// One D2 resolution the caller supplied for a blocking candidate
+/// (ADR-100). The id is advice, not a lock: a caller may name one outside
+/// the candidate set the server or store last reported.
+#[derive(Debug, Clone)]
+pub enum Resolution {
+    Supersedes(NoteId),
+    RelatesTo(NoteId),
+    Contradicts(NoteId),
+    /// The similarity is incidental; records nothing.
+    Distinct(NoteId),
+}
+
+/// Outcome of [`MemoryBackend::add_with_reconcile`] (ADR-100 D2/D4).
+pub enum AddOutcome {
+    /// Written (or reused; see [`MemoryBackend::add`] for what `created`
+    /// means). `candidates` is the duplicate band, `related` is the related
+    /// band — both computed before the write (D1), both empty for a backend
+    /// that does not reconcile.
+    Created {
+        id: NoteId,
+        created: bool,
+        candidates: Vec<super::memory::Candidate>,
+        related: Vec<super::memory::Candidate>,
+    },
+    /// Refused: `reconcile` was on, the duplicate band was non-empty, and
+    /// `resolutions` was empty. Nothing was written.
+    Blocked {
+        candidates: Vec<super::memory::Candidate>,
+    },
+}
+
 /// Abstraction over local SQLite and remote HTTP memory stores.
 #[async_trait]
 pub trait MemoryBackend: Send {
@@ -70,6 +101,23 @@ pub trait MemoryBackend: Send {
     /// backend, see `MemoryStore::add_note`). Backends that cannot detect this
     /// (git notes, remote) always return `true`.
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)>;
+    /// D2/D4: attempt the write, honouring `reconcile`/`resolutions` when the
+    /// backend can reconcile server-side. Every backend but
+    /// [`super::remote::RemoteMemoryBackend`] just calls [`Self::add`] and
+    /// reports no candidates: correct for a caller that already decided
+    /// whether to write before reaching this (the local SQLite path computes
+    /// and acts on candidates in the CLI layer, ahead of `add`) or that never
+    /// blocks by contract (git notes import, batch/sync — D2b). Not a
+    /// provided (default) method: `async_trait` needs `Self: Sync` to give a
+    /// default body's `&self` await point a `Send` future, and this trait's
+    /// objects are erased as `dyn MemoryBackend + Send` throughout, not
+    /// `+ Sync` — so each backend writes its own one-line passthrough instead.
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        reconcile: bool,
+        resolutions: &[Resolution],
+    ) -> Result<AddOutcome>;
     /// Topic-filtered search over ALL notes (incl. archived), ordered by
     /// valid_at/created_at ASC — the `memory timeline` retrieval.
     ///
@@ -208,6 +256,24 @@ impl MemoryBackend for LocalMemoryBackend {
             store.set_origin(&id, origin)?;
         }
         Ok((id, created))
+    }
+
+    // The CLI layer resolves D2 candidates and blocking itself, ahead of
+    // calling `add` on this backend (see `cli/cmd/memory/add.rs`), so this
+    // never has anything to reconcile by the time it is reached.
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        _reconcile: bool,
+        _resolutions: &[Resolution],
+    ) -> Result<AddOutcome> {
+        let (id, created) = self.add(input).await?;
+        Ok(AddOutcome::Created {
+            id,
+            created,
+            candidates: Vec::new(),
+            related: Vec::new(),
+        })
     }
 
     async fn search_timeline(
