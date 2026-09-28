@@ -43,8 +43,6 @@ fn absent_id() -> NoteId {
     "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33".parse().unwrap()
 }
 
-// ── entity_id on read ────────────────────────────────────────────────────────
-
 // Every read path hands back the entry's portable identity, so a caller that
 // displays or quotes it never has to know which query produced the note.
 #[test]
@@ -88,8 +86,6 @@ fn every_read_path_carries_the_entity_id() {
     );
 }
 
-// ── supersede() ──────────────────────────────────────────────────────────────
-
 #[test]
 fn supersede_happy_path() {
     let store = open_store();
@@ -104,12 +100,10 @@ fn supersede_happy_path() {
     let changed = store.supersede(&old_id, &new_id).unwrap();
     assert!(changed, "supersede() should return true on first call");
 
-    // (a) old note must be archived with superseded_by set
     let old_note = store.get(&old_id).unwrap().expect("old note must exist");
     assert_eq!(old_note.status, "archived");
     assert_eq!(old_note.superseded_by, sup(&new_id));
 
-    // (b) a memory_edges row must exist linking new → old
     assert_eq!(
         count_edges(&store, &new_id, &old_id, "supersedes"),
         1,
@@ -131,22 +125,18 @@ fn supersede_idempotent() {
     let first = store.supersede(&old_id, &new_id).unwrap();
     assert!(first);
 
-    // Second call on an already-archived note must return false
     let second = store.supersede(&old_id, &new_id).unwrap();
     assert!(
         !second,
         "supersede() should return false when note is already archived"
     );
 
-    // Must not have inserted a duplicate edge
     assert_eq!(
         count_edges(&store, &new_id, &old_id, "supersedes"),
         1,
         "duplicate supersedes edge must not be inserted"
     );
 }
-
-// ── add_note_superseding() ──────────────────────────────────────────────────
 
 #[test]
 fn add_note_superseding_happy_path_archives_old_and_links_new() {
@@ -183,10 +173,9 @@ fn add_note_superseding_happy_path_archives_old_and_links_new() {
     );
 }
 
-// ADR-068 amendment E4: re-superseding an already-archived OLD (via a second
-// `add_note_superseding` call naming a different successor) must reject with
-// an error and roll back the whole transaction — no orphaned new note, no
-// second supersedes edge, OLD's existing successor link untouched.
+// Re-superseding an already-archived OLD (naming a different successor) must
+// reject and roll back entirely: no orphaned new note, no second edge, OLD's
+// existing successor link untouched.
 #[test]
 fn add_note_superseding_rejects_already_archived_old_and_writes_nothing() {
     let store = open_store();
@@ -227,8 +216,8 @@ fn add_note_superseding_rejects_already_archived_old_and_writes_nothing() {
     );
 }
 
-// Superseding a nonexistent OLD id must also error, not silently create an
-// unlinked new note (the archive-`OLD` `UPDATE` matches zero rows either way).
+// Superseding a nonexistent OLD id must also error: the archive-`OLD` UPDATE
+// matches zero rows the same way an already-archived OLD does.
 #[test]
 fn add_note_superseding_rejects_nonexistent_old() {
     let store = open_store();
@@ -246,8 +235,6 @@ fn add_note_superseding_rejects_nonexistent_old() {
         "no note must be created when OLD does not exist"
     );
 }
-
-// ── add_edge() ───────────────────────────────────────────────────────────────
 
 #[test]
 fn add_edge_valid_kinds_accepted() {
@@ -296,7 +283,7 @@ fn add_edge_duplicate_silently_ignored() {
         .unwrap();
 
     store.add_edge(&a, &b, "relates_to").unwrap();
-    store.add_edge(&a, &b, "relates_to").unwrap(); // second call must not error
+    store.add_edge(&a, &b, "relates_to").unwrap();
 
     assert_eq!(
         count_edges(&store, &a, &b, "relates_to"),
@@ -304,8 +291,6 @@ fn add_edge_duplicate_silently_ignored() {
         "duplicate edge must not produce a second row"
     );
 }
-
-// ── relates_to_edges_for_sync(): only fully-synced relates_to edges ───────────
 
 // The edge push enumerates only `relates_to` edges whose BOTH endpoints carry
 // a `remote_id`, so the cloud knows them by external_id. An edge with an
@@ -323,10 +308,8 @@ fn relates_to_edges_for_sync_requires_both_endpoints_synced() {
         .unwrap();
     store.add_edge(&b, &a, "relates_to").unwrap();
 
-    // Neither endpoint synced yet: nothing to push.
     assert!(store.relates_to_edges_for_sync().unwrap().is_empty());
 
-    // Only one endpoint synced: still withheld.
     store
         .set_remote_id(&a, "01890000-0000-7000-8000-0000000000a1")
         .unwrap();
@@ -335,7 +318,6 @@ fn relates_to_edges_for_sync_requires_both_endpoints_synced() {
         "an edge with one unsynced endpoint must not be pushable"
     );
 
-    // Both synced: the edge is now pushable, keyed by each endpoint's id.
     store
         .set_remote_id(&b, "01890000-0000-7000-8000-0000000000b2")
         .unwrap();
@@ -369,8 +351,6 @@ fn relates_to_edges_for_sync_ignores_supersedes_and_contradicts() {
     );
 }
 
-// ── identity + cursor + idempotent apply ─────────────────────────────────────
-
 // The identity is minted at insert, never backfilled later: `add_note` hands
 // back the entry's UUIDv7 and reading the row back yields the same id.
 #[test]
@@ -403,8 +383,6 @@ fn rows_for_sync_carries_the_identity_and_is_text_only() {
 
     let rows = store.rows_for_sync(false).unwrap();
     assert_eq!(rows.len(), 2);
-    // Every row carries its UUIDv7 identity; SyncRow has no embedding field at
-    // all (text-only by construction).
     for r in &rows {
         assert_eq!(r.id.as_str().len(), 36);
         assert!(r.remote_id.is_none());
@@ -432,7 +410,6 @@ fn apply_remote_note_is_idempotent_no_dupes() {
         .unwrap();
     assert!(inserted, "first apply inserts");
 
-    // Re-applying the same remote_id must NOT create a duplicate.
     let inserted2 = store
         .apply_remote_note(
             remote_id,
@@ -468,7 +445,7 @@ fn apply_remote_note_tombstone_archives_existing() {
     let local_id = store.note_id_for_remote_id(remote_id).unwrap().unwrap();
     assert_eq!(store.get(&local_id).unwrap().unwrap().status, "active");
 
-    // A pulled tombstone archives the local copy (never un-archives).
+    // A pulled tombstone archives the local copy; it never un-archives.
     let inserted = store
         .apply_remote_note(remote_id, "note", "T", "b", None, 1_700_000_000, true)
         .unwrap();
@@ -476,7 +453,6 @@ fn apply_remote_note_tombstone_archives_existing() {
     assert_eq!(store.get(&local_id).unwrap().unwrap().status, "archived");
 }
 
-// ── apply_remote_note: entity_id + collision recovery ──────────────────────
 // `idx_notes_entity_id` is UNIQUE from creation, so every test below runs
 // against a store where a duplicate `{kind,title,body}` insert collides.
 
@@ -675,9 +651,8 @@ fn apply_remote_note_collision_non_archived_pull_does_not_unarchive_existing() {
         )
         .unwrap();
 
-    // Without these two, the assertion below passes trivially even when the
-    // pulled note lands as a distinct second row (never touching existing_id
-    // at all), so it would not actually catch a collision-recovery regression.
+    // Counting rows first rules out the pulled note landing as a distinct
+    // second row that never touches `existing_id` at all.
     let total_rows: i64 = store
         .conn
         .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
@@ -736,12 +711,11 @@ fn apply_remote_note_other_insert_error_propagates_and_rolls_back() {
     );
 }
 
-// The existing rollback test above only forces a failure at the INSERT
-// itself, which every prior insert path already rolled back on trivially
-// (a single failed statement leaves nothing behind, transaction or not).
-// This forces the failure one step later, inside set_remote_id's UPDATE
+// The rollback test above only forces a failure at the INSERT itself, which
+// a single failed statement rolls back on trivially, transaction or not.
+// This forces the failure one step later, inside `set_remote_id`'s UPDATE
 // after collision recovery already succeeded, to prove the BEGIN/COMMIT
-// wrapping is doing real work for criterion 7's "partway through" case.
+// wrapping is doing real work for a "partway through" failure.
 #[test]
 fn apply_remote_note_failure_after_collision_recovery_rolls_back() {
     let store = open_store();
@@ -830,16 +804,12 @@ fn max_remote_id_is_the_pull_cursor() {
     );
 }
 
-// Direct, fast unit test on the cursor's lexical-sort assumption using
-// genuinely generated `Uuid::now_v7()` values (inkentry-oss story 272/269
-// hardening), not hand-typed strings: the server mints `sync_id` the same
-// way, so this proves `MAX(remote_id)` picks the truly newest entry for
-// real UUIDv7 output, independent of the row insertion order used to
-// stamp them. A future regression that acks a push with anything other
-// than a genuine `sync_id` (e.g. a raw autoincrement row id, which sorts
-// lexically after any current-era UUIDv7's smaller leading hex digits)
-// would fail here in milliseconds, instead of only surfacing via the
-// full-server integration test.
+// Uses genuinely generated `Uuid::now_v7()` values, not hand-typed strings,
+// since the server mints `sync_id` the same way: proves `MAX(remote_id)`
+// picks the truly newest entry independent of row insertion order. A
+// regression that acks a push with anything other than a genuine `sync_id`
+// (e.g. a raw autoincrement row id) would fail here instantly, instead of
+// only surfacing via the full-server integration test.
 #[test]
 fn max_remote_id_orders_real_uuidv7_values_by_time_not_insertion_order() {
     let store = open_store();
@@ -851,11 +821,10 @@ fn max_remote_id_orders_real_uuidv7_values_by_time_not_insertion_order() {
         .add_note("note", "second", "b", &[], &[], None, None)
         .unwrap();
 
-    // Two genuinely generated UUIDv7 values. Sort them ourselves (don't
-    // assume generation order == lexical order across two close calls) and
-    // stamp the lexically SMALLER one onto the row added FIRST, so a
-    // passing result can't be explained by MAX() secretly tracking
-    // insertion/rowid order instead of the UUIDv7 string's own value.
+    // Sort the two generated values ourselves (don't assume generation order
+    // == lexical order) and stamp the smaller one onto the row added first,
+    // so a pass can't be explained by MAX() tracking insertion order instead
+    // of the UUIDv7 string's own value.
     let uuid_x = uuid::Uuid::now_v7().to_string();
     let uuid_y = uuid::Uuid::now_v7().to_string();
     let (smaller, larger) = if uuid_x < uuid_y {
@@ -874,9 +843,7 @@ fn max_remote_id_orders_real_uuidv7_values_by_time_not_insertion_order() {
     );
 }
 
-// ── has_note: does this store own the id? ─────────────────────────────────
 // Used to apply a relayed push-ack back onto the originating row.
-
 #[test]
 fn has_note_recognises_only_ids_this_store_minted() {
     let store = open_store();
@@ -887,8 +854,6 @@ fn has_note_recognises_only_ids_this_store_minted() {
     assert!(store.has_note(&id).unwrap());
     assert!(!store.has_note(&absent_id()).unwrap());
 }
-
-// ── pending_sync_count: cheap outbox count, never mutates ──────────────────
 
 #[test]
 fn pending_sync_count_reports_unpushed_active_rows() {
@@ -942,8 +907,6 @@ fn pending_sync_count_is_a_pure_read_unaffected_by_rows_for_sync() {
         .add_note("note", "B", "b", &[], &[], None, None)
         .unwrap();
 
-    // pending_sync_count must never mutate: calling it repeatedly, interleaved
-    // with the real read, must not change what either sees.
     assert_eq!(store.pending_sync_count().unwrap(), 2);
     let rows = store.rows_for_sync(false).unwrap();
     assert_eq!(rows.len(), 2);
@@ -1061,13 +1024,10 @@ fn union_tags_keeps_fts_in_sync() {
     assert_eq!(hits, 1, "the unioned tag must be searchable");
 }
 
-// ── ADR-101: tag normalisation and the entity-id collision merge ───────────
-
 // Two `add_note` calls with identical `{kind, title, body}` but different
 // (differently-cased) tags collide on `entity_id` and must merge into one
-// row rather than create a second — the "two INSERT OR IGNOREs" path ADR-101
-// D1 describes. `entity_id` itself must be unaffected by tags or files
-// either way: it is a pure function of kind/title/body (ADR-093).
+// row rather than create a second. `entity_id` itself must be unaffected by
+// tags or files either way: it is a pure function of kind/title/body.
 #[test]
 fn entity_id_collision_on_add_note_merges_tags_and_files_and_leaves_entity_id_unchanged() {
     let store = open_store();
@@ -1103,7 +1063,7 @@ fn entity_id_collision_on_add_note_merges_tags_and_files_and_leaves_entity_id_un
 
 // A tag is normalised the same way regardless of which write path it
 // travelled through: `memory add`'s raw-string entry point and the collision
-// merge above both funnel through the same core normalisation (D2).
+// merge above both funnel through the same core normalisation.
 #[test]
 fn add_note_normalises_tags_on_every_write_path() {
     let store = open_store();
@@ -1127,8 +1087,8 @@ fn add_note_normalises_tags_on_every_write_path() {
 }
 
 // A path outside the project root is refused rather than silently stored
-// with the wrong meaning (D3) — exercised at the `add_note` level, not just
-// the pure `file_links` helper, so the whole write path is covered.
+// with the wrong meaning — exercised at the `add_note` level, not just the
+// pure `file_links` helper, so the whole write path is covered.
 #[test]
 fn add_note_refuses_a_linked_file_that_escapes_the_project_root() {
     let store = open_store();
@@ -1140,8 +1100,6 @@ fn add_note_refuses_a_linked_file_that_escapes_the_project_root() {
         "{err}"
     );
 }
-
-// ── insert_embedding ─────────────────────────────────────────────────────────
 
 // `note_embeddings` is keyed by the storage surrogate, which is the only place
 // outside this module's own SQL that needs it.
@@ -1307,8 +1265,6 @@ fn insert_embedding_joins_callers_transaction_and_rolls_back_with_it() {
          transaction, the row would still hold `second` here"
     );
 }
-
-// ── notes_missing_embeddings / reindex candidate queries ─────────────────────
 
 // Give `note_id` a valid 896-dim embedding so it drops out of the missing set.
 fn embed(store: &MemoryStore, note_id: &NoteId) {
@@ -1525,7 +1481,6 @@ fn superseded_note_excluded_by_default_included_with_archived() {
     );
 }
 
-// ── schema creation ──────────────────────────────────────────────────────────
 // A fresh store is created from `memory_001_initial.sql` (frozen at version
 // 11) and migrated up the ladder; a store this binary already made is
 // accepted as is, and one stamped below 11 or above the current version is
@@ -1720,7 +1675,6 @@ fn reopen_preserves_distinct_multi_row_content_not_just_row_count() {
     }
 }
 
-// ── point-in-time (`--as-of`) reconstruction ────────────────────────────────
 // The as-of filter must return exactly the entries live at instant T:
 //     COALESCE(valid_at, created_at) <= T AND (invalid_at IS NULL OR invalid_at > T)
 // independent of archived status. Two boundaries are pinned here:
@@ -1868,8 +1822,6 @@ fn search_text_as_of_reconstructs_point_in_time_ignoring_archived() {
         );
     }
 }
-
-// ── list_by_entity_ids ───────────────────────────────────────────────────────
 
 // `list_by_entity_ids` returns exactly the rows whose entity_id is requested,
 // and applies the same active-only / include_archived gate as `list_filtered`.

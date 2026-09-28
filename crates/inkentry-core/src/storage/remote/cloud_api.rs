@@ -8,7 +8,7 @@
 //!
 //! Every route used here ships on the cloud API, and the project segment
 //! accepts a slug on all of them, including the per-entry `get`/`archive`
-//! routes (see ADR-005's second amendment).
+//! routes.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -21,11 +21,11 @@ use wire::*;
 
 mod wire;
 
-/// Entries fetched per page when a filter has to be applied client-side.
+// Entries fetched per page when a filter has to be applied client-side.
 const PAGE_SIZE: usize = 200;
 
-/// Ceiling on client-side filtering passes, so a server that ignores `offset`
-/// cannot spin this loop forever.
+// Ceiling on client-side filtering passes, so a server that ignores `offset`
+// cannot spin this loop forever.
 const MAX_PAGES: usize = 500;
 
 pub struct CloudApiMemoryBackend {
@@ -45,19 +45,15 @@ impl CloudApiMemoryBackend {
         )
     }
 
-    /// Send an authenticated request, classifying any transport failure once.
-    ///
-    /// When a connection to this origin already failed earlier in this process,
-    /// the attempt is skipped and the same failure is reported immediately,
-    /// rather than spending another connect timeout to reach a conclusion that
-    /// is already known. That is a latency shortcut and nothing more: the error
-    /// is the one an attempt would have produced, and which store this backend
-    /// talks to is decided before this is ever called.
+    // Sends an authenticated request, classifying any transport failure once.
+    // When a connection to this origin already failed earlier in this
+    // process, the attempt is skipped and the same failure reported
+    // immediately: a latency shortcut, never a different outcome.
     async fn send(&self, req: reqwest::RequestBuilder, op: &str) -> Result<reqwest::Response> {
         session::send_request(&self.bearer, &self.base_url, req, op).await
     }
 
-    /// One page of `GET /memory`, optionally narrowed by a search query.
+    // One page of `GET /memory`, optionally narrowed by a search query.
     async fn page(
         &self,
         query: Option<&str>,
@@ -84,12 +80,10 @@ impl CloudApiMemoryBackend {
             .context("parsing GET /memory response")
     }
 
-    /// Page through the project and keep entries whose `source_commit` starts
-    /// with `prefix`.
-    ///
-    /// The cloud API exposes no server-side `source_commit` filter, so this is
-    /// O(entries in project). Correct, but the one place this dialect costs
-    /// real efficiency against the team server's indexed lookup.
+    // Pages through the project and keeps entries whose `source_commit`
+    // starts with `prefix`. The cloud API exposes no server-side filter for
+    // it, so this is O(entries in project) — the one place this dialect
+    // costs real efficiency against the team server's indexed lookup.
     async fn filter_by_source_commit(
         &self,
         prefix: &str,
@@ -121,8 +115,8 @@ impl CloudApiMemoryBackend {
         Ok(out)
     }
 
-    /// Read an entry's `external_id`, the only key the batch edge route
-    /// accepts.
+    // Reads an entry's `external_id`, the only key the batch edge route
+    // accepts.
     async fn external_id_of(&self, id: &NoteId, role: &str) -> Result<String> {
         let entry = self
             .fetch(id)
@@ -164,10 +158,9 @@ impl MemoryBackend for CloudApiMemoryBackend {
     /// anticipated: it is the sole key the batch edge route accepts, and it
     /// cannot be assigned retroactively.
     ///
-    /// v7, not v4: every identifier this product mints is time-ordered
-    /// (ADR-078), and the hosted API's own schema states the same intent for
-    /// this field. Minting from the wall clock is right here — the entry is
-    /// created at the moment of the push.
+    /// v7, not v4: every identifier this product mints is time-ordered, and
+    /// minting from the wall clock is right here — the entry is created at
+    /// the moment of the push.
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)> {
         let body = CreateEntryBody {
             kind: input.kind,
@@ -184,7 +177,7 @@ impl MemoryBackend for CloudApiMemoryBackend {
             .await?;
 
         // A 409 means "stored, but semantically close to an existing entry":
-        // a warning on every other backend, so a warning here too.
+        // a warning, as on every other backend.
         if resp.status() == reqwest::StatusCode::CONFLICT {
             let created = resp
                 .json::<EntryResponse>()
@@ -241,7 +234,7 @@ impl MemoryBackend for CloudApiMemoryBackend {
         )
     }
 
-    /// ADR-083's relevance gate is calibrated for the local SQLite backend's
+    /// The relevance gate is calibrated for the local SQLite backend's
     /// embedding space only, so `gate` is unused here.
     async fn search_hybrid(
         &self,
@@ -301,9 +294,8 @@ impl MemoryBackend for CloudApiMemoryBackend {
         Ok(self.fetch(&id).await?.map(EntryResponse::into_note))
     }
 
-    /// The cloud API exposes no filter on `entity_id`, so the handle is resolved
-    /// by paging the project and matching client-side, the same way
-    /// `filter_by_source_commit` handles the other unindexed key.
+    /// The cloud API exposes no filter on `entity_id`, so the handle is
+    /// resolved by paging the project and matching client-side.
     ///
     /// Paged to exhaustion rather than to a first page: a partial read that
     /// found nothing cannot tell a missing entry from an unread one, and the
@@ -338,10 +330,9 @@ impl MemoryBackend for CloudApiMemoryBackend {
         Ok(self.page(None, 1, 0, false).await?.total)
     }
 
-    /// The cloud API archives by `DELETE`; there is no archive sub-route.
-    ///
-    /// A 404 counts as success, matching `CloudSyncClient::delete_remote`: the
-    /// caller asked for the entry to be gone and it is.
+    /// The cloud API archives by `DELETE`; there is no archive sub-route. A
+    /// 404 counts as success: the caller asked for the entry to be gone and
+    /// it is.
     async fn archive(&self, id: NoteId) -> Result<bool> {
         let resp = self
             .send(

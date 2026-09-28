@@ -1,10 +1,9 @@
-//! ADR-098 D6: an entry's origin — who or what produced it.
+//! An entry's origin — who or what produced it.
 //!
 //! Optional and additive on every carrier: absent means the caller declared
 //! nothing, which reads as `unknown`, never as "no human wrote this". Not
 //! part of `entity_id`, so identity and dedupe are unchanged by whether two
-//! otherwise-identical entries carry an origin at all (see
-//! `entity_id::entity_id`).
+//! otherwise-identical entries carry an origin at all.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +21,7 @@ pub struct Origin {
 impl Origin {
     /// The origin a caller's own declaration implies, or `None` when it
     /// declared no actor at all — absence, not a fabricated `unknown` object,
-    /// is how "not declared" is represented (D6).
+    /// is how "not declared" is represented.
     pub fn from_caller(decl: &CallerDeclaration) -> Option<Self> {
         if decl.actor == ActorKind::Unknown {
             return None;
@@ -35,9 +34,9 @@ impl Origin {
     }
 
     /// The origin `inkentry harvest` stamps on every entry it writes,
-    /// regardless of what the environment declares (D6: only harvest itself
-    /// may set `actor_kind = harvest`). `model` is the model harvest used for
-    /// extraction, when known.
+    /// regardless of what the environment declares — only harvest itself may
+    /// set `actor_kind = harvest`. `model` is the model used for extraction,
+    /// when known.
     pub fn harvest(model: Option<String>) -> Self {
         Self {
             actor_kind: ActorKind::Harvest,
@@ -46,13 +45,11 @@ impl Origin {
         }
     }
 
-    /// Build from the three nullable `notes.origin_*` columns (or the
-    /// equivalent carrier/wire fields), as a row mapper reads them.
-    /// `None` unless `actor_kind` is present and recognised: a NULL/absent
-    /// `actor_kind` is what "no origin recorded" looks like on every path
-    /// that stores these three columns independently, and a value this build
-    /// does not recognise is treated the same way rather than surfaced as a
-    /// half-formed origin.
+    /// Build from the three nullable `origin_*` columns/fields, as a row
+    /// mapper reads them. `None` unless `actor_kind` is present and
+    /// recognised: a NULL/absent `actor_kind` is what "no origin recorded"
+    /// looks like, and an unrecognised value is treated the same way rather
+    /// than surfaced as a half-formed origin.
     pub fn from_parts(
         actor_kind: Option<&str>,
         tool: Option<String>,

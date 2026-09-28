@@ -6,8 +6,6 @@ use super::*;
 
 const UUID: &str = "9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f";
 const UUID_2: &str = "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d";
-// Shared fixture project id; `slug_backend` below exercises the slug case
-// separately for every route, including the two that once rejected it.
 const PROJECT: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 
 fn backend(server: &MockServer) -> CloudApiMemoryBackend {
@@ -45,8 +43,6 @@ fn note_input(title: &str) -> NoteInput {
     }
 }
 
-// ── add ──────────────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn add_posts_to_the_memory_route_and_returns_the_server_uuid() {
     let server = MockServer::start().await;
@@ -61,8 +57,6 @@ async fn add_posts_to_the_memory_route_and_returns_the_server_uuid() {
     assert!(created);
 }
 
-// The batch edge route addresses entries only by `external_id`, and the key
-// cannot be assigned after the fact, so every add must carry one.
 #[tokio::test]
 async fn add_always_mints_an_external_id() {
     let server = MockServer::start().await;
@@ -98,8 +92,6 @@ async fn a_conflict_on_add_is_a_warning_not_a_failure() {
     let (id, _) = backend(&server).add(note_input("t")).await.unwrap();
     assert_eq!(id, UUID.parse::<NoteId>().unwrap());
 }
-
-// ── list / search / count ────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn list_reads_the_memory_route_without_a_query() {
@@ -144,7 +136,6 @@ async fn an_empty_project_lists_cleanly() {
     assert_eq!(backend(&server).count().await.unwrap(), 0);
 }
 
-// Search is the list route with `q`, not the team server's `POST memory/search`.
 #[tokio::test]
 async fn search_uses_the_query_parameter_on_the_list_route() {
     let server = MockServer::start().await;
@@ -195,8 +186,6 @@ async fn count_reads_the_server_computed_total() {
 
     assert_eq!(backend(&server).count().await.unwrap(), 37);
 }
-
-// ── get ──────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn get_fetches_by_uuid_path_segment() {
@@ -257,8 +246,6 @@ async fn an_archived_tombstone_becomes_archived_status() {
     assert_eq!(note.invalid_at, Some(1781917200));
 }
 
-// ── archive ──────────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn archive_deletes_rather_than_posting_an_archive_subroute() {
     let server = MockServer::start().await;
@@ -293,8 +280,6 @@ async fn archiving_an_already_gone_entry_is_not_an_error() {
         "a 404 reports nothing changed, and must not surface as an error"
     );
 }
-
-// ── supersede ────────────────────────────────────────────────────────────────
 
 async fn mount_two_live_entries(server: &MockServer) {
     Mock::given(method("GET"))
@@ -337,8 +322,6 @@ async fn supersede_posts_a_batch_edge_keyed_by_external_id() {
     );
 }
 
-// An edge naming an already-archived predecessor comes back unresolved.
-// Reporting that as success would claim a link that does not exist.
 #[tokio::test]
 async fn an_unresolved_edge_reports_no_change_rather_than_success() {
     let server = MockServer::start().await;
@@ -376,10 +359,6 @@ async fn superseding_a_missing_entry_names_which_side_is_missing() {
     assert!(err.contains("(old)"), "got: {err}");
 }
 
-// ── harvest dedupe (client-side source_commit filtering) ─────────────────────
-
-// The cloud API has no server-side source_commit filter, so the client pages
-// through and filters locally. The page boundary is where that goes wrong.
 #[tokio::test]
 async fn harvested_shas_pages_past_the_first_full_page() {
     let server = MockServer::start().await;
@@ -434,8 +413,6 @@ async fn has_source_ref_matches_on_source_commit() {
     assert!(!be.has_source_ref("cafebabe").await.unwrap());
 }
 
-// ── edges stay unsupported ───────────────────────────────────────────────────
-
 #[tokio::test]
 async fn edge_queries_stay_empty_as_on_every_remote_backend() {
     let server = MockServer::start().await;
@@ -465,13 +442,6 @@ async fn every_request_carries_the_bearer() {
     );
 }
 
-// ── all six routes accept a project slug, not only a UUID ────────────────────
-
-// `GET`/`DELETE /memory/{entry_id}` used to be typed `Path<(Uuid, Uuid)>`
-// server-side, unlike their four sibling routes, so a slug `project_id`
-// worked for list/search/add but not for get/archive/supersede. Both routes
-// now take `Path<(String, Uuid)>` like their siblings, so a slug works
-// identically everywhere.
 fn slug_backend(server: &MockServer) -> CloudApiMemoryBackend {
     CloudApiMemoryBackend {
         client: reqwest::Client::builder().build().unwrap(),
@@ -514,9 +484,6 @@ async fn a_slug_project_archives_an_entry() {
     );
 }
 
-// Listing and adding already took `Path<String>` before this change; keep
-// them covered alongside get/archive so the whole set is exercised in one
-// place.
 #[tokio::test]
 async fn a_slug_project_still_lists_and_adds() {
     let server = MockServer::start().await;
@@ -536,18 +503,14 @@ async fn a_slug_project_still_lists_and_adds() {
     assert!(be.add(note_input("t")).await.is_ok());
 }
 
-// ── entity id lookup ─────────────────────────────────────────────────────────
-
-// Two titles whose content hashes agree for exactly the first eight characters,
-// found by searching over `entity_id` inputs. Genuine collisions rather than
-// injected values: the cloud wire carries no entity id, so the backend computes
-// it from the entry itself and a fixture cannot choose one.
+// Two titles whose content hashes agree for exactly the first eight
+// characters, found by searching over `entity_id` inputs: genuine collisions,
+// since the cloud wire carries no entity id for a fixture to choose.
 const TWIN_A: &str = "twin-3608";
 const TWIN_B: &str = "twin-94341";
 const TWIN_PREFIX: &str = "22a92aad";
 
-// Enough pages that the target sits well past both the first page and the
-// 1000-entry mark a single bounded read would have stopped at.
+// Enough pages that the target sits well past the first page.
 const FILLED_PAGES: usize = 6;
 
 fn filler(page: usize, i: usize) -> Value {
@@ -558,7 +521,7 @@ fn filler(page: usize, i: usize) -> Value {
     )
 }
 
-// Mount `FILLED_PAGES` full pages of filler, with `tail` as the short final
+// Mounts `FILLED_PAGES` full pages of filler, with `tail` as the short final
 // page that tells the pager it has reached the end.
 async fn mount_paged_project(server: &MockServer, tail: Vec<Value>, seeded: &[(usize, Value)]) {
     for page in 0..FILLED_PAGES {
@@ -631,9 +594,6 @@ async fn an_entry_past_the_first_page_resolves_by_a_twelve_character_handle() {
     assert_eq!(found, vec![UUID_2.parse::<NoteId>().unwrap()]);
 }
 
-// The reason every page is read rather than every page until the first match:
-// a prefix is only unambiguous once the whole store has been checked, and two
-// entries sharing one can sit on different pages.
 #[tokio::test]
 async fn an_ambiguous_prefix_is_detected_across_pages() {
     let server = MockServer::start().await;

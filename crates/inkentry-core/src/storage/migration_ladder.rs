@@ -1,28 +1,28 @@
-//! Generic forward-only `PRAGMA user_version` migration ladder, shared by
-//! every local store that stamps one. `memory.db` is the first caller
-//! (`storage::memory::migrate`); a store with its own registry and
-//! label reuses this runner rather than growing a second copy of it.
+// Generic forward-only `PRAGMA user_version` migration ladder, shared by
+// every local store that stamps one. `memory.db` is the first caller; a
+// store with its own registry and label reuses this runner rather than
+// growing a second copy of it.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-/// One step in a ladder: the schema version it produces, and the body that
-/// gets a store there from the version immediately below. Runs inside the
-/// step's own transaction, alongside its `PRAGMA user_version` stamp.
+// One step in a ladder: the schema version it produces, and the body that
+// gets a store there from the version immediately below. Runs inside the
+// step's own transaction, alongside its `PRAGMA user_version` stamp.
 pub(crate) type MigrationStep = fn(&Connection) -> Result<()>;
 
-/// Applies every step in `steps` whose version is greater than
-/// `found_version` and at most `target_version`, in order. Each step commits
-/// atomically with its `PRAGMA user_version` stamp, so a crash or a failing
-/// step leaves the store at the last version fully applied rather than
-/// half-migrated. Runs each step under `BEGIN IMMEDIATE`: a concurrent
-/// opener of the same file serialises on the write lock and, on its turn,
-/// finds the version already advanced past the step and moves on without
-/// re-running it.
-///
-/// `label` names the store in the one stderr line this prints when it
-/// actually migrates something (e.g. `"memory.db"`); nothing is printed when
-/// every step is already applied, and nothing ever goes to stdout.
+// Applies every step in `steps` whose version is greater than
+// `found_version` and at most `target_version`, in order. Each step commits
+// atomically with its `PRAGMA user_version` stamp, so a crash or a failing
+// step leaves the store at the last version fully applied rather than
+// half-migrated. Runs each step under `BEGIN IMMEDIATE`: a concurrent
+// opener of the same file serialises on the write lock and, on its turn,
+// finds the version already advanced past the step and moves on without
+// re-running it.
+//
+// `label` names the store in the one stderr line this prints when it
+// actually migrates something; nothing is printed when every step is
+// already applied, and nothing ever goes to stdout.
 pub(crate) fn apply_ladder(
     conn: &Connection,
     found_version: i32,
@@ -33,9 +33,9 @@ pub(crate) fn apply_ladder(
     run_ladder(conn, found_version, target_version, steps, label, true)
 }
 
-/// [`apply_ladder`] for a store this process has just created: the climb from
-/// the frozen initial schema to the current version is part of creation, not
-/// an upgrade of anything the user had, so nothing is announced.
+// `apply_ladder` for a store this process has just created: the climb from
+// the frozen initial schema to the current version is part of creation, not
+// an upgrade of anything the user had, so nothing is announced.
 pub(crate) fn apply_ladder_quietly(
     conn: &Connection,
     found_version: i32,
@@ -98,8 +98,8 @@ fn run_ladder(
     if announce && at_version != found_version {
         eprintln!("{label}: migrated schema version {found_version} to {at_version}");
     }
-    // A registry that stops short would otherwise hand back a store at an
-    // older shape than the caller is about to query.
+    // Otherwise a registry that stops short hands back a store at an older
+    // shape than the caller is about to query.
     anyhow::ensure!(
         at_version == target_version,
         "{label} is at schema version {at_version} but this build needs {target_version}, \
@@ -108,12 +108,10 @@ fn run_ladder(
     Ok(())
 }
 
-/// Asserts `steps` is contiguous and strictly increasing, starting at
-/// `first` and ending at `last`. A gap or a duplicate would silently skip or
-/// double-stamp a version. Trivially true when `steps` is empty and `first >
-/// last` (no version between them to fill yet). Test-only: production never
-/// needs to re-check its own registry at runtime, only a test needs to hold
-/// it to this.
+// Asserts `steps` is contiguous and strictly increasing, starting at `first`
+// and ending at `last`. A gap or a duplicate would silently skip or
+// double-stamp a version. Trivially true when `steps` is empty and `first >
+// last` (no version between them to fill yet).
 #[cfg(test)]
 pub(crate) fn assert_contiguous(steps: &[(i32, MigrationStep)], first: i32, last: i32) {
     if steps.is_empty() {
