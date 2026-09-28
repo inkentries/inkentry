@@ -85,6 +85,23 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
             .ok()
             .and_then(|s| s.notes_missing_embeddings(false).ok())
             .map(|v| v.len());
+        // ADR-099 D4: same age/worktree-existence test as the text line.
+        let memory_unanchored: Option<usize> = MemoryStore::open(&mem_path)
+            .ok()
+            .and_then(|s| s.all_pending_anchors().ok())
+            .map(|pending| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                pending
+                    .iter()
+                    .filter(|p| {
+                        now - p.created_at > UNANCHORED_AGE_SECS
+                            || !std::path::Path::new(&p.worktree).exists()
+                    })
+                    .count()
+            });
 
         let has_semantic_search = matches!(
             tier,
@@ -173,6 +190,7 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
                 "tier": tier_str,
                 "mode": cfg.resolve_mode().as_str(),
                 "memory_embedding_pending": memory_embedding_pending,
+                "memory_unanchored": memory_unanchored,
                 "sync_pending": sync_pending,
                 "sync_last_synced_at": sync_last_synced_at,
                 "server_url": tier_url,
@@ -342,6 +360,9 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         }
     }
     if let Some(line) = memory_embedding_line(&mem_path_text) {
+        cprintln!("{line}");
+    }
+    if let Some(line) = memory_unanchored_line(&mem_path_text) {
         cprintln!("{line}");
     }
     if let Some(ts) = s.last_indexed {
@@ -621,6 +642,40 @@ fn memory_embedding_line(mem_path: &std::path::Path) -> Option<String> {
         "\x1b[33m[Memory: {pending} entr{} not in semantic search; \
          run 'inkentry memory reindex']\x1b[0m",
         if pending == 1 { "y" } else { "ies" }
+    ))
+}
+
+// ADR-099 D4: a pending anchor older than 14 days, or whose worktree no
+// longer exists on disk, is reported as unanchored and is never assigned —
+// it is not counted against `pending`, it is a distinct, un-fixable state.
+const UNANCHORED_AGE_SECS: i64 = 14 * 24 * 3600;
+
+fn memory_unanchored_line(mem_path: &std::path::Path) -> Option<String> {
+    if !mem_path.exists() {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let pending = MemoryStore::open(mem_path)
+        .ok()?
+        .all_pending_anchors()
+        .ok()?;
+    let unanchored = pending
+        .iter()
+        .filter(|p| {
+            now - p.created_at > UNANCHORED_AGE_SECS || !std::path::Path::new(&p.worktree).exists()
+        })
+        .count();
+    if unanchored == 0 {
+        return None;
+    }
+    Some(format!(
+        "\x1b[33m[Memory: {unanchored} entr{} unanchored (pending over 14 days, or their \
+         worktree is gone); they will not be assigned automatically — anchor by hand with \
+         `inkentry memory anchor --commit <sha> <id>`]\x1b[0m",
+        if unanchored == 1 { "y" } else { "ies" }
     ))
 }
 

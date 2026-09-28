@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+mod anchors;
 mod dedupe;
 mod edges;
 pub mod events;
@@ -17,6 +18,7 @@ mod sync;
 mod tags;
 mod uuid_v7;
 
+pub use anchors::PendingAnchor;
 pub use dedupe::DedupeSummary;
 pub use events::{EventFields, EventRow, record_event_at};
 pub use file_links::{FileState, ResolvedFileLink, normalize_relative_path, resolve_file_link};
@@ -45,7 +47,7 @@ mod tests;
 /// that is the whole point of [`LAST_LEGACY_SCHEMA_VERSION`]: `user_version`
 /// is one i32 per file, shared with every stamp that ladder ever wrote, so a
 /// fresh numbering would make an old product's store read as a *newer* one.
-pub(super) const MEMORY_SCHEMA_VERSION: i32 = 13;
+pub(super) const MEMORY_SCHEMA_VERSION: i32 = 14;
 
 /// The highest `user_version` the pre-rename migration ladder ever stamped,
 /// across every released binary (0.9.6 stamped 9; 0.9.7 and 0.9.8 stamped

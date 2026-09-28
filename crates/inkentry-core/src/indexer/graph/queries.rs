@@ -1,9 +1,9 @@
-//! The vendored `locals.scm` scope queries, compiled once per language.
-//!
-//! The query files under `queries/` are upstream's, unmodified (provenance and
-//! licence in `queries/README.md`). Upstream composes some of them with an
-//! `; inherits:` header that its own loader resolves; the part lists below do
-//! the same, so each file stays byte-for-byte what upstream ships.
+// The vendored `locals.scm` scope queries, compiled once per language.
+//
+// The query files under `queries/` are upstream's, unmodified (provenance and
+// licence in `queries/README.md`). Upstream composes some of them with an
+// `; inherits:` header that its own loader resolves; the part lists below do
+// the same, so each file stays byte-for-byte what upstream ships.
 
 use std::sync::OnceLock;
 
@@ -30,8 +30,8 @@ const PHP: &[&str] = &[include_str!("queries/php_only/locals.scm")];
 const KOTLIN: &[&str] = &[include_str!("queries/kotlin/locals.scm")];
 const SWIFT: &[&str] = &[include_str!("queries/swift/locals.scm")];
 
-/// Every language with a vendored query, in the grammar names the indexer
-/// uses, paired with the query files that make it up.
+// Every language with a vendored query, in the grammar names the indexer
+// uses, paired with the query files that make it up.
 const LANGUAGES: &[(&str, &[&str])] = &[
     ("rust", RUST),
     ("python", PYTHON),
@@ -60,11 +60,11 @@ fn compile(language: &str, parts: &[&str]) -> Result<tree_sitter::Query, String>
     Ok(query)
 }
 
-/// The compiled locals query for `language`, or `None` for a language with
-/// no vendored query. Each query compiles on first use, so an index of a
-/// one-language tree compiles one. A query that fails to compile against its
-/// grammar is also `None` (logged once), so indexing degrades to unresolved
-/// edges instead of failing; the compile test below keeps that from shipping.
+// The compiled locals query for `language`, or `None` for a language with
+// no vendored query. Each query compiles on first use, so an index of a
+// one-language tree compiles one. A query that fails to compile against its
+// grammar is also `None` (logged once), so indexing degrades to unresolved
+// edges instead of failing; the compile test below keeps that from shipping.
 pub(super) fn locals_query(language: &str) -> Option<&'static tree_sitter::Query> {
     static COMPILED: [OnceLock<Option<tree_sitter::Query>>; LANGUAGES.len()] =
         [const { OnceLock::new() }; LANGUAGES.len()];

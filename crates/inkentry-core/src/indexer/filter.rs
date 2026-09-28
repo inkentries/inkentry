@@ -243,15 +243,12 @@ mod tests {
     #[test]
     fn each_default_class_is_excluded() {
         let f = default_filter();
-        // lockfiles
         assert!(is_excluded(&f, "package-lock.json", false));
         assert!(is_excluded(&f, "npm-shrinkwrap.json", false));
         assert!(is_excluded(&f, "packages.lock.json", false));
         assert!(is_excluded(&f, "front/skills-lock.json", false));
-        // minified
         assert!(is_excluded(&f, "app.min.js", false));
         assert!(is_excluded(&f, "site.min.css", false));
-        // vendored / generated directories (as dirs)
         assert!(is_excluded(&f, "vendor", true));
         assert!(is_excluded(&f, "node_modules", true));
         assert!(is_excluded(&f, "third_party", true));
@@ -265,12 +262,10 @@ mod tests {
             f.classify(Path::new("node_modules/react/index.js"), false),
             Decision::Exclude(_)
         ));
-        // generated file markers
         assert!(is_excluded(&f, "api.generated.ts", false));
         assert!(is_excluded(&f, "types.gen.go", false));
         assert!(is_excluded(&f, "client.gen.ts", false));
         assert!(is_excluded(&f, "zz_generated_deepcopy.go", false));
-        // protobuf / grpc
         assert!(is_excluded(&f, "user.pb.go", false));
         assert!(is_excluded(&f, "user.pb.cc", false));
         assert!(is_excluded(&f, "user.pb.h", false));
@@ -278,7 +273,6 @@ mod tests {
         assert!(is_excluded(&f, "user_pb2_grpc.py", false));
         assert!(is_excluded(&f, "user_pb.js", false));
         assert!(is_excluded(&f, "user_pb.d.ts", false));
-        // machine-data
         assert!(is_excluded(&f, "schema.json", false));
         assert!(is_excluded(&f, "openapi.schema.json", false));
         assert!(is_excluded(&f, "src/translations/en/messages.json", false));
@@ -296,7 +290,7 @@ mod tests {
             "tsconfig.json",
             "README.md",
             "tests/foo_test.rs",
-            // .ts under i18n/ survives: the i18n default only excludes *.json
+            // The i18n default only excludes *.json, so a .ts survives.
             "src/i18n/index.ts",
         ] {
             assert_eq!(
@@ -334,7 +328,6 @@ mod tests {
 
     #[test]
     fn user_excludes_apply_without_defaults() {
-        // Defaults off, but a user glob still excludes.
         let f = IndexFilter::build(&["*.bin".to_string()], false, true).unwrap();
         match f.decide(Path::new("blob.bin"), false) {
             Decision::Exclude(mi) => assert!(!mi.from_default),
@@ -393,9 +386,8 @@ mod tests {
         assert_eq!(generated_marker(&plain), None);
     }
 
-    /// Line-window boundary is exactly `MARKER_MAX_LINES` (5): a marker on line 5
-    /// fires, the same marker one line later (line 6) does not. Pins the `take(5)`
-    /// bound so a later off-by-one can't silently widen or narrow it.
+    // Pins the `take(5)` boundary: a marker on line 5 fires, the same marker
+    // one line later (line 6) does not.
     #[test]
     fn generated_marker_line5_fires_line6_does_not() {
         // Marker on line 5 (four preceding lines): fires.
@@ -416,9 +408,8 @@ mod tests {
         );
     }
 
-    /// CRLF line endings must not defeat detection: `str::lines()` strips the
-    /// `\r`, and the Go header additionally `trim_end()`s, so both markers still
-    /// fire under Windows-style newlines.
+    // `str::lines()` strips `\r`, and the Go header additionally
+    // `trim_end()`s, so both markers still fire under CRLF.
     #[test]
     fn generated_marker_handles_crlf() {
         assert_eq!(
@@ -431,10 +422,9 @@ mod tests {
         );
     }
 
-    /// A UTF-8 BOM prefix on line 1: the `@generated` substring scan is
-    /// position-independent so it still fires. The Go-header scan is anchored at
-    /// `^//`, so a BOM (or any) prefix before the `//` defeats it; documented
-    /// here as a known boundary, not asserted as desirable.
+    // The `@generated` scan is position-independent so a leading BOM doesn't
+    // defeat it; the Go-header scan is anchored at `^//`, so a BOM prefix
+    // does defeat it (a known boundary, not asserted as desirable).
     #[test]
     fn generated_marker_bom_prefix() {
         let bom = "\u{feff}";
@@ -450,10 +440,8 @@ mod tests {
         );
     }
 
-    /// The head sniff reads at most `MARKER_HEAD_BYTES` (4 KiB). A marker pushed
-    /// past that window by a long leading line is never seen, so the file is not
-    /// flagged. Exercised through the real file-reading `generated_marker`, since
-    /// the 4 KiB cap lives in `read_head`, not `marker_in_head`.
+    // The 4 KiB cap lives in `read_head`, not `marker_in_head`, so this goes
+    // through the real file-reading `generated_marker` to exercise it.
     #[test]
     fn generated_marker_past_4kib_not_detected() {
         let dir = tempfile::tempdir().unwrap();
@@ -474,12 +462,8 @@ mod tests {
         assert_eq!(generated_marker(&g), Some("@generated"));
     }
 
-    // ── Dir-prune re-include semantics: matches git ──────────────────────────
-
-    /// A user `!file` line CANNOT un-prune an excluded parent directory, but a
-    /// user `!dir/` line CAN un-prune the directory itself. `prune_dir` is what
-    /// the walk consults per directory, so this is the exact lever that decides
-    /// whether the walk descends.
+    // A user `!file` line cannot un-prune an excluded parent directory, but a
+    // `!dir/` line un-prunes the directory itself.
     #[test]
     fn dir_prune_reinclude_semantics() {
         // A `!` on a file *inside* node_modules does not lift the directory prune:
@@ -501,14 +485,10 @@ mod tests {
         assert!(dir_reinclude.prune_dir(Path::new("node_modules")));
     }
 
-    // ── Sensitive-layer invariant: defense-in-depth mutation-kill ────────────
-
-    /// MUTATION-KILL A: the sensitive patterns (`.env`, `*.pem`, private keys)
-    /// must NEVER appear in `DEFAULT_EXCLUDES`. They live only in the walker's
-    /// non-overridable `OverrideBuilder`; routing them through this
-    /// user-tunable gitignore layer would make them re-includable via
-    /// `[index].exclude = ["!.env"]`. If a future refactor "consolidates" the
-    /// sensitive set into the defaults, this fails.
+    // Sensitive patterns must never appear in DEFAULT_EXCLUDES: they live only
+    // in the walker's non-overridable OverrideBuilder, and routing them
+    // through this user-tunable layer would make them re-includable via
+    // `[index].exclude = ["!.env"]`.
     #[test]
     fn sensitive_patterns_absent_from_default_excludes() {
         let joined = DEFAULT_EXCLUDES.join("\n").to_lowercase();
@@ -538,12 +518,9 @@ mod tests {
         }
     }
 
-    /// MUTATION-KILL B: the index filter itself has NO opinion on sensitive
-    /// paths - it returns `Keep`, because sensitive protection lives entirely in
-    /// the separate override layer. A regression that made the filter the
-    /// sensitive gate (Exclude) would fire here, and a `!` re-include of a
-    /// sensitive path resolves through the filter to a plain keep, never a
-    /// filter-level protection.
+    // The index filter has no opinion on sensitive paths: it always returns
+    // Keep, because that protection lives entirely in the separate override
+    // layer.
     #[test]
     fn index_filter_has_no_opinion_on_sensitive_paths() {
         let f = default_filter();

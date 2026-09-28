@@ -1,5 +1,3 @@
-// Consolidated security test binary: groups the previously separate egress, secret-scanning, and hook-path test files into one integration test crate to cut per-binary link overhead.
-
 mod plumbing_helpers;
 
 #[path = "security_tests/crash_safety.rs"]

@@ -1,40 +1,23 @@
-// Network egress trap for local-tier CLI flows.
+// Every outbound call in this workspace goes through reqwest (no raw
+// std::net/socket use, no `Client::builder().no_proxy()` call site), so
+// pointing HTTP_PROXY/HTTPS_PROXY/ALL_PROXY at a sink we control, with
+// NO_PROXY carving out loopback, turns every call into an observable event
+// without touching production code. Pure userspace, so it behaves the same on
+// every platform.
 //
-// The product's headline privacy claim is that code never leaves the local
-// machine unless a team `server_url` is explicitly configured. Every
-// outbound HTTP(S) call this workspace makes goes through `reqwest`
-// (verified by grepping the crate for raw `std::net`/socket use: there is
-// none), and no call site here disables env-based proxying
-// (`Client::builder().no_proxy()` does not appear anywhere in the
-// workspace), so pointing `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` at a sink
-// we control, with `NO_PROXY` carving out loopback, turns every reqwest
-// call site in the binary into an observable event without touching
-// production code. This is pure userspace (env vars + a local HTTP
-// server), so it works identically on macOS, Linux, and Windows: no
-// netns/sandbox, no platform-conditional skip.
-//
-// Known boundary: `NO_PROXY` matching is hostname-level, not
-// `host:port`-level (verified empirically: a `NO_PROXY=127.0.0.1:<port>`
-// entry does not stop reqwest from proxying a request to a *different*
-// `127.0.0.1:<other_port>`; both got proxied in testing, so the port
-// qualifier was silently ignored). This trap therefore proves "nothing left
-// the loopback interface", not "nothing reached a loopback port other than
-// the sanctioned inference server". A stray request to an unintended
-// loopback service is out of scope for this mechanism; each test additionally
-// constrains the loopback surface to exactly the mock server(s) it starts, so
-// a wrong-port bug fails the command outright (connection refused) rather
-// than passing silently.
+// NO_PROXY matches by hostname only, not host:port (verified: a
+// NO_PROXY=127.0.0.1:<port> entry does not stop proxying to a different
+// 127.0.0.1:<other_port>). So this proves nothing left the loopback interface,
+// not that nothing hit an unintended loopback port — each test must keep its
+// loopback surface to exactly the mock server(s) it starts, so a wrong port
+// fails outright instead of passing silently.
 
 use assert_cmd::Command;
 use wiremock::MockServer;
 
-// The `Host`/CONNECT-authority header on a proxied `Request` survives even
-// though `wiremock` never completes the CONNECT tunnel (it 404s the
-// pseudo-request, which is enough to make `reqwest` fail the outbound call);
-// see `Request::from_hyper` in wiremock 0.6, which folds the CONNECT
-// authority-form target into a `host` header. That header is the only
-// reliable way to name the destination for both plain HTTP and HTTPS-via-
-// CONNECT requests.
+// The Host/CONNECT-authority header on a proxied Request survives even though
+// wiremock never completes the CONNECT tunnel; it's the only reliable way to
+// name the destination for both plain HTTP and HTTPS-via-CONNECT requests.
 fn destination(r: &wiremock::Request) -> String {
     r.headers
         .get("host")
@@ -43,8 +26,8 @@ fn destination(r: &wiremock::Request) -> String {
         .unwrap_or_else(|| format!("{} {}", r.method, r.url))
 }
 
-// A proxy-based egress trap: every non-loopback HTTP(S) call a wired
-// `Command` makes is funneled here instead of reaching the real network.
+// Every non-loopback HTTP(S) call a wired `Command` makes is funneled here
+// instead of reaching the real network.
 pub struct EgressTrap {
     sink: MockServer,
 }
@@ -56,16 +39,15 @@ impl EgressTrap {
         }
     }
 
-    // `http://` URL of the trap's sink, for callers that need to apply the
-    // same proxy env vars `wire()` sets on a `Command` to the current
-    // process instead (see `self_test_trap_catches_rogue_call`).
+    // http:// URL of the trap's sink, so a caller can apply the same proxy env
+    // vars `wire()` sets to the current process instead.
     pub fn proxy_url(&self) -> String {
         format!("http://{}", self.sink.address())
     }
 
-    // Route everything except loopback through this trap. Sets both
-    // upper- and lower-case proxy env vars since libraries disagree on
-    // which case they read.
+    // Routes everything except loopback through this trap. Sets both upper-
+    // and lower-case proxy vars since libraries disagree on which case they
+    // read.
     pub fn wire(&self, cmd: &mut Command) {
         let proxy = self.proxy_url();
         for var in [
@@ -78,17 +60,14 @@ impl EgressTrap {
         ] {
             cmd.env(var, &proxy);
         }
-        // Bare hostnames only (see module doc: NO_PROXY is not port-scoped
-        // in practice), so every test must keep its loopback surface to
-        // exactly the mock server(s) it starts.
+        // Hostnames only, not host:port (see module doc), so tests must keep
+        // their loopback surface to exactly the mock server(s) they start.
         for var in ["NO_PROXY", "no_proxy"] {
             cmd.env(var, "127.0.0.1,localhost,::1");
         }
     }
 
-    // Assert nothing reached the trap. Panics naming every destination seen
-    // otherwise: the loud, specific failure the story requires instead of a
-    // generic "test failed".
+    // Panics naming every destination seen, not just "test failed".
     pub async fn assert_clean(&self) {
         let seen = self.sink.received_requests().await.expect(
             "wiremock request journaling must stay enabled (default for MockServer::start())",
@@ -101,9 +80,8 @@ impl EgressTrap {
         );
     }
 
-    // Like `assert_clean()`, but returns the destinations instead of
-    // panicking: for the self-test that proves a rogue call is actually
-    // caught (a passing assertion there would prove nothing).
+    // Same as assert_clean, but returns the destinations instead of panicking,
+    // for the self-test that proves a rogue call is actually caught.
     pub async fn destinations_seen(&self) -> Vec<String> {
         self.sink
             .received_requests()
@@ -117,16 +95,14 @@ impl EgressTrap {
     }
 }
 
-// The port to hand loopback auto-discovery's fixed-port fallback (step 3b)
-// through `INKENTRY_TEST_DISCOVERY_PORT`, so a mock on `url` stands in for the
-// auto-discovered inference server. Deliberately distinct from an explicit
-// `server_url` (a team-server opt-in, out of scope here).
+// Feeds loopback auto-discovery's fixed-port fallback (step 3b) via
+// `INKENTRY_TEST_DISCOVERY_PORT`, so a mock on `url` stands in for the
+// auto-discovered inference server — distinct from an explicit `server_url`.
 //
-// Not step 3a's `server.port` file: that step uses a responder only when the
-// pid recorded beside the port is a live `inkentry-server` process reporting
-// the recorded instance id, and a wiremock stand-in is neither. Fabricating
-// the file here would leave the command with no server at all, which for a
-// test that only asserts an absence is a pass that proves nothing.
+// Not step 3a's `server.port` file: that step only responds when the pid
+// beside the port is a live `inkentry-server` reporting the recorded instance
+// id, which a wiremock stand-in cannot fake, and fabricating the file here
+// would leave the command with no server at all.
 pub fn loopback_discovery_port(url: &str) -> String {
     url.rsplit(':')
         .next()

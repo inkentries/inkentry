@@ -35,8 +35,7 @@ pub fn pushed_vector_model_tag() -> &'static str {
 
 /// Serialise a float vector to raw little-endian f32 bytes for a sqlite-vec
 /// `float[N]` column. Used for the full-precision memory-note vector table
-/// (`note_embeddings`, `FLOAT[896]`). See `docs/architecture.md` ("Why two
-/// vector-storage formats").
+/// (`note_embeddings`, `FLOAT[896]`).
 pub fn vec_to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -46,8 +45,7 @@ pub fn vec_to_blob(v: &[f32]) -> Vec<u8> {
 /// `round(x * 127)` clamped to `[-127, 127]` — 4× smaller than f32, and since
 /// the scaling is uniform L2 ranking is preserved (callers rescale by
 /// `INT8_SCALE`). Used only for the chunk/snapshot tables (`embeddings`,
-/// `snapshot_embeddings`). See `docs/architecture.md` ("Why two vector-storage
-/// formats").
+/// `snapshot_embeddings`).
 pub fn vec_to_int8_blob(v: &[f32]) -> Vec<u8> {
     v.iter()
         .map(|&x| ((x * 127.0).round().clamp(-127.0, 127.0) as i8) as u8)

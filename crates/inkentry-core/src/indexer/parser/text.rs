@@ -1,11 +1,11 @@
 use super::super::chunker::{Chunk, ChunkKind, chunk_token_cap, sliding_window};
 use crate::search::tokens::estimate_tokens;
 
-/// Parse a `.ipynb` notebook into per-cell chunks.
-///
-/// Code cells become `Verbatim` chunks tagged with the kernel language.
-/// Markdown/raw cells become `Section` chunks.  Falls back to sliding-window
-/// if the JSON is malformed.
+// Parse a `.ipynb` notebook into per-cell chunks.
+//
+// Code cells become `Verbatim` chunks tagged with the kernel language.
+// Markdown/raw cells become `Section` chunks. Falls back to sliding-window
+// if the JSON is malformed.
 pub(super) fn parse_notebook(source: &str, file_path: &str) -> Vec<Chunk> {
     #[derive(serde::Deserialize)]
     struct Notebook {
@@ -28,7 +28,7 @@ pub(super) fn parse_notebook(source: &str, file_path: &str) -> Vec<Chunk> {
         cell_type: String,
         source: CellSource,
     }
-    /// The `source` field is either a JSON string or an array of strings.
+    // The `source` field is either a JSON string or an array of strings.
     #[derive(serde::Deserialize)]
     #[serde(untagged)]
     enum CellSource {
@@ -93,10 +93,10 @@ pub(super) fn parse_notebook(source: &str, file_path: &str) -> Vec<Chunk> {
     chunks
 }
 
-/// Split a Markdown document into per-section chunks.
-/// Each ATX heading (`#`, `##`, …) starts a new chunk that includes the
-/// heading line and all content until the next same-or-higher-level heading.
-/// If the file has no headings the whole document is split by sliding window.
+// Split a Markdown document into per-section chunks.
+// Each ATX heading (`#`, `##`, …) starts a new chunk that includes the
+// heading line and all content until the next same-or-higher-level heading.
+// If the file has no headings the whole document is split by sliding window.
 pub(super) fn parse_markdown(source: &str, file_path: &str) -> Vec<Chunk> {
     let lines: Vec<&str> = source.lines().collect();
     let mut chunks: Vec<Chunk> = Vec::new();
@@ -152,7 +152,6 @@ pub(super) fn parse_markdown(source: &str, file_path: &str) -> Vec<Chunk> {
             if let Some((start, title)) = section.take() {
                 flush(start, Some(title), i, &lines, &mut chunks);
             } else if !preamble.is_empty() {
-                // Flush preamble (content before the first heading)
                 let start = *preamble.first().unwrap();
                 flush(start, None, i, &lines, &mut chunks);
                 preamble.clear();
@@ -163,7 +162,6 @@ pub(super) fn parse_markdown(source: &str, file_path: &str) -> Vec<Chunk> {
         }
     }
 
-    // Flush the last section / remaining preamble
     if let Some((start, title)) = section {
         flush(start, Some(title), lines.len(), &lines, &mut chunks);
     } else if !preamble.is_empty() {
@@ -177,8 +175,8 @@ pub(super) fn parse_markdown(source: &str, file_path: &str) -> Vec<Chunk> {
     chunks
 }
 
-/// Extract the text of an ATX heading line (`# Foo` → `"Foo"`).
-/// Returns None for non-heading lines or fenced-code-block lines.
+// Extract the text of an ATX heading line (`# Foo` → `"Foo"`).
+// Returns None for non-heading lines or fenced-code-block lines.
 pub(super) fn atx_heading(line: &str) -> Option<String> {
     let stripped = line.trim_start_matches('#');
     let hashes = line.len() - stripped.len();

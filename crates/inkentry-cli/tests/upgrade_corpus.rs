@@ -1,35 +1,27 @@
 // Upgrade corpus ("DB museum"): open artifacts written by real released
 // binaries with the current build and assert nothing is lost.
 //
-// Every wing under `fixtures/upgrade-corpus/wings/` was produced by an actual
-// downloaded release, not by constructing an old shape by hand. The expected
-// values in MANIFEST.json were read out of each artifact at capture time with
-// plain SQL, before any current-binary code touched it, so they are an
-// independent record of what the old binary wrote rather than an echo of what
-// today's code happens to produce.
+// Every wing under `fixtures/upgrade-corpus/wings/` came from an actual
+// downloaded release, not a hand-built old shape. MANIFEST.json's expected
+// values were read out of each artifact with plain SQL at capture time, before
+// any current-binary code touched it — an independent record of what the old
+// binary wrote, not an echo of what today's code produces.
 //
-// The corpus holds three wings, and the reason it holds so few is the point.
+// The corpus deliberately holds only three wings: a wing earns its place by
+// covering a path a real user's data actually takes. `index.db` from the
+// earlier product is not carried at all (the user reindexes), and its
+// `memory.db` is exported to a portable dump and imported fresh, so neither
+// needed a wing once the migration ladders defending them were retired.
 //
-// A wing earns its place by covering a path a real user's data actually takes.
-// No database written by the earlier product is such a path: its `index.db` is
-// not carried at all (the user reindexes) and its `memory.db` is exported to a
-// portable dump and imported into a store this binary creates. Wings for those
-// were archaeology, and they went with the migration ladders they were
-// defending.
+// Both databases written by 1.0/1.1 are such a path — `memory.db` stamped
+// schema 11, `index.db` stamped 17 — because each migrates forward in place
+// rather than being replaced. The notes ref is the other: it is renamed in
+// place rather than exported, so a migrating user hands this binary a ref
+// carrying blobs from three older writing eras.
 //
-// Both databases written by 1.0 or 1.1 are such a path. `memory.db` is stamped
-// schema version 11 and `index.db` 17, and each is migrated forward in place,
-// so the store a real 1.1.0 binary wrote is what the first step after it has
-// to carry across.
-//
-// The notes ref is the exception, and it is why the harness survives them. It
-// is renamed in place rather than exported, so a migrating user really does
-// hand this binary a ref carrying blobs from three older writing eras.
-//
-// The harness is kept whole for the wings that do not exist yet. The first time
-// a shipped schema version has to migrate to a newer one, that release's
-// databases get captured here and this file grows a test that opens them; the
-// tripwire at the bottom is what makes that happen rather than be forgotten.
+// The harness stays in place for wings that don't exist yet: the tripwire test
+// at the bottom forces a new one to be captured the first time a shipped
+// schema version has to migrate forward.
 //
 // Regenerate with scripts/upgrade-corpus/generate.sh.
 
@@ -237,11 +229,10 @@ fn the_corpus_is_not_empty_and_every_wing_is_present() {
         );
 
         // An artifact that no longer hashes to what was captured is no longer
-        // evidence about the release named in `producer`. The expectations in
-        // this manifest were read out of *those* bytes, so silently swapping
-        // them (a regenerated wing committed without recapturing, a fixture
-        // hand-edited to make a test pass) would leave the suite asserting one
-        // artifact's contents against another's.
+        // evidence about the release named in `producer`: the expectations
+        // were read out of *those* bytes, so a regenerated or hand-edited
+        // fixture would leave the suite asserting one artifact's contents
+        // against another's.
         assert!(
             !wing.sha256.is_empty(),
             "wing {} has no recorded artifact digest, so nothing ties the \
@@ -266,10 +257,10 @@ fn the_corpus_is_not_empty_and_every_wing_is_present() {
 // comma-joined columns now present as rows, normalised.
 //
 // The expected tags and paths are written out here rather than computed, so
-// they do not echo whatever today's normaliser happens to do. The raw column
-// values are asserted first against the manifest, which was read out of the
-// artifact with plain SQL at capture time: a regenerated wing with different
-// content fails there, loudly, instead of quietly testing something else.
+// they don't echo whatever today's normaliser happens to do. The raw column
+// values are asserted first against the manifest, so a regenerated wing with
+// different content fails there, loudly, instead of quietly testing something
+// else.
 #[test]
 #[serial_test::serial]
 fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
@@ -349,6 +340,16 @@ fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
         );
     }
 
+    // Captured before `MemoryStore::open` migrates `db` in place, so this is
+    // genuinely the 1.1.0 binary's own value, not a post-migration echo.
+    let raw_source_refs: Vec<(String, Option<String>)> = raw(&db)
+        .prepare("SELECT title, source_ref FROM notes")
+        .expect("preparing raw source_ref read")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("reading raw source_ref")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collecting raw source_ref");
+
     let store = MemoryStore::open(&db).expect("opening a 1.1.0 store must migrate it, not refuse");
     assert_eq!(read_user_version(&raw(&db)), fresh_memory_schema_version());
 
@@ -393,10 +394,9 @@ fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
         "a tag must still be reachable through full-text search once it lives in note_tags"
     );
 
-    // Step 13 (ADR-098 D5/D6): every entry the 1.1.0 store wrote predates
-    // origin, so it must read as absent — never a fabricated `unknown`
-    // object — and the new `events` table must exist and be empty, since
-    // nothing has recorded into it yet.
+    // Step 13: every entry the 1.1.0 store wrote predates origin, so it must
+    // read as absent — never a fabricated `unknown` object — and the new
+    // `events` table starts empty.
     for note in &all {
         assert_eq!(
             note.origin, None,
@@ -409,6 +409,40 @@ fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
         Vec::new(),
         "a migrated store's events table starts empty"
     );
+
+    // Step 14 (ADR-099 D1): pending_anchors is new local working state, so a
+    // migrated store — which never ran a `memory add` under this build —
+    // starts with none, same as `events` above.
+    assert_eq!(
+        store
+            .pending_anchor_count()
+            .expect("counting pending anchors"),
+        0,
+        "a migrated store's pending_anchors table starts empty"
+    );
+
+    // Step 14 touches no existing column, so every entry's `source_ref` —
+    // set or absent — must read back exactly as the 1.1.0 binary wrote it.
+    // This fixture's own entries all predate `source_ref` (none are
+    // harvested), so the assertion below exercises the "still absent" case;
+    // `a_store_migrated_to_14_matches_a_fresh_store` in `schema_tests.rs`
+    // covers the shape step 14 leaves the column in either way.
+    assert!(
+        !raw_source_refs.is_empty(),
+        "the fixture must carry at least one entry, or this assertion proves nothing"
+    );
+    for (title, raw_ref) in &raw_source_refs {
+        let migrated_ref = all
+            .iter()
+            .find(|n| &n.title == title)
+            .unwrap_or_else(|| panic!("{title:?} did not survive the migration"))
+            .source_ref
+            .clone();
+        assert_eq!(
+            &migrated_ref, raw_ref,
+            "{title:?}'s source_ref must survive step 14 unchanged"
+        );
+    }
 }
 
 // The ref carries blobs from three writing eras (legacy single-JSON, multi-line
@@ -462,10 +496,10 @@ async fn git_notes_reads_every_era_on_the_ref() {
             );
         }
 
-        // Exactly the recorded entries, no more. The 0.9.3 era binary really
-        // does write each of its entries twice into the log, so a reader that
-        // stopped folding duplicates would hand the user the same decision
-        // several times over and every title assertion above would still pass.
+        // Exactly the recorded entries, no more: the 0.9.3 era binary writes
+        // each entry twice into the log, so a reader that stopped folding
+        // duplicates would hand the user the same decision several times over
+        // and every title assertion above would still pass.
         assert_eq!(
             notes.len(),
             wing.expect.era_entries.len(),
@@ -577,31 +611,23 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
     }
 }
 
-// ── The corpus has to start collecting again when there is something to collect
+// The wing list is change-boundary driven. A corpus that holds no wing for a
+// store because none is needed looks exactly like one that quietly stopped
+// growing. This assertion is what tells the two apart: it fires whenever a
+// store's schema version moves past what the corpus was last checked against,
+// and asks whether a shipped version of that store has to cross the move.
 //
-// The wing list is change-boundary driven, and it once stopped advancing
-// without anything noticing: it ended at the last release before `user_version`
-// existed and stayed there while four more releases shipped, so nothing had
-// ever opened a stamped store and the suite went on passing, because a suite
-// can only test the wings it has.
-//
-// A corpus that holds no wing for a store because none is needed looks exactly
-// like that failure. What makes the two distinguishable is this assertion: it
-// fires whenever a store's schema version moves past what the corpus was last
-// checked against, and asks whether a shipped version of that store has to
-// cross the move.
-//
-// The numbers below are an acknowledgement, not a derivation. Deriving them
+// The numbers below are an acknowledgement, not a derivation — deriving them
 // from the crate constants would make the check tautological.
 //
-// Memory 11 -> 12: yes to the question below. 1.0 and 1.1 shipped writing 11,
-// and step 12 migrates that store in place. The `memory-v1.1.0-schema-11` wing
-// and `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` are
-// the answer.
+// Memory 11 -> 12: yes. 1.0 and 1.1 shipped writing 11, and step 12 migrates
+// that store in place. The `memory-v1.1.0-schema-11` wing and
+// `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` are the
+// answer.
 //
-// Index 17 -> 18: yes as well. 1.0 and 1.1 shipped writing index.db at 17, and
-// step 18 migrates it in place instead of rebuilding it, so its embeddings are
-// kept. The `index-v1.1.0-schema-17` wing and
+// Index 17 -> 18: yes. 1.0 and 1.1 shipped writing index.db at 17, and step 18
+// migrates it in place instead of rebuilding, so its embeddings are kept. The
+// `index-v1.1.0-schema-17` wing and
 // `an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema` are the
 // answer.
 //
@@ -612,15 +638,23 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
 // step 20 too, and the same test checks that it flags without discarding.
 //
 // Memory 12 -> 13: no. Schema 12 (tags and linked files as rows) has not
-// shipped in a release; no user holds a released binary's memory.db stamped
-// 12, so there is nothing a released store needs to survive moving to 13 that
-// the `memory-v1.1.0-schema-11` wing does not already cover: it climbs the
-// whole ladder, 11 through the current version, including this step.
+// shipped in a release, so there is nothing a released store needs to survive
+// moving to 13 that the `memory-v1.1.0-schema-11` wing doesn't already cover
+// by climbing the whole ladder.
 // `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
 // assertions for what step 13 adds (events exists and is empty; origin reads
 // as absent) rather than a new wing.
+//
+// Memory 13 -> 14: no, for the same reason as 12 -> 13. Schema 13 (ADR-098
+// events/origin) has not shipped either, so no released binary's store is
+// stamped 13 and there is nothing new for the 1.1.0 wing to survive moving
+// through step 14 (ADR-099 pending_anchors/patch_id_cache) that its own climb
+// through 11 -> current does not already cover.
+// `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
+// assertions for what step 14 adds (pending_anchors exists and is empty;
+// harvested entries keep their source_ref) rather than a new wing.
 const CORPUS_COVERS_INDEX_SCHEMA: i32 = 20;
-const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 13;
+const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 14;
 
 #[test]
 #[serial_test::serial]

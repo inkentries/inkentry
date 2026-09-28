@@ -1,9 +1,9 @@
-//! The imported name behind an in-file alias (`import { foo as bar }`), for
-//! the grammars whose locals query binds the alias as an import definition.
+// The imported name behind an in-file alias (`import { foo as bar }`), for
+// the grammars whose locals query binds the alias as an import definition.
 
 use tree_sitter::Node;
 
-/// `Some(original)` when `def` is the alias half of a renaming import.
+// `Some(original)` when `def` is the alias half of a renaming import.
 pub(super) fn original_name(def: Node<'_>, src: &[u8], language: &str) -> Option<String> {
     let parent = def.parent()?;
     let is_alias = parent.child_by_field_name("alias").map(|n| n.id()) == Some(def.id());
@@ -32,10 +32,10 @@ pub(super) fn original_name(def: Node<'_>, src: &[u8], language: &str) -> Option
     Some(text.rsplit(['.', ':']).next()?.to_owned())
 }
 
-/// For a JavaScript/TypeScript binding declared by `require(...)`, `Some` of
-/// the name it renames (`const { fetch: load } = require(…)` gives
-/// `Some("fetch")`), or `Some(None)` when it keeps the required name. `None`
-/// when the binding is not a `require`.
+// For a JavaScript/TypeScript binding declared by `require(...)`, `Some` of
+// the name it renames (`const { fetch: load } = require(…)` gives
+// `Some("fetch")`), or `Some(None)` when it keeps the required name. `None`
+// when the binding is not a `require`.
 pub(super) fn required_name(def: Node<'_>, src: &[u8], language: &str) -> Option<Option<String>> {
     if !matches!(language, "javascript" | "jsx" | "typescript" | "tsx") {
         return None;

@@ -840,6 +840,44 @@ impl ServerDb {
         Ok(changed > 0)
     }
 
+    /// ADR-099 D5: set `source_ref` on an entry that may have synced before a
+    /// commit claimed it. `source_ref` has no dedicated column on this
+    /// schema (same as `source_commit` on create, `handlers::batch`): it
+    /// folds into `tags` as a `git:<sha>` entry, the convention
+    /// `harvested_shas`/`source_commit_from_tags` already read. Replaces any
+    /// existing `git:` tag rather than appending a second one, so this stays
+    /// idempotent on a resend (the client has no local record of whether a
+    /// previous push already delivered this) and matches D3's "one
+    /// `source_ref` per entry" projection. Overwrites unconditionally, unlike
+    /// `archive_note`'s active-only guard: an anchor is not a lifecycle
+    /// transition.
+    pub fn set_note_source_ref(
+        &self,
+        project_id: i64,
+        note_id: &str,
+        source_ref: &str,
+    ) -> Result<bool> {
+        let row: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT tags FROM notes WHERE sync_id = ?1 AND project_id = ?2",
+                rusqlite::params![note_id, project_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(existing) = row else {
+            return Ok(false);
+        };
+        let mut tags = split_csv(existing.as_deref());
+        tags.retain(|t| !t.starts_with("git:"));
+        tags.push(format!("git:{source_ref}"));
+        let changed = self.conn.execute(
+            "UPDATE notes SET tags = ?1 WHERE sync_id = ?2 AND project_id = ?3",
+            rusqlite::params![tags.join(","), note_id, project_id],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// `superseded_by` stores the successor's rowid, so the successor must be
     /// resolved before the write: foreign keys are enforced on this connection
     /// and an unresolvable successor would otherwise be a constraint error

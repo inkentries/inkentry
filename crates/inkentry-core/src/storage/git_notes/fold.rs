@@ -122,6 +122,64 @@ pub(super) fn anchor_commits(records: &[(String, NoteRecord)]) -> HashMap<String
         .collect()
 }
 
+/// Every commit an entity is anchored to (ADR-099 D3): the original
+/// write-time attachment ([`anchor_commits`]) plus every commit carrying an
+/// explicit `op: "anchor"` record for it. An entity may now name more than
+/// one commit — a rebase or `memory anchor` can add anchors beyond the first.
+pub(super) fn all_anchor_commits(
+    records: &[(String, NoteRecord)],
+) -> HashMap<String, std::collections::HashSet<String>> {
+    let mut map: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    for (entity, commit) in anchor_commits(records) {
+        map.entry(entity).or_default().insert(commit);
+    }
+    for (commit, record) in records {
+        if record.op.as_deref() == Some("anchor") {
+            map.entry(record.resolve_entity_id())
+                .or_default()
+                .insert(commit.clone());
+        }
+    }
+    map
+}
+
+/// Every explicit `op: "anchor"` commit claimed for `entity_id`, paired with
+/// the `created_at` of the record that claimed it. Feeds
+/// `resolve_source_ref`'s "earliest reachable, falling back to earliest" rule
+/// (ADR-099 D3).
+///
+/// Deliberately **excludes** the base write-time attachment `anchor_commits`
+/// resolves: that attachment means "written while standing on this commit"
+/// (typically the claimed commit's *parent*), a different fact from "this
+/// commit carries the work", and conflating the two would make `source_ref`
+/// fall back to the parent the moment an entry has any real claim at all,
+/// since the write-time attachment is always the older of the two.
+pub(super) fn anchors_for_entity(
+    records: &[(String, NoteRecord)],
+    entity_id: &str,
+) -> Vec<(String, i64)> {
+    records
+        .iter()
+        .filter(|(_, r)| r.op.as_deref() == Some("anchor") && r.resolve_entity_id() == entity_id)
+        .map(|(commit, r)| (commit.clone(), r.created_at))
+        .collect()
+}
+
+/// "Earliest reachable, falling back to earliest" (ADR-099 D3): among
+/// `anchors`, the earliest-created one `reachable` accepts; if none is
+/// reachable, the earliest overall. `None` only when `anchors` is empty.
+pub(super) fn resolve_source_ref(
+    anchors: &[(String, i64)],
+    reachable: impl Fn(&str) -> bool,
+) -> Option<String> {
+    anchors
+        .iter()
+        .filter(|(commit, _)| reachable(commit))
+        .min_by_key(|(_, created_at)| *created_at)
+        .or_else(|| anchors.iter().min_by_key(|(_, created_at)| *created_at))
+        .map(|(commit, _)| commit.clone())
+}
+
 /// Index of the copy every base-sourced field is taken from.
 ///
 /// Total by construction: two copies this cannot separate agree on every field
@@ -210,6 +268,8 @@ mod tests {
             superseded_by_entity_id: None,
             edges: vec![],
             origin: None,
+            op: None,
+            patch_id: None,
         }
     }
 
@@ -556,6 +616,97 @@ mod tests {
             Some(500),
             "invalid_at must still take the min"
         );
+    }
+
+    // ── ADR-099 D3: anchor records ────────────────────────────────────────────
+
+    fn anchor_record(id: i64, created_at: i64, entity: &NoteRecord) -> NoteRecord {
+        let mut r = copy(id, created_at, &[]);
+        r.title = entity.title.clone();
+        r.body = entity.body.clone();
+        r.entity_id = entity.entity_id.clone();
+        r.op = Some("anchor".to_string());
+        r.patch_id = Some(format!("patch-{id}"));
+        r
+    }
+
+    #[test]
+    fn all_anchor_commits_unions_the_base_write_attachment_and_anchor_records() {
+        let entity = copy(1, 100, &[]);
+        let entity_id = entity.resolve_entity_id();
+        let anchor = anchor_record(2, 200, &entity);
+        let records = vec![
+            ("commit-a".to_string(), entity),
+            ("commit-b".to_string(), anchor),
+        ];
+
+        let map = all_anchor_commits(&records);
+        let commits = map.get(&entity_id).expect("entity has anchors");
+        assert_eq!(
+            commits,
+            &std::collections::HashSet::from(["commit-a".to_string(), "commit-b".to_string()])
+        );
+    }
+
+    #[test]
+    fn anchors_for_entity_returns_only_explicit_anchor_records_not_the_base_write_attachment() {
+        let entity = copy(1, 100, &[]);
+        let entity_id = entity.resolve_entity_id();
+        let anchor = anchor_record(2, 200, &entity);
+        let records = vec![
+            ("commit-a".to_string(), entity),
+            ("commit-b".to_string(), anchor),
+        ];
+
+        let anchors = anchors_for_entity(&records, &entity_id);
+        assert_eq!(
+            anchors,
+            vec![("commit-b".to_string(), 200)],
+            "commit-a is only the write-time attachment (no op: \"anchor\"), \
+             so it must not compete with commit-b for source_ref"
+        );
+    }
+
+    #[test]
+    fn anchors_for_entity_returns_every_explicit_anchor_when_there_are_several() {
+        let entity = copy(1, 100, &[]);
+        let entity_id = entity.resolve_entity_id();
+        let first = anchor_record(2, 200, &entity);
+        let second = anchor_record(3, 300, &entity);
+        let records = vec![
+            ("commit-a".to_string(), entity),
+            ("commit-b".to_string(), first),
+            ("commit-c".to_string(), second),
+        ];
+
+        let mut anchors = anchors_for_entity(&records, &entity_id);
+        anchors.sort();
+        assert_eq!(
+            anchors,
+            vec![("commit-b".to_string(), 200), ("commit-c".to_string(), 300)]
+        );
+    }
+
+    #[test]
+    fn resolve_source_ref_prefers_the_earliest_reachable_anchor() {
+        let anchors = vec![
+            ("old-unreachable".to_string(), 100),
+            ("newer-reachable".to_string(), 200),
+        ];
+        let resolved = resolve_source_ref(&anchors, |c| c == "newer-reachable");
+        assert_eq!(resolved, Some("newer-reachable".to_string()));
+    }
+
+    #[test]
+    fn resolve_source_ref_falls_back_to_the_earliest_when_none_are_reachable() {
+        let anchors = vec![("earliest".to_string(), 100), ("later".to_string(), 200)];
+        let resolved = resolve_source_ref(&anchors, |_| false);
+        assert_eq!(resolved, Some("earliest".to_string()));
+    }
+
+    #[test]
+    fn resolve_source_ref_is_none_for_no_anchors() {
+        assert_eq!(resolve_source_ref(&[], |_| true), None);
     }
 }
 

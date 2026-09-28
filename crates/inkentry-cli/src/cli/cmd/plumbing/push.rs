@@ -25,6 +25,8 @@ struct PushReport {
     without_local_vector: usize,
     embedded_locally: usize,
     interrupted: bool,
+    // ADR-099 D5, additive: already-synced rows whose anchor update was sent.
+    anchors_pushed: usize,
 }
 
 pub(super) async fn push(
@@ -92,6 +94,7 @@ pub(super) async fn push(
         without_local_vector: summary.without_local_vector,
         embedded_locally: summary.embedded_locally,
         interrupted: false,
+        anchors_pushed: summary.anchors_pushed,
     };
     let mut stdout = std::io::stdout();
     writeln!(stdout, "{}", serde_json::to_string(&report)?)?;

@@ -1,40 +1,6 @@
-// Egress containment for local-tier flows: the only outbound connections a
-// local-tier command may make are to the auto-discovered loopback inference
-// server. Every test here wires `egress_trap::EgressTrap` around a real
-// `inkentry` subprocess and fails loudly, naming the destination, if any
-// call escapes it.
-//
-// ## Update-check (ADR-050) coverage: not yet implementable
-//
-// ADR-050 (`docs/adr/050-cli-auto-update-check.md`) designs an opt-out
-// `api.github.com` update-notification check, but at the time this suite was
-// written no code in the workspace implements it yet: there is no
-// `INKENTRY_NO_UPDATE_CHECK`, no `UpdateConfig`, no `releases/latest` call
-// site, no `state.toml`. `update_check_unimplemented_tripwire` below is a
-// deliberate tripwire, not a behavioral test: it fails the moment someone
-// adds the feature, which is the cue to replace it with real coverage of
-// D2/D3 (trigger cadence, opt-out precedence, silent-offline swallow). Until
-// then, every `zero_egress` test below already proves the CLI makes no
-// `api.github.com` call in practice (it is simply one destination among
-// "any non-loopback host", all of which are caught identically).
-//
-// ## embed_hub (Hugging Face download) coverage
-//
-// `embed_hub`/`hf-hub` live only in `inkentry-server` behind the optional
-// `embed-llama` feature; `inkentry-cli`'s production `[dependencies]` do not
-// depend on `inkentry-server` at all (only a `[dev-dependencies]` entry with
-// `default-features = false`, used by unrelated relay tests). So "CLI local
-// flows never trigger embed_hub" is a compile-time property of the
-// dependency graph, not just a runtime observation:
-// `embed_hub_unreachable_from_cli_binary` below asserts that graph shape
-// directly so a future Cargo.toml change that pulls `hf-hub` into the
-// `inkentry` binary fails CI immediately. The first-run download itself
-// (only reaches `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF` on the default HF
-// endpoint) already has pinning coverage in
-// `crates/inkentry-server/src/embed_hub.rs`'s `prequantized_gguf_repo_*`
-// tests; this suite does not duplicate a live download against the real HF
-// host (network-dependent and slow, ~339 MB, not appropriate for this
-// harness).
+// The only outbound connections a local-tier command may make are to the auto-discovered
+// loopback inference server. Every test wires `egress_trap::EgressTrap` around a real
+// `inkentry` subprocess and fails loudly, naming the destination, if any call escapes it.
 
 use crate::egress_trap;
 use crate::plumbing_helpers;
@@ -74,10 +40,6 @@ fn write_project(dir: &Path) {
     .expect("write lib.rs");
 }
 
-// `POST /v1/projects/{id}/search`: the endpoint `inkentry search --mode
-// semantic|hybrid` uses to embed the query server-side (`search_query` in
-// `server_client.rs`); distinct from `/index/embed` (`embed_text`), which
-// `memory search`/`memory add`/`plumbing embed` use instead.
 async fn mount_search(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path_regex(r"^/v1/projects/.+/search$"))
@@ -89,12 +51,8 @@ async fn mount_search(server: &MockServer) {
         .await;
 }
 
-// Build a `inkentry` command isolated from ambient `INKENTRY_*` env, wired
-// against `project` as CWD and `state_dir` for loopback auto-discovery.
-// A command that never parsed cannot have leaked, so a clean trap over one
-// proves nothing. Argument-parsing failures are the way these invocations go
-// stale: a renamed or removed subcommand still exits, still touches no socket,
-// and still passes every egress assertion.
+// A command that never parsed cannot have leaked: a renamed or removed subcommand still exits,
+// touches no socket, and passes every egress assertion.
 fn assert_ran(out: &std::process::Output, label: &str) {
     let stderr = String::from_utf8_lossy(&out.stderr);
     for marker in [
@@ -122,10 +80,8 @@ fn local_tier_cmd(home: &Path, project: &Path, state_dir: &Path) -> assert_cmd::
     cmd
 }
 
-// [`local_tier_cmd`] with loopback auto-discovery pointed at a mock inference
-// server on `url`, for the commands that are supposed to find one. The rest of
-// this file keeps `local_tier_cmd`, whose `inkentry_bin_in` already disables
-// discovery outright.
+// Points loopback auto-discovery at a mock inference server; the rest of the file keeps
+// `local_tier_cmd`, which disables discovery.
 fn loopback_tier_cmd(
     home: &Path,
     project: &Path,
@@ -137,13 +93,8 @@ fn loopback_tier_cmd(
     cmd
 }
 
-// How many requests the mock inference server has served whose path ends with
-// `suffix`.
-//
-// Every test here asserts an absence (nothing reached the egress trap), which a
-// run that did nothing at all satisfies just as well as a run that stayed
-// local. Counting what the sanctioned loopback server actually served is what
-// separates the two.
+// Every test asserts an absence, which a run that did nothing satisfies as well as one that
+// stayed local; counting what the sanctioned loopback server served separates the two.
 async fn served(server: &MockServer, suffix: &str) -> usize {
     server
         .received_requests()
@@ -153,8 +104,6 @@ async fn served(server: &MockServer, suffix: &str) -> usize {
         .filter(|r| r.url.path().ends_with(suffix))
         .count()
 }
-
-// ── init ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn init_zero_egress() {
@@ -172,8 +121,6 @@ async fn init_zero_egress() {
 
     trap.assert_clean().await;
 }
-
-// ── index (loopback auto-discovery) ─────────────────────────────────────
 
 #[tokio::test]
 async fn index_local_tier_zero_egress() {
@@ -207,8 +154,6 @@ async fn index_local_tier_zero_egress() {
     trap.assert_clean().await;
 }
 
-// ── search --mode text (no server needed at all) ───────────────────────
-
 #[tokio::test]
 async fn search_text_mode_zero_egress() {
     ensure_sqlite_vec();
@@ -218,9 +163,7 @@ async fn search_text_mode_zero_egress() {
     init_git_repo(project.path());
     write_project(project.path());
 
-    // Index once (loopback-backed) so there is something to search; this
-    // setup phase runs *outside* the trap on purpose: only the command
-    // actually under test is wired.
+    // Setup runs outside the trap on purpose: only the command under test is wired.
     {
         let inference = MockServer::start().await;
         mount_health(&inference).await;
@@ -242,9 +185,8 @@ async fn search_text_mode_zero_egress() {
         );
     }
 
-    // No inference server at all for the search itself: text mode must not
-    // need one, and a stray loopback probe (default port 4655, nothing
-    // listening) must fail closed locally, never touch the trap.
+    // No inference server for the search itself: text mode must not need one, and a stray
+    // loopback probe (default port 4655) must fail closed locally.
     let empty_state_dir = TempDir::new().expect("empty state dir");
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), empty_state_dir.path());
@@ -254,8 +196,6 @@ async fn search_text_mode_zero_egress() {
 
     trap.assert_clean().await;
 }
-
-// ── semantic search via loopback server ─────────────────────────────────
 
 #[tokio::test]
 async fn search_semantic_zero_egress() {
@@ -290,9 +230,7 @@ async fn search_semantic_zero_egress() {
         &inference.uri(),
     );
     trap.wire(&mut cmd);
-    // Default best-available ranking over the code corpus: the query embed goes
-    // to the loopback server, never off-box. --only-code keeps this to the one
-    // code-prefix embed the test is about.
+    // `--only-code` keeps this to the one code-prefix embed the test is about.
     cmd.arg("search").arg("greet").arg("--only-code");
     cmd.assert().success();
 
@@ -303,8 +241,6 @@ async fn search_semantic_zero_egress() {
     );
     trap.assert_clean().await;
 }
-
-// ── memory add / list (pure local) ──────────────────────────────────────
 
 #[tokio::test]
 async fn memory_add_list_zero_egress() {
@@ -344,8 +280,6 @@ async fn memory_add_list_zero_egress() {
     trap.assert_clean().await;
 }
 
-// ── event recording (ADR-098 D5): a local-only INSERT, nothing else ────────────
-
 #[tokio::test]
 async fn event_recording_zero_egress() {
     ensure_sqlite_vec();
@@ -363,9 +297,7 @@ async fn event_recording_zero_egress() {
 
     let trap = EgressTrap::start().await;
 
-    // A full caller declaration, so the recording path actually runs
-    // (trigger/actor parsing, session_ref hashing) rather than falling
-    // through the "undeclared" no-op branch.
+    // A full caller declaration so the recording path runs rather than the undeclared no-op.
     let mut add_cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut add_cmd);
     add_cmd
@@ -395,8 +327,6 @@ async fn event_recording_zero_egress() {
 
     trap.assert_clean().await;
 }
-
-// ── metrics snapshot (ADR-098): memory.db + local git log, nothing else ────────
 
 #[tokio::test]
 async fn metrics_snapshot_zero_egress() {
@@ -434,8 +364,6 @@ async fn metrics_snapshot_zero_egress() {
 
     trap.assert_clean().await;
 }
-
-// ── memory-corpus search (hybrid, loopback-embedded query) ─────────────────────
 
 #[tokio::test]
 async fn memory_search_zero_egress() {
@@ -486,8 +414,7 @@ async fn memory_search_zero_egress() {
         &inference.uri(),
     );
     trap.wire(&mut cmd);
-    // Memory-only unified search: the QA query embed goes to the loopback server,
-    // the note KNN runs locally, and no index.db is required for `--only-memory`.
+    // The QA query embed goes to the loopback server; the note KNN runs locally.
     cmd.arg("search").arg("egress").arg("--only-memory");
     cmd.assert().success();
 
@@ -498,8 +425,6 @@ async fn memory_search_zero_egress() {
     );
     trap.assert_clean().await;
 }
-
-// ── graph edges (index-backed, local reads) ─────────────────────────────
 
 #[tokio::test]
 async fn graph_edges_zero_egress() {
@@ -515,8 +440,8 @@ async fn graph_edges_zero_egress() {
     )
     .expect("write caller.rs");
 
-    // Index offline (no loopback state ⇒ no server): parsing extracts the call
-    // graph without embedding, which is all `plumbing graph-edges` needs.
+    // Index offline: parsing extracts the call graph without embedding, which is all
+    // `plumbing graph-edges` needs.
     local_tier_cmd(home.path(), project.path(), state_dir.path())
         .arg("index")
         .arg(".")
@@ -526,8 +451,6 @@ async fn graph_edges_zero_egress() {
     let trap = EgressTrap::start().await;
     let mut cmd = local_tier_cmd(home.path(), project.path(), state_dir.path());
     trap.wire(&mut cmd);
-    // The graph capability's machine surface after the top-level `graph`
-    // porcelain was removed: exact-edge lookup, JSONL, index-backed, local-only.
     cmd.args(["plumbing", "graph-edges", "--symbol", "greet"]);
     cmd.assert()
         .success()
@@ -535,8 +458,6 @@ async fn graph_edges_zero_egress() {
 
     trap.assert_clean().await;
 }
-
-// ── plumbing (local reads) ───────────────────────────────────────────────
 
 #[tokio::test]
 async fn plumbing_local_reads_zero_egress() {
@@ -571,9 +492,8 @@ async fn plumbing_local_reads_zero_egress() {
     let db_path = project.path().join(".inkentry").join("index.db");
     let trap = EgressTrap::start().await;
 
-    // `publish-notes` is excluded deliberately: it pushes `refs/notes/inkentry`
-    // to a git remote, an explicit, expected-egress operation, not a
-    // local-tier read this zero-egress claim covers.
+    // `publish-notes` is excluded: it pushes `refs/notes/inkentry` to a git remote, which is
+    // expected egress rather than a local-tier read.
     for args in [
         vec!["ls-files"],
         vec!["cat-chunks", "src/lib.rs"],
@@ -593,17 +513,14 @@ async fn plumbing_local_reads_zero_egress() {
         for a in &args {
             cmd.arg(a);
         }
-        // Exit code varies by subcommand semantics (e.g. `ls-files` exits 1
-        // on an empty result), so the outcome is not asserted. What is
-        // asserted is that the subcommand still parses: renaming one would
-        // otherwise leave this green having run nothing at all.
+        // Exit code varies by subcommand (`ls-files` exits 1 on empty), so only assert that it
+        // still parses: renaming one would otherwise leave this green having run nothing.
         let out = cmd.output().expect("run plumbing subcommand");
         assert_ran(&out, &args.join(" "));
     }
 
-    // `knn` takes its query vector pre-embedded on stdin (unlike `embed`, it
-    // never calls the inference server itself), so it gets its own
-    // invocation instead of joining the no-stdin loop above.
+    // `knn` takes its query vector pre-embedded on stdin and never calls the inference
+    // server, so it gets its own invocation.
     let mut knn_cmd = loopback_tier_cmd(
         home.path(),
         project.path(),
@@ -621,9 +538,8 @@ async fn plumbing_local_reads_zero_egress() {
     let knn_out = knn_cmd.output().expect("run plumbing knn");
     assert_ran(&knn_out, "knn");
 
-    // A discoverable loopback server was available to every one of those
-    // commands and none of them used it: that is the claim, and it is not the
-    // same claim as "no server was reachable".
+    // A discoverable loopback server was available to every command and none used it, which
+    // is not the same claim as "no server was reachable".
     assert_eq!(
         served(&inference, "/index/embed").await,
         embeds_after_index,
@@ -658,23 +574,12 @@ async fn plumbing_embed_zero_egress() {
     .assert()
     .success();
 
-    // `plumbing`'s dispatch (`cli/cmd/plumbing/mod.rs`) hands `embed_cmd` the
-    // raw `Config` without first running the tier-probe/`effective_config`
-    // bridge every other inference-calling command goes through (see
-    // `capability::tier::Tier::effective_config`'s doc comment on why that
-    // bridge exists), so unlike `search`/`memory search`, loopback
-    // auto-discovery alone (`INKENTRY_STATE_DIR`) does not reach it; only an
-    // explicit `server_url` under `cloud_first` does. That URL is still a
-    // loopback address here (the same mock server as every other test in
-    // this file uses), so the egress claim under test (zero non-loopback
-    // connections) is identical; only the config knob differs.
-    //
-    // `write_project_server_config` overwrites the whole `config.toml`, so
-    // the `project_id` `init --name` just wrote must be passed back in
-    // explicitly or it's lost: `ServerInferenceClient` reads `cfg.project_id`
-    // verbatim (no derive-from-git fallback; that only happens in the
-    // `effective_config` bridge this code path skips), so a lost project_id
-    // means an empty `{project_id}` URL segment and a 404, not an egress leak.
+    // `plumbing` hands `embed_cmd` the raw `Config` without the tier-probe bridge other
+    // inference commands go through, so loopback auto-discovery alone does not reach it; only an
+    // explicit `server_url` under `cloud_first` does (still loopback here, so the egress claim
+    // is unchanged). `write_project_server_config` overwrites config.toml, so the `project_id`
+    // from `init --name` must be passed back: it is read verbatim, and losing it gives a 404,
+    // not an egress leak.
     plumbing_helpers::write_project_server_config(project.path(), &inference.uri(), project_id);
 
     let db_path = project.path().join(".inkentry").join("index.db");
@@ -688,8 +593,7 @@ async fn plumbing_embed_zero_egress() {
     );
     trap.wire(&mut cmd);
     cmd.env("INKENTRY_MODE", "cloud_first");
-    // `plumbing embed` reads lines from stdin (`--query` only toggles which
-    // F2LLM instruction prefix to apply), not a positional query arg.
+    // `plumbing embed` reads lines from stdin (`--query` only picks the instruction prefix).
     cmd.arg("plumbing")
         .arg("--db")
         .arg(&db_path)
@@ -706,12 +610,11 @@ async fn plumbing_embed_zero_egress() {
     trap.assert_clean().await;
 }
 
-// ── ADR-050 update check: tripwire, see module doc ──────────────────────
-
 #[test]
 fn update_check_unimplemented_tripwire() {
-    // Only production `src/` trees: walking `tests/` would trip on this
-    // very file's doc comment naming these identifiers.
+    // Tripwire, not a behavioral test: fails the moment update-check code lands, the cue to
+    // replace it with real coverage. Only production `src/` is walked, since this file names
+    // the identifiers itself.
     let crates_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut hits = Vec::new();
     for needle in [
@@ -761,15 +664,11 @@ fn walk_rs_files(dir: &Path, f: &mut impl FnMut(&Path, &str)) -> bool {
     true
 }
 
-// ── embed_hub: compile-time unreachable from the CLI binary ─────────────
-
 #[test]
 fn embed_hub_unreachable_from_cli_binary() {
-    // `cargo tree --edges normal` walks the *production* dependency graph
-    // (dev-dependencies excluded), which is exactly the graph the shipped
-    // `inkentry` binary links. `hf-hub` lives only behind inkentry-server's
-    // optional `embed-llama` feature; asserting it is absent here is a
-    // structural guarantee, not a runtime sample.
+    // `cargo tree --edges normal` is the production graph the shipped binary links; `hf-hub`
+    // lives only behind inkentry-server's optional `embed-llama` feature, so its absence is a
+    // structural guarantee rather than a runtime sample.
     let out = std::process::Command::new("cargo")
         .args([
             "tree",
@@ -796,17 +695,10 @@ fn embed_hub_unreachable_from_cli_binary() {
     );
 }
 
-// ── self-test: prove the trap actually catches a rogue call ─────────────
-//
-// Critical per the story: a harness that only ever asserts "clean" proves
-// nothing about its own ability to detect a violation. This drives a real
-// `reqwest::Client` (the same HTTP stack every local-tier command uses)
-// against a rogue non-loopback host under the identical proxy-env wiring
-// `EgressTrap::wire` applies to a subprocess, and asserts the trap names the
-// destination. `#[serial]` because, unlike every other test in this file,
-// this one mutates process-global env directly instead of scoping the env
-// to a spawned child via `Command::env` (there is no "child process" to
-// scope to when proving the mechanism itself, only the test process).
+// A harness that only asserts "clean" cannot detect a violation: this drives a real
+// `reqwest::Client` at a rogue non-loopback host under the same proxy-env wiring
+// `EgressTrap::wire` applies, and asserts the trap names it. `#[serial]` because it mutates
+// process-global env instead of scoping env to a spawned child.
 #[tokio::test]
 #[serial_test::serial]
 async fn self_test_trap_catches_rogue_call() {

@@ -1,17 +1,12 @@
-// The state-file discovery path (step 3a) works end to end, driven through the
-// real binary rather than an in-process `probe_loopback` call.
+// The state-file discovery path (step 3a), driven through the real binary
+// rather than an in-process `probe_loopback` call: stands up a recorded server
+// (port + pid + instance_id) beside a mock daemon and asserts `inkentry status`
+// discovers and reports it as the auto-discovered loopback server.
 //
-// This is the integration-level counterpart to the unit tests in
-// `capability/probe.rs`: it stands up a recorded server (port + pid +
-// instance_id) beside a mock daemon and asserts that `inkentry status`
-// discovers it and reports it as the auto-discovered loopback server.
-//
-// Cross-platform, unlike the live-process unit tests: the un-fakeable OS pid
-// query is relaxed by `INKENTRY_TEST_TRUST_RECORDED_RESPONDER`, while the
-// recorded instance_id is still checked for real against what the mock reports.
-// That is the only signal a Windows test cannot otherwise stage, so this is how
-// the happy path every command travels gets coverage that does not depend on
-// the host OS.
+// Cross-platform: the un-fakeable OS pid query is relaxed by
+// `INKENTRY_TEST_TRUST_RECORDED_RESPONDER`, while the recorded instance_id is
+// still checked for real against what the mock reports — the only signal a
+// Windows test could not otherwise stage.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{init_git_repo, inkentry_bin_in};
@@ -36,9 +31,9 @@ fn run(home: &Path, state: &Path, project: &Path, args: &[&str], trust_recorded:
     out.stdout
 }
 
-// Configured so `relay_target` resolves and the relay gate is actually reached:
-// without a team server and a project id, the outbox never probes the recorded
-// port at all and this would assert against the inference path's warning.
+// Needs a team server and project id so the outbox actually probes the
+// recorded port; otherwise this would assert against the inference path's
+// warning instead.
 fn run_stderr(home: &Path, state: &Path, project: &Path, team_url: &str, args: &[&str]) -> String {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(project)
@@ -79,8 +74,8 @@ async fn mock_daemon() -> (MockServer, u16) {
             "started_by": null,
             "embedding_dim": 0
         })))
-        // Verified on drop: a run that never reached the probe would otherwise
-        // look the same as one whose discovery silently failed.
+        // Verified on drop, so a run that never reached the probe doesn't look
+        // identical to one whose discovery silently failed.
         .expect(1..)
         .mount(&server)
         .await;
@@ -123,9 +118,9 @@ async fn a_recorded_daemon_is_discovered_by_status_end_to_end() {
     );
 }
 
-// A responder that answers but cannot be verified is the case worth telling the
-// user about: a silent `None` here reads as "no daemon" while a process is in
-// fact holding the port. The refusal names the failed check and the remedy.
+// A responder that answers but can't be verified must be reported, not
+// silently read as "no daemon" while a process is in fact holding the port.
+// The refusal names the failed check and the remedy.
 #[tokio::test]
 async fn a_refused_relay_responder_says_why_on_stderr() {
     let (_server, port) = mock_daemon().await;

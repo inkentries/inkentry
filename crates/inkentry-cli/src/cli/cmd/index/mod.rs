@@ -104,6 +104,18 @@ async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
 
     let project_root = worktree::resolve_main_worktree_root(&args.path);
 
+    // ADR-099 D3a: hook-free rewrite reconciliation. `index` is the pass that
+    // already runs after local history moves (the post-commit hook, and the
+    // "bring the index up to date" step at the start of every session), so it
+    // hosts this rather than `memory sync`. Best-effort and silent: it must
+    // never slow down or fail an index run over a stale anchor.
+    let mem_path_for_anchors = project_root.join(".inkentry").join("memory.db");
+    if let Err(e) =
+        super::memory::anchor::reconcile_anchors(&mem_path_for_anchors, &project_root).await
+    {
+        tracing::debug!("anchor reconciliation skipped: {e:#}");
+    }
+
     let db_path = args
         .db
         .clone()

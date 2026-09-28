@@ -483,6 +483,7 @@ fn the_summary_clause_reports_local_embedding_separately_from_push_results() {
         embedded_locally: embedded,
         without_local_vector: missing,
         edges_pushed: 0,
+        anchors_pushed: 0,
     };
     assert_eq!(
         local_embed_summary(&summary(0, 0)),

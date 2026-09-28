@@ -674,6 +674,112 @@ fn step_13_on_a_12_stamped_store_with_rows_adds_events_and_leaves_existing_rows_
     );
 }
 
+// ── step 14 (ADR-099 D1): pending_anchors + patch_id_cache ─────────────────────
+
+#[test]
+fn step_14_on_a_fresh_empty_store_creates_empty_pending_anchors_and_patch_id_cache() {
+    let (_dir, store) = store();
+    assert_eq!(
+        store.pending_anchor_count().unwrap(),
+        0,
+        "a fresh store's pending_anchors table starts empty"
+    );
+    assert_eq!(
+        store.cached_patch_id("any-sha").unwrap(),
+        None,
+        "a fresh store's patch_id_cache starts empty"
+    );
+}
+
+#[test]
+fn step_14_on_a_13_stamped_store_with_rows_adds_the_two_tables_and_leaves_existing_rows_intact() {
+    use crate::storage::migration_ladder::apply_ladder;
+
+    register_sqlite_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
+            include_str!("../../../migrations/memory_001_initial.sql")
+        ))
+        .unwrap();
+        // Climb only as far as step 13, leaving the store stamped exactly
+        // where a real ADR-098-migrated store would sit before this step
+        // ever runs.
+        apply_ladder(&conn, 11, 13, super::migrate::MEMORY_MIGRATIONS, "test.db").unwrap();
+        conn.execute(
+            "INSERT INTO notes (uuid, kind, title, body, created_at, status, entity_id) \
+             VALUES ('0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e02', 'decision', 'pre-14 row', 'b', \
+             1700000000, 'active', 'pre14entity')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = MemoryStore::open(&path).expect("opening a 13-stamped store must migrate it");
+    let version: i32 = store
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, super::MEMORY_SCHEMA_VERSION);
+
+    assert_eq!(
+        store.pending_anchor_count().unwrap(),
+        0,
+        "step 14 creates pending_anchors empty; there is no way to backfill it"
+    );
+
+    let id: NoteId = NoteId::from_str("0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e02").unwrap();
+    let note = store
+        .get(&id)
+        .unwrap()
+        .expect("the pre-existing row must survive the migration");
+    assert_eq!(note.title, "pre-14 row");
+}
+
+#[test]
+fn step_14_pending_anchors_round_trip_on_a_populated_store() {
+    let (_dir, store) = store();
+    let id = add(&store, "an entry written before its commit exists");
+    let entity_id = store.get(&id).unwrap().unwrap().entity_id;
+
+    store
+        .record_pending_anchor(&entity_id, "/repo/.git", "deadbeef")
+        .unwrap();
+
+    assert_eq!(store.pending_anchor_count().unwrap(), 1);
+    let pending = store.pending_anchors_in_worktree("/repo/.git").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].entity_id, entity_id);
+}
+
+#[test]
+fn a_store_migrated_to_14_matches_a_fresh_store() {
+    register_sqlite_vec();
+    let legacy_dir = tempfile::tempdir().unwrap();
+    let legacy_path = legacy_dir.path().join("memory.db");
+    {
+        let conn = rusqlite::Connection::open(&legacy_path).unwrap();
+        conn.execute_batch(&format!(
+            "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
+            include_str!("../../../migrations/memory_001_initial.sql")
+        ))
+        .unwrap();
+    }
+
+    let migrated = MemoryStore::open(&legacy_path).expect("open must migrate, not refuse");
+    let (_fresh_dir, fresh) = store();
+
+    assert_eq!(
+        sqlite_master_signature(&migrated.conn),
+        sqlite_master_signature(&fresh.conn),
+        "a store climbing the ladder to 14 must reach the identical shape a \
+         fresh store is created with"
+    );
+}
+
 #[test]
 fn a_store_from_a_future_build_is_refused() {
     register_sqlite_vec();

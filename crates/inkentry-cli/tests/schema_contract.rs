@@ -1,35 +1,26 @@
-// Golden-schema checker for the plumbing JSONL stability contract.
-//
-// Included with `mod schema_contract;` by the contract test binaries. Compiled
-// standalone as its own (test-free) integration target too, which is why the
-// dead-code allow is needed.
+// Also compiled standalone as its own integration target, hence the dead-code allow.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-// The committed contract. Field *presence and type* only: values vary run to
-// run (line numbers, hashes, timestamps), so pinning them would make the
-// contract a flake rather than a guarantee.
+// Field presence and type only: values vary run to run, so pinning them would make the
+// contract a flake.
 pub const GOLDEN_RELATIVE_PATH: &str = "tests/golden/plumbing_jsonl_schema.json";
 
 pub fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(GOLDEN_RELATIVE_PATH)
 }
 
-// One command's declared output shape.
-//
-// `required` fields must appear on every emitted line. `optional` fields are
-// those a serializer may omit (`skip_serializing_if`) or that only occur on one
-// of several outcome shapes; when present they must still match their type.
+// `optional` fields may be omitted by a serializer or occur on only one outcome shape; when
+// present they must still match their type.
 #[derive(Debug, Clone)]
 pub struct CommandSchema {
     pub required: BTreeMap<String, FieldType>,
     pub optional: BTreeMap<String, FieldType>,
 }
 
-// A declared type, parsed from the golden file's compact spelling:
-// `"string"`, `"string|null"`, `"array<number>"`, `"array<any>"`.
+// Compact spelling: `"string"`, `"string|null"`, `"array<number>"`, `"array<any>"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldType {
     spelling: String,
@@ -131,8 +122,6 @@ impl FieldType {
         })
     }
 
-    // Some value this declaration accepts, so a conforming row can be built from
-    // the contract alone rather than from whatever a command happens to emit.
     pub fn example(&self) -> serde_json::Value {
         let value = match &self.alternatives[0] {
             Alternative::Scalar(s) => s.example(),
@@ -146,9 +135,7 @@ impl FieldType {
         value
     }
 
-    // Some value this declaration rejects, for driving the retype mutation.
-    // `None` when the declaration accepts everything, which is itself worth
-    // knowing: such a field is declared but unguarded.
+    // `None` when the declaration accepts everything: such a field is declared but unguarded.
     pub fn counterexample(&self) -> Option<serde_json::Value> {
         [
             serde_json::json!("a string"),
@@ -223,12 +210,7 @@ pub fn parse_golden(raw: &str) -> BTreeMap<String, CommandSchema> {
         .collect()
 }
 
-// Build a row that satisfies a schema, using only what the contract declares.
-//
-// Deriving it from the contract instead of from real output is what lets a
-// mutation sweep run over every declared command without needing nine live
-// fixtures, and keeps the sweep honest: nothing here can be copied from what
-// the code currently emits.
+// Derived from the contract, not real output, so the mutation sweep needs no live fixtures.
 pub fn conforming_row(schema: &CommandSchema) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     for (field, ty) in &schema.required {
@@ -240,8 +222,6 @@ pub fn conforming_row(schema: &CommandSchema) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-// A single contract violation, reported rather than panicked so one run can
-// surface every problem at once instead of only the first.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Violation {
     NotAnObject {
@@ -300,10 +280,7 @@ fn json_type_name(value: &serde_json::Value) -> String {
     }
 }
 
-// Check emitted JSONL rows against a command's declared schema.
-//
-// Unknown fields are deliberately accepted: the contract's evolution rule is
-// additive-only, so a new field must not break a consumer or this check.
+// Unknown fields are deliberately accepted: the contract evolves additive-only.
 pub fn check_rows(schema: &CommandSchema, rows: &[serde_json::Value]) -> Vec<Violation> {
     let mut violations = Vec::new();
     for (idx, row) in rows.iter().enumerate() {
@@ -343,7 +320,6 @@ pub fn check_rows(schema: &CommandSchema, rows: &[serde_json::Value]) -> Vec<Vio
     violations
 }
 
-// Assert conformance, failing with every violation listed.
 pub fn assert_conforms(command: &str, schema: &CommandSchema, rows: &[serde_json::Value]) {
     assert!(
         !rows.is_empty(),

@@ -1,10 +1,10 @@
-//! Whether a variable binding's initialiser is itself a definition, which is
-//! what lets a call to that binding claim the file it is written in.
+// Whether a variable binding's initialiser is itself a definition, which is
+// what lets a call to that binding claim the file it is written in.
 
 use tree_sitter::Node;
 
-/// Function, lambda and class expressions across the grammars with value
-/// bindings in their locals queries.
+// Function, lambda and class expressions across the grammars with value
+// bindings in their locals queries.
 const DEFINITION_KINDS: &[&str] = &[
     "arrow_function",
     "function_expression",
@@ -19,9 +19,9 @@ const DEFINITION_KINDS: &[&str] = &[
     "anonymous_function",
 ];
 
-/// True when `def`, the name a declaration binds, is initialised by a
-/// function, lambda or class expression. A destructured name, or one bound
-/// alongside others, has no single initialiser and is never one.
+// True when `def`, the name a declaration binds, is initialised by a
+// function, lambda or class expression. A destructured name, or one bound
+// alongside others, has no single initialiser and is never one.
 pub(super) fn initialised_by_a_definition(def: Node<'_>) -> bool {
     initialiser(def).is_some_and(|value| DEFINITION_KINDS.contains(&value.kind()))
 }

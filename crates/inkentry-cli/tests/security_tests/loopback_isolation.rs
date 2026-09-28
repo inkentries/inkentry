@@ -1,12 +1,12 @@
 // Every test that runs the `inkentry` binary must disable loopback
 // auto-discovery's fixed-port fallback.
 //
-// Discovery step 3b (`capability/probe.rs`) probes a fixed port. On a
-// developer's machine that is their own daemon, so an unisolated test does not
-// run against nothing — it runs against their server and sends it real
-// embedding work. Neither guard that should catch this can: `egress_containment`
-// permits loopback by construction, and CI has nothing listening, so the suite
-// is green in the only environment where the bug cannot happen (inkentry-oss^5).
+// Discovery step 3b (`capability/probe.rs`) probes a fixed port, which on a
+// developer's machine is their own daemon: an unisolated test sends it real
+// embedding work instead of running against nothing. `egress_containment`
+// permits loopback by construction and CI has nothing listening, so neither
+// guard catches this, and the suite is green in the only environment where the
+// bug can't happen.
 //
 // Pointing `INKENTRY_STATE_DIR` at an empty dir does NOT isolate: that defeats
 // step 3a only, and 3b is the step that reaches off the test's world.

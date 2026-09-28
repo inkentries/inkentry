@@ -56,6 +56,11 @@ INKENTRY={inkentry}
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 
+# Claims this worktree's pending memory entries onto the commit that just
+# landed (ADR-099 D2). Plumbing: always exits 0 and prints nothing, so it can
+# never fail the commit; the redirects are belt-and-braces on top of that.
+"$INKENTRY" memory anchor --commit HEAD >/dev/null 2>&1
+
 "$INKENTRY" index "$PROJECT_ROOT" --detach
 "$INKENTRY" harvest --git-range HEAD~1..HEAD --detach
 "#;
@@ -293,6 +298,7 @@ async fn install_post_commit(cfg: &Config) -> Result<()> {
         Installed::Wrote(p) => println!("Installed post-commit hook at {}", p.display()),
     }
     println!("After each commit, inkentry will:");
+    println!("  - Claim this worktree's pending memory entries onto the commit");
     println!("  - Re-index the project");
     println!("  - Harvest memory from the new commit");
     // The hook runs harvest detached, so a missing LLM would otherwise fail unseen.
@@ -412,6 +418,23 @@ mod tests {
         assert!(
             !POST_COMMIT_HOOK_TEMPLATE.contains("memory harvest"),
             "post-commit hook must not use the deprecated subcommand spelling"
+        );
+    }
+
+    #[test]
+    fn post_commit_hook_claims_pending_anchors_before_indexing_or_harvesting() {
+        let anchor_pos = POST_COMMIT_HOOK_TEMPLATE
+            .find("memory anchor --commit HEAD")
+            .expect("the hook must call memory anchor");
+        let index_pos = POST_COMMIT_HOOK_TEMPLATE
+            .find("index \"$PROJECT_ROOT\" --detach")
+            .expect("the hook must still index");
+        let harvest_pos = POST_COMMIT_HOOK_TEMPLATE
+            .find("harvest --git-range HEAD~1..HEAD --detach")
+            .expect("the hook must still harvest");
+        assert!(
+            anchor_pos < index_pos && anchor_pos < harvest_pos,
+            "memory anchor must run before the detached index and harvest lines"
         );
     }
 

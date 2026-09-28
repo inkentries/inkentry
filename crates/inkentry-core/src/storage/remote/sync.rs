@@ -443,6 +443,37 @@ impl CloudSyncClient {
         )
     }
 
+    /// ADR-099 D5: send a claimed anchor for an entry that may have already
+    /// synced (`POST /memory/{id}/anchor`). Best-effort by contract with every
+    /// caller: the client keeps no record of whether a previous push already
+    /// delivered this `source_ref`, so it resends on every push/sync, and the
+    /// server-side write is unconditional for exactly that reason (see
+    /// `AnchorUpdateRequest` server-side).
+    pub async fn push_anchor_update(&self, remote_id: &str, source_ref: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            source_ref: &'a str,
+        }
+        let resp = self
+            .authed(
+                self.client
+                    .post(self.url(&format!("memory/{remote_id}/anchor")))
+                    .json(&Body { source_ref }),
+            )
+            .send()
+            .await
+            .context("POST /memory/{id}/anchor")?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "POST /memory/{remote_id}/anchor failed ({status}): {text}{hint}",
+            hint = credential_hint(status, &self.base_url)
+        )
+    }
+
     /// Maximum `limit` the server accepts on `GET /memory/since`
     /// (`ServerDb::notes_since_id`'s `limit.clamp(1, 500)`). A request's
     /// `limit` only needs to satisfy `limit <= MEMORY_SINCE_MAX_LIMIT`; the

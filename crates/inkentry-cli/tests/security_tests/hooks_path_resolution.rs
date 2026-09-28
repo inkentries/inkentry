@@ -1,24 +1,7 @@
-//! Hook installation must resolve the hooks directory the way git itself
-//! does, honoring `core.hooksPath` (set by husky, lefthook, the pre-commit
-//! framework, or a team's own shared-hooks convention) instead of assuming
-//! the default `.git/hooks`.
-//!
-//! Before this, `inkentry hooks install` wrote to a hardcoded `$GIT_DIR/hooks`
-//! and the `init` install-state detector read that same hardcoded path. On a
-//! `core.hooksPath` machine the hook silently never ran while `init` kept
-//! reporting it as installed, because installer and detector agreed with
-//! each other while both disagreed with git.
-//!
-//! Covered:
-//! - install lands at the git-resolved hooks dir when `core.hooksPath` points
-//!   elsewhere, not at the default `.git/hooks`.
-//! - a pre-push hook installed at a `core.hooksPath` location is actually
-//!   invoked by a real `git push` (the functional proof, not just a file
-//!   existence check).
-//! - `init`'s summary agrees with where the hook actually landed.
-//! - a `core.hooksPath` pointing inside the repo's tracked working tree (the
-//!   husky/lefthook pattern) is refused rather than written to silently.
-//! - a linked worktree resolves hooks to the main worktree's shared hooks dir.
+// Hook installation must resolve the hooks directory the way git itself does,
+// honoring `core.hooksPath` (set by husky, lefthook, the pre-commit framework,
+// or a team's own shared-hooks convention) instead of assuming the default
+// `.git/hooks`.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::inkentry_bin_in;
@@ -28,19 +11,15 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use tempfile::TempDir;
 
-// A `git` invocation in `dir` with an isolated identity and config.
+// `git push`/`git commit` here can run an installed inkentry hook, which execs
+// a inkentry child; env this helper doesn't set is inherited from the test
+// process, so the child's config dir and secret store must be pinned on the
+// git command itself, not just on the inkentry commands a test runs directly.
 //
-// `git push` and `git commit` here can run an installed inkentry hook, which
-// execs a inkentry child. Anything this helper leaves unset is inherited from
-// the test process, so the child's config dir and secret store have to be
-// pinned on the git command itself: pinning them on the inkentry commands a test
-// runs directly leaves the hook's child ambient.
-//
-// `HOME` alone is not enough, because `inkentry_config_dir()` returns
-// `INKENTRY_CONFIG_DIR` before it consults `dirs::home_dir()`. A runner that
-// exports `INKENTRY_CONFIG_DIR` to isolate the suite from a developer's own
-// config would otherwise win over `HOME` and point the hook's child at a
-// directory no test seeded.
+// `HOME` alone is not enough: `inkentry_config_dir()` reads
+// `INKENTRY_CONFIG_DIR` before `dirs::home_dir()`, so a runner that exports it
+// to isolate the suite would otherwise win over `HOME` and point the hook's
+// child elsewhere.
 fn git_cmd(home: &Path, dir: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(dir)
@@ -77,9 +56,8 @@ fn git_stdout(home: &Path, dir: &Path, args: &[&str]) -> String {
         .to_string()
 }
 
-// The hooks directory git itself resolves for `dir` (honors `core.hooksPath`
-// and worktrees). The independent reference the tests check installs
-// against, rather than re-deriving inkentry's own resolution logic.
+// The hooks directory git itself resolves for `dir`, honoring `core.hooksPath`
+// and worktrees — the independent reference installs are checked against.
 fn git_hooks_dir(home: &Path, dir: &Path) -> PathBuf {
     let raw = git_stdout(home, dir, &["rev-parse", "--git-path", "hooks"]);
     let path = PathBuf::from(raw);
@@ -100,7 +78,7 @@ fn init_repo(home: &Path, dir: &Path) {
     git(home, dir, &["commit", "-q", "-m", "init"]);
 }
 
-/// A `inkentry` command with an isolated HOME and no server contact.
+// An isolated HOME and no server contact.
 fn bin(home: &Path, cwd: &Path) -> Command {
     let mut cmd = inkentry_bin_in(home);
     cmd.current_dir(cwd)
@@ -109,7 +87,6 @@ fn bin(home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
-/// Record one memory entry through the real `memory add`.
 fn memory_add(home: &Path, repo: &Path, title: &str) {
     bin(home, repo)
         .args([
@@ -119,17 +96,15 @@ fn memory_add(home: &Path, repo: &Path, title: &str) {
         .success();
 }
 
-/// Write an empty inkentry config (`init` needs `--config` but no values here).
+// An empty inkentry config (`init` needs `--config` but no values here).
 fn empty_config(dir: &Path) -> PathBuf {
     let cfg = dir.join("config.toml");
     std::fs::write(&cfg, "").unwrap();
     cfg
 }
 
-// ── install resolves through git, not a hardcoded .git/hooks ─────────────────
-
-/// With `core.hooksPath` pointed at an untracked directory outside the repo,
-/// the post-commit hook must land there, not at the default `.git/hooks`.
+// With `core.hooksPath` pointed at an untracked directory outside the repo,
+// the post-commit hook must land there, not at the default `.git/hooks`.
 #[test]
 fn install_post_commit_lands_at_the_core_hooks_path_location() {
     let home = TempDir::new().unwrap();
@@ -145,8 +120,7 @@ fn install_post_commit_lands_at_the_core_hooks_path_location() {
         &["config", "core.hooksPath", custom_hooks.to_str().unwrap()],
     );
 
-    // Setup control: confirm git itself resolves hooks to the custom dir, so
-    // the assertions below are about the real target, not a guess.
+    // Setup control: confirm git resolves hooks to the custom dir first.
     assert_eq!(
         git_hooks_dir(home.path(), &repo),
         custom_hooks,
@@ -169,10 +143,10 @@ fn install_post_commit_lands_at_the_core_hooks_path_location() {
     );
 }
 
-/// Same, for the pre-push hook, plus the functional proof: a real `git push`
-/// must actually invoke the hook from the resolved location. A file existing
-/// at the right path is necessary but not sufficient; git running it is the
-/// whole point.
+// Same, for the pre-push hook, plus the functional proof: a real `git push`
+// must actually invoke the hook from the resolved location. A file existing
+// at the right path is necessary but not sufficient; git running it is the
+// whole point.
 #[test]
 fn pre_push_hook_installed_at_core_hooks_path_is_actually_invoked_by_git_push() {
     let home = TempDir::new().unwrap();
@@ -222,9 +196,9 @@ fn pre_push_hook_installed_at_core_hooks_path_is_actually_invoked_by_git_push() 
     git(home.path(), &dev, &["commit", "-q", "-m", "second"]);
     git(home.path(), &dev, &["push", "-q", "origin", "main"]);
 
-    // The proof that matters: git actually ran the hook from the custom
-    // location, so the notes ref reached origin. A hook that only exists on
-    // disk but is never invoked would leave this ref absent.
+    // The proof that matters: git ran the hook from the custom location, so
+    // the notes ref reached origin. A hook that only exists on disk but is
+    // never invoked would leave this ref absent.
     assert!(
         git_out(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"])
             .status
@@ -234,13 +208,8 @@ fn pre_push_hook_installed_at_core_hooks_path_is_actually_invoked_by_git_push() 
     );
 }
 
-// ── the install-state detector must agree with the installer ─────────────────
-
-/// `init`'s summary must say the hook is installed only when it landed where
-/// git will actually run it from. Before the fix, the installer and the
-/// detector both read the same hardcoded `.git/hooks`, which agreed with each
-/// other while disagreeing with git whenever `core.hooksPath` pointed
-/// elsewhere.
+// `init`'s summary must say the hook is installed only when it landed where
+// git will actually run it from.
 #[test]
 fn init_summary_agrees_with_pre_push_installer_when_core_hooks_path_is_set() {
     let home = TempDir::new().unwrap();
@@ -291,12 +260,10 @@ fn init_summary_agrees_with_pre_push_installer_when_core_hooks_path_is_set() {
     );
 }
 
-// ── a tracked, shared hooks dir is refused rather than written to ────────────
-
-/// `core.hooksPath` pointing inside the repo's own tracked working tree (the
-/// husky/lefthook pattern) is a different act from writing into local
-/// `.git/`: it commits inkentry's hook to every clone. Install must refuse with
-/// an explanation rather than write silently.
+// `core.hooksPath` pointing inside the repo's own tracked working tree (the
+// husky/lefthook pattern) is a different act from writing into local `.git/`:
+// it commits inkentry's hook to every clone. Install must refuse with an
+// explanation rather than write silently.
 #[test]
 fn install_refuses_when_core_hooks_path_is_inside_the_tracked_working_tree() {
     let home = TempDir::new().unwrap();
@@ -327,9 +294,9 @@ fn install_refuses_when_core_hooks_path_is_inside_the_tracked_working_tree() {
     );
 }
 
-/// The refusal is specific to a directory inside the tracked working tree: a
-/// `core.hooksPath` outside the repo entirely (the common case) must still
-/// install normally.
+// The refusal is specific to a directory inside the tracked working tree: a
+// `core.hooksPath` outside the repo entirely (the common case) must still
+// install normally.
 #[test]
 fn install_still_succeeds_when_core_hooks_path_is_outside_the_repository() {
     let home = TempDir::new().unwrap();
@@ -353,28 +320,20 @@ fn install_still_succeeds_when_core_hooks_path_is_outside_the_repository() {
     assert!(custom_hooks.join("post-commit").exists());
 }
 
-// ── worktrees share the main repo's hooks dir ─────────────────────────────────
-
-/// A linked worktree resolves hooks to the MAIN worktree's shared hooks dir,
-/// not a per-worktree location: git itself runs hooks from there for every
-/// worktree of a repo.
+// A linked worktree resolves hooks to the MAIN worktree's shared hooks dir,
+// not a per-worktree location: git itself runs hooks from there for every
+// worktree of a repo.
 #[test]
 fn hooks_resolve_to_the_shared_main_repo_hooks_dir_from_a_linked_worktree() {
     let home = TempDir::new().unwrap();
     let tmp = TempDir::new().unwrap();
     // Canonicalized: git reports `--git-path`/`--show-toplevel` symlink-resolved
-    // (macOS `$TMPDIR` is itself a symlink), and the real command always sees a
-    // canonical cwd via `std::env::current_dir()`, so comparisons below must
-    // use the same resolved form to compare like with like.
-    //
-    // `inkentry_core::utils::canonicalize` (backed by `dunce`) rather than
-    // `Path::canonicalize`: on Windows CI runners the plain std canonicalize
-    // returns a `\\?\`-prefixed verbatim path, and passing that straight to
-    // `git worktree add <path>` as an argv string fails ("Invalid argument")
-    // because this git-for-windows version does not accept the `\\?\` form
-    // there. `dunce::canonicalize` still resolves symlinks (so the macOS
-    // `$TMPDIR` case above is unaffected) but de-UNCs the Windows result back
-    // to a plain `C:\…` path, which `git worktree add` accepts.
+    // (macOS `$TMPDIR` is itself a symlink), so comparisons below must use the
+    // same resolved form. `inkentry_core::utils::canonicalize` (backed by
+    // `dunce`) rather than `Path::canonicalize`: the plain std canonicalize
+    // returns a `\\?\`-prefixed path on Windows, which `git worktree add
+    // <path>` rejects as an argv string; `dunce` still resolves symlinks but
+    // de-UNCs the Windows result to a plain `C:\…` path git accepts.
     let base = inkentry_core::utils::canonicalize(tmp.path());
     let main_root = base.join("main");
     std::fs::create_dir_all(&main_root).unwrap();

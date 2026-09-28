@@ -196,11 +196,16 @@ storage/
                    same decision land on the same id (ADR-068; the handle users
                    quote is a prefix of it, ADR-093)
   git_notes/
-    mod.rs         — GitNotesBackend struct + helpers; append_to_git_notes free function
+    mod.rs         — GitNotesBackend struct + helpers; append_to_git_notes free
+                     function; append_anchor_record/commit_patch_id/is_ancestor/
+                     commits_reachable_from_any_ref/resolve_source_ref (ADR-099 D3/D3a)
     backend_impl.rs — MemoryBackend trait impl for GitNotesBackend
     fold.rs        — collapses the per-machine copies of one entity that the
                      append-only notes ref accumulates into a single entry;
-                     the fold rules converge under any merge order (ADR-068)
+                     the fold rules converge under any merge order (ADR-068).
+                     all_anchor_commits/anchors_for_entity/resolve_source_ref
+                     read `op: "anchor"` records (ADR-099 D3) separately from
+                     the ordinary write-time attachment fold_group resolves
   memory/
     mod.rs       — NoteStore: memory entries CRUD + list_filtered
     edges.rs     — memory relationship edges CRUD
@@ -220,6 +225,9 @@ storage/
                    call site funnels through; events_in_window/
                    events_command_counts_since/clear_events back the metrics
                    events source, status's 7-day usage summary, and `metrics clear`
+    anchors.rs   — ADR-099 D1/D3a: `pending_anchors` CRUD (record/claim/list/
+                   reassign) and the `patch_id_cache` seen-set; both local
+                   working state, never carried by the git-notes carrier
     tests.rs     — integration tests for NoteStore
   backend.rs     — StorageBackend trait (local vs remote)
   remote/
@@ -256,6 +264,10 @@ migrations/  (crates/inkentry-core/migrations/)
   memory_013.sql — step 13 (ADR-098 D5/D6): the `events` table and the
                            nullable notes.origin_actor_kind/origin_tool/origin_model
                            columns; both pure additions, no data pass
+  memory_014.sql — step 14 (ADR-099 D1): `pending_anchors` (a `memory add`
+                           write's worktree/HEAD, until a commit claims it)
+                           and `patch_id_cache` (D3a's seen-set); both local
+                           working state, never carried or synced
 ```
 
 ### inkentry-cli (`crates/inkentry-cli/src/`)
@@ -350,6 +362,10 @@ cli/
     memory/
       mod.rs          — `inkentry memory` dispatch
       add.rs          — memory add subcommand
+      anchor.rs       — ADR-099: `memory anchor` (D2 claim rule + the D4 escape
+                        hatches), and `reconcile_anchors` (D3a, called from
+                        `inkentry index`). Plumbing: always exits 0, never
+                        prints, so a hook can never fail a commit over it
       archive.rs      — memory archive subcommand
       failures.rs     — `inkentry memory failures` handler
       graph_cmd.rs    — memory graph subcommand
