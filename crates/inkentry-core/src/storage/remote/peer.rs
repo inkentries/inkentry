@@ -1,46 +1,34 @@
-//! Which memory dialect the configured `server_url` speaks.
-//!
-//! `cloud_first` routes memory CRUD to whatever server is configured, and that
-//! is either a self-hosted OSS team server or the hosted cloud API. The two
-//! expose different memory routes, so the dialect has to be settled once, at
-//! backend-open time, rather than branched on inside every method.
+// Which memory dialect the configured `server_url` speaks.
+//
+// `cloud_first` routes memory CRUD to whatever server is configured, and that
+// is either a self-hosted OSS team server or the hosted cloud API. The two
+// expose different memory routes, so the dialect has to be settled once, at
+// backend-open time, rather than branched on inside every method.
 
 use std::time::Duration;
 
 use serde::Deserialize;
 
-/// How long the probe waits before falling back.
-///
-/// Deliberately far below the 30s CRUD timeout: a server that cannot answer a
-/// liveness question promptly is not one this client should stall on, and the
-/// real request that follows carries its own, longer budget. An unreachable
-/// server therefore costs this much before the command proceeds to fail on its
-/// own terms, which is why it is kept small rather than merely "under 30s":
-/// platforms where a connection to an unreachable host hangs rather than
-/// refusing pay it in full, on every memory command.
-/// Kept strictly above the client's connect bound, so the two failures stay
-/// tellable apart: a host that never answers trips the connect bound first and
-/// is reported as a connect error, while only a server that accepted the
-/// connection and then dawdled can reach this. With one budget covering both,
-/// every miss arrives as the same undifferentiated timeout, and the difference
-/// is what decides whether a miss may be recorded as unreachable.
+// How long the probe waits before falling back. Kept well below the 30s CRUD
+// timeout, so an unreachable server fails fast rather than stalling on a
+// liveness check before the real, longer-budgeted request. Kept strictly
+// above the client's connect bound, so a host that never answers trips that
+// bound first (reported as a connect error), and only a server that accepted
+// the connection and then dawdled reaches this timeout instead.
 const PROBE_TIMEOUT: Duration =
     Duration::from_secs(crate::config::REMOTE_CONNECT_TIMEOUT.as_secs() * 2);
 
-/// The capability that separates the two peers.
-///
-/// The OSS team server builds its `/v1/health` capability list from `memory`,
-/// `index.embed`/`search.semantic` and `llm.complete`, and never
-/// advertises SSE streaming; the hosted API does. Keying on an already-shipped
-/// capability avoids adding a field to either peer just to tell them apart.
+// The capability that separates the two peers. The OSS team server never
+// advertises SSE streaming; the hosted API does. Keying on an already-shipped
+// capability avoids adding a field to either peer just to tell them apart.
 const CLOUD_ONLY_CAPABILITY: &str = "memory.stream";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::storage) enum PeerDialect {
-    /// `POST memory/search`, `POST memory/{id}/archive`, `GET stats`, and a
-    /// `source_ref`-filtered `GET memory`.
+    // `POST memory/search`, `POST memory/{id}/archive`, `GET stats`, and a
+    // `source_ref`-filtered `GET memory`.
     TeamServer,
-    /// `GET memory?q=`, `DELETE memory/{id}`, batch edges for supersede.
+    // `GET memory?q=`, `DELETE memory/{id}`, batch edges for supersede.
     CloudApi,
 }
 
@@ -50,17 +38,16 @@ struct HealthBody {
     capabilities: Vec<String>,
 }
 
-/// Probe `{base_url}/v1/health` and report which dialect to speak.
-///
-/// Every uncertain answer resolves to [`PeerDialect::TeamServer`]: an
-/// unreachable, slow, or pre-JSON-health server then takes exactly the code
-/// path it took before this probe existed, so no self-hosted deployment gains
-/// a new failure mode at open time. A genuinely unreachable cloud server still
-/// fails, but on the CRUD request that follows, exactly as it does today.
-///
-/// Sent unauthenticated: `/v1/health` requires no auth on either peer, and a
-/// bearer minted for one origin has no business being offered to a server
-/// whose identity is still being established.
+// Probes `{base_url}/v1/health` and reports which dialect to speak.
+//
+// Every uncertain answer resolves to `TeamServer`: an unreachable, slow, or
+// pre-JSON-health server takes the same path a self-hosted deployment always
+// took. A genuinely unreachable cloud server still fails, but on the CRUD
+// request that follows.
+//
+// Sent unauthenticated: `/v1/health` requires no auth on either peer, and a
+// bearer minted for one origin has no business being offered to a server
+// whose identity is still being established.
 pub(in crate::storage) async fn detect_dialect(
     client: &reqwest::Client,
     base_url: &str,

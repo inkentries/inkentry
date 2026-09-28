@@ -1,11 +1,10 @@
-//! Wire types for the cloud API's memory routes.
-//!
-//! Deliberately separate from the team server's types in
-//! [`wire_types`](super::super::wire_types): the two peers disagree about the
-//! shape of an entry, not merely the routes that carry it. The cloud API keys
-//! entries by UUID, timestamps them as RFC 3339 strings, names the harvest
-//! field `source_commit`, and expresses "archived" as a tombstone timestamp
-//! rather than a status word.
+// Wire types for the cloud API's memory routes.
+//
+// Deliberately separate from the team server's types in `wire_types`: the two
+// peers disagree about the shape of an entry, not merely the routes that
+// carry it. The cloud API keys entries by UUID, timestamps them as RFC 3339
+// strings, names the harvest field `source_commit`, and expresses "archived"
+// as a tombstone timestamp rather than a status word.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +16,8 @@ pub(super) struct CreateEntryBody {
     pub(super) title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) body: Option<String>,
-    /// The server's idempotency key and the only id the batch edge route
-    /// accepts. Minted client-side on every add.
+    // The server's idempotency key and the only id the batch edge route
+    // accepts. Minted client-side on every add.
     pub(super) external_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) source_commit: Option<String>,
@@ -35,7 +34,7 @@ pub(super) struct EntryResponse {
     pub(super) external_id: Option<String>,
     #[serde(default)]
     pub(super) source_commit: Option<String>,
-    /// Tombstone timestamp; `Some` means the entry is archived.
+    // Tombstone timestamp; `Some` means the entry is archived.
     #[serde(default)]
     pub(super) archived_at: Option<String>,
     #[serde(default)]
@@ -44,10 +43,9 @@ pub(super) struct EntryResponse {
     pub(super) distance: Option<f64>,
 }
 
-/// RFC 3339 to Unix seconds, `None` when absent or unparseable.
-///
-/// A timestamp this client cannot read must not sink the entry that carries
-/// it: the caller loses ordering fidelity on that one row, not the read.
+// RFC 3339 to Unix seconds, `None` when absent or unparseable. A timestamp
+// this client cannot read must not sink the entry that carries it: the
+// caller loses ordering fidelity on that one row, not the read.
 fn epoch_secs(ts: Option<&String>) -> Option<i64> {
     let raw = ts?;
     chrono::DateTime::parse_from_rfc3339(raw)
@@ -64,8 +62,8 @@ impl EntryResponse {
         } else {
             "active"
         };
-        // The cloud id IS the cross-machine identity, so it is both the entry's
-        // id on this backend and its `remote_id`.
+        // The cloud id IS the cross-machine identity, so it is both the
+        // entry's id on this backend and its `remote_id`.
         let remote_id = Some(self.id.to_string());
         let body = self.body.unwrap_or_default();
         let entity_id = crate::storage::entity_id(&self.kind, &self.title, &body);
@@ -75,7 +73,7 @@ impl EntryResponse {
             kind: self.kind,
             title: self.title,
             body,
-            // The cloud API carries neither on its entry shape.
+            // The cloud API's entry shape carries neither.
             tags: vec![],
             linked_files: vec![],
             created_at,
@@ -89,8 +87,7 @@ impl EntryResponse {
             source_project: None,
             source_project_path: None,
             remote_id,
-            // The cloud API's entry shape does not carry origin (ADR-098 D6
-            // follow-up).
+            // The cloud API's entry shape does not carry origin.
             origin: None,
         }
     }
@@ -100,7 +97,7 @@ impl EntryResponse {
 pub(super) struct EntryListResponse {
     #[serde(default)]
     pub(super) entries: Vec<EntryResponse>,
-    /// Count of matching entries, computed server-side in the same round trip.
+    // Count of matching entries, computed server-side in the same round trip.
     #[serde(default)]
     pub(super) total: i64,
 }
@@ -112,7 +109,7 @@ pub(super) struct BatchEdge {
     pub(super) kind: &'static str,
 }
 
-/// An edge-only batch: `entries` is required by the route but stays empty.
+// An edge-only batch: `entries` is required by the route but stays empty.
 #[derive(Serialize)]
 pub(super) struct BatchEdgeBody {
     pub(super) entries: [(); 0],
@@ -131,11 +128,9 @@ pub(super) struct BatchEdgeResult {
 }
 
 impl BatchEdgeResult {
-    /// Whether the supersede edge actually landed.
-    ///
-    /// An edge naming an already-archived predecessor comes back
-    /// `"unresolved"`; reporting that as success would tell the user a link
-    /// exists when none does.
+    // Whether the supersede edge actually landed. An edge naming an
+    // already-archived predecessor comes back `"unresolved"`; reporting that
+    // as success would tell the user a link exists when none does.
     pub(super) fn edge_applied(&self) -> bool {
         self.edges
             .iter()
