@@ -19,6 +19,22 @@ once, and no vector is discarded.
 
 ### Added
 
+- **`memory add` reconciles against existing entries before it writes.**
+  It embeds the new entry, then bands active entries near it as `duplicate`
+  (near-restatement) or `related`, at most five each; the response gains
+  `candidates`/`related` fields either way. Opt in with `--reconcile`, or
+  `reconcile = "block"` under `[memory]` in `.inkentry/config.toml`, to
+  refuse a write landing in the duplicate band until resolved with one of
+  `--supersedes`/`--relates-to`/`--contradicts` (new)/`--distinct-from`
+  (new) `<id>`; a blocked write exits `3` (new, additive) and writes
+  nothing. Off by default in 1.x, so a plain `memory add` behaves exactly as
+  before. `--contradicts` records a `contradicts` edge, which `--expand-graph`
+  now follows and `inkentry context` marks when unresolved. `harvest`'s
+  near-duplicate check and inkentry-server's `POST .../memory` (which
+  advertises the new `memory.reconcile` capability on `GET /v1/health` and
+  no longer writes a `contradicts` edge from a bare similarity check) share
+  the same candidate logic. See
+  [ADR-100](docs/adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md).
 - **Tags and linked files are rows, with a vocabulary and exact filters.**
   `memory.db` moves to schema version 12: tags and linked files leave the
   comma-joined columns for `note_tags` and `note_files`, tags are normalised

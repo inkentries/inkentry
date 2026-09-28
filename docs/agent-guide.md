@@ -229,14 +229,18 @@ To exclude files or directories from indexing, add a `.inkentryignore` file (sam
 
 ## Storing decisions
 
-Every non-obvious choice should be stored:
+Every non-obvious choice should be stored. Agent surfaces write with
+`--reconcile` on ([ADR-100](adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md)):
+an agent is exactly the caller who can read what it found and resolve it,
+which is the case a human running `memory add` by hand usually is not.
 
 ```bash
 inkentry memory add \
   --title "Chose sqlite-vec over hnswlib for vector search" \
   --body "No C++ dependency, single file, good enough performance for <1M vectors. Revisit if we need ANN at scale." \
   --kind decision \
-  --tags storage,embeddings
+  --tags storage,embeddings \
+  --reconcile
 ```
 
 Doing this consistently means future agents (and future you) can retrieve the rationale:
@@ -244,6 +248,24 @@ Doing this consistently means future agents (and future you) can retrieve the ra
 ```bash
 inkentry search "why did we choose sqlite-vec" --only-memory
 ```
+
+**The reconcile loop.** With `--reconcile`, a write that lands in the
+duplicate band of an existing entry exits `3` and prints `candidates`
+instead of writing anything — read them, decide how the new entry relates to
+what is already there, and repeat the command with a resolution:
+
+```bash
+inkentry memory add --title "..." --kind decision --body "..." --reconcile
+# exit 3: {"created": false, "reason": "candidates", "candidates": [...], "related": [...]}
+inkentry memory add --title "..." --kind decision --body "..." --reconcile \
+  --supersedes <id>   # or --relates-to / --contradicts / --distinct-from <id>
+```
+
+The hooks and the [agent skill](https://github.com/inkentries/agent-plugin)
+pass `--reconcile` on your behalf on the invocations they own. A write that
+does not land in the duplicate band, or one made without `--reconcile`,
+behaves exactly as before — `candidates`/`related` are additive fields on the
+response either way.
 
 **git-notes write-through:** with `store_in_git_notes` enabled (the default),
 `inkentry memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`,
@@ -368,7 +390,7 @@ inkentry plumbing pull        # server -> local
 inkentry plumbing push        # local -> server
 ```
 
-Conflict detection: If you write an entry semantically similar to an existing one (cosine ≥ 0.92), the server returns HTTP 409 (advisory). The entry is stored, and the server records a `contradicts` edge to the conflicting entry on its own side. That edge is not carried back to your machine, so `inkentry memory show` will not display it; what you get locally is a warning on stderr naming each conflicting entry and its similarity score. Review those entries before proceeding.
+Reconciliation ([ADR-100](adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md)): a team `server_url` computes the same duplicate/related candidates a local `memory add` does, before storing. Pass `--reconcile` for it to refuse an unresolved duplicate-band write with a 409 (`stored: false`) instead of storing it, the same as the local store; resolve with `--supersedes`/`--relates-to`/`--contradicts`/`--distinct-from <id>` as usual. This needs the server to advertise `memory.reconcile` on `GET /v1/health`; against an older server, `--reconcile` has no effect and a semantically close write is still just stored, with no `contradicts` edge written on its behalf — similarity alone no longer writes one.
 
 ## Reconciling memory from a server database
 
@@ -688,6 +710,6 @@ inkentry plumbing graph-edges --symbol <symbol>
 inkentry index .                                              # incremental, blake3-gated
 
 # Session end — store decisions for next session
-inkentry memory add --title "Decision: ..." --kind decision
+inkentry memory add --title "Decision: ..." --kind decision --reconcile
 inkentry memory add --title "Handoff: ..." --kind handoff
 ```
