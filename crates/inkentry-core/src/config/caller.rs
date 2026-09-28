@@ -1,17 +1,16 @@
-//! ADR-098 D5/D6: what the caller declares about itself — how the invocation
-//! was triggered and by what kind of actor — read once from the environment
-//! at [`super::Config::load`] and shared by every command that records an
-//! event or an entry's origin.
+//! What the caller declares about itself — how the invocation was triggered
+//! and by what kind of actor — read once from the environment at
+//! [`super::Config::load`] and shared by every command that records an event
+//! or an entry's origin.
 //!
-//! Never inferred from a TTY or any other environment probe: a wrong guess
-//! would silently corrupt the automation metrics this declaration feeds
-//! (ADR-098's rationale table).
+//! Never inferred from a TTY or other environment probe: a wrong guess would
+//! silently corrupt the automation metrics this declaration feeds.
 
 use sha2::{Digest, Sha256};
 
-/// How many hex characters of the session ref's SHA-256 are kept. Long enough
-/// to group a session's events without carrying the raw token, which may
-/// itself be sensitive, into storage.
+// How many hex characters of the session ref's SHA-256 are kept: long enough
+// to group a session's events without carrying the raw token, which may
+// itself be sensitive, into storage.
 const SESSION_REF_HASH_LEN: usize = 16;
 
 pub const ENV_TRIGGER: &str = "INKENTRY_TRIGGER";
@@ -56,10 +55,10 @@ impl Trigger {
 
 /// Who or what is acting. `Human`/`Agent` are the two values a caller may
 /// declare via `INKENTRY_ACTOR`; `Harvest` is never declared — only
-/// `inkentry harvest` itself sets it, on an entry's origin (D6); `Unknown`
-/// covers an undeclared caller and is the events table's own third value (D5).
-/// An entry's `origin` uses only the first three: an undeclared origin is
-/// represented by the whole `origin` object being absent, never by this value.
+/// `inkentry harvest` itself sets it, on an entry's origin; `Unknown` covers
+/// an undeclared caller and is the events table's own third value. An entry's
+/// `origin` uses only the first three: an undeclared origin is represented by
+/// the whole `origin` object being absent, never by this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorKind {
@@ -85,9 +84,9 @@ impl ActorKind {
     }
 
     /// Parse `INKENTRY_ACTOR`'s value: `human` or `agent` only. `harvest` is
-    /// never a caller declaration — `inkentry harvest` sets it itself,
-    /// regardless of what the environment declares (D6) — so it is refused
-    /// here the same as any other unrecognised value, and the caller reads as
+    /// never a caller declaration — `inkentry harvest` sets it itself
+    /// regardless of what the environment declares — so it is refused here
+    /// the same as any other unrecognised value, and the caller reads as
     /// undeclared rather than silently becoming a harvest.
     pub fn parse_declared(s: &str) -> Option<Self> {
         match s.trim() {
@@ -115,10 +114,9 @@ impl ActorKind {
 pub struct CallerDeclaration {
     pub trigger: Trigger,
     pub actor: ActorKind,
-    /// SHA-256 hex of `INKENTRY_SESSION_REF`, truncated to
-    /// [`SESSION_REF_HASH_LEN`] characters — never the raw value, which may
-    /// itself carry identifying information the event log has no business
-    /// storing (D5: "session_ref is stored hashed").
+    /// SHA-256 hex of `INKENTRY_SESSION_REF`, truncated to a fixed length —
+    /// never the raw value, which may itself carry identifying information
+    /// the event log has no business storing.
     pub session_ref: Option<String>,
     /// `INKENTRY_TOOL`, free text: the agent tool that made the call (e.g.
     /// `claude-code`), for an entry's `origin.tool`.
@@ -134,9 +132,8 @@ impl CallerDeclaration {
         Self::from_getter(|k| std::env::var(k).ok())
     }
 
-    /// [`Self::from_env`] against an injected variable source, so a test can
-    /// assert the parsing rules without mutating the real process
-    /// environment.
+    // Like `from_env`, but against an injected variable source, so a test can
+    // assert the parsing rules without mutating the real process environment.
     fn from_getter(get: impl Fn(&str) -> Option<String>) -> Self {
         Self {
             trigger: get(ENV_TRIGGER)
@@ -206,7 +203,7 @@ mod tests {
     #[test]
     fn actor_declaration_never_accepts_harvest() {
         // Only `inkentry harvest` itself may set an origin's actor_kind to
-        // harvest (D6); a caller cannot claim it via the environment.
+        // harvest; a caller cannot claim it via the environment.
         let d = CallerDeclaration::from_getter(getter(&[(ENV_ACTOR, "harvest")]));
         assert_eq!(d.actor, ActorKind::Unknown);
     }

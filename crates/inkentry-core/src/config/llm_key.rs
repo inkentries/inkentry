@@ -27,11 +27,11 @@ pub const ENV_LLM_URL: &str = "INKENTRY_LLM_URL";
 /// Environment variable overriding [`Config::llm_model`](super::Config::llm_model).
 pub const ENV_LLM_MODEL: &str = "INKENTRY_LLM_MODEL";
 
-/// Trim `raw` and treat a blank result as "no key".
-///
-/// A set-but-empty value is what `${INKENTRY_LLM_KEY:-}` expands to in a
-/// docker-compose file with the variable unset; that must read as
-/// unauthenticated rather than as a broken empty-string credential.
+// Trim `raw` and treat a blank result as "no key".
+//
+// A set-but-empty value is what `${INKENTRY_LLM_KEY:-}` expands to in a
+// docker-compose file with the variable unset; that must read as
+// unauthenticated rather than as a broken empty-string credential.
 fn normalize(raw: Option<String>) -> Option<String> {
     raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
@@ -57,7 +57,7 @@ pub fn set_with_store(key: &str, store: &dyn SecretStore) -> Result<()> {
 }
 
 /// Remove the stored LLM credential (`inkentry auth remove-key --llm`).
-/// Returns whether the store held one (ADR-090 D2/D4).
+/// Returns whether the store held one.
 ///
 /// `INKENTRY_LLM_KEY` is a separate tier this cannot reach: an environment
 /// variable is the caller's to unset, so removal here is about the store only.
@@ -126,8 +126,6 @@ mod tests {
         assert_eq!(resolve_with_store(&store).unwrap(), None);
     }
 
-    // ADR-090 D2: the LLM credential gained a remover, so the key `auth
-    // set-key --llm` installs can be taken back out again.
     #[test]
     #[serial_test::serial]
     fn clear_removes_the_stored_key_and_reports_that_it_did() {
@@ -140,7 +138,7 @@ mod tests {
         assert_eq!(store.get(KEY_LLM_KEY).unwrap(), None);
     }
 
-    // D4: absence is not an error, and is not reported as a removal.
+    // Absence is not an error, and is not reported as a removal.
     #[test]
     #[serial_test::serial]
     fn clear_of_an_absent_key_is_idempotent_and_reports_no_removal() {
