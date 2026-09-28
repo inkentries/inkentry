@@ -219,7 +219,6 @@ pub(super) async fn harvest_claude_code(
     let mut stored = 0usize;
     let mut dedup_skipped = 0usize;
     let mut stored_entity_ids: Vec<String> = Vec::new();
-    const DEDUP_THRESHOLD: f64 = 0.15;
 
     let estimate_tokens = |s: &str| s.len() / 3;
     let context_length = cfg.llm_context_length;
@@ -378,7 +377,7 @@ pub(super) async fn harvest_claude_code(
                 }
             };
             if let Some(top) = neighbors.first()
-                && top.distance.unwrap_or(1.0) < DEDUP_THRESHOLD
+                && super::is_duplicate_band(top)
             {
                 println!(
                     "  [dedup] '{}' too similar to #{} '{}' (dist={:.3})",

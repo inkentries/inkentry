@@ -241,6 +241,12 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     // warning.
     let overlaps = compute_overlaps(&sections);
 
+    // ADR-100 D4: entries with an unresolved `contradicts` edge (both
+    // endpoints active) get a visible marker.
+    let unresolved_contradictions = unresolved_contradiction_ids(&*backend, &sections)
+        .await
+        .unwrap_or_default();
+
     let mut conventions: Vec<crate::conventions::ConventionRecord> =
         if !args.no_conventions && args.kind.is_none() {
             load_conventions(args.index_db.as_deref(), &cfg)
@@ -273,8 +279,29 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
 
     match crate::utils::effective_format(&args.format) {
         "json" => {
+            // A note gains `contradicts_unresolved: true` only when it has
+            // one (ADR-100 D4); the array-of-`[kind, notes]` shape stays
+            // exactly what `sections`' own `Serialize` impl already produced.
+            let sections_json: Vec<serde_json::Value> = sections
+                .iter()
+                .map(|(kind, notes)| {
+                    let notes_json: Vec<serde_json::Value> = notes
+                        .iter()
+                        .map(|n| {
+                            let mut v = serde_json::to_value(n).unwrap_or(serde_json::Value::Null);
+                            if unresolved_contradictions.contains(&n.id)
+                                && let Some(obj) = v.as_object_mut()
+                            {
+                                obj.insert("contradicts_unresolved".to_string(), true.into());
+                            }
+                            v
+                        })
+                        .collect();
+                    serde_json::json!([kind, notes_json])
+                })
+                .collect();
             let mut output = serde_json::json!({
-                "sections": sections,
+                "sections": sections_json,
                 "conventions": conventions,
                 "overlaps": overlaps,
             });
@@ -297,6 +324,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
                     }
                     for n in notes {
                         print_note_summary(n);
+                        print_contradiction_marker(n, &unresolved_contradictions);
                     }
                     continue;
                 }
@@ -306,6 +334,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
                 print_section_header(kind);
                 for n in notes {
                     print_note_summary(n);
+                    print_contradiction_marker(n, &unresolved_contradictions);
                 }
             }
             if !conventions.is_empty() {
@@ -404,6 +433,59 @@ fn print_section_header(kind: &str) {
     };
     cprintln!("\x1b[1;34m── {label} \x1b[0m");
     println!();
+}
+
+// ADR-100 D4: the ids of entries in `sections` that carry a `contradicts`
+// edge whose other endpoint is still active — an archived (e.g. superseded)
+// endpoint reads as resolved. One `get()` per distinct other-endpoint id,
+// cached across notes since two entries can disagree with the same target.
+async fn unresolved_contradiction_ids(
+    backend: &dyn crate::storage::MemoryBackend,
+    sections: &[(String, Vec<Note>)],
+) -> Result<std::collections::HashSet<NoteId>> {
+    let mut unresolved = std::collections::HashSet::new();
+    let mut other_is_active: std::collections::HashMap<NoteId, bool> = Default::default();
+    for (_, notes) in sections {
+        for n in notes {
+            if n.status != "active" {
+                continue;
+            }
+            let (outgoing, incoming) = backend.get_edges(&n.id).await?;
+            for e in outgoing.iter().chain(incoming.iter()) {
+                if e.kind != "contradicts" {
+                    continue;
+                }
+                let other = if e.from_id == n.id {
+                    &e.to_id
+                } else {
+                    &e.from_id
+                };
+                let active = if let Some(&cached) = other_is_active.get(other) {
+                    cached
+                } else {
+                    let active = backend
+                        .get(other.clone())
+                        .await?
+                        .is_some_and(|o| o.status == "active");
+                    other_is_active.insert(other.clone(), active);
+                    active
+                };
+                if active {
+                    unresolved.insert(n.id.clone());
+                    break;
+                }
+            }
+        }
+    }
+    Ok(unresolved)
+}
+
+// Docs and agents match on this wording; printed without ANSI so it holds
+// under any color policy, the same reasoning as `print_overlap_warning`.
+fn print_contradiction_marker(n: &Note, unresolved: &std::collections::HashSet<NoteId>) {
+    if unresolved.contains(&n.id) {
+        println!("     ⚠ contradicts an active entry, unresolved");
+    }
 }
 
 fn compute_overlaps(sections: &[(String, Vec<Note>)]) -> Vec<String> {

@@ -76,7 +76,10 @@ pub(crate) async fn memory_corpus_search(
         for n in &notes {
             let (outgoing, incoming) = backend.get_edges(&n.id).await.map_err(backend_err)?;
             for e in outgoing.iter().chain(incoming.iter()) {
-                if e.kind != "relates_to" {
+                // ADR-100 D4: `contradicts` is as much a "look at this too" as
+                // `relates_to` — the second entry is what makes the first
+                // worth flagging.
+                if e.kind != "relates_to" && e.kind != "contradicts" {
                     continue;
                 }
                 let neighbour_id = if e.from_id == n.id {

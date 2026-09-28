@@ -131,6 +131,24 @@ pub struct MemoryAddArgs {
     #[arg(long, value_name = "ID")]
     pub relates_to: Option<NoteId>,
 
+    /// ID of an existing entry this entry contradicts (creates a contradicts
+    /// edge). Resolves a duplicate-band candidate under --reconcile (ADR-100 D4).
+    #[arg(long, value_name = "ID")]
+    pub contradicts: Option<NoteId>,
+
+    /// ID of an existing candidate the similarity to which is incidental.
+    /// Resolves a duplicate-band candidate under --reconcile without
+    /// recording anything (ADR-100 D2).
+    #[arg(long, value_name = "ID")]
+    pub distinct_from: Option<NoteId>,
+
+    /// Block the write when it lands in the duplicate band of an existing
+    /// entry, until resolved with --supersedes/--relates-to/--contradicts/
+    /// --distinct-from (ADR-100 D2/D2a). Off by default in 1.x; also settable
+    /// as `reconcile = "block"` under [memory] in .inkentry/config.toml.
+    #[arg(long)]
+    pub reconcile: bool,
+
     /// Anchor this entry to a commit immediately (ADR-099 D4), instead of
     /// recording a pending anchor for the post-commit hook to claim later.
     /// The commit does not have to exist on disk under `git show` for this
@@ -499,6 +517,22 @@ async fn git_head_reachable() -> bool {
         .await
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// ADR-100 D5: harvest's top-1 near-duplicate check goes through the same
+/// band classifier `memory add`'s pre-write reconciliation uses, rather than
+/// its own threshold compare, so the duplicate band cannot drift between them.
+pub(super) fn is_duplicate_band(top: &crate::storage::memory::Note) -> bool {
+    let hit = crate::storage::CandidateHit {
+        id: top.id.to_string(),
+        kind: top.kind.clone(),
+        title: top.title.clone(),
+        created_at: top.created_at,
+        distance: top.distance,
+    };
+    crate::storage::classify_candidates(vec![hit], vec![], None)
+        .first()
+        .is_some_and(|c| c.band == crate::storage::CandidateBand::Duplicate)
 }
 
 pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {

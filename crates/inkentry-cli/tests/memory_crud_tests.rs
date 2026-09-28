@@ -21,6 +21,8 @@ mod memory_entity_id_handle;
 mod memory_list_format;
 #[path = "memory_crud_tests/memory_list_source_ref.rs"]
 mod memory_list_source_ref;
+#[path = "memory_crud_tests/memory_reconcile_candidates.rs"]
+mod memory_reconcile_candidates;
 #[path = "memory_crud_tests/memory_reindex.rs"]
 mod memory_reindex;
 #[path = "memory_crud_tests/memory_removed_commands.rs"]

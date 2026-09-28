@@ -97,6 +97,34 @@ struct ProjectIndexConfig {
     detect_generated: Option<bool>,
 }
 
+/// `memory add`'s D2 blocking policy (ADR-100 D2a): whether a non-empty
+/// duplicate-band candidate refuses the write until the caller resolves it.
+/// `--reconcile` on the command selects [`Self::Block`] for that one
+/// invocation regardless of what this resolves to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReconcileMode {
+    /// Write as today; `candidates`/`related` are additive response fields.
+    #[default]
+    Off,
+    /// Refuse a write with an unresolved duplicate-band candidate.
+    Block,
+}
+
+/// The `[memory]` config table (ADR-100 D2a). Project-only, like `[index]`:
+/// whether `memory add` blocks is a team policy, not a personal preference.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    #[serde(default)]
+    pub reconcile: ReconcileMode,
+}
+
+// Per-field override of `MemoryConfig` from a project `.inkentry/config.toml`.
+#[derive(Debug, Default, Deserialize)]
+struct ProjectMemoryConfig {
+    reconcile: Option<ReconcileMode>,
+}
+
 // Fields settable in `.inkentry/config.toml` (project-level, checked-in). Only
 // fields safe to share with the team (no secrets).
 //
@@ -127,6 +155,7 @@ struct ProjectConfig {
     // Overrides a personal value; `INKENTRY_MODE` still wins over both.
     mode: Option<SyncMode>,
     index: Option<ProjectIndexConfig>,
+    memory: Option<ProjectMemoryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,6 +276,12 @@ pub struct Config {
     #[serde(default)]
     pub index: IndexConfig,
 
+    /// `[memory]` table (ADR-100 D2a): `reconcile = "block"` makes
+    /// `memory add` block on an unresolved duplicate-band candidate, the
+    /// same as passing `--reconcile`. Project `.inkentry/config.toml` only.
+    #[serde(default)]
+    pub memory: MemoryConfig,
+
     /// The caller's self-declaration
     /// (`INKENTRY_TRIGGER`/`INKENTRY_ACTOR`/`INKENTRY_SESSION_REF`/
     /// `INKENTRY_TOOL`/`INKENTRY_MODEL`), read once from the environment at
@@ -319,6 +354,13 @@ impl Config {
     fn default_store_in_git_notes() -> bool {
         true
     }
+
+    /// Whether `[memory] reconcile = "block"` is set (ADR-100 D2a). `--reconcile`
+    /// on the command turns on the same behaviour for one invocation regardless
+    /// of this; callers check both.
+    pub fn reconcile_block(&self) -> bool {
+        self.memory.reconcile == ReconcileMode::Block
+    }
 }
 
 impl Default for Config {
@@ -337,6 +379,7 @@ impl Default for Config {
             store_in_git_notes: Self::default_store_in_git_notes(),
             org: None,
             index: IndexConfig::default(),
+            memory: MemoryConfig::default(),
             caller: CallerDeclaration::default(),
         }
     }
@@ -474,6 +517,11 @@ impl Config {
                 if let Some(v) = pidx.detect_generated {
                     cfg.index.detect_generated = v;
                 }
+            }
+            if let Some(pmem) = proj.memory
+                && let Some(v) = pmem.reconcile
+            {
+                cfg.memory.reconcile = v;
             }
         }
 
@@ -700,6 +748,7 @@ const PROJECT_CONFIG_KEYS: &[&str] = &[
     "mode",
     "llm_url",
     "index",
+    "memory",
 ];
 
 // Keys the project config has no field for that name a credential. These get

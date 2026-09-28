@@ -46,6 +46,10 @@ pub struct Capabilities {
     pub memory_pull: bool,
     pub memory_search: bool,
     pub memory_harvest: bool,
+    /// ADR-100 D4: the server computes candidates before storing and honours
+    /// a `reconcile`/`resolutions` request. Absent (or an older server) means
+    /// `POST .../memory` still answers with the pre-ADR-100 409 shape.
+    pub memory_reconcile: bool,
     // The only reliable LLM signal: a server can advertise older capabilities
     // while serving no `/llm/complete` route. Skipped so the `status` JSON keeps
     // its shape.
@@ -72,6 +76,7 @@ impl Capabilities {
             memory_pull: memory,
             memory_search: memory,
             memory_harvest: memory,
+            memory_reconcile: has("memory.reconcile"),
             llm_complete: has("llm.complete"),
             plan: has("plan"),
             accepts_pushed_vectors: false,
@@ -86,6 +91,7 @@ impl Capabilities {
             memory_pull: true,
             memory_search: true,
             memory_harvest: false,
+            memory_reconcile: false,
             llm_complete: false,
             plan: false,
             accepts_pushed_vectors: false,
@@ -101,6 +107,7 @@ impl Capabilities {
             memory_pull: true,
             memory_search: true,
             memory_harvest: true,
+            memory_reconcile: true,
             llm_complete: true,
             plan: true,
             accepts_pushed_vectors: true,
@@ -121,20 +128,37 @@ mod tests {
         assert!(!caps.memory_pull);
         assert!(!caps.memory_search);
         assert!(!caps.memory_harvest);
+        assert!(!caps.memory_reconcile);
         assert!(!caps.plan);
     }
 
     #[test]
     fn from_server_caps_full_set() {
-        let caps =
-            Capabilities::from_server_caps(&["search.semantic", "index.embed", "memory", "plan"]);
+        let caps = Capabilities::from_server_caps(&[
+            "search.semantic",
+            "index.embed",
+            "memory",
+            "memory.reconcile",
+            "plan",
+        ]);
         assert!(caps.search_semantic);
         assert!(caps.index_embed);
         assert!(caps.memory_push);
         assert!(caps.memory_pull);
         assert!(caps.memory_search);
         assert!(caps.memory_harvest);
+        assert!(caps.memory_reconcile);
         assert!(caps.plan);
+    }
+
+    #[test]
+    fn from_server_caps_without_reconcile_leaves_it_false() {
+        let caps = Capabilities::from_server_caps(&["memory"]);
+        assert!(caps.memory_push, "the rest of memory still advertises");
+        assert!(
+            !caps.memory_reconcile,
+            "memory.reconcile is a separate, explicit capability"
+        );
     }
 
     #[test]
