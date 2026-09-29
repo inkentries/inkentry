@@ -1,17 +1,17 @@
-//! ADR-099 D1: `pending_anchors`, the local working state a `memory add`
-//! leaves behind until a commit claims it, plus D3a's `patch_id_cache` seen-set.
-//!
-//! Neither table is part of the git-notes carrier and neither syncs: a
-//! pending row records where an entry was written, not what it says, and the
-//! patch-id cache is pure local bookkeeping for a reconciliation pass that
-//! runs again on every machine that runs it.
+// pending_anchors: the local working state a memory add leaves behind until
+// a commit claims it. patch_id_cache: a reconciliation pass's seen-set.
+//
+// Neither table is part of the git-notes carrier and neither syncs: a
+// pending row records where an entry was written, not what it says, and the
+// patch-id cache is pure local bookkeeping for a reconciliation pass that
+// runs again on every machine that runs it.
 
 use anyhow::Result;
 
 use super::MemoryStore;
 
-/// One row of `pending_anchors`: a `memory add` entry waiting for a commit to
-/// claim it (ADR-099 D1/D2).
+/// One row of `pending_anchors`: a `memory add` entry waiting for a commit
+/// to claim it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingAnchor {
     pub entity_id: String,
@@ -32,9 +32,9 @@ fn row_to_pending_anchor(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingAnc
 }
 
 impl MemoryStore {
-    /// Record a pending anchor for `entity_id` (D1). `INSERT OR IGNORE`: a
-    /// second `memory add` write for the same content within one process is
-    /// not expected, and leaving the earliest write's row in place rather than
+    /// Records a pending anchor for `entity_id`. `INSERT OR IGNORE`: a second
+    /// `memory add` write for the same content within one process is not
+    /// expected, and leaving the earliest write's row in place rather than
     /// clobbering it is the safer default if it ever happens.
     pub fn record_pending_anchor(
         &self,
@@ -56,15 +56,14 @@ impl MemoryStore {
     }
 
     /// Count of pending rows — the only shape this local table takes outside
-    /// this store (ADR-099 Security implications: "never exported by dump
-    /// except as a count").
+    /// this store.
     pub fn pending_anchor_count(&self) -> Result<i64> {
         Ok(self
             .conn
             .query_row("SELECT COUNT(*) FROM pending_anchors", [], |r| r.get(0))?)
     }
 
-    /// Every pending row written from `worktree` — D2's first claim condition,
+    /// Every pending row written from `worktree` — the first claim condition,
     /// applied before the caller checks ancestry.
     pub fn pending_anchors_in_worktree(&self, worktree: &str) -> Result<Vec<PendingAnchor>> {
         let mut stmt = self.conn.prepare(
@@ -76,7 +75,7 @@ impl MemoryStore {
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Every pending row, for `status`'s D4 unanchored report and D3a's
+    /// Every pending row, for `status`'s unanchored report and the
     /// reconciliation pass.
     pub fn all_pending_anchors(&self) -> Result<Vec<PendingAnchor>> {
         let mut stmt = self.conn.prepare(
@@ -87,8 +86,8 @@ impl MemoryStore {
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Remove a pending row once its entity has been claimed (D2) or
-    /// anchored by hand (D4's `--commit`/`memory anchor <id>` escape hatches).
+    /// Removes a pending row once its entity has been claimed, or anchored
+    /// by hand (`--commit`/`memory anchor <id>`).
     pub fn remove_pending_anchor(&self, entity_id: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM pending_anchors WHERE entity_id = ?1",
@@ -97,8 +96,8 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// D3a: point a still-pending row at the commit that replaced its
-    /// `head_at_write` after a rebase, so the ordinary D2 ancestry test can
+    /// Points a still-pending row at the commit that replaced its
+    /// `head_at_write` after a rebase, so the ordinary ancestry test can
     /// claim it against the replacement on the next commit in that worktree.
     pub fn reassign_pending_anchor_head(
         &self,
@@ -112,9 +111,9 @@ impl MemoryStore {
         Ok(())
     }
 
-    /// The cached `git patch-id --stable` for `commit_sha`, and whether it has
-    /// been computed before at all: `Ok(None)` means "not seen", `Ok(Some(None))`
-    /// means "seen, and it is a merge with no patch-id" (D3a).
+    /// The cached `git patch-id --stable` for `commit_sha`, and whether it
+    /// has been computed before at all: `Ok(None)` means "not seen",
+    /// `Ok(Some(None))` means "seen, and it is a merge with no patch-id".
     pub fn cached_patch_id(&self, commit_sha: &str) -> Result<Option<Option<String>>> {
         use rusqlite::OptionalExtension;
         Ok(self
@@ -127,9 +126,8 @@ impl MemoryStore {
             .optional()?)
     }
 
-    /// Record `commit_sha`'s patch-id (or `None` for a merge) so a later pass
-    /// does not recompute it (D3a: "cost one patch-id per commit not seen
-    /// before").
+    /// Records `commit_sha`'s patch-id (or `None` for a merge) so a later
+    /// pass does not recompute it.
     pub fn cache_patch_id(&self, commit_sha: &str, patch_id: Option<&str>) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO patch_id_cache (commit_sha, patch_id) VALUES (?1, ?2)",

@@ -1,33 +1,32 @@
-//! Collapse the copies of one entity that `refs/notes/inkentry` accumulates.
-//!
-//! The ref is an append-only, entity-keyed event log: two machines recording
-//! the same decision write lines with the same `entity_id` but their own `id`
-//! and `created_at`, and `cat_sort_uniq` keeps both. Readers fold those copies
-//! into one entry; writers never mutate in place.
-//!
-//! Every rule here is commutative, associative and idempotent, so any merge
-//! order across any number of machines converges (ADR-068 A6) — with one
-//! narrower exception: `superseded_by_entity_id` (ADR-068 E5) resolves via a
-//! whole-group scan over every copy's `created_at`, rather than the pairwise
-//! fold every other field uses, so it is commutative within one
-//! `fold_records` call (any order of the same input converges) but not
-//! associative across a partial pre-fold. That is safe because `fold_records`
-//! is only ever invoked once, over the complete set of records read off the
-//! ref (`GitNotesBackend::collect`), never incrementally.
+// Collapses the copies of one entity that refs/notes/inkentry accumulates.
+//
+// The ref is an append-only, entity-keyed event log: two machines recording
+// the same decision write lines with the same entity_id but their own id and
+// created_at, and cat_sort_uniq keeps both. Readers fold those copies into
+// one entry; writers never mutate in place.
+//
+// Every rule here is commutative, associative and idempotent, so any merge
+// order across any number of machines converges — with one narrower
+// exception: superseded_by_entity_id resolves via a whole-group scan over
+// every copy's created_at, rather than the pairwise fold every other field
+// uses, so it is commutative within one fold_records call but not
+// associative across a partial pre-fold. Safe because fold_records is only
+// ever invoked once, over the complete set of records read off the ref,
+// never incrementally.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use super::super::note_record::NoteRecord;
 
-/// Collapse each `entity_id` group in `records` into exactly one record.
-///
-/// Groups are keyed on `resolve_entity_id()`, never the raw field: a legacy
-/// line predating `entity_id` recomputes it from `{kind, title, body}` and so
-/// folds together with a fresh line for the same entry.
-///
-/// Returns one record per entity in first-encounter order, which a later stable
-/// sort turns into "`created_at` ties keep blob order" (ADR-069 D2).
+// Collapses each entity_id group in records into exactly one record.
+//
+// Groups are keyed on resolve_entity_id(), never the raw field: a legacy
+// line predating entity_id recomputes it from {kind, title, body} and so
+// folds together with a fresh line for the same entry.
+//
+// Returns one record per entity in first-encounter order, which a later
+// stable sort turns into "created_at ties keep blob order".
 pub(super) fn fold_records(records: Vec<NoteRecord>) -> Vec<NoteRecord> {
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<NoteRecord>> = HashMap::new();
@@ -49,12 +48,12 @@ pub(super) fn fold_records(records: Vec<NoteRecord>) -> Vec<NoteRecord> {
         .collect()
 }
 
-/// Fold one entity's copies onto its base copy.
+// Folds one entity's copies onto its base copy.
 fn fold_group(mut group: Vec<NoteRecord>) -> NoteRecord {
-    // Resolved over the whole group before `base` is picked/consumed below
-    // (ADR-068 E5): `base` is the *earliest*-created copy, not the most
-    // recent, so `superseded_by_entity_id` cannot be folded by the same
-    // pairwise base-vs-other rule the other fields use.
+    // Resolved over the whole group before base is picked/consumed below:
+    // base is the earliest-created copy, not the most recent, so
+    // superseded_by_entity_id cannot be folded by the same pairwise
+    // base-vs-other rule the other fields use.
     let superseded_by_entity_id = resolve_superseded_by_entity_id(&group);
 
     let base_idx = base_index(&group);
@@ -66,17 +65,15 @@ fn fold_group(mut group: Vec<NoteRecord>) -> NoteRecord {
     base
 }
 
-/// Resolve a fold group's `superseded_by_entity_id`: the value carried by
-/// whichever record has the greatest `created_at` among those where the
-/// field is non-`None` — "most recent write wins", not the lexicographically
-/// smallest value `min_some` would pick (ADR-068 E5). Ties on `created_at`
-/// defer to `base_key`'s own ascending tie-break (id, then the remaining
-/// fields), the same convention `base_index` uses, so the pick stays
-/// deterministic even when two independent machines' rows collide on `id`
-/// (e.g. each starting its own SQLite sequence from 1). A final fallback on
-/// the value itself keeps this a total order even in the degenerate case of
-/// two records tying on every `base_key` field too (never happens with real
-/// distinct writes, but keeps the fold provably order-independent).
+// Resolves a fold group's superseded_by_entity_id: the value carried by
+// whichever record has the greatest created_at among those where the field
+// is non-None — "most recent write wins", not the lexicographically
+// smallest value min_some would pick. Ties on created_at defer to
+// base_key's own ascending tie-break (id, then the remaining fields), the
+// same convention base_index uses, so the pick stays deterministic even
+// when two machines' rows collide on id. A final fallback on the value
+// itself keeps this a total order even if two records tie on every
+// base_key field too.
 fn resolve_superseded_by_entity_id(group: &[NoteRecord]) -> Option<String> {
     group
         .iter()
@@ -90,19 +87,18 @@ fn resolve_superseded_by_entity_id(group: &[NoteRecord]) -> Option<String> {
         .and_then(|r| r.superseded_by_entity_id.clone())
 }
 
-/// Map each entity to the commit its note is anchored to: the commit carrying
-/// the entity's base (fold-winning) copy.
-///
-/// The base is the same earliest-recorded copy [`fold_group`] folds onto, so an
-/// entity's anchor is the commit it was first written on; later state-updates
-/// (appended to whatever `HEAD` was current when written) never move it. Keyed
-/// on `resolve_entity_id`, exactly like [`fold_records`], so a legacy line and a
-/// fresh line for the same entry share one anchor.
-///
-/// Input is `(commit, record)` pairs, one per raw line across every noted
-/// commit; the winning copy is chosen with the same [`base_key`] ordering
-/// [`base_index`] uses, so the anchor of an entity always names the commit of
-/// the copy `fold_group` keeps as base.
+// Maps each entity to the commit its note is anchored to: the commit
+// carrying the entity's base (fold-winning) copy.
+//
+// The base is the same earliest-recorded copy fold_group folds onto, so an
+// entity's anchor is the commit it was first written on; later
+// state-updates never move it. Keyed on resolve_entity_id, exactly like
+// fold_records, so a legacy line and a fresh line for the same entry share
+// one anchor.
+//
+// Input is (commit, record) pairs, one per raw line across every noted
+// commit; the winning copy is chosen with the same base_key ordering
+// base_index uses.
 pub(super) fn anchor_commits(records: &[(String, NoteRecord)]) -> HashMap<String, String> {
     let mut best: HashMap<String, usize> = HashMap::new();
     for (i, (_commit, record)) in records.iter().enumerate() {
@@ -122,10 +118,10 @@ pub(super) fn anchor_commits(records: &[(String, NoteRecord)]) -> HashMap<String
         .collect()
 }
 
-/// Every commit an entity is anchored to (ADR-099 D3): the original
-/// write-time attachment ([`anchor_commits`]) plus every commit carrying an
-/// explicit `op: "anchor"` record for it. An entity may now name more than
-/// one commit — a rebase or `memory anchor` can add anchors beyond the first.
+// Every commit an entity is anchored to: the original write-time attachment
+// (anchor_commits) plus every commit carrying an explicit op: "anchor"
+// record for it. An entity may name more than one commit — a rebase or
+// `memory anchor` can add anchors beyond the first.
 pub(super) fn all_anchor_commits(
     records: &[(String, NoteRecord)],
 ) -> HashMap<String, std::collections::HashSet<String>> {
@@ -143,17 +139,16 @@ pub(super) fn all_anchor_commits(
     map
 }
 
-/// Every explicit `op: "anchor"` commit claimed for `entity_id`, paired with
-/// the `created_at` of the record that claimed it. Feeds
-/// `resolve_source_ref`'s "earliest reachable, falling back to earliest" rule
-/// (ADR-099 D3).
-///
-/// Deliberately **excludes** the base write-time attachment `anchor_commits`
-/// resolves: that attachment means "written while standing on this commit"
-/// (typically the claimed commit's *parent*), a different fact from "this
-/// commit carries the work", and conflating the two would make `source_ref`
-/// fall back to the parent the moment an entry has any real claim at all,
-/// since the write-time attachment is always the older of the two.
+// Every explicit op: "anchor" commit claimed for entity_id, paired with the
+// created_at of the record that claimed it. Feeds resolve_source_ref's
+// "earliest reachable, falling back to earliest" rule.
+//
+// Deliberately excludes the base write-time attachment anchor_commits
+// resolves: that attachment means "written while standing on this commit"
+// (typically the claimed commit's parent), a different fact from "this
+// commit carries the work" — conflating them would make source_ref fall
+// back to the parent the moment an entry has any real claim at all, since
+// the write-time attachment is always the older of the two.
 pub(super) fn anchors_for_entity(
     records: &[(String, NoteRecord)],
     entity_id: &str,
@@ -165,9 +160,9 @@ pub(super) fn anchors_for_entity(
         .collect()
 }
 
-/// "Earliest reachable, falling back to earliest" (ADR-099 D3): among
-/// `anchors`, the earliest-created one `reachable` accepts; if none is
-/// reachable, the earliest overall. `None` only when `anchors` is empty.
+// "Earliest reachable, falling back to earliest": among anchors, the
+// earliest-created one reachable accepts; if none is reachable, the
+// earliest overall. None only when anchors is empty.
 pub(super) fn resolve_source_ref(
     anchors: &[(String, i64)],
     reachable: impl Fn(&str) -> bool,
@@ -180,10 +175,9 @@ pub(super) fn resolve_source_ref(
         .map(|(commit, _)| commit.clone())
 }
 
-/// Index of the copy every base-sourced field is taken from.
-///
-/// Total by construction: two copies this cannot separate agree on every field
-/// it sources, so which one wins cannot change the fold's output.
+// Index of the copy every base-sourced field is taken from. Total by
+// construction: two copies this cannot separate agree on every field it
+// sources, so which one wins cannot change the fold's output.
 fn base_index(group: &[NoteRecord]) -> usize {
     group
         .iter()
@@ -193,7 +187,7 @@ fn base_index(group: &[NoteRecord]) -> usize {
         .expect("a group always holds the record that created it")
 }
 
-/// Earliest recording wins; the trailing fields only break a tie.
+// Earliest recording wins; the trailing fields only break a tie.
 fn base_key(r: &NoteRecord) -> (i64, i64, Option<&String>, Option<&String>, Option<i64>) {
     (
         r.created_at,
@@ -204,14 +198,14 @@ fn base_key(r: &NoteRecord) -> (i64, i64, Option<&String>, Option<&String>, Opti
     )
 }
 
-/// `kind`/`title`/`body` are equal by construction (they are the identity) and
-/// `created_at` is already the minimum, since `base_key` orders on it first.
-///
-/// `superseded_by_entity_id` is deliberately not folded here — `fold_group`
-/// resolves it separately, over the whole group, via
-/// `resolve_superseded_by_entity_id` (ADR-068 E5).
+// kind/title/body are equal by construction (they are the identity) and
+// created_at is already the minimum, since base_key orders on it first.
+//
+// superseded_by_entity_id is deliberately not folded here — fold_group
+// resolves it separately, over the whole group, via
+// resolve_superseded_by_entity_id.
 fn merge_into(base: &mut NoteRecord, other: NoteRecord) {
-    // Archival is monotonic: never un-archive (`apply_remote_note`).
+    // Archival is monotonic: never un-archive.
     if other.status == "archived" {
         base.status = "archived".to_string();
     }
@@ -226,7 +220,7 @@ fn merge_into(base: &mut NoteRecord, other: NoteRecord) {
     base.edges.dedup();
 }
 
-/// Keep the smallest present value. `None` is the identity.
+// Keeps the smallest present value; None is the identity.
 fn min_some<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -234,7 +228,7 @@ fn min_some<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
     }
 }
 
-/// Add-wins OR-Set union: an incoming member is added, none is ever dropped.
+// Add-wins OR-Set union: an incoming member is added, none is ever dropped.
 fn union_into(base: &mut Vec<String>, other: Vec<String>) {
     base.extend(other);
     base.sort();
@@ -247,7 +241,6 @@ mod tests {
     use crate::storage::entity_id::entity_id;
     use crate::storage::note_record::CarriedEdge;
 
-    /// Two copies of one decision, as two machines would write them.
     pub(super) fn copy(id: i64, created_at: i64, tags: &[&str]) -> NoteRecord {
         NoteRecord {
             schema_version: 1,
@@ -273,7 +266,7 @@ mod tests {
         }
     }
 
-    /// One copy per machine, each differing in every foldable field.
+    // One copy per machine, each differing in every foldable field.
     fn copies() -> Vec<NoteRecord> {
         let mut archived = copy(3, 300, &["c"]);
         archived.status = "archived".to_string();
@@ -294,8 +287,8 @@ mod tests {
         vec![earliest, middle, archived]
     }
 
-    /// Two machines each record an edge from the same entity; the fold keeps
-    /// both and collapses the copy they share, exactly as tags fold.
+    // Two machines each record an edge from the same entity; the fold keeps
+    // both, exactly as tags fold.
     #[test]
     fn edges_union_across_copies_and_dedup() {
         let mut a = copy(1, 100, &[]);
@@ -317,8 +310,8 @@ mod tests {
         );
     }
 
-    /// A4/A6's stated standard: every rule is order-insensitive, so any merge
-    /// order across any number of machines reaches the same entry.
+    // Every rule is order-insensitive, so any merge order across any number
+    // of machines reaches the same entry.
     #[test]
     fn folding_converges_regardless_of_order() {
         let fingerprint = |group: Vec<NoteRecord>| {
@@ -352,7 +345,7 @@ mod tests {
         assert_eq!(fingerprint(twice), expected, "folding is idempotent");
     }
 
-    /// `NoteRecord` is not `Clone`; rebuild the i-th copy instead.
+    // NoteRecord is not Clone; rebuild the i-th copy instead.
     fn copies_at(src: &[NoteRecord], i: usize) -> NoteRecord {
         let want = &src[i];
         let mut r = copy(want.id, want.created_at, &[]);
@@ -365,7 +358,7 @@ mod tests {
         r
     }
 
-    /// The fold collapses copies, never distinct entries.
+    // The fold collapses copies, never distinct entries.
     #[test]
     fn distinct_entities_are_not_collapsed() {
         let mut other = copy(1, 100, &[]);
@@ -375,15 +368,14 @@ mod tests {
         assert_eq!(fold_records(vec![copy(1, 100, &[]), other]).len(), 2);
     }
 
-    /// The one entry a group of copies folds to, serialized for comparison.
     fn fingerprint(records: Vec<NoteRecord>) -> String {
         let folded = fold_records(records);
         assert_eq!(folded.len(), 1, "the fixture must be one entity's copies");
         serde_json::to_string(&folded[0]).expect("serialize")
     }
 
-    /// Three copies tying on `(created_at, id)` and differing only in the
-    /// remaining fields `base` supplies.
+    // Three copies tying on (created_at, id) and differing only in the
+    // remaining fields base supplies.
     fn tied_variants() -> Vec<NoteRecord> {
         let mut high = copy(1, 100, &[]);
         high.source_ref = Some("bbb".to_string());
@@ -404,7 +396,7 @@ mod tests {
         vec![high, low, mid]
     }
 
-    /// `NoteRecord` is not `Clone`; rebuild the group in the given order.
+    // NoteRecord is not Clone; rebuild the group in the given order.
     fn tied_in_order(idx: [usize; 3]) -> Vec<NoteRecord> {
         let mut src: Vec<Option<NoteRecord>> = tied_variants().into_iter().map(Some).collect();
         idx.iter()
@@ -412,9 +404,9 @@ mod tests {
             .collect()
     }
 
-    /// `(created_at, id)` alone is not total: two copies can tie there and still
-    /// differ in the other fields `base` supplies, which would leave the fold
-    /// order-dependent. Ordering those too is what keeps it convergent.
+    // (created_at, id) alone is not total: two copies can tie there and
+    // still differ in the other fields base supplies, which would leave the
+    // fold order-dependent. Ordering those too is what keeps it convergent.
     #[test]
     fn base_is_deterministic_when_created_at_and_id_tie() {
         let expected = fingerprint(tied_in_order([0, 1, 2]));
@@ -439,12 +431,10 @@ mod tests {
         );
     }
 
-    // ── ADR-068 amendment E5: superseded_by_entity_id resolves by recency ────
-
-    /// A conflicting `superseded_by_entity_id` (e.g. from a lost cross-machine
-    /// race double-superseding the same OLD by two different successors) must
-    /// resolve to the value on the record with the greatest `created_at`, not
-    /// the lexicographically smallest value `min_some` used to pick.
+    // A conflicting superseded_by_entity_id (e.g. a race double-superseding
+    // the same OLD by two different successors) must resolve to the record
+    // with the greatest created_at, not the lexicographically smallest
+    // value min_some used to pick.
     #[test]
     fn superseded_by_entity_id_resolves_to_latest_created_at_not_lexicographic_min() {
         let mut earlier = copy(1, 100, &[]);
@@ -466,9 +456,9 @@ mod tests {
         );
     }
 
-    /// Two conflicting records tying on `created_at` resolve by `id` ascending —
-    /// the same tie-break order `base_key` already uses. Checked in both input
-    /// orders: the result must not depend on which one arrives first.
+    // Two conflicting records tying on created_at resolve by id ascending —
+    // the same tie-break order base_key already uses. Checked in both input
+    // orders: the result must not depend on which one arrives first.
     #[test]
     fn superseded_by_entity_id_tie_on_created_at_breaks_by_id_ascending() {
         // Deliberately the *opposite* of lexicographic order: the smaller id
@@ -507,12 +497,11 @@ mod tests {
         );
     }
 
-    /// Three machines, not just two, independently double(triple)-superseding
-    /// the same OLD with three different successors: the fold must scan the
-    /// *whole* group and pick the true maximum, not just win a pairwise
-    /// comparison. Deliberately unordered input (the true max is in the
-    /// middle) so an accidental "last one wins" or "first beats second, stop"
-    /// implementation would fail this.
+    // Three machines independently double(triple)-superseding the same OLD
+    // with three different successors: the fold must scan the whole group
+    // and pick the true maximum, not just win a pairwise comparison. Input
+    // is deliberately unordered (the true max is in the middle) so an
+    // accidental "last one wins" implementation would fail this.
     #[test]
     fn superseded_by_entity_id_three_way_conflict_resolves_to_latest_created_at() {
         let mut low = copy(1, 100, &[]);
@@ -541,11 +530,11 @@ mod tests {
         );
     }
 
-    /// Three conflicting records all tying on `created_at` — not a corner
-    /// case: `NoteRecord::created_at` is second-granularity
-    /// (`now_secs`), so three near-simultaneous writes/races commonly land on
-    /// the same second in practice. All three must resolve by `id` ascending,
-    /// regardless of input order.
+    // Three conflicting records all tying on created_at — not a corner
+    // case: created_at is second-granularity (now_secs), so
+    // near-simultaneous writes/races commonly land on the same second in
+    // practice. All three must resolve by id ascending, regardless of
+    // input order.
     #[test]
     fn superseded_by_entity_id_three_way_tie_on_created_at_breaks_by_id_ascending() {
         fn tied_triple() -> Vec<NoteRecord> {
@@ -590,10 +579,11 @@ mod tests {
         }
     }
 
-    /// Regression guard: E5 is scoped to `superseded_by_entity_id` only —
-    /// `valid_at`/`invalid_at` folding is untouched, still resolving via
-    /// `min_some` (earliest wins), a different semantic (a temporal validity
-    /// window, not a conflicting-successor pointer).
+    // Regression guard: this fold change is scoped to
+    // superseded_by_entity_id only — valid_at/invalid_at folding is
+    // untouched, still resolving via min_some (earliest wins), a different
+    // semantic (temporal validity window, not a conflicting-successor
+    // pointer).
     #[test]
     fn valid_at_and_invalid_at_still_fold_via_min_some() {
         let mut a = copy(1, 100, &[]);
@@ -617,8 +607,6 @@ mod tests {
             "invalid_at must still take the min"
         );
     }
-
-    // ── ADR-099 D3: anchor records ────────────────────────────────────────────
 
     fn anchor_record(id: i64, created_at: i64, entity: &NoteRecord) -> NoteRecord {
         let mut r = copy(id, created_at, &[]);
@@ -710,11 +698,11 @@ mod tests {
     }
 }
 
-/// Convergence, over generated copies rather than a fixed fixture.
-///
-/// A6's standard is that every rule is commutative, associative and idempotent.
-/// The fixed-permutation test above pins one worked example; these pin the
-/// property itself.
+// Convergence, over generated copies rather than a fixed fixture.
+//
+// Every rule must be commutative, associative and idempotent. The
+// fixed-permutation test above pins one worked example; these pin the
+// property itself.
 #[cfg(test)]
 mod convergence {
     use super::tests::copy;
@@ -722,7 +710,7 @@ mod convergence {
     use crate::storage::note_record::CarriedEdge;
     use proptest::prelude::*;
 
-    /// The fields two machines' copies of one entity may legitimately differ in.
+    // The fields two machines' copies of one entity may legitimately differ in.
     #[derive(Debug, Clone)]
     struct Spec {
         id: i64,
@@ -758,8 +746,8 @@ mod convergence {
         r
     }
 
-    /// Ranges are tiny on purpose: ties are where an incomplete order would
-    /// leak through, so the generator has to produce them often.
+    // Ranges are tiny on purpose: ties are where an incomplete order would
+    // leak through, so the generator has to produce them often.
     fn arb_spec() -> impl Strategy<Value = Spec> {
         (
             (0i64..3, 0i64..3, any::<bool>()),
@@ -825,9 +813,9 @@ mod convergence {
         serde_json::to_string(&folded[0]).expect("serialize")
     }
 
-    /// Same as `entry`, but blanks `superseded_by_entity_id` first — see the
-    /// comment on `folding_is_idempotent_and_associative`'s second half for
-    /// why that one field is compared separately.
+    // Same as entry, but blanks superseded_by_entity_id first — see the
+    // comment on folding_is_idempotent_and_associative's second half for
+    // why that field is compared separately.
     fn entry_ignoring_successor(mut folded: Vec<NoteRecord>) -> String {
         assert_eq!(folded.len(), 1, "every spec is a copy of one entity");
         folded[0].superseded_by_entity_id = None;
@@ -835,8 +823,8 @@ mod convergence {
     }
 
     proptest! {
-        /// Commutative: two machines holding the same copies in any order reach
-        /// the same entry.
+        // Commutative: two machines holding the same copies in any order
+        // reach the same entry.
         #[test]
         fn folding_converges_over_every_order(specs in prop::collection::vec(arb_spec(), 1..6)) {
             let expected = fold_of(&specs);
@@ -845,18 +833,15 @@ mod convergence {
             }
         }
 
-        /// Idempotent: re-reading a folded entry changes nothing. Associative:
-        /// folding one machine's copies first reaches the same entry as folding
-        /// the union in one pass — with one deliberate exception, scoped out
-        /// below: `superseded_by_entity_id` (ADR-068 E5) resolves via a
-        /// whole-group scan over every copy's `created_at`, not the pairwise
-        /// `base`-vs-`other` fold every other field uses, so a partial
-        /// pre-fold can discard the `created_at` context a later merge would
-        /// need to re-resolve it correctly. This is safe in practice:
-        /// `fold_records` is only ever called once, over every commit's
-        /// records in a single pass (`GitNotesBackend::collect`'s doc
-        /// comment: "the only site that can fold an entity's copies
-        /// together") — never incrementally on a partial pre-fold.
+        // Idempotent: re-reading a folded entry changes nothing. Associative:
+        // folding one machine's copies first reaches the same entry as
+        // folding the union in one pass — except superseded_by_entity_id,
+        // which resolves via a whole-group scan over every copy's
+        // created_at rather than the pairwise fold every other field uses,
+        // so a partial pre-fold can discard context a later merge would
+        // need. Safe in practice: fold_records is only ever called once,
+        // over every commit's records in a single pass, never
+        // incrementally on a partial pre-fold.
         #[test]
         fn folding_is_idempotent_and_associative(
             left in prop::collection::vec(arb_spec(), 1..4),
