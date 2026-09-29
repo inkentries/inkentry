@@ -1,7 +1,6 @@
 // The window holding the declaration of a container too large to keep whole
-// is named after it. Without a name it lost the heaviest full-text signal: a
-// Rails model's associations and validations were findable only by their
-// body text.
+// is named after it: without a name, a Rails model's associations and
+// validations would be findable only by their body text.
 
 use inkentry_core::indexer::{Chunk, SourceParser};
 

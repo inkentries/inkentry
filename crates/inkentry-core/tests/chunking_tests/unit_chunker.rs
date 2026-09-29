@@ -1,14 +1,12 @@
-//! Unit tests for the chunker module (no I/O, no SQLite).
+// Unit tests for the chunker module (no I/O, no SQLite).
 
 use inkentry_core::indexer::chunker::MAX_CHUNK_TOKENS;
 use inkentry_core::indexer::{Chunk, ChunkKind, SourceParser};
 use inkentry_core::search::tokens::estimate_tokens;
 
-// ── sliding_window (token-aware) ─────────────────────────────────────────────
-
 use inkentry_core::indexer::sliding_window;
 
-/// One line of `chars` visible characters (no trailing newline).
+// One line of `chars` visible characters (no trailing newline).
 fn line_of(chars: usize) -> String {
     "x".repeat(chars)
 }
@@ -132,8 +130,6 @@ fn sliding_window_threads_identity_onto_every_subchunk() {
     }
 }
 
-// ── tree-sitter docstring extraction (preceding_comment) ────────────────────
-
 #[test]
 fn docstring_captured_for_plain_function() {
     let src = "/// does a thing\nfn plain() {}\n";
@@ -178,8 +174,6 @@ fn no_docstring_when_attribute_has_none_above_it() {
     assert_eq!(f.docstring, None);
 }
 
-// ── Chunk::embedding_text ────────────────────────────────────────────────────
-
 fn make_chunk(name: Option<&str>, docstring: Option<&str>, content: &str) -> Chunk {
     Chunk {
         file_path: "src/lib.rs".into(),
@@ -217,10 +211,8 @@ fn embedding_text_prepends_docstring() {
     );
 }
 
-// ── MAX_CHUNK_TOKENS ceiling ─────────────────────────────────────────────────
-
-/// A Rust function with `body_lines` short statements, guaranteed short enough
-/// per line that any 120-line window stays under the cap.
+// A Rust function with `body_lines` short statements, guaranteed short enough
+// per line that any 120-line window stays under the cap.
 fn big_rust_fn(name: &str, body_lines: usize) -> String {
     let mut s = format!("fn {name}() {{\n");
     for i in 0..body_lines {
@@ -241,7 +233,6 @@ fn oversized_leaf_splits_into_capped_subchunks() {
 
     let chunks = SourceParser::parse(&src, "huge.rs", "rust").unwrap();
 
-    // No single whole-function chunk survives; it is re-windowed.
     assert!(
         chunks.len() > 1,
         "oversized leaf should split into >1 chunk"
@@ -263,7 +254,6 @@ fn oversized_leaf_splits_into_capped_subchunks() {
         assert_eq!(c.name.as_deref(), Some("huge"));
         assert!(c.embedding_text().starts_with("title: huge |"));
     }
-    // Line offset preserved: the function starts at file line 1.
     assert_eq!(chunks[0].start_line, 1);
 }
 
@@ -316,12 +306,10 @@ fn oversized_container_suppresses_own_chunk_keeps_children() {
 
     let chunks = SourceParser::parse(&src, "container.rs", "rust").unwrap();
 
-    // Container's own Module chunk is suppressed.
     assert!(
         !chunks.iter().any(|c| matches!(c.kind, ChunkKind::Module)),
         "oversized container must not emit its own chunk"
     );
-    // But per-fn child chunks are still emitted, each under the cap.
     let fns: Vec<&Chunk> = chunks
         .iter()
         .filter(|c| matches!(c.kind, ChunkKind::Function))
@@ -369,8 +357,6 @@ fn no_docstring_when_python_decorator_has_none_above_it() {
     assert_eq!(f.docstring, None);
 }
 
-// ── docstring on the first documented member of a block ──
-//
 // tree-sitter-python attaches a comment that leads the first statement of a
 // class/function body as a child of the *enclosing* class_definition /
 // function_definition node (a sibling of `body`), not as the first child
@@ -459,7 +445,7 @@ fn docstring_captured_for_first_member_of_ruby_class_body() {
     // Same grammar quirk as Python's class_definition/function_definition:
     // tree-sitter-ruby attaches the leading comment as a child of `class`
     // itself rather than inside `body_statement`. preceding_comment() is
-    // shared across languages, so the fix applies here too.
+    // shared across languages, so this applies here too.
     let src = "class Outer\n  # inner\n  def attributed\n  end\nend\n";
     let chunks = SourceParser::parse(src, "f.rb", "ruby").unwrap();
     let f = chunks

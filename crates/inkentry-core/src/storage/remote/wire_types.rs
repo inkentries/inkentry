@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use super::super::backend::Resolution;
 use super::super::memory::{Candidate, Note, NoteId};
 
-// ── Wire types (match server JSON schema) ─────────────────────────────────────
-
 #[derive(Serialize)]
 pub(super) struct AddNoteRequest {
     pub(super) kind: String,
@@ -12,9 +10,8 @@ pub(super) struct AddNoteRequest {
     pub(super) body: String,
     pub(super) tags: Vec<String>,
     pub(super) linked_files: Vec<String>,
-    /// Locally-computed embedding, letting the server store this entry without
-    /// re-embedding it. The three travel together or not at all: the accept
-    /// side refuses a vector whose model and precision it cannot check.
+    // vector/vector_model/vector_precision travel together or not at all: the
+    // accept side refuses a vector whose model and precision it can't check.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) vector: Option<Vec<f32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -25,10 +22,8 @@ pub(super) struct AddNoteRequest {
     pub(super) source_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) valid_at: Option<i64>,
-    /// ADR-098 D6. Flat rather than a nested object, matching every other
-    /// field on this request. A server that predates these three simply does
-    /// not read them (see `docs/adr/098-metrics-and-evaluation-indexed-by-commit.md`
-    /// D6: storing them server-side is a follow-up, not implemented here).
+    // Flat fields, not a nested object, matching the rest of this request; a
+    // server that predates them simply ignores the unknown fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) origin_actor_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,8 +81,8 @@ pub(super) struct AddNoteResponse {
     // The related band, present only alongside a stored entry.
     #[serde(default)]
     pub(super) related: Vec<CandidateWire>,
-    /// Server-assigned cross-machine id, if the server minted one. Absent on
-    /// older servers → `None`.
+    // Server-assigned cross-machine id, if the server minted one. Absent on
+    // older servers.
     #[serde(default)]
     pub(super) remote_id: Option<String>,
 }
@@ -151,8 +146,8 @@ pub(super) struct NoteResponse {
     pub(super) valid_at: Option<i64>,
     #[serde(default)]
     pub(super) invalid_at: Option<i64>,
-    /// Canonical cross-machine id, if the server has one. Absent on older
-    /// servers → `None`. Surfaced into the domain `Note` (ADR-059 D2).
+    // Canonical cross-machine id, if the server has one. Absent on older
+    // servers.
     #[serde(default)]
     pub(super) remote_id: Option<String>,
     #[serde(default)]
@@ -181,22 +176,16 @@ impl From<NoteResponse> for Note {
             source_project: None,
             source_project_path: None,
             remote_id: r.remote_id,
-            // The team-server wire (NoteResponse) does not carry origin back
-            // yet (ADR-098 D6: server-side storage is a follow-up).
+            // The wire response doesn't carry origin back yet.
             origin: None,
         }
     }
 }
 
-/// Tolerant reader for the `list` and `search` read endpoints.
-///
-/// A team `inkentry-server` at or after the wire-contract fix wraps notes in an
-/// `{ "entries": [...], "total": N }` object (ADR-076: a JSON response root
-/// must be an object, never a bare array). Older servers still in the
-/// version-skew support window emit a bare `[...]` array. Accepting both is
-/// what keeps a newer CLI working against an older team server: the common
-/// real-world skew, since a CLI is upgraded ahead of a team server running on
-/// someone else's schedule. See `docs/version-skew.md`.
+// Tolerant reader for the `list` and `search` read endpoints. A newer team
+// server wraps notes in `{ "entries": [...], "total": N }`; an older one still
+// emits a bare `[...]` array. Accepting both keeps a newer CLI working against
+// a team server running on its own upgrade schedule.
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub(super) enum NoteListPayload {
@@ -216,9 +205,8 @@ impl NoteListPayload {
     }
 }
 
-/// Tolerant reader for the `harvested-shas` endpoint. Same rationale as
-/// [`NoteListPayload`]: newer servers send `{ "shas": [...] }`, older ones a
-/// bare `["sha", ...]` array of primitives.
+// Same tolerance as `NoteListPayload`: newer servers send `{ "shas": [...] }`,
+// older ones a bare `["sha", ...]` array.
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub(super) enum HarvestedShasPayload {

@@ -1,5 +1,5 @@
-//! Unit tests for embedding helpers (vec_to_blob / blob_to_vec roundtrip,
-//! int8 quantisation for sqlite-vec `int8[N]` storage).
+// Unit tests for embedding helpers (vec_to_blob / blob_to_vec roundtrip,
+// int8 quantisation for sqlite-vec `int8[N]` storage).
 
 use inkentry_core::embeddings::{
     EMBEDDING_DIM, INT8_SCALE, blob_to_vec, vec_to_blob, vec_to_int8_blob,
@@ -41,9 +41,7 @@ fn blob_to_vec_ignores_trailing_incomplete_chunk() {
     assert_eq!(result.len(), 3);
 }
 
-// ── int8 quantisation (PR #441 / inkentry-oss#9) ────────────────────────────────
-
-/// Read an int8 blob back as `i8` values for assertions.
+// Read an int8 blob back as `i8` values for assertions.
 fn as_i8(blob: &[u8]) -> Vec<i8> {
     blob.iter().map(|&b| b as i8).collect()
 }
@@ -52,7 +50,7 @@ fn as_i8(blob: &[u8]) -> Vec<i8> {
 fn int8_blob_is_one_byte_per_component() {
     let v = vec![0.0_f32; EMBEDDING_DIM];
     assert_eq!(vec_to_int8_blob(&v).len(), EMBEDDING_DIM);
-    // 4× smaller than the f32 blob — the headline storage win of #441.
+    // 4× smaller than the f32 blob.
     assert_eq!(vec_to_int8_blob(&v).len() * 4, vec_to_blob(&v).len());
 }
 

@@ -1,7 +1,8 @@
-//! Integration and unit tests for convention extraction (#268).
-//!
-//! All tests use in-memory SQLite so they are hermetic (no LLM, no network).
-//! DB tests are annotated `#[serial]` because `sqlite3_auto_extension` is process-global.
+// Integration and unit tests for convention extraction.
+//
+// All tests use in-memory SQLite so they are hermetic (no LLM, no network).
+// DB tests are annotated `#[serial]` because `sqlite3_auto_extension` is
+// process-global.
 
 use crate::common;
 use serial_test::serial;
@@ -12,8 +13,6 @@ use inkentry_core::conventions::{
     run_extraction,
 };
 use inkentry_core::storage::ConventionRow;
-
-// ── Helper builders ───────────────────────────────────────────────────────────
 
 fn rust_fn(name: &str, content: &str) -> ChunkSummary {
     ChunkSummary {
@@ -76,8 +75,6 @@ fn find_record<'a>(
 ) -> Option<&'a ConventionRecord> {
     records.iter().find(|r| r.category == category)
 }
-
-// ── Rust: naming conventions ──────────────────────────────────────────────────
 
 #[test]
 fn rust_functions_snake_case() {
@@ -163,8 +160,6 @@ fn rust_doc_coverage_high() {
     assert!(r.description.contains("high"), "desc={}", r.description);
 }
 
-// ── TypeScript: naming conventions ───────────────────────────────────────────
-
 #[test]
 fn ts_functions_camel_case() {
     let chunks: Vec<ChunkSummary> = [
@@ -242,8 +237,6 @@ fn ts_testing_spec_files() {
     assert!(r.description.contains("spec.ts"), "desc={}", r.description);
 }
 
-// ── ConventionExtractor: multi-language dispatch ──────────────────────────────
-
 #[test]
 fn extractor_dispatches_by_language() {
     let rust_chunks: Vec<ChunkSummary> = (0..10)
@@ -270,11 +263,11 @@ fn extractor_handles_empty_input() {
     assert!(records.is_empty());
 }
 
-/// Regression: the extractor must emit at most one record per (language,
-/// category). Language-specific + always-on generic sets emit overlapping
-/// categories (naming.functions, docs), and tsx chunks route through the
-/// typescript set (self-labelled "typescript"), so a rust/ts/tsx corpus
-/// previously listed those categories two or three times per language.
+// The extractor must emit at most one record per (language, category).
+// Language-specific + always-on generic sets emit overlapping categories
+// (naming.functions, docs), and tsx chunks route through the typescript set
+// (self-labelled "typescript"), so a rust/ts/tsx corpus could otherwise list
+// those categories two or three times per language.
 #[test]
 fn extractor_dedups_language_category() {
     let rust_chunks: Vec<ChunkSummary> = (0..10)
@@ -345,14 +338,14 @@ fn find_lang_cat<'a>(
         .collect()
 }
 
-/// Language-specific wins over generic for overlapping categories.
-///
-/// Both the rust set and the always-on generic set emit `naming.functions` and
-/// `docs` via the same shared helpers, so their description/confidence are
-/// identical by construction — the only observable of the win is that the
-/// cross-source duplicate is *discarded*, not summed: evidence stays at the
-/// single-source count (N), never 2N. A rust-only category (`error_handling`)
-/// confirms the language-specific records are the ones flowing through.
+// Language-specific wins over generic for overlapping categories.
+//
+// Both the rust set and the always-on generic set emit `naming.functions` and
+// `docs` via the same shared helpers, so their description/confidence are
+// identical by construction — the only observable of the win is that the
+// cross-source duplicate is *discarded*, not summed: evidence stays at the
+// single-source count (N), never 2N. A rust-only category (`error_handling`)
+// confirms the language-specific records are the ones flowing through.
 #[test]
 fn extractor_language_specific_wins_over_generic() {
     const N: u32 = 8;
@@ -392,8 +385,8 @@ fn extractor_language_specific_wins_over_generic() {
     );
 }
 
-/// .ts and .tsx chunks land in one canonical group, so a single
-/// `naming.functions` record counts all of them (5 ts + 5 tsx).
+// .ts and .tsx chunks land in one canonical group, so a single
+// `naming.functions` record counts all of them (5 ts + 5 tsx).
 #[test]
 fn extractor_pools_evidence_across_ts_and_tsx() {
     let ts_chunks: Vec<ChunkSummary> = (0..5)
@@ -422,9 +415,9 @@ fn extractor_pools_evidence_across_ts_and_tsx() {
     );
 }
 
-/// Determinism: `extract` is backed by a BTreeMap keyed on (language, category),
-/// so repeated runs on the same input yield the same records in the same,
-/// ascending order.
+// Determinism: `extract` is backed by a BTreeMap keyed on (language, category),
+// so repeated runs on the same input yield the same records in the same,
+// ascending order.
 #[test]
 fn extractor_extract_is_deterministic() {
     let rust_chunks: Vec<ChunkSummary> = (0..8)
@@ -465,13 +458,12 @@ fn extractor_extract_is_deterministic() {
     );
 }
 
-/// No regression for generic-only languages: go/js/jsx/ruby have no dedicated
-/// rule set, so they flow through the generic set alone. Dedup must not drop
-/// their legitimate distinct records.
-///
-/// jsx keeps its own label: only tsx is canonicalized, because only tsx routes
-/// through a language-specific set and so could surface under two labels.
-/// Folding jsx into javascript would pool their evidence here instead.
+// go/js/jsx/ruby have no dedicated rule set, so they flow through the generic
+// set alone; dedup must not drop their legitimate distinct records.
+//
+// jsx keeps its own label: only tsx is canonicalized, because only tsx routes
+// through a language-specific set and so could surface under two labels.
+// Folding jsx into javascript would pool their evidence here instead.
 #[test]
 fn extractor_preserves_generic_only_languages() {
     fn fn_chunk(lang: &str, name: &str) -> ChunkSummary {
@@ -506,8 +498,8 @@ fn extractor_preserves_generic_only_languages() {
     }
 }
 
-/// tsx is typescript plus JSX, so its conventions canonicalize onto the
-/// "typescript" label: never emitted under "tsx", and never twice.
+// tsx is typescript plus JSX, so its conventions canonicalize onto the
+// "typescript" label: never emitted under "tsx", and never twice.
 #[test]
 fn extractor_tsx_conventions_canonicalize_onto_typescript_label_only() {
     let tsx_chunks: Vec<ChunkSummary> = (0..8)
@@ -537,13 +529,10 @@ fn extractor_tsx_conventions_canonicalize_onto_typescript_label_only() {
     );
 }
 
-/// Confidence must describe the whole corpus, not the most extreme dialect.
-///
-/// Splitting .ts from .tsx produced two partial `async` views that the merge
-/// collapsed by keeping the *higher* confidence, so a small all-async .tsx group
-/// made "async/await is widely used" read 100% when only 9 of 16 functions were
-/// async. Pooling the evidence before the rate is computed is what keeps the
-/// number honest, and it is what `inkentry context` reports to an agent.
+// Confidence must describe the whole corpus, not the most extreme dialect:
+// pooling the evidence before the rate is computed, rather than taking the
+// higher of the .ts and .tsx views, is what keeps the number honest — the
+// number `inkentry context` reports to an agent.
 #[test]
 fn extractor_async_confidence_pools_evidence_rather_than_taking_max_of_splits() {
     // 10 .ts functions, 3 async.
@@ -557,7 +546,7 @@ fn extractor_async_confidence_pools_evidence_rather_than_taking_max_of_splits() 
             ts_fn(&format!("thing{i}"), &content)
         })
         .collect();
-    // 6 .tsx functions, all async: the lopsided split that used to win outright.
+    // 6 .tsx functions, all async — the lopsided split.
     let tsx_chunks: Vec<ChunkSummary> = (0..6)
         .map(|i| {
             tsx_fn(
@@ -585,8 +574,8 @@ fn extractor_async_confidence_pools_evidence_rather_than_taking_max_of_splits() 
         pooled.confidence
     );
 
-    // Extracting the .tsx chunks alone reproduces the split whose 100% used to
-    // be adopted wholesale.
+    // Extracting the .tsx chunks alone reproduces the standalone 100% split,
+    // for comparison against the pooled rate above.
     let tsx_refs: Vec<&ChunkSummary> = tsx_chunks.iter().collect();
     let split = inkentry_core::conventions::rules::typescript::extract(&tsx_refs, "typescript", 0);
     let split_async = find_record(&split, "async").expect("tsx-only async record");
@@ -598,8 +587,6 @@ fn extractor_async_confidence_pools_evidence_rather_than_taking_max_of_splits() 
         split_async.confidence
     );
 }
-
-// ── DB round-trip: replace_conventions + list_conventions ─────────────────────
 
 #[test]
 #[serial]
@@ -661,8 +648,6 @@ fn db_list_conventions_empty_when_none_stored() {
     assert!(all.is_empty());
 }
 
-// ── End-to-end: run_extraction via DB ─────────────────────────────────────────
-
 #[test]
 #[serial]
 fn run_extraction_end_to_end() {
@@ -721,8 +706,6 @@ fn run_extraction_end_to_end() {
     );
 }
 
-// ── list_conventions API wrapper ──────────────────────────────────────────────
-
 #[test]
 #[serial]
 fn list_conventions_wrapper_converts_correctly() {
@@ -744,13 +727,10 @@ fn list_conventions_wrapper_converts_correctly() {
     assert_eq!(records[0].extracted_at, 42);
 }
 
-// ── Confidence filtering ──────────────────────────────────────────────────────
-
 #[test]
 fn extractor_emits_low_evidence_raw_records() {
-    // The extractor emits records regardless of evidence count.
-    // run_extraction applies the filter (>= 0.5 confidence AND >= 5 evidence).
-    // With 2 evidence points the evidence_count should be < 5.
+    // The extractor emits records regardless of evidence count; run_extraction
+    // applies the filter (>= 0.5 confidence AND >= 5 evidence) separately.
     let chunks = [
         rust_fn("small_set_a", "fn small_set_a() {}"),
         rust_fn("small_set_b", "fn small_set_b() {}"),

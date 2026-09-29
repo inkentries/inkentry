@@ -1,19 +1,14 @@
-//! Shared test helpers.
+// Shared test helpers. Import with `mod common;` or `use crate::common::*;`
+// inside integration tests.
 #![allow(dead_code)]
-//!
-//! Import with `mod common;` or `use crate::common::*;` inside integration tests.
 
 use std::sync::OnceLock;
 
-/// Register the sqlite-vec extension exactly once for the test process.
-///
-/// sqlite3_auto_extension is process-global; calling it more than once per
-/// address is a no-op but calling it from multiple threads without
-/// synchronisation is UB.  `OnceLock` guarantees single initialisation.
-///
-/// Tests that open a `Database` **must** call this first.
-/// Annotate those tests with `#[serial_test::serial]` so the global
-/// registration happens before any connection is opened.
+// sqlite3_auto_extension is process-global; calling it twice per address is
+// a no-op, but calling it from multiple threads without synchronisation is
+// UB — `OnceLock` guarantees single initialisation. Tests that open a
+// `Database` must call this first; annotate with `#[serial_test::serial]`
+// so registration happens before any connection opens.
 pub fn register_sqlite_vec() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
@@ -26,9 +21,7 @@ pub fn register_sqlite_vec() {
     });
 }
 
-/// Open an in-memory `inkentry_core::storage::Database` for tests.
-///
-/// Calls `register_sqlite_vec()` automatically.
+// Opens an in-memory Database, calling register_sqlite_vec() automatically.
 pub fn open_test_db() -> inkentry_core::storage::Database {
     register_sqlite_vec();
     inkentry_core::storage::Database::open(std::path::Path::new(":memory:"))
@@ -43,13 +36,11 @@ pub fn open_test_db() -> inkentry_core::storage::Database {
 // override a test's own explicit `user.name`/`user.email`.
 //
 // This is `inkentry-core`'s `tests/`-side copy of
-// `inkentry_core::test_support::isolate_git_config`. An integration test
-// binary links the crate externally, so it can't reach that `#[cfg(test)]`-
-// reachable definition directly without a self-referencing dev-dependency:
-// tried, and it breaks this repo's shared-`CARGO_TARGET_DIR`-across-
-// worktrees pre-commit hook (fails with `unresolved import` against a target
-// dir last built from a different Cargo.lock). This duplicate is the actual
-// floor, not the self-dependency trick.
+// `inkentry_core::test_support::isolate_git_config`: an integration test
+// binary links the crate externally and can't reach that `#[cfg(test)]`-only
+// definition without a self-referencing dev-dependency, which breaks this
+// repo's shared-`CARGO_TARGET_DIR`-across-worktrees pre-commit hook. This
+// duplicate is the actual floor.
 pub fn isolate_git_config() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {

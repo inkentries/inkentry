@@ -1,23 +1,18 @@
-//! Adversarial / coverage-gap hardening for the token-aware re-window +
-//! identity re-attach change (`sliding_window`, `push_windowed`,
-//! `parse_markdown`'s oversized-section path).
-//!
-//! The engineer's own suite (`unit_chunker.rs`, `prop_chunker.rs`) proves the
-//! cap-bound, forward-progress, overlap, and single-node identity-threading
-//! behaviour. This file probes what a single-node happy path cannot catch:
-//! cross-contamination between sibling oversized nodes in one file, the
-//! genuinely-anonymous (no name/docstring) case, per-section attribution in
-//! markdown with multiple oversized sections, and the worst documented
-//! estimate/real-token bias.
+// Coverage for `sliding_window`/`push_windowed`/`parse_markdown`'s
+// oversized-section path beyond a single-node happy path: cross-
+// contamination between sibling oversized nodes, the genuinely-anonymous
+// (no name/docstring) case, per-section attribution in markdown with
+// multiple oversized sections, and the worst documented estimate/real-token
+// bias.
 
 use inkentry_core::indexer::chunker::{MAX_CHUNK_TOKENS, sliding_window};
 use inkentry_core::indexer::{Chunk, ChunkKind, SourceParser};
 use inkentry_core::search::tokens::estimate_tokens;
 
-/// A Rust function whose body is `body_lines` short statements tagged with
-/// `marker`, long enough in aggregate to exceed `MAX_CHUNK_TOKENS`, preceded
-/// by a `///` doc comment containing `marker` so windows can be attributed
-/// back to the right function by content alone.
+// A Rust function whose body is `body_lines` short statements tagged with
+// `marker`, long enough in aggregate to exceed `MAX_CHUNK_TOKENS`, preceded
+// by a `///` doc comment containing `marker` so windows can be attributed
+// back to the right function by content alone.
 fn big_rust_fn_with_doc(name: &str, marker: &str, body_lines: usize) -> String {
     let mut s = format!("/// {marker} docstring\nfn {name}() {{\n");
     for i in 0..body_lines {
@@ -26,8 +21,6 @@ fn big_rust_fn_with_doc(name: &str, marker: &str, body_lines: usize) -> String {
     s.push_str("}\n\n");
     s
 }
-
-// ── Multiple oversized siblings in one file ─────────────────────────────────
 
 #[test]
 fn multiple_oversized_siblings_keep_own_identity_no_cross_contamination() {
@@ -109,19 +102,13 @@ fn multiple_oversized_siblings_keep_own_identity_no_cross_contamination() {
     );
 }
 
-// ── Anonymous oversized node (no name, no docstring) ────────────────────────
-
 #[test]
 fn anonymous_oversized_node_gets_none_identity_not_a_literal_none_string() {
     // A Rust `impl` block is a built-in case of a genuinely anonymous node:
     // `node_specs("rust")` maps `impl_item` with `name_field: None`, and rust
-    // has no language-specific fallback in `extract_name` — an impl block's
-    // `name` is always `None`. Fill one with only comments (no `fn`/`const`
-    // children for the container recursion to match) and oversize it, so the
-    // *impl block itself* is what re-windows, with no preceding doc comment
-    // either. Confirms the windowing path degrades to `None`/`title: none`
-    // gracefully rather than panicking or leaking a stray `Option::None`
-    // debug artifact into the embedding text.
+    // has no language-specific fallback in `extract_name`. Fill one with only
+    // comments (no `fn`/`const` children) and oversize it, so the impl block
+    // itself re-windows with no preceding doc comment either.
     let mut src = String::from("impl Foo {\n");
     for i in 0..1200 {
         src.push_str(&format!("    // filler comment line {i}\n"));
@@ -145,9 +132,8 @@ fn anonymous_oversized_node_gets_none_identity_not_a_literal_none_string() {
     for c in &windows {
         assert_eq!(c.name, None, "anonymous node must not synthesize a name");
         assert_eq!(c.docstring, None, "anonymous node has no preceding comment");
-        // No panic constructing the embedding text (this would already have
-        // panicked above if it did), and it degrades to the documented
-        // lowercase `none` sentinel rather than a `Debug`-formatted `None`.
+        // Degrades to the documented lowercase `none` sentinel rather than a
+        // `Debug`-formatted `None`.
         let text = c.embedding_text();
         assert!(text.starts_with("title: none |"), "got: {text:?}");
         assert!(
@@ -156,8 +142,6 @@ fn anonymous_oversized_node_gets_none_identity_not_a_literal_none_string() {
         );
     }
 }
-
-// ── Markdown: multiple oversized sections at different heading levels ──────
 
 #[test]
 fn markdown_multiple_oversized_sections_each_keep_own_heading() {
@@ -214,18 +198,13 @@ fn markdown_multiple_oversized_sections_each_keep_own_heading() {
     }
 }
 
-// ── Worst-case estimate/real-token bias ─────────────────────────────────────
-
 #[test]
 fn worst_case_estimate_bias_still_bounds_windows_far_below_old_overshoot() {
     // `estimate_tokens` is `chars/4` with no tokenizer, so it cannot see a
-    // real tokenizer's corpus-dependent bias — the architect's spike measured
-    // up to 1.387 real/estimate on MDX. A window's *true* token count can
-    // therefore run ~1.3-1.4x over the cap in the worst documented case; that
-    // is the accepted trade-off (see `sliding_window`'s doc comment). What
-    // must not happen is a return to the pre-fix behaviour, where a single
-    // 120-line window measured 10_341 tokens against the 2_048 cap (~5x
-    // overshoot) because nothing bounded it by content length at all.
+    // real tokenizer's corpus-dependent bias, measured up to 1.387
+    // real/estimate on MDX. A window's *true* token count can therefore run
+    // ~1.3-1.4x over the cap in the worst documented case; it must stay far
+    // below an unbounded window's 10_341-token overshoot against a 2_048 cap.
     const WORST_CASE_BIAS: f64 = 1.387;
     const OLD_BUG_OVERSHOOT_TOKENS: usize = 10_341;
 
@@ -265,8 +244,6 @@ fn worst_case_estimate_bias_still_bounds_windows_far_below_old_overshoot() {
     }
 }
 
-// ── Regression: non-oversized paths are unaffected ──────────────────────────
-
 #[test]
 fn small_function_is_not_windowed_and_keeps_direct_identity() {
     let src = "/// Adds one\nfn add_one(x: i32) -> i32 {\n    x + 1\n}\n";
@@ -280,7 +257,7 @@ fn small_function_is_not_windowed_and_keeps_direct_identity() {
     assert!(matches!(chunks[0].kind, ChunkKind::Function));
     // `preceding_comment` includes the trailing newline of the comment node's
     // own span; trim before comparing so the assertion is about content, not
-    // that pre-existing (out of scope for this task) exact-span behaviour.
+    // exact span.
     assert_eq!(
         chunks[0].docstring.as_deref().map(str::trim_end),
         Some("/// Adds one")

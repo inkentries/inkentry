@@ -1,6 +1,5 @@
-// Consolidated storage/persistence test binary: groups the previously
-// separate DB, git-notes, worktree, and convention test files into one
-// integration test crate to cut per-binary link overhead.
+// One storage/persistence test binary, not several: groups the DB, git-notes,
+// worktree, and convention test files to cut per-binary link overhead.
 
 mod common;
 
