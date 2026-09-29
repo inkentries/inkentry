@@ -1,9 +1,8 @@
 use thiserror::Error;
 
-/// Errors raised by the llama.cpp embedding engine
-/// ([`crate::embedder_llama`]). Kept distinct from a bare `anyhow::Error` so
-/// a caller (e.g. `inkentry-server`'s HTTP handlers) can match on the failure
-/// kind instead of string-matching a message.
+/// Errors raised by the llama.cpp embedding engine. Kept distinct from a bare
+/// `anyhow::Error` so a caller (e.g. `inkentry-server`'s HTTP handlers) can
+/// match on the failure kind instead of string-matching a message.
 #[derive(Error, Debug)]
 pub enum EmbedError {
     #[error("tokenization failed: {0}")]

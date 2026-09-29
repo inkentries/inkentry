@@ -1,7 +1,7 @@
-// Guards the fix for the per-decode llama warning: with the batch tokens marked
-// as output-bearing, a pooling embed no longer trips llama.cpp's
-// "some input tokens were not marked as outputs -> overriding" WARN, which used
-// to fire once per chunk (thousands of lines per index).
+// Guards against the per-decode llama warning: with the batch tokens marked
+// as output-bearing, a pooling embed does not trip llama.cpp's "some input
+// tokens were not marked as outputs -> overriding" WARN (which would otherwise
+// fire once per chunk — thousands of lines per index).
 //
 // Ignored by default (needs the canonical GGUF). Run with:
 //   INKENTRY_TEST_GGUF=/path/to/f2llm-v2-330m-llama-q8_0.gguf \

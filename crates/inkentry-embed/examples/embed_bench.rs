@@ -10,7 +10,7 @@
 //
 // x-axis is tokenizer-exact (real `tokenizer.json` output), not the `chars/4`
 // estimate `inkentry-core` uses at index time, which carries ~±25% per-chunk
-// error and produced non-monotonic artifacts in an earlier profiling pass.
+// error.
 //
 // Usage:
 //   cargo run --release -p inkentry-embed --features llama --example embed_bench -- \
@@ -24,22 +24,22 @@ use anyhow::{Context, Result, bail};
 use inkentry_embed::{DEFAULT_EMBED_POOL_SIZE, DeviceRequest, EmbeddingBackend, LlamaEmbedder};
 use tokenizers::Tokenizer;
 
-/// Sequence lengths (tokens) to sweep by default. Covers the spike's plateau
-/// region (256-512) plus enough range either side to see the curve bend.
+// Sequence lengths (tokens) to sweep by default. Covers the spike's plateau
+// region (256-512) plus enough range either side to see the curve bend.
 const DEFAULT_SIZES: &[usize] = &[
     32, 64, 128, 192, 256, 320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 1792, 2048, 3072,
     4096,
 ];
 
-/// Batch sizes to sweep by default: 1 (sequential) vs 8.
+// Batch sizes to sweep by default: 1 (sequential) vs 8.
 const DEFAULT_BATCHES: &[usize] = &[1, 8];
 
-/// Repeats per (size, batch) point; the reported latency is the median.
+// Repeats per (size, batch) point; the reported latency is the median.
 const DEFAULT_REPEAT: usize = 5;
 
-/// This crate's own source as the synthetic corpus (no network fetch
-/// needed); cycled in `corpus_token_ids` if a run needs more tokens than one
-/// copy provides.
+// This crate's own source as the synthetic corpus (no network fetch needed);
+// cycled in `corpus_token_ids` if a run needs more tokens than one copy
+// provides.
 const CORPUS_SOURCES: &[&str] = &[
     include_str!("../src/lib.rs"),
     include_str!("../src/embedder_llama.rs"),
@@ -130,13 +130,13 @@ fn parse_usize_list(raw: &str) -> Result<Vec<usize>> {
         .collect()
 }
 
-/// One sweep measurement: a (target size, batch) point.
+// One sweep measurement: a (target size, batch) point.
 struct Row {
-    /// Requested sweep point (label only; `actual_n` is what was embedded).
+    // Requested sweep point (label only; `actual_n` is what was embedded).
     target: usize,
     batch: usize,
-    /// Mean tokenizer-exact tokens actually embedded per batch item: the
-    /// real x-axis.
+    // Mean tokenizer-exact tokens actually embedded per batch item: the real
+    // x-axis.
     actual_n: f64,
     median_ms: f64,
     tokens_per_sec: f64,
@@ -184,8 +184,7 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("building tokio runtime")?;
 
     // Warm up the allocator/BLAS pool/page faults before timing, or whichever
-    // point runs first absorbs that one-time cost (this made n=128 look
-    // slower than n=256 in an untimed dry run).
+    // point runs first absorbs that one-time cost.
     eprintln!("warming up...");
     rt.block_on(sweep_point(embedder, &tokenizer, &corpus_ids, 128, 1, 1))?;
 
@@ -220,8 +219,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Tokenizes the concatenated corpus (cycled to >= `min_tokens` ids,
-/// `add_special_tokens=false`): the raw pool windows are sliced from.
+// Tokenizes the concatenated corpus (cycled to >= `min_tokens` ids,
+// `add_special_tokens=false`): the raw pool windows are sliced from.
 fn corpus_token_ids(tokenizer: &Tokenizer, min_tokens: usize) -> Result<Vec<u32>> {
     let one_copy = CORPUS_SOURCES.concat();
     anyhow::ensure!(!one_copy.is_empty(), "embed_bench corpus sources are empty");
@@ -236,10 +235,10 @@ fn corpus_token_ids(tokenizer: &Tokenizer, min_tokens: usize) -> Result<Vec<u32>
     Ok(ids)
 }
 
-/// Slices `batch` circularly-wrapped windows from `corpus_ids`, decodes to
-/// text, then re-measures the actual token count via the same
-/// `add_special_tokens=true` encode the embedder uses internally: decode/encode
-/// isn't perfectly bijective, so slice length isn't what actually gets embedded.
+// Slices `batch` circularly-wrapped windows from `corpus_ids`, decodes to
+// text, then re-measures the actual token count via the same
+// `add_special_tokens=true` encode the embedder uses internally: decode/encode
+// isn't perfectly bijective, so slice length isn't what actually gets embedded.
 fn build_batch_texts(
     tokenizer: &Tokenizer,
     corpus_ids: &[u32],
@@ -340,8 +339,8 @@ fn print_table(rows: &[Row]) {
     }
 }
 
-/// Least-squares fit of `ms = a + b*n + c*n^2`, via 3x3 normal equations
-/// solved by Cramer's rule (no linalg dependency needed for 3 unknowns).
+// Least-squares fit of `ms = a + b*n + c*n^2`, via 3x3 normal equations
+// solved by Cramer's rule (no linalg dependency needed for 3 unknowns).
 fn print_fit(rows: &[Row], batch: usize) {
     let pts: Vec<(f64, f64)> = rows
         .iter()
@@ -384,8 +383,8 @@ fn print_fit(rows: &[Row], batch: usize) {
     }
 }
 
-/// Solve `m * x = v` for a 3x3 system via Cramer's rule. `None` if `m` is
-/// (near-)singular (all sweep points collinear/degenerate in x).
+// Solve `m * x = v` for a 3x3 system via Cramer's rule. `None` if `m` is
+// (near-)singular (all sweep points collinear/degenerate in x).
 fn solve_3x3(m: [[f64; 3]; 3], v: [f64; 3]) -> Option<[f64; 3]> {
     let det3 = |r: [[f64; 3]; 3]| -> f64 {
         r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])

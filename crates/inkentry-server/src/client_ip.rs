@@ -1,17 +1,16 @@
 //! Resolving the address a request actually came from.
 //!
 //! The answer feeds the rate limiter's bucket key, so it decides how much of
-//! the operator's LLM budget one caller may burn (ADR-002 makes that limit a
-//! binding requirement). Anything a client can set at will is therefore
-//! unusable as an identity: a caller who can choose its own key can mint a
-//! fresh budget per request and the limit stops existing.
+//! the operator's LLM budget one caller may burn. Anything a client can set at
+//! will is therefore unusable as an identity: a caller who can choose its own
+//! key can mint a fresh budget per request and the limit stops existing.
 //!
 //! `X-Forwarded-For` is exactly that — a request header, writable by whoever
-//! opened the connection. ADR-066 gave the server in-process TLS precisely so
-//! that a team-reachable deployment is first-party and proxy-free, so in the
-//! ratified shape there is no proxy in front and nothing legitimate to trust.
-//! The header is therefore ignored unless the operator has named the peer as a
-//! trusted proxy, and even then only a syntactically valid IP is accepted.
+//! opened the connection. A team-reachable deployment runs its own in-process
+//! TLS and is proxy-free, so in the common case there is no proxy in front and
+//! nothing legitimate to trust. The header is therefore ignored unless the
+//! operator has named the peer as a trusted proxy, and even then only a
+//! syntactically valid IP is accepted.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -20,8 +19,8 @@ use axum::http::HeaderMap;
 
 /// Peers whose `X-Forwarded-For` header this server will believe.
 ///
-/// Empty by default, which is the ADR-066 deployment: no proxy in front, so
-/// the forwarded header carries no authority and the TCP peer is the client.
+/// Empty by default: no proxy in front, so the forwarded header carries no
+/// authority and the TCP peer is the client.
 #[derive(Clone, Default)]
 pub struct TrustedProxies(Arc<[IpAddr]>);
 
@@ -79,29 +78,29 @@ pub fn client_ip_key(
     }
 }
 
-/// The *trailing* `X-Forwarded-For` entry, if it parses as an IP address.
-///
-/// Rightmost rather than leftmost, because it is the only choice that is
-/// correct under both ways a proxy can be configured to set the header:
-///
-/// - Appending (nginx's common `$proxy_add_x_forwarded_for`) keeps whatever the
-///   client sent and adds the address the proxy actually saw. A client sending
-///   `9.9.9.9` arrives as `9.9.9.9, <real client>`, so everything left of the
-///   last entry is attacker-chosen and only the last entry is observed fact.
-/// - Overwriting (`$remote_addr`) leaves exactly one entry, where rightmost and
-///   leftmost are the same value.
-///
-/// Taking the leftmost entry would therefore reopen the spoofing bug for any
-/// operator whose proxy appends — the majority default.
-///
-/// The trust config names the immediate peer, so a chain of two or more trusted
-/// proxies would resolve to the inner proxy rather than the originating client.
-/// That is out of scope here, and it fails safe: the key is a proxy address, not
-/// one the caller chose.
-///
-/// Rejecting non-IP text is load-bearing beyond tidiness: the returned value
-/// becomes a rate-limiter map key, and an unparsed header would let a caller
-/// choose keys of arbitrary length and cardinality.
+// The *trailing* `X-Forwarded-For` entry, if it parses as an IP address.
+//
+// Rightmost rather than leftmost, because it is the only choice that is
+// correct under both ways a proxy can be configured to set the header:
+//
+// - Appending (nginx's common `$proxy_add_x_forwarded_for`) keeps whatever the
+//   client sent and adds the address the proxy actually saw. A client sending
+//   `9.9.9.9` arrives as `9.9.9.9, <real client>`, so everything left of the
+//   last entry is attacker-chosen and only the last entry is observed fact.
+// - Overwriting (`$remote_addr`) leaves exactly one entry, where rightmost and
+//   leftmost are the same value.
+//
+// Taking the leftmost entry would therefore reopen the spoofing bug for any
+// operator whose proxy appends — the majority default.
+//
+// The trust config names the immediate peer, so a chain of two or more trusted
+// proxies would resolve to the inner proxy rather than the originating client.
+// That is out of scope here, and it fails safe: the key is a proxy address, not
+// one the caller chose.
+//
+// Rejecting non-IP text is load-bearing beyond tidiness: the returned value
+// becomes a rate-limiter map key, and an unparsed header would let a caller
+// choose keys of arbitrary length and cardinality.
 fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
     headers
         .get("x-forwarded-for")
@@ -182,9 +181,6 @@ mod tests {
         assert_eq!(key, "198.51.100.9");
     }
 
-    // nginx's `$proxy_add_x_forwarded_for` appends rather than overwrites, so a
-    // client that sends its own header keeps the leading entry. Reading the
-    // leftmost value would hand that client the bucket key.
     #[test]
     fn an_appending_proxy_keys_on_the_address_the_proxy_saw() {
         let trusted = TrustedProxies::new(["198.51.100.4".parse().unwrap()]);

@@ -1,13 +1,13 @@
-//! llama.cpp-backed embedder for the F2LLM-v2-330M model — inkentry's sole
-//! embedding engine.
-//!
-//! llama.cpp's Vulkan backend gives NVIDIA/AMD/Intel GPUs a single cross-vendor
-//! binary on Windows/Linux (`llama-vulkan` feature); its Metal build serves
-//! macOS (`llama-metal`); the bare feature runs on CPU everywhere else.
-//!
-//! Loads the canonical llama.cpp GGUF (`blk.N.*` tensor names, tokenizer and
-//! last-token pooling baked into metadata), 896-dim, Q8_0-quantized, under a
-//! fixed `MODEL_ID`. `inkentry-server`'s `embed_hub` resolves the file.
+// llama.cpp-backed embedder for the F2LLM-v2-330M model — inkentry's sole
+// embedding engine.
+//
+// llama.cpp's Vulkan backend gives NVIDIA/AMD/Intel GPUs a single cross-vendor
+// binary on Windows/Linux (`llama-vulkan` feature); its Metal build serves
+// macOS (`llama-metal`); the bare feature runs on CPU everywhere else.
+//
+// Loads the canonical llama.cpp GGUF (`blk.N.*` tensor names, tokenizer and
+// last-token pooling baked into metadata), 896-dim, Q8_0-quantized, under a
+// fixed `MODEL_ID`. `inkentry-server`'s `embed_hub` resolves the file.
 
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -30,31 +30,29 @@ use crate::EmbedLane;
 use crate::error::EmbedError;
 use crate::vector::l2_normalise;
 
-/// The one llama context size the embedder runs at on every machine. A sequence
-/// longer than this is truncated to it, so it IS the token cap. Fixing it makes
-/// that truncation happen at the same token boundary on every host: a per-machine
-/// size embedded the same source to different vectors depending on the machine's
-/// RAM, which diverges once those vectors reach a shared team/cloud store. A
-/// machine that cannot allocate a context this size is refused at load rather
-/// than stepped down to a smaller one (see [`ensure_embed_context_fits`]).
+// The one llama context size the embedder runs at on every machine. A sequence
+// longer than this is truncated to it, so it IS the token cap. Fixing it makes
+// that truncation happen at the same token boundary on every host: a per-machine
+// size embedded the same source to different vectors depending on the machine's
+// RAM, which diverges once those vectors reach a shared team/cloud store. A
+// machine that cannot allocate a context this size is refused at load rather
+// than stepped down to a smaller one (see `ensure_embed_context_fits`).
 const EMBED_UBATCH: u32 = 8192;
 
-/// Default bulk-lane worker count for direct callers (e.g. the `embed_bench`
-/// example). The server passes its own admission capacities to
-/// [`LlamaEmbedder::load_from_path`], so the pool and the admission gate never
-/// drift and every admitted concurrent embed finds its own warm context.
-/// Independent contexts, NOT one shared behind a mutex — a shared context would
-/// serialize every embed and reintroduce the interactive-embed starvation
-/// ADR-096 removes.
+/// Default bulk-lane worker count for a direct caller with no admission
+/// capacities of its own (e.g. the `embed_bench` example). The server passes
+/// its own capacities to [`LlamaEmbedder::load_from_path`] instead, so the pool
+/// and the admission gate never drift. Each worker keeps its own context rather
+/// than sharing one behind a mutex, which would serialize every embed.
 pub const DEFAULT_EMBED_POOL_SIZE: usize = 2;
 
-/// A bulk-lane (and non-primary interactive) context is dropped after this long
-/// with no work, so its ~5.5 GiB of reserved address space is paid only while a
-/// pass is actually running, not held between passes (ADR-096 §4 memory budget).
-/// During an active index, batches arrive far faster than this so the context
-/// stays hot for the pass. The one persistently-hot interactive context is
-/// exempt (see [`worker_idle_timeout`]): it is never idle-evicted, so the first
-/// `search`/`memory add` after any lull skips the ~2 s cold-context build.
+// A bulk-lane (and non-primary interactive) context is dropped after this long
+// with no work, so its ~5.5 GiB of reserved address space is paid only while a
+// pass is actually running, not held between passes. During an active index,
+// batches arrive far faster than this so the context stays hot for the pass.
+// The one persistently-hot interactive context is exempt (see
+// `worker_idle_timeout`): it is never idle-evicted, so the first `search`/
+// `memory add` after any lull skips the ~2s cold-context build.
 const CONTEXT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where the caller wants inference to run. `Auto` and `Gpu` both offload the
@@ -85,9 +83,9 @@ impl std::str::FromStr for DeviceRequest {
     }
 }
 
-/// Process-wide llama.cpp backend handle. ggml's backend registry is global
-/// state that may be initialised exactly once per process; the handle lives in
-/// a static so it is never dropped out from under a second embedder instance.
+// Process-wide llama.cpp backend handle. ggml's backend registry is global
+// state that may be initialised exactly once per process; the handle lives in
+// a static so it is never dropped out from under a second embedder instance.
 fn backend() -> Result<&'static LlamaBackend> {
     static BACKEND: OnceLock<std::result::Result<LlamaBackend, String>> = OnceLock::new();
     BACKEND
@@ -103,14 +101,14 @@ fn backend() -> Result<&'static LlamaBackend> {
         .map_err(|e| anyhow::anyhow!("initialising llama.cpp backend: {e}"))
 }
 
-/// With `dynamic-backends` (the `llama-vulkan` build) every ggml backend —
-/// Vulkan *and* the CPU-SIMD variants — is a runtime-loaded module, and
-/// nothing loads them implicitly: skipping this leaves the registry empty and
-/// every model load failing. `GGML_BACKEND_PATH` is the operator override;
-/// otherwise the two shipped layouts below are probed, then the compile-time
-/// build-tree dir that covers `cargo run`/tests. A module whose driver is
-/// missing (no Vulkan) simply fails to load, which is the graceful CPU
-/// degrade this build exists for.
+// With `dynamic-backends` (the `llama-vulkan` build) every ggml backend —
+// Vulkan *and* the CPU-SIMD variants — is a runtime-loaded module, and
+// nothing loads them implicitly: skipping this leaves the registry empty and
+// every model load failing. `GGML_BACKEND_PATH` is the operator override;
+// otherwise the two shipped layouts below are probed, then the compile-time
+// build-tree dir that covers `cargo run`/tests. A module whose driver is
+// missing (no Vulkan) simply fails to load, which is the graceful CPU
+// degrade this build exists for.
 #[cfg(feature = "llama-vulkan")]
 fn load_backend_modules() {
     use llama_cpp_2::llama_backend::{load_backends, load_backends_from_path};
@@ -120,9 +118,9 @@ fn load_backend_modules() {
         load_backends_from_path(std::path::Path::new(&dir));
         return;
     }
-    // Two shipped layouts: archives are flat (modules beside the binary);
-    // the .deb splits them (/usr/bin + /usr/lib/inkentry, matching the
-    // binary's $ORIGIN/../lib/inkentry rpath for its core libs).
+    // Two shipped layouts: archives are flat (modules beside the binary); the
+    // .deb splits them (/usr/bin + /usr/lib/inkentry, matching the binary's
+    // $ORIGIN/../lib/inkentry rpath for its core libs).
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| {
         p.parent().and_then(|d| {
             [d.to_path_buf(), d.join("../lib/inkentry")]
@@ -137,12 +135,9 @@ fn load_backend_modules() {
     load_backends();
 }
 
-/// Module filenames are `libggml-<backend>.so` on unix (macOS included) and
-/// `ggml-<backend>.dll` on Windows, with `<backend>` varying by build
-/// (vulkan, cpu-haswell, cpu-apple_m1, …) — so probe by prefix, not name.
-/// `libggml-base` is the core library, not a runtime-loaded backend module, and
-/// shares the `libggml-` prefix, so it is excluded: a directory holding only
-/// core libs has no backend to load and must not be selected.
+// Module filenames are `libggml-<backend>.so` on unix (macOS included) and
+// `ggml-<backend>.dll` on Windows, with `<backend>` varying by build (vulkan,
+// cpu-haswell, cpu-apple_m1, …) — so probe by prefix, not name.
 #[cfg(feature = "llama-vulkan")]
 fn dir_has_ggml_modules(dir: &Path) -> bool {
     std::fs::read_dir(dir).is_ok_and(|entries| {
@@ -152,7 +147,9 @@ fn dir_has_ggml_modules(dir: &Path) -> bool {
     })
 }
 
-/// A ggml backend-module filename (not a core lib). See [`dir_has_ggml_modules`].
+// `libggml-base` is the core library, not a runtime-loaded backend module, and
+// shares the `libggml-` prefix, so it is excluded: a directory holding only
+// core libs has no backend to load and must not be selected.
 #[cfg(feature = "llama-vulkan")]
 fn is_ggml_backend_module(name: &str) -> bool {
     (name.starts_with("libggml-") || name.starts_with("ggml-"))
@@ -160,10 +157,10 @@ fn is_ggml_backend_module(name: &str) -> bool {
         && !name.starts_with("ggml-base")
 }
 
-/// Name of the first registered GPU-class backend, if any. Resolved from the
-/// live ggml registry rather than compile-time features: with runtime-loaded
-/// modules the Vulkan module can be absent or driverless, and `/v1/health`
-/// must not claim a device that isn't actually serving.
+// Name of the first registered GPU-class backend, if any. Resolved from the
+// live ggml registry rather than compile-time features: with runtime-loaded
+// modules the Vulkan module can be absent or driverless, and `/v1/health`
+// must not claim a device that isn't actually serving.
 fn first_gpu_backend() -> Option<&'static str> {
     use llama_cpp_2::LlamaBackendDeviceType;
     llama_cpp_2::list_llama_ggml_backend_devices()
@@ -198,42 +195,41 @@ fn context_params(ubatch: u32, n_threads: i32) -> LlamaContextParams {
         .with_n_threads_batch(n_threads)
 }
 
-/// The outcome of one embed request, sent back over the job's reply channel.
+// The outcome of one embed request, sent back over the job's reply channel.
 type EmbedResult = std::result::Result<Vec<Vec<f32>>, anyhow::Error>;
 
-/// One embed request handed to a pool worker. Owns its inputs so it can cross
-/// the thread boundary; the reply travels back over a `oneshot` the awaiting
-/// [`LlamaEmbedder::embed_with_cancel`] holds.
+// One embed request handed to a pool worker. Owns its inputs so it can cross
+// the thread boundary; the reply travels back over a `oneshot` the awaiting
+// caller holds.
 struct Job {
     texts: Vec<String>,
     cancel: Arc<AtomicBool>,
     reply: oneshot::Sender<EmbedResult>,
 }
 
-/// One lane's worker threads: senders to reach them, per-worker "busy" flags,
-/// and the rotation counter used once every worker is busy. A `LlamaContext`
-/// borrows its `&LlamaModel`, so it cannot be stored beside the
-/// `Arc<LlamaModel>` in a struct (self-referential) — but a worker thread can
-/// hold both on its own stack for its whole life and decode job after job
-/// against the same warm context.
-///
-/// [`claim_worker`] prefers the first idle worker within the lane, so serial
-/// work in a lane keeps reusing its first worker's warm context while the rest
-/// never build one; the moment a second request in the same lane overlaps, it
-/// lands on the next worker's context with no wait and no shared lock.
+// One lane's worker threads: senders to reach them, per-worker "busy" flags,
+// and the rotation counter used once every worker is busy. A `LlamaContext`
+// borrows its `&LlamaModel`, so it cannot be stored beside the
+// `Arc<LlamaModel>` in a struct (self-referential) — but a worker thread can
+// hold both on its own stack for its whole life and decode job after job
+// against the same warm context.
+//
+// `claim_worker` prefers the first idle worker within the lane, so serial
+// work in a lane keeps reusing its first worker's warm context while the rest
+// never build one; the moment a second request in the same lane overlaps, it
+// lands on the next worker's context with no wait and no shared lock.
 struct LaneWorkers {
     senders: Vec<mpsc::Sender<Job>>,
     busy: Vec<Arc<AtomicBool>>,
     round_robin: AtomicUsize,
 }
 
-/// A bounded set of worker threads split into two lanes, each worker owning one
-/// persistent `LlamaContext`. Bulk requests reach the [`bulk`](Self::bulk)
-/// lane's workers and interactive requests the [`interactive`](Self::interactive)
-/// lane's, so a bulk index batch never occupies a context an interactive embed
-/// needs (ADR-096): with the pool sized to the total admission capacity, at
-/// least `interactive.len()` contexts stay reachable for interactive work no
-/// matter how many the bulk lane holds.
+// A bounded set of worker threads split into two lanes, each worker owning one
+// persistent `LlamaContext`. Bulk requests reach the bulk lane's workers and
+// interactive requests the interactive lane's, so a bulk index batch never
+// occupies a context an interactive embed needs: with the pool sized to the
+// total admission capacity, at least `interactive.len()` contexts stay
+// reachable for interactive work no matter how many the bulk lane holds.
 struct WorkerPool {
     interactive: LaneWorkers,
     bulk: LaneWorkers,
@@ -348,13 +344,13 @@ impl Drop for WorkerPool {
     }
 }
 
-/// How long a worker at `index_in_lane` in `lane` keeps a built context through
-/// idle before dropping it. `None` means never for idle — exactly one
-/// interactive context (the first worker in the interactive lane) stays
-/// permanently hot so serial interactive use never pays a cold-context build.
-/// Every other worker — bulk, and any additional interactive worker built only
-/// under concurrent interactive load — idle-drops on [`CONTEXT_IDLE_TIMEOUT`]
-/// so its reserved address space is not held between passes (ADR-096 §3/§4).
+// How long a worker at `index_in_lane` in `lane` keeps a built context through
+// idle before dropping it. `None` means never: exactly one interactive context
+// (the first worker in the interactive lane) stays permanently hot so serial
+// interactive use never pays a cold-context build. Every other worker — bulk,
+// and any additional interactive worker built only under concurrent
+// interactive load — idle-drops on `CONTEXT_IDLE_TIMEOUT` so its reserved
+// address space is not held between passes.
 fn worker_idle_timeout(lane: EmbedLane, index_in_lane: usize) -> Option<Duration> {
     match lane {
         EmbedLane::Interactive if index_in_lane == 0 => None,
@@ -362,12 +358,12 @@ fn worker_idle_timeout(lane: EmbedLane, index_in_lane: usize) -> Option<Duration
     }
 }
 
-/// The lane to actually dispatch on. Normally the requested one, but a lane can
-/// have no workers when a direct caller sizes it to zero — a single-context
-/// embedder built with `interactive_capacity = 0`. Falling back to the other
-/// lane keeps `claim_worker`'s `% busy.len()` from dividing by zero. A pool
-/// always has at least one worker overall (guaranteed at construction), so at
-/// most one lane is ever empty.
+// The lane to actually dispatch on. Normally the requested one, but a lane can
+// have no workers when a direct caller sizes it to zero — a single-context
+// embedder built with `interactive_capacity = 0`. Falling back to the other
+// lane keeps `claim_worker`'s `% busy.len()` from dividing by zero. A pool
+// always has at least one worker overall (guaranteed at construction), so at
+// most one lane is ever empty.
 fn effective_lane(
     requested: EmbedLane,
     interactive_workers: usize,
@@ -380,11 +376,11 @@ fn effective_lane(
     }
 }
 
-/// Pick the worker to run the next job within a lane: the first idle one
-/// (claiming it), else — every worker in the lane being busy means the lane's
-/// admission capacity is saturated — the next by rotation, whose queue it joins.
-/// Pulled out of [`WorkerPool::dispatch`] so the preference is unit-testable
-/// without a model.
+// Pick the worker to run the next job within a lane: the first idle one
+// (claiming it), else — every worker in the lane being busy means the lane's
+// admission capacity is saturated — the next by rotation, whose queue it
+// joins. Pulled out of `WorkerPool::dispatch` so the preference is
+// unit-testable without a model.
 fn claim_worker(busy: &[Arc<AtomicBool>], round_robin: &AtomicUsize) -> usize {
     for (i, flag) in busy.iter().enumerate() {
         if flag
@@ -397,13 +393,13 @@ fn claim_worker(busy: &[Arc<AtomicBool>], round_robin: &AtomicUsize) -> usize {
     round_robin.fetch_add(1, Ordering::Relaxed) % busy.len()
 }
 
-/// Owns one persistent context for its whole life and decodes jobs against it.
-/// The context is built lazily on the first job (so an unused worker never
-/// allocates one). It is dropped on a decode failure (which may have wedged it),
-/// and — when `idle_timeout` is `Some` — after that long with no job; a `None`
-/// timeout keeps the context resident through any idle spell (the persistently
-/// hot interactive context, ADR-096 §3). Either drop path rebuilds on the next
-/// job.
+// Owns one persistent context for its whole life and decodes jobs against it.
+// The context is built lazily on the first job (so an unused worker never
+// allocates one). It is dropped on a decode failure (which may have wedged
+// it), and — when `idle_timeout` is `Some` — after that long with no job; a
+// `None` timeout keeps the context resident through any idle spell (the
+// persistently hot interactive context). Either drop path rebuilds on the
+// next job.
 fn worker_loop(
     model: Arc<LlamaModel>,
     token_cap: usize,
@@ -487,8 +483,8 @@ fn worker_loop(
     }
 }
 
-/// True when the error is a cooperative cancellation rather than a real
-/// failure — the one error that does not mean the reused context is suspect.
+// True when the error is a cooperative cancellation rather than a real
+// failure — the one error that does not mean the reused context is suspect.
 fn is_cancelled(result: &EmbedResult) -> bool {
     matches!(
         result,
@@ -496,9 +492,9 @@ fn is_cancelled(result: &EmbedResult) -> bool {
     )
 }
 
-/// Embed every chunk through one reused context, one chunk per `llama_decode`
-/// with the KV cache cleared between chunks. `cancel` is checked before each
-/// chunk; on cancel the KV cache is cleared so the context is clean for reuse.
+// Embed every chunk through one reused context, one chunk per `llama_decode`
+// with the KV cache cleared between chunks. `cancel` is checked before each
+// chunk; on cancel the KV cache is cleared so the context is clean for reuse.
 fn run_job(
     ctx: &mut LlamaContext,
     batch: &mut LlamaBatch,
@@ -554,12 +550,9 @@ fn run_job(
             .into());
         }
         batch.clear();
-        // `true` marks the tokens as output-bearing. A pooling embedder needs
-        // logits at the pooled positions, so with `false` llama.cpp overrides
-        // the flag on every decode and logs a WARN per forward pass ("some input
-        // tokens were not marked as outputs") — ~one line per chunk, thousands
-        // per index. Marking them up front is what it does anyway; the pooled
-        // read (`embeddings_seq_ith`) and the vectors are unchanged.
+        // `true` marks the tokens output-bearing, avoiding llama.cpp's
+        // per-decode WARN when it has to override an unmarked batch itself
+        // (thousands of lines per index); the pooled read is unchanged either way.
         batch
             .add_sequence(toks, 0, true)
             .map_err(|e| EmbedError::Inference(format!("batching chunk {i}: {e}")))?;
@@ -598,7 +591,7 @@ impl LlamaEmbedder {
     /// `bulk_capacity` and `interactive_capacity` are how many persistent
     /// contexts (worker threads) back each admission lane. The server passes its
     /// two embed-admission capacities so every admitted concurrent embed has its
-    /// own context on its own lane (ADR-096); direct callers can pass
+    /// own context on its own lane; direct callers can pass
     /// [`DEFAULT_EMBED_POOL_SIZE`] for bulk and `1` for interactive.
     pub fn load_from_path(
         gguf_path: &Path,
@@ -692,12 +685,12 @@ impl LlamaEmbedder {
     }
 }
 
-/// Verify a llama context at the fixed [`EMBED_UBATCH`] allocates on this
-/// device, and return that size as the token cap. Context creation is where
-/// llama.cpp reserves the KV-cache and compute buffers, so a failure means this
-/// hardware cannot hold a context that size — refused, not stepped down: a
-/// smaller context would truncate long inputs at a different token boundary than
-/// other hosts and so embed the same source to different vectors.
+// Verify a llama context at the fixed `EMBED_UBATCH` allocates on this
+// device, and return that size as the token cap. Context creation is where
+// llama.cpp reserves the KV-cache and compute buffers, so a failure means this
+// hardware cannot hold a context that size — refused, not stepped down: a
+// smaller context would truncate long inputs at a different token boundary than
+// other hosts and so embed the same source to different vectors.
 fn ensure_embed_context_fits(
     model: &LlamaModel,
     backend: &LlamaBackend,
@@ -738,7 +731,7 @@ impl crate::EmbeddingBackend for LlamaEmbedder {
     /// Embed a batch of strings via llama.cpp on the declared `lane`, stopping
     /// early if `cancel` is observed set.
     ///
-    /// The request is handed to a [`WorkerPool`] worker on `lane` that owns a
+    /// The request is handed to a pool worker on `lane` that owns a
     /// persistent context: each chunk is tokenized with llama.cpp's own
     /// tokenizer (byte-identical to the HF tokenizer for this model, verified
     /// including the appended EOS), truncated to the token cap, then decoded one
@@ -751,7 +744,7 @@ impl crate::EmbeddingBackend for LlamaEmbedder {
     /// one chunk's forward pass, and `completed`/`total` count chunks. There is
     /// no interior mutex: workers are independent, and the interactive lane's
     /// contexts are separate from the bulk lane's, so a bulk index batch never
-    /// blocks a concurrent interactive embed (ADR-096).
+    /// blocks a concurrent interactive embed.
     async fn embed_lane(
         &self,
         texts: &[&str],
@@ -836,10 +829,6 @@ mod tests {
 
     #[test]
     fn exactly_one_interactive_context_is_persistently_hot() {
-        // The first interactive worker never idle-drops its context, so serial
-        // interactive use always lands on a warm one; every other worker —
-        // additional interactive workers and all bulk workers — idle-drops so
-        // its reserved address space is not held between passes.
         assert_eq!(worker_idle_timeout(EmbedLane::Interactive, 0), None);
         assert_eq!(
             worker_idle_timeout(EmbedLane::Interactive, 1),
@@ -923,15 +912,11 @@ mod tests {
     #[cfg(feature = "llama-vulkan")]
     #[test]
     fn ggml_backend_module_detection_excludes_the_core_base_lib() {
-        // Real runtime-loaded backend modules qualify.
         assert!(is_ggml_backend_module("libggml-vulkan.so"));
         assert!(is_ggml_backend_module("libggml-cpu-haswell.so.0"));
         assert!(is_ggml_backend_module("ggml-vulkan.dll"));
-        // The core base library shares the `libggml-` prefix but is not a
-        // backend module, so a directory holding only it must not be selected.
         assert!(!is_ggml_backend_module("libggml-base.so.0"));
         assert!(!is_ggml_backend_module("ggml-base.dll"));
-        // Other core libs and unrelated files don't match the prefix at all.
         assert!(!is_ggml_backend_module("libggml.so"));
         assert!(!is_ggml_backend_module("libllama.so"));
         assert!(!is_ggml_backend_module("tokenizer.json"));

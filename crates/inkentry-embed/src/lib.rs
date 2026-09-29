@@ -18,16 +18,13 @@ mod backend;
 pub use backend::{EmbedLane, EmbeddingBackend};
 
 /// Stable provenance id for the native embedding model, `<repo-shortname>@<dim>`.
-/// Exact-match token: never parse it. Requantization or a hardware-portability
-/// rebuild of the same model must NOT change this — only a genuine model swap
-/// (different weights / vector space) does, which forces a re-index.
+/// An exact-match token: never parse it. A requantization or hardware-portability
+/// rebuild of the same model must not change this — only a genuine model swap
+/// (different weights or vector space) does, which forces a re-index.
 ///
-/// Before changing this value, ship memory.db embedding-provenance stamping
-/// first: unstamped `note_embeddings` vectors are assumed to be this model
-/// (backfill rule "unstamped ⇒ F2LLM-v2-330M@896"), an invariant that only
-/// holds while this is the sole model ever shipped. See the 2026-07-26
-/// `requirement` entry in inkentry memory and task inkentry-oss^286 for the
-/// acceptance criteria that work must meet.
+/// Changing this value requires memory.db embedding-provenance stamping first:
+/// an unstamped `note_embeddings` vector is assumed to be this model, which
+/// only holds while this is the sole model ever shipped.
 pub const MODEL_ID: &str = "F2LLM-v2-330M@896";
 
 /// Embedding dimension of the sole shipped model (F2LLM-v2-330M, 896-dim).

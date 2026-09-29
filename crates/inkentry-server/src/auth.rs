@@ -26,8 +26,6 @@ pub enum Principal {
 #[derive(Debug)]
 pub struct AuthError(pub String);
 
-// ── ApiKeyAuth ─────────────────────────────────────────────────────────────────
-
 /// OSS API-key auth provider. Checks for a `Authorization: Bearer <key>` header.
 /// When no key is configured the server accepts all requests (safe on loopback).
 ///
@@ -37,7 +35,7 @@ pub struct AuthError(pub String);
 /// the two digests in constant time, closing a timing side channel on a
 /// network-exposed server.
 pub struct ApiKeyAuth {
-    /// `None` → accept all requests (no key configured; safe on a local loopback).
+    // `None` → accept all requests (no key configured; safe on a local loopback).
     key_hash: Option<[u8; 32]>,
 }
 
