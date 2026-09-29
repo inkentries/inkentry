@@ -241,8 +241,8 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     // warning.
     let overlaps = compute_overlaps(&sections);
 
-    // ADR-100 D4: entries with an unresolved `contradicts` edge (both
-    // endpoints active) get a visible marker.
+    // Entries with an unresolved `contradicts` edge (both endpoints active)
+    // get a visible marker.
     let unresolved_contradictions = unresolved_contradiction_ids(&*backend, &sections)
         .await
         .unwrap_or_default();
@@ -280,8 +280,8 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     match crate::utils::effective_format(&args.format) {
         "json" => {
             // A note gains `contradicts_unresolved: true` only when it has
-            // one (ADR-100 D4); the array-of-`[kind, notes]` shape stays
-            // exactly what `sections`' own `Serialize` impl already produced.
+            // one; the array-of-`[kind, notes]` shape stays exactly what
+            // `sections`' own `Serialize` impl already produced.
             let sections_json: Vec<serde_json::Value> = sections
                 .iter()
                 .map(|(kind, notes)| {
@@ -435,10 +435,10 @@ fn print_section_header(kind: &str) {
     println!();
 }
 
-// ADR-100 D4: the ids of entries in `sections` that carry a `contradicts`
-// edge whose other endpoint is still active — an archived (e.g. superseded)
-// endpoint reads as resolved. One `get()` per distinct other-endpoint id,
-// cached across notes since two entries can disagree with the same target.
+// The ids of entries in `sections` that carry a `contradicts` edge whose
+// other endpoint is still active — an archived (e.g. superseded) endpoint
+// reads as resolved. One `get()` per distinct other-endpoint id, cached
+// across notes since two entries can disagree with the same target.
 async fn unresolved_contradiction_ids(
     backend: &dyn crate::storage::MemoryBackend,
     sections: &[(String, Vec<Note>)],

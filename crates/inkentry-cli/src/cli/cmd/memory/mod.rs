@@ -519,9 +519,9 @@ async fn git_head_reachable() -> bool {
         .unwrap_or(false)
 }
 
-/// ADR-100 D5: harvest's top-1 near-duplicate check goes through the same
-/// band classifier `memory add`'s pre-write reconciliation uses, rather than
-/// its own threshold compare, so the duplicate band cannot drift between them.
+// Harvest's top-1 near-duplicate check goes through the same band classifier
+// `memory add`'s pre-write reconciliation uses, rather than its own
+// threshold compare, so the duplicate band cannot drift between them.
 pub(super) fn is_duplicate_band(top: &crate::storage::memory::Note) -> bool {
     let hit = crate::storage::CandidateHit {
         id: top.id.to_string(),

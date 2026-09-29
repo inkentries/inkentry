@@ -46,9 +46,9 @@ pub struct Capabilities {
     pub memory_pull: bool,
     pub memory_search: bool,
     pub memory_harvest: bool,
-    /// ADR-100 D4: the server computes candidates before storing and honours
-    /// a `reconcile`/`resolutions` request. Absent (or an older server) means
-    /// `POST .../memory` still answers with the pre-ADR-100 409 shape.
+    // The server computes candidates before storing and honours a
+    // `reconcile`/`resolutions` request. Absent, or on an older server,
+    // `POST .../memory` still answers with the old 409-conflict shape.
     pub memory_reconcile: bool,
     // The only reliable LLM signal: a server can advertise older capabilities
     // while serving no `/llm/complete` route. Skipped so the `status` JSON keeps

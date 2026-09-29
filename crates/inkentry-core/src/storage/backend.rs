@@ -61,9 +61,9 @@ impl EntityIdLookup {
     }
 }
 
-/// One D2 resolution the caller supplied for a blocking candidate
-/// (ADR-100). The id is advice, not a lock: a caller may name one outside
-/// the candidate set the server or store last reported.
+/// One resolution the caller supplied for a blocking candidate. The id is
+/// advice, not a lock: a caller may name one outside the candidate set the
+/// server or store last reported.
 #[derive(Debug, Clone)]
 pub enum Resolution {
     Supersedes(NoteId),
@@ -73,12 +73,12 @@ pub enum Resolution {
     Distinct(NoteId),
 }
 
-/// Outcome of [`MemoryBackend::add_with_reconcile`] (ADR-100 D2/D4).
+/// Outcome of [`MemoryBackend::add_with_reconcile`].
 pub enum AddOutcome {
     /// Written (or reused; see [`MemoryBackend::add`] for what `created`
     /// means). `candidates` is the duplicate band, `related` is the related
-    /// band — both computed before the write (D1), both empty for a backend
-    /// that does not reconcile.
+    /// band — both computed before the write, both empty for a backend that
+    /// does not reconcile.
     Created {
         id: NoteId,
         created: bool,
@@ -101,17 +101,17 @@ pub trait MemoryBackend: Send {
     /// backend, see `MemoryStore::add_note`). Backends that cannot detect this
     /// (git notes, remote) always return `true`.
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)>;
-    /// D2/D4: attempt the write, honouring `reconcile`/`resolutions` when the
+    /// Attempt the write, honouring `reconcile`/`resolutions` when the
     /// backend can reconcile server-side. Every backend but
     /// [`super::remote::RemoteMemoryBackend`] just calls [`Self::add`] and
     /// reports no candidates: correct for a caller that already decided
     /// whether to write before reaching this (the local SQLite path computes
     /// and acts on candidates in the CLI layer, ahead of `add`) or that never
-    /// blocks by contract (git notes import, batch/sync — D2b). Not a
-    /// provided (default) method: `async_trait` needs `Self: Sync` to give a
-    /// default body's `&self` await point a `Send` future, and this trait's
-    /// objects are erased as `dyn MemoryBackend + Send` throughout, not
-    /// `+ Sync` — so each backend writes its own one-line passthrough instead.
+    /// blocks by contract (git notes import, batch/sync). Not a provided
+    /// (default) method: `async_trait` needs `Self: Sync` to give a default
+    /// body's `&self` await point a `Send` future, and this trait's objects
+    /// are erased as `dyn MemoryBackend + Send` throughout, not `+ Sync` —
+    /// so each backend writes its own one-line passthrough instead.
     async fn add_with_reconcile(
         &self,
         input: NoteInput,
@@ -258,7 +258,7 @@ impl MemoryBackend for LocalMemoryBackend {
         Ok((id, created))
     }
 
-    // The CLI layer resolves D2 candidates and blocking itself, ahead of
+    // The CLI layer resolves candidates and blocking itself, ahead of
     // calling `add` on this backend (see `cli/cmd/memory/add.rs`), so this
     // never has anything to reconcile by the time it is reached.
     async fn add_with_reconcile(

@@ -296,8 +296,8 @@ impl MemoryBackend for RemoteMemoryBackend {
             origin_actor_kind,
             origin_tool,
             origin_model,
-            // ADR-100 D4: a server that predates this field simply ignores
-            // it and answers with the pre-existing 409 shape, which
+            // A server that predates this field simply ignores it and
+            // answers with the pre-existing 409 shape, which
             // `AddNoteResponse::stored`'s default reads correctly.
             reconcile: reconcile.then_some("block"),
             resolutions: resolutions.iter().map(ResolutionWire::from).collect(),
@@ -336,15 +336,15 @@ impl MemoryBackend for RemoteMemoryBackend {
                 .context("parsing POST /memory 409 response")?;
 
             if !resp.stored {
-                // ADR-100 D2: a duplicate-band candidate with no resolution.
-                // Nothing was written.
+                // A duplicate-band candidate with no resolution; nothing was
+                // written.
                 return Ok(AddOutcome::Blocked {
                     candidates: resp.candidates.into_iter().map(Into::into).collect(),
                 });
             }
 
-            // Pre-ADR-100 server: stored but conflicting — treat as success
-            // but emit the legacy warning.
+            // An older server has no blocking concept: stored but
+            // conflicting is success, with a legacy warning.
             if !resp.conflicts.is_empty() {
                 eprintln!("warning: memory entry conflicts with existing entries:");
                 for c in &resp.conflicts {

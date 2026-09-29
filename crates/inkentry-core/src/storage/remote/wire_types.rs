@@ -35,10 +35,10 @@ pub(super) struct AddNoteRequest {
     pub(super) origin_tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) origin_model: Option<String>,
-    /// ADR-100 D4: `"block"` asks the server to refuse the write on a
-    /// non-empty duplicate band with no `resolutions`. Sent only when the
-    /// server advertises `memory.reconcile` on `/v1/health`; an older server
-    /// ignores an unrecognised field and behaves exactly as before.
+    // `"block"` asks the server to refuse the write on a non-empty duplicate
+    // band with no `resolutions`. Sent only when the server advertises
+    // `memory.reconcile` on `/v1/health`; an older server ignores an
+    // unrecognised field and behaves exactly as before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reconcile: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -69,22 +69,21 @@ impl From<&Resolution> for ResolutionWire {
 
 #[derive(Deserialize)]
 pub(super) struct AddNoteResponse {
-    /// Absent when `stored` is `false` (ADR-100 D2 block): nothing was
-    /// written, so there is no id to report.
+    // Absent when `stored` is `false`: nothing was written, so there is no id
+    // to report.
     #[serde(default)]
     pub(super) id: Option<NoteId>,
-    /// `true` unless the server refused the write under `reconcile: "block"`.
-    /// Defaults to `true` so a pre-ADR-100 server's response (which carries
-    /// no `stored` field at all) reads exactly as it always has.
+    // `true` unless the server refused the write under `reconcile: "block"`.
+    // Defaults to `true` so a server predating this field, whose response
+    // carries no `stored` field at all, reads exactly as it always has.
     #[serde(default = "default_true")]
     pub(super) stored: bool,
     #[serde(default)]
     pub(super) conflicts: Vec<ConflictInfo>,
-    /// The duplicate band (ADR-100 D1/D2), present on both a blocked and a
-    /// stored response.
+    // The duplicate band, present on both a blocked and a stored response.
     #[serde(default)]
     pub(super) candidates: Vec<CandidateWire>,
-    /// The related band (ADR-100 D3), present only alongside a stored entry.
+    // The related band, present only alongside a stored entry.
     #[serde(default)]
     pub(super) related: Vec<CandidateWire>,
     /// Server-assigned cross-machine id, if the server minted one. Absent on

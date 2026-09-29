@@ -50,8 +50,8 @@ impl MemoryBackend for GitNotesBackend {
         Ok((crate::storage::note_record::carrier_token(id), true))
     }
 
-    // Git notes has no searchable index to reconcile against (D2b: an import
-    // path with no caller to ask never blocks anyway), so this always writes.
+    // Git notes has no searchable index to reconcile against — an import
+    // path with no caller to ask never blocks anyway — so this always writes.
     async fn add_with_reconcile(
         &self,
         input: NoteInput,

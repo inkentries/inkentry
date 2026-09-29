@@ -128,14 +128,11 @@ impl wiremock::Respond for RecordStoreStateOnArrival {
     }
 }
 
-// ADR-100 D1 reverses the ordering the previous name asserted: the embed now
-// runs *before* the write, so the pre-write candidate pool sees the same
-// vector the entry is stored with. The entry is durably stored by the time
-// `memory_add` returns either way — that half of the old guarantee is intact
-// and covered by the assertions below — but it is no longer durable *before*
-// the embed request is sent, and a lost or stalled embed still cannot lose
-// the entry, because the write happens after the embed attempt completes
-// (successfully or not), not depending on it.
+// The embed runs before the write, so the pre-write candidate pool sees the
+// same vector the entry is stored with. The entry is still durably stored by
+// the time `memory_add` returns: the write happens after the embed attempt
+// completes (successfully or not), so a lost or stalled embed still cannot
+// lose the entry.
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
 async fn the_embed_request_is_sent_before_the_entry_is_stored() {

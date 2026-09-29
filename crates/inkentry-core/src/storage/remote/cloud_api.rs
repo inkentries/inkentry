@@ -196,9 +196,8 @@ impl MemoryBackend for CloudApiMemoryBackend {
         Ok((created.id, true))
     }
 
-    // ADR-100 does not extend to the hosted cloud API dialect: it has its own
-    // conflict handling above (409, stored, warn) and this record does not
-    // touch it.
+    // The hosted cloud API has its own conflict handling (409, stored, warn)
+    // above, so this just delegates and never blocks.
     async fn add_with_reconcile(
         &self,
         input: NoteInput,

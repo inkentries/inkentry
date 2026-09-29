@@ -15,17 +15,16 @@ use super::{MemoryStore, Note, NoteId};
 /// Changing `MODEL_ID` or that instruction string invalidates the calibration.
 pub const MEMORY_MAX_QA_DISTANCE: f64 = 1.2032;
 
-/// The duplicate-band floor for `memory add`'s pre-write reconciliation
-/// (ADR-100 D1). Same scale as [`MEMORY_MAX_QA_DISTANCE`] — L2 over the
-/// L2-normalised `note_embeddings` vectors — but not independently
-/// calibrated: it is the top-1 near-duplicate threshold `harvest` has used
-/// since before this record (`cli/cmd/memory/harvest.rs`'s `DEDUP_THRESHOLD`),
-/// promoted to a shared constant rather than re-derived. `0.15` L2 is cosine
-/// `0.98875` (`cos = 1 - distance²/2`): tight enough that only a near-restatement
-/// of an existing entry lands here.
+/// The duplicate-band floor for `memory add`'s pre-write reconciliation.
+/// Same scale as [`MEMORY_MAX_QA_DISTANCE`] — L2 over the L2-normalised
+/// `note_embeddings` vectors — but not independently calibrated: it is the
+/// same top-1 near-duplicate threshold harvest's own dedup check uses,
+/// promoted to a shared constant. `0.15` L2 is cosine `0.98875`
+/// (`cos = 1 - distance²/2`): tight enough that only a near-restatement of
+/// an existing entry lands here.
 pub const MEMORY_DUPLICATE_DISTANCE: f64 = 0.15;
 
-/// At most this many candidates are kept per band (ADR-100 D1).
+/// At most this many candidates are kept per band.
 pub const MAX_CANDIDATES_PER_BAND: usize = 5;
 
 /// How many candidates the pool query fed into `classify_candidates` fetches,
@@ -33,16 +32,16 @@ pub const MAX_CANDIDATES_PER_BAND: usize = 5;
 /// [`MAX_CANDIDATES_PER_BAND`].
 const CANDIDATE_POOL: usize = 20;
 
-/// Which band a pre-write candidate landed in (ADR-100 D1).
+/// Which band a pre-write candidate landed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CandidateBand {
     /// Distance below [`MEMORY_DUPLICATE_DISTANCE`]: blocks the write under
-    /// `--reconcile` (ADR-100 D2) unless the caller resolves it.
+    /// `--reconcile` unless the caller resolves it.
     Duplicate,
     /// Distance below [`MEMORY_MAX_QA_DISTANCE`] (or an FTS-only title match,
-    /// which carries no distance): returned alongside a successful write
-    /// (ADR-100 D3); never blocks.
+    /// which carries no distance): returned alongside a successful write;
+    /// never blocks.
     Related,
 }
 
@@ -59,8 +58,8 @@ pub struct CandidateHit {
     pub distance: Option<f64>,
 }
 
-/// A pre-write candidate (ADR-100 D1/D2): `id` is what the caller hands back
-/// as `--supersedes`/`--relates-to`/`--contradicts`/`--distinct-from`.
+/// A pre-write candidate: `id` is what the caller hands back as
+/// `--supersedes`/`--relates-to`/`--contradicts`/`--distinct-from`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Candidate {
     pub id: String,
@@ -72,7 +71,7 @@ pub struct Candidate {
     pub band: CandidateBand,
 }
 
-/// D1/D5: bands and ranks a candidate pool the same way for every caller
+/// Bands and ranks a candidate pool the same way for every caller
 /// (`memory add`, `harvest`, inkentry-server). `exclude_id`, when given, drops
 /// a self-match. Within a band, a candidate carrying a distance sorts by
 /// distance then `id`; a distance-less (FTS-only) candidate sorts after every
@@ -147,8 +146,8 @@ pub fn classify_candidates(
 }
 
 impl MemoryStore {
-    /// FTS5 match over the note title only (ADR-100 D1's lexical half of the
-    /// pre-write candidate pool) — narrower than [`MemoryStore::search_text`],
+    /// FTS5 match over the note title only — the lexical half of the
+    /// pre-write candidate pool, narrower than [`MemoryStore::search_text`],
     /// which also matches body and tags. Active entries only; `limit` is
     /// capped the same way `search_text` caps its own.
     pub fn search_title_fts(&self, title: &str, limit: usize) -> Result<Vec<Note>> {
@@ -174,8 +173,8 @@ impl MemoryStore {
         Ok(notes)
     }
 
-    /// The pre-write candidate pool for `memory add` (ADR-100 D1/D5): vector
-    /// KNN over active entries (when `embedding` is available) unioned with
+    /// The pre-write candidate pool for `memory add`: vector KNN over active
+    /// entries (when `embedding` is available) unioned with
     /// an FTS5 title match, banded and capped by [`classify_candidates`].
     /// `exclude_id`, when given, drops a self-match (used when re-checking an
     /// entry already in the store). With no embedding, candidates come from

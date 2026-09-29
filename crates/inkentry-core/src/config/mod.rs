@@ -97,10 +97,10 @@ struct ProjectIndexConfig {
     detect_generated: Option<bool>,
 }
 
-/// `memory add`'s D2 blocking policy (ADR-100 D2a): whether a non-empty
-/// duplicate-band candidate refuses the write until the caller resolves it.
-/// `--reconcile` on the command selects [`Self::Block`] for that one
-/// invocation regardless of what this resolves to.
+/// Whether a non-empty duplicate-band candidate refuses `memory add`'s write
+/// until the caller resolves it. `--reconcile` on the command selects
+/// [`Self::Block`] for that one invocation regardless of what this resolves
+/// to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReconcileMode {
@@ -111,8 +111,8 @@ pub enum ReconcileMode {
     Block,
 }
 
-/// The `[memory]` config table (ADR-100 D2a). Project-only, like `[index]`:
-/// whether `memory add` blocks is a team policy, not a personal preference.
+/// The `[memory]` config table. Project-only, like `[index]`: whether
+/// `memory add` blocks is a team policy, not a personal preference.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default)]
@@ -276,9 +276,9 @@ pub struct Config {
     #[serde(default)]
     pub index: IndexConfig,
 
-    /// `[memory]` table (ADR-100 D2a): `reconcile = "block"` makes
-    /// `memory add` block on an unresolved duplicate-band candidate, the
-    /// same as passing `--reconcile`. Project `.inkentry/config.toml` only.
+    /// `[memory]` table: `reconcile = "block"` makes `memory add` block on
+    /// an unresolved duplicate-band candidate, the same as passing
+    /// `--reconcile`. Project `.inkentry/config.toml` only.
     #[serde(default)]
     pub memory: MemoryConfig,
 
@@ -355,9 +355,9 @@ impl Config {
         true
     }
 
-    /// Whether `[memory] reconcile = "block"` is set (ADR-100 D2a). `--reconcile`
-    /// on the command turns on the same behaviour for one invocation regardless
-    /// of this; callers check both.
+    /// Whether `[memory] reconcile = "block"` is set. `--reconcile` on the
+    /// command turns on the same behaviour for one invocation regardless of
+    /// this; callers check both.
     pub fn reconcile_block(&self) -> bool {
         self.memory.reconcile == ReconcileMode::Block
     }

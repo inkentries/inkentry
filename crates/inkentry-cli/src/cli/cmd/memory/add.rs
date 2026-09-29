@@ -18,11 +18,11 @@ use crate::{
 // minutes; a healthy embed takes tens of milliseconds.
 pub(super) const INTERACTIVE_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// ADR-100 D2a: exit status for a `memory add` refused under `--reconcile` (or
-/// `[memory] reconcile = "block"`) with an unresolved duplicate-band
-/// candidate. New in 1.x, and additive-only per `docs/stability.md`: it exists
-/// only on this opt-in path, so no caller that exits `0`/`1`/`2` today sees a
-/// changed exit code.
+// Exit status for a `memory add` refused under `--reconcile` (or
+// `[memory] reconcile = "block"`) with an unresolved duplicate-band
+// candidate. Additive-only per `docs/stability.md`: it exists only on this
+// opt-in path, so no caller that exits `0`/`1`/`2` today sees a changed exit
+// code.
 pub(super) const EXIT_RECONCILE_CANDIDATES: i32 = 3;
 
 pub(super) fn pending_embedding_warning(reason: &str) -> String {
@@ -133,8 +133,8 @@ pub(super) async fn memory_add(
     // The id `add` surfaces is the portable one, not the per-machine row id.
     let entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
 
-    // ADR-100 D2/D2a: opt-in blocking, and the resolutions a caller may have
-    // supplied for a candidate this same invocation is about to report.
+    // Opt-in blocking, and the resolutions a caller may have supplied for a
+    // candidate this same invocation is about to report.
     let reconcile_on = args.reconcile || cfg.reconcile_block();
     let resolutions: Vec<Resolution> = [
         args.supersedes.clone().map(Resolution::Supersedes),
@@ -153,12 +153,12 @@ pub(super) async fn memory_add(
     let store_first = !placeholder_path
         && !(cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some());
 
-    // ADR-100 D1: the local sqlite-primary store is the only backend with a
-    // searchable index to reconcile against, so candidates are computed only
-    // on this path. Embedding moves ahead of the write here (ADR-096's
-    // reserved interactive lane is what keeps that bounded) so the vector
-    // that feeds the KNN half is the same one the entry is stored with —
-    // there is no separate post-write attach any more on this path.
+    // The local sqlite-primary store is the only backend with a searchable
+    // index to reconcile against, so candidates are computed only on this
+    // path. Embedding moves ahead of the write here (ADR-096's reserved
+    // interactive lane is what keeps that bounded) so the vector that feeds
+    // the KNN half is the same one the entry is stored with — there is no
+    // separate post-write attach any more on this path.
     let mut pre_write_embedding: Option<Vec<u8>> = None;
     let mut embed_failure_reason: Option<String> = None;
     let mut duplicate_candidates: Vec<Candidate> = Vec::new();
@@ -182,8 +182,8 @@ pub(super) async fn memory_add(
         }
     }
 
-    // ADR-100 D2: nothing is written. The candidate set is advice, not a
-    // lock (a resolution naming an id outside it is still accepted below).
+    // Nothing is written. The candidate set is advice, not a lock (a
+    // resolution naming an id outside it is still accepted below).
     if store_first && reconcile_on && !duplicate_candidates.is_empty() && !has_resolution {
         print_blocked_candidates(&args.format, &duplicate_candidates, &related_candidates)?;
         // Best-effort, same as the success-path record below: `ok: false`
@@ -266,8 +266,8 @@ pub(super) async fn memory_add(
         relates_to_entity_id = Some(note_entity_id(&target));
     }
 
-    // Mirrors the `--relates-to` preflight above (ADR-100 D4): resolved before
-    // the write, by the target's `entity_id` for the same carrier reason.
+    // Mirrors the `--relates-to` preflight above: resolved before the write,
+    // by the target's `entity_id` for the same carrier reason.
     let mut contradicts_entity_id: Option<String> = None;
     if let Some(con_id) = args.contradicts.as_ref()
         && !pre_init_notes
@@ -307,10 +307,10 @@ pub(super) async fn memory_add(
             supersedes: args.supersedes.clone(),
             origin: crate::storage::Origin::from_caller(&cfg.caller),
         };
-        // The local sqlite path already resolved D2 above, so it writes
-        // unconditionally here; the remote path (D4) reconciles server-side —
-        // it is the only backend that can still block at this point. Sent
-        // only when the server advertises `memory.reconcile` (ADR-100 D4);
+        // The local sqlite path already resolved candidates above, so it
+        // writes unconditionally here; the remote path reconciles
+        // server-side — it is the only backend that can still block at this
+        // point. Sent only when the server advertises `memory.reconcile`;
         // against an older server this is `false` and the write goes through
         // exactly as it always has, including the legacy stored:true 409.
         let added = if store_first {
@@ -347,7 +347,7 @@ pub(super) async fn memory_add(
 
     // The remote backend reports edge ops as a no-op, hence the kind check.
     // `--supersedes`/`--relates-to`/`--contradicts` sent to it as
-    // `resolutions` are applied server-side instead (ADR-100 D4).
+    // `resolutions` are applied server-side instead.
     if let Some(rel_id) = args.relates_to.as_ref()
         && let Some(backend) = primary_backend.as_ref()
         && matches!(backend.backend_kind(), "sqlite" | "git-notes")
@@ -466,9 +466,9 @@ pub(super) async fn memory_add(
         }
     }
 
-    // The embed already ran ahead of the write (ADR-100 D1); a vectorless
-    // entry (`embed_failure_reason`) is what `memory reindex` and sync's
-    // repair already look for.
+    // The embed already ran ahead of the write; a vectorless entry
+    // (`embed_failure_reason`) is what `memory reindex` and sync's repair
+    // already look for.
     let pending_embedding = embed_failure_reason;
     if store_first {
         // Closed now that the write is durable.
@@ -504,9 +504,9 @@ pub(super) async fn memory_add(
                     .map(|(path, state)| serde_json::json!({"path": path, "state": state}))
                     .collect();
             }
-            // ADR-100 D2a/D3: additive fields, present whenever the pre-write
-            // reconciliation found something — empty (and so omitted) on the
-            // paths that don't compute candidates at all (git notes, pre-init).
+            // Additive fields, present whenever the pre-write reconciliation
+            // found something — empty (and so omitted) on the paths that
+            // don't compute candidates at all (git notes, pre-init).
             if !duplicate_candidates.is_empty() {
                 obj["candidates"] = serde_json::to_value(&duplicate_candidates)?;
             }
@@ -568,11 +568,11 @@ pub(super) async fn memory_add(
     Ok(())
 }
 
-// ADR-100 D1: embeds ahead of the write, within the ADR-096 interactive
-// budget, so the vector that feeds the pre-write candidate KNN is the one the
-// entry is stored with. `Err` names why there is no vector; the write still
-// proceeds without one (D1: "a write may be the only copy of a thought; the
-// embedder never gets to block it").
+// Embeds ahead of the write, within the ADR-096 interactive budget, so the
+// vector that feeds the pre-write candidate KNN is the one the entry is
+// stored with. `Err` names why there is no vector; the write still proceeds
+// without one — a write may be the only copy of a thought, and the embedder
+// never gets to block it.
 async fn embed_with_budget(cfg: &Config, doc: &str) -> Result<Vec<u8>, String> {
     use crate::embeddings::vec_to_blob;
 
@@ -598,9 +598,9 @@ async fn embed_with_budget(cfg: &Config, doc: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// ADR-100 D2: prints the blocked response for a `--reconcile`/`[memory]
-/// reconcile = "block"` write with an unresolved duplicate-band candidate.
-/// Nothing has been written when this runs.
+// Prints the blocked response for a `--reconcile`/`[memory] reconcile =
+// "block"` write with an unresolved duplicate-band candidate. Nothing has
+// been written when this runs.
 fn print_blocked_candidates(
     format: &str,
     duplicate_candidates: &[Candidate],
