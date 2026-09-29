@@ -178,6 +178,45 @@ fn note_count(mem_path: &Path) -> i64 {
         .expect("note count")
 }
 
+#[derive(Debug, PartialEq)]
+struct AddEvent {
+    reconcile: Option<String>,
+    resolution: Option<String>,
+    ok: bool,
+    memory_results: Option<i64>,
+}
+
+fn add_events(mem_path: &Path) -> Vec<AddEvent> {
+    ensure_sqlite_vec();
+    let conn = Connection::open(mem_path).expect("open memory.db");
+    let mut stmt = conn
+        .prepare(
+            "SELECT reconcile, resolution, ok, memory_results FROM events \
+             WHERE command = 'memory.add' ORDER BY rowid",
+        )
+        .expect("prepare events query");
+    stmt.query_map([], |r| {
+        Ok(AddEvent {
+            reconcile: r.get(0)?,
+            resolution: r.get(1)?,
+            ok: r.get::<_, i64>(2)? != 0,
+            memory_results: r.get(3)?,
+        })
+    })
+    .expect("query events")
+    .collect::<rusqlite::Result<_>>()
+    .expect("collect events")
+}
+
+fn event(reconcile: &str, resolution: Option<&str>, ok: bool, results: i64) -> AddEvent {
+    AddEvent {
+        reconcile: Some(reconcile.to_string()),
+        resolution: resolution.map(str::to_string),
+        ok,
+        memory_results: Some(results),
+    }
+}
+
 #[test]
 fn reconcile_block_with_a_duplicate_and_no_resolution_writes_nothing() {
     let f = fixture();
@@ -453,4 +492,219 @@ fn no_embedder_reachable_falls_back_to_fts_only_and_the_write_proceeds() {
         related[0].get("distance").is_none(),
         "an FTS-only candidate carries no distance"
     );
+}
+
+#[test]
+fn a_blocked_write_is_recorded_as_abandoned_and_not_ok_with_the_duplicate_count() {
+    let f = fixture();
+    let server = start_mock(vec![0.0100, 0.0102]);
+
+    add_cmd(&f, &server.uri())
+        .args(["--kind", "decision", "--title", "First", "--body", "b1"])
+        .assert()
+        .success();
+    add_cmd(&f, &server.uri())
+        .args([
+            "--kind",
+            "decision",
+            "--title",
+            "First restated",
+            "--body",
+            "b2",
+            "--reconcile",
+        ])
+        .assert()
+        .code(3);
+
+    assert_eq!(
+        add_events(&f.mem_path),
+        vec![
+            event("off", None, true, 1),
+            event("block", Some("abandoned"), false, 1),
+        ]
+    );
+}
+
+#[test]
+fn a_blocked_write_under_config_block_records_the_block_mode() {
+    let f = fixture();
+    let server = start_mock(vec![0.0100, 0.0102]);
+    std::fs::write(
+        f.project_dir.join(".inkentry").join("config.toml"),
+        "[memory]\nreconcile = \"block\"\n",
+    )
+    .expect("write project config");
+
+    add_cmd(&f, &server.uri())
+        .args(["--kind", "note", "--title", "Policy", "--body", "b1"])
+        .assert()
+        .success();
+    add_cmd(&f, &server.uri())
+        .args(["--kind", "note", "--title", "Policy again", "--body", "b2"])
+        .assert()
+        .code(3);
+
+    assert_eq!(
+        add_events(&f.mem_path),
+        vec![
+            event("block", None, true, 1),
+            event("block", Some("abandoned"), false, 1),
+        ]
+    );
+}
+
+#[test]
+fn a_write_that_resolves_a_block_records_the_resolution_kind() {
+    let f = fixture();
+    let server = start_mock(vec![0.0100, 0.0102]);
+
+    add_cmd(&f, &server.uri())
+        .args([
+            "--kind",
+            "decision",
+            "--title",
+            "Old policy",
+            "--body",
+            "b1",
+        ])
+        .assert()
+        .success();
+    let old_id = note_uuid_by_title(&f.mem_path, "Old policy");
+    add_cmd(&f, &server.uri())
+        .args([
+            "--kind",
+            "decision",
+            "--title",
+            "Old policy restated",
+            "--body",
+            "b2",
+            "--reconcile",
+            "--supersedes",
+            &old_id,
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        add_events(&f.mem_path),
+        vec![
+            event("off", None, true, 1),
+            event("block", Some("supersedes"), true, 1),
+        ]
+    );
+}
+
+#[test]
+fn a_plain_write_with_a_duplicate_present_records_no_resolution() {
+    let f = fixture();
+    let server = start_mock(vec![0.0100, 0.0102]);
+
+    add_cmd(&f, &server.uri())
+        .args(["--kind", "note", "--title", "Alpha", "--body", "b1"])
+        .assert()
+        .success();
+    add_cmd(&f, &server.uri())
+        .args([
+            "--kind",
+            "note",
+            "--title",
+            "Alpha restated",
+            "--body",
+            "b2",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        add_events(&f.mem_path),
+        vec![event("off", None, true, 1), event("off", None, true, 1)]
+    );
+}
+
+#[test]
+fn a_related_only_write_under_reconcile_records_block_mode_and_no_resolution() {
+    let f = fixture();
+    let server = start_mock(vec![0.0100, 0.0500]);
+
+    add_cmd(&f, &server.uri())
+        .args(["--kind", "note", "--title", "Retry backoff", "--body", "b1"])
+        .assert()
+        .success();
+    add_cmd(&f, &server.uri())
+        .args([
+            "--kind",
+            "note",
+            "--title",
+            "Retry jitter",
+            "--body",
+            "b2",
+            "--reconcile",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        add_events(&f.mem_path),
+        vec![event("off", None, true, 1), event("block", None, true, 1)]
+    );
+}
+
+#[test]
+fn each_resolution_flag_is_recorded_as_its_kind() {
+    let f = fixture();
+    no_server_add_cmd(&f)
+        .args(["--kind", "note", "--title", "Target", "--body", "b0"])
+        .assert()
+        .success();
+    let target = note_uuid_by_title(&f.mem_path, "Target");
+
+    for (i, (flag, kind)) in [
+        ("--relates-to", "relates_to"),
+        ("--contradicts", "contradicts"),
+        ("--distinct-from", "distinct"),
+        ("--supersedes", "supersedes"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let title = format!("Resolved {i}");
+        no_server_add_cmd(&f)
+            .args(["--kind", "note", "--title", &title, "--body", "b"])
+            .args(["--reconcile", flag, &target])
+            .assert()
+            .success();
+        let recorded = add_events(&f.mem_path);
+        assert_eq!(
+            recorded.last().and_then(|e| e.resolution.as_deref()),
+            Some(kind),
+            "{flag}"
+        );
+        assert_eq!(
+            recorded.last().and_then(|e| e.reconcile.as_deref()),
+            Some("block")
+        );
+    }
+}
+
+#[test]
+fn a_write_naming_several_resolutions_records_the_supersede() {
+    let f = fixture();
+    no_server_add_cmd(&f)
+        .args(["--kind", "note", "--title", "Target", "--body", "b0"])
+        .assert()
+        .success();
+    let target = note_uuid_by_title(&f.mem_path, "Target");
+
+    no_server_add_cmd(&f)
+        .args(["--kind", "note", "--title", "Both", "--body", "b"])
+        .args(["--relates-to", &target, "--supersedes", &target])
+        .assert()
+        .success();
+
+    let recorded = add_events(&f.mem_path);
+    assert_eq!(
+        recorded.last().unwrap().resolution.as_deref(),
+        Some("supersedes")
+    );
+    assert_eq!(recorded.last().unwrap().reconcile.as_deref(), Some("off"));
 }

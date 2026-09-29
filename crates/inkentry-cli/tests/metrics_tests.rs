@@ -231,3 +231,70 @@ fn status_text_shows_the_compact_metrics_section_once_a_memory_store_exists() {
         .stdout(predicates::str::contains("entries"))
         .stdout(predicates::str::contains("conflicts"));
 }
+
+#[test]
+fn a_resolved_write_shows_in_the_snapshot_and_in_one_status_line() {
+    let home = TempDir::new().unwrap();
+    let (project_dir, config_path) = indexed_project(home.path());
+    let run = |args: &[&str]| {
+        inkentry_bin_in(home.path())
+            .env("INKENTRY_NO_SERVER", "1")
+            .current_dir(&project_dir)
+            .arg("--config")
+            .arg(&config_path)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let first = run(&[
+        "memory",
+        "add",
+        "--kind",
+        "decision",
+        "--title",
+        "Use X",
+        "--body",
+        "because Y",
+        "--format",
+        "json",
+    ]);
+    assert!(first.status.success());
+    let first_id = serde_json::from_slice::<serde_json::Value>(&first.stdout).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let status_before = String::from_utf8(run(&["status"]).stdout).unwrap();
+    assert!(
+        !status_before.contains("reconcile"),
+        "no reconcile line until a write was blocked or resolved: {status_before}"
+    );
+
+    let resolved = run(&[
+        "memory",
+        "add",
+        "--kind",
+        "note",
+        "--title",
+        "Related to X",
+        "--body",
+        "b",
+        "--reconcile",
+        "--relates-to",
+        &first_id,
+    ]);
+    assert!(resolved.status.success());
+
+    let status = String::from_utf8(run(&["status"]).stdout).unwrap();
+    let lines: Vec<&str> = status.lines().filter(|l| l.contains("reconcile")).collect();
+    assert_eq!(lines.len(), 1, "exactly one reconcile line: {status}");
+    assert!(lines[0].contains("blocked 0") && lines[0].contains("relates_to 1"));
+
+    let snapshot = run(&["metrics", "snapshot", "--json"]);
+    let body: serde_json::Value = serde_json::from_slice(&snapshot.stdout).expect("valid JSON");
+    let outcomes = &body["events"]["use.reconcile_outcomes"];
+    assert_eq!(outcomes["blocked"], 0);
+    assert_eq!(outcomes["by_resolution"]["relates_to"], 1);
+    assert_eq!(outcomes["by_resolution"]["supersedes"], 0);
+}

@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use inkentry_core::storage::memory::{ReconcileMode, ResolutionKind};
 
+use super::super::events::ReconcileOutcome;
 use super::MemoryAddArgs;
 use crate::{
     capability,
@@ -146,6 +148,12 @@ pub(super) async fn memory_add(
     .flatten()
     .collect();
     let has_resolution = !resolutions.is_empty();
+    let reconcile_mode = if reconcile_on {
+        ReconcileMode::Block
+    } else {
+        ReconcileMode::Off
+    };
+    let resolution = resolution_kind(&args);
 
     // Only a local row can have a vector attached after the fact, so only there
     // can the write go first; other backends take the vector as part of the add
@@ -189,17 +197,19 @@ pub(super) async fn memory_add(
         // Best-effort, same as the success-path record below: `ok: false`
         // distinguishes a blocked write from one that wrote nothing because
         // it errored. `returned_ids` is empty — nothing was written to name.
-        super::super::events::record(
+        super::super::events::record_memory_add(
             cfg,
             mem_path,
             backend_override,
-            "memory.add",
-            None,
             Some(duplicate_candidates.len() as i64),
             &[],
             None,
             started,
             false,
+            ReconcileOutcome {
+                mode: reconcile_mode,
+                resolution: Some(ResolutionKind::Abandoned),
+            },
         );
         std::process::exit(EXIT_RECONCILE_CANDIDATES);
     }
@@ -552,20 +562,38 @@ pub(super) async fn memory_add(
     if !pre_init_notes {
         let tokens_out = crate::search::tokens::estimate_tokens(&title)
             + crate::search::tokens::estimate_tokens(&body);
-        super::super::events::record(
+        super::super::events::record_memory_add(
             cfg,
             mem_path,
             backend_override,
-            "memory.add",
-            None,
             Some(1),
             std::slice::from_ref(&entity_id),
             Some(tokens_out as i64),
             started,
             true,
+            ReconcileOutcome {
+                mode: reconcile_mode,
+                resolution,
+            },
         );
     }
     Ok(())
+}
+
+// One column per event, so a write naming several resolutions records the one
+// with the largest effect on the store.
+fn resolution_kind(args: &MemoryAddArgs) -> Option<ResolutionKind> {
+    if args.supersedes.is_some() {
+        Some(ResolutionKind::Supersedes)
+    } else if args.contradicts.is_some() {
+        Some(ResolutionKind::Contradicts)
+    } else if args.relates_to.is_some() {
+        Some(ResolutionKind::RelatesTo)
+    } else if args.distinct_from.is_some() {
+        Some(ResolutionKind::Distinct)
+    } else {
+        None
+    }
 }
 
 // Embeds ahead of the write, within the ADR-096 interactive budget, so the

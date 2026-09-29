@@ -680,8 +680,10 @@ Right below it, whenever at least one event has been recorded, a "Use, last
 7 days" section shows `context`/`search`/`memory.add` call counts split into
 explicit/hook/unknown columns, plus the read and write automation rates
 (ADR-098 D5) — the same `events` block `inkentry metrics snapshot` emits,
-condensed. `--format json`'s `metrics` field gains the identical `events`
-object additively.
+condensed. One further `reconcile` line (blocked count, then each resolution
+kind) appears once a `memory add` was blocked or carried a resolution.
+`--format json`'s `metrics` field gains the identical `events` object
+additively.
 
 **Example:**
 
@@ -1514,6 +1516,7 @@ on this machine:
 | `use.sessions_with_context` | sessions with a `context` event among their first three, over sessions with a declared `INKENTRY_SESSION_REF` |
 | `use.search_hit_rate` | `search` events with a nonzero result count, over all `search` events |
 | `use.search_before_write` | `memory add` events preceded in the same session by a `search` or `context` event, over all `memory add` events |
+| `use.reconcile_outcomes` | how `memory add` writes that were blocked or carried a resolution ended: `blocked` (writes refused under `--reconcile`) and `by_resolution`, a count for each of `abandoned`, `contradicts`, `distinct`, `relates_to` and `supersedes` (all five always present). A blocked write is recorded as `abandoned`; the retry that resolves it is a separate event counted under its own kind, so `abandoned` counts blocks, not writes that were never retried. A write naming several resolution flags counts once, under the first of `supersedes`, `contradicts`, `relates_to`, `distinct`. Counted whether or not `--reconcile` was on |
 | `auto.read_rate` | `search`/`context` events with `trigger = hook`, over all `search`/`context` events |
 | `auto.write_rate` | `memory add`/`memory supersede` events with `trigger = hook`, over all of those events |
 | `calls.{context,search,memory.add}` | total call count for each, split into `explicit`/`hook`/`unknown` by declared trigger |

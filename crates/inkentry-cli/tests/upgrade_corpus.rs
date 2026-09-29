@@ -421,6 +421,40 @@ fn a_store_written_by_1_1_0_survives_the_move_to_the_current_schema() {
         "a migrated store's pending_anchors table starts empty"
     );
 
+    // Step 15 adds two nullable columns to `events`. The 1.1.0 store has no
+    // events to carry, so the columns must exist and an event recorded with no
+    // outcome must read NULL in both, exactly as a migrated row would.
+    let events_columns: Vec<String> = raw(&db)
+        .prepare("SELECT name FROM pragma_table_info('events')")
+        .expect("preparing events column read")
+        .query_map([], |r| r.get(0))
+        .expect("reading events columns")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collecting events columns");
+    for column in ["reconcile", "resolution"] {
+        assert!(
+            events_columns.iter().any(|c| c == column),
+            "events.{column} must exist after the migration"
+        );
+    }
+    raw(&db)
+        .execute(
+            "INSERT INTO events (at, command, surface, trigger, actor_kind, ok) \
+             VALUES (1, 'search', 'cli', 'unknown', 'unknown', 1)",
+            [],
+        )
+        .expect("recording an event without an outcome");
+    assert_eq!(
+        store
+            .events_in_window(0, i64::MAX)
+            .expect("reading events")
+            .iter()
+            .map(|e| (e.reconcile.clone(), e.resolution.clone()))
+            .collect::<Vec<_>>(),
+        vec![(None, None)],
+        "an event recorded without an outcome reads NULL in both new columns"
+    );
+
     // Step 14 touches no existing column, so every entry's `source_ref` —
     // set or absent — must read back exactly as the 1.1.0 binary wrote it.
     // This fixture's own entries all predate `source_ref` (none are
@@ -653,8 +687,17 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
 // `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
 // assertions for what step 14 adds (pending_anchors exists and is empty;
 // harvested entries keep their source_ref) rather than a new wing.
+//
+// Memory 14 -> 15: no, for the same reason as 12 -> 13 and 13 -> 14. Schema 14
+// has not shipped either, and step 15 (two nullable columns on `events`) is
+// pure DDL on a table the 1.1.0 wing does not have rows in, so there is
+// nothing a released store needs to survive that its climb from 11 does not
+// already cover.
+// `a_store_written_by_1_1_0_survives_the_move_to_the_current_schema` gained
+// assertions for what step 15 adds (the columns exist and read NULL) rather
+// than a new wing.
 const CORPUS_COVERS_INDEX_SCHEMA: i32 = 20;
-const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 14;
+const CORPUS_COVERS_MEMORY_SCHEMA: i32 = 15;
 
 #[test]
 #[serial_test::serial]

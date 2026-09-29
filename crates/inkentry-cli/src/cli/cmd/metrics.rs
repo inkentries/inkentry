@@ -1,8 +1,10 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use inkentry_core::metrics::{
-    EventsMetrics, MedianSeconds, Rate, Snapshot, StatusMetricsSummary, build_snapshot,
+    EventsMetrics, MedianSeconds, Rate, ReconcileOutcomes, Snapshot, StatusMetricsSummary,
+    build_snapshot,
 };
+use inkentry_core::storage::memory::ResolutionKind;
 
 use crate::config::Config;
 use crate::storage::MemoryStore;
@@ -172,6 +174,10 @@ fn print_events_summary(e: &EventsMetrics) {
         format_pct(&e.use_search_before_write)
     );
     println!(
+        "  use.reconcile_outcomes       {}",
+        format_reconcile_outcomes(&e.use_reconcile_outcomes)
+    );
+    println!(
         "  auto.read_rate               {}",
         format_pct(&e.auto_read_rate)
     );
@@ -280,6 +286,20 @@ fn print_status_use_section(e: &EventsMetrics) {
         format_pct(&e.auto_read_rate),
         format_pct(&e.auto_write_rate)
     );
+    if !e.use_reconcile_outcomes.is_empty() {
+        println!(
+            "  reconcile      {}",
+            format_reconcile_outcomes(&e.use_reconcile_outcomes)
+        );
+    }
+}
+
+fn format_reconcile_outcomes(o: &ReconcileOutcomes) -> String {
+    let by_resolution: Vec<String> = ResolutionKind::ALL
+        .iter()
+        .map(|k| format!("{} {}", k.as_str(), o.by_resolution[k.as_str()]))
+        .collect();
+    format!("blocked {}  {}", o.blocked, by_resolution.join("  "))
 }
 
 fn short_sha(sha: &str) -> &str {

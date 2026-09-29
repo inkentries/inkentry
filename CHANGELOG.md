@@ -85,6 +85,17 @@ once, and no vector is discarded.
   CLI (`inkentry status`'s usage summary now reads `events` instead); the
   table itself is untouched.
   See [ADR-098](docs/adr/098-metrics-and-evaluation-indexed-by-commit.md) D5/D6.
+- **`memory add` records how reconciliation ended.** `memory.db` moves to
+  schema version 15: the local `events` table gains nullable `reconcile`
+  (`off`/`block`, the mode in force) and `resolution` (`supersedes`,
+  `relates_to`, `contradicts`, `distinct`, or `abandoned` for a write blocked
+  under `--reconcile`) columns, set only on `memory add` rows and never
+  affecting its output or exit status. `inkentry metrics snapshot` gains
+  `use.reconcile_outcomes` in its `events` block (a `blocked` count plus a
+  count per resolution kind), and `inkentry status` shows one `reconcile` line
+  in its "Use" section once there is anything to report. See
+  [ADR-098](docs/adr/098-metrics-and-evaluation-indexed-by-commit.md) and
+  [ADR-100](docs/adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md).
 - **`memory add` entries anchor to the commit that carries them.** `memory.db`
   moves to schema version 14: a new `pending_anchors` table records, per
   worktree, where a write happened until a commit claims it — local working

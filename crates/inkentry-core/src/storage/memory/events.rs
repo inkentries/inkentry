@@ -18,6 +18,55 @@ use super::MemoryStore;
 // well under this.
 const RECORD_BUSY_TIMEOUT_MS: u32 = 200;
 
+/// Whether a `memory add` blocks on a duplicate-band candidate, as recorded in
+/// `events.reconcile`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileMode {
+    Off,
+    Block,
+}
+
+impl ReconcileMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReconcileMode::Off => "off",
+            ReconcileMode::Block => "block",
+        }
+    }
+}
+
+/// How a `memory add` ended, as recorded in `events.resolution`. `Abandoned`
+/// is a write that was blocked and stored nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionKind {
+    Supersedes,
+    RelatesTo,
+    Contradicts,
+    Distinct,
+    Abandoned,
+}
+
+impl ResolutionKind {
+    /// Every kind, in the order the metrics report them.
+    pub const ALL: [ResolutionKind; 5] = [
+        ResolutionKind::Supersedes,
+        ResolutionKind::RelatesTo,
+        ResolutionKind::Contradicts,
+        ResolutionKind::Distinct,
+        ResolutionKind::Abandoned,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResolutionKind::Supersedes => "supersedes",
+            ResolutionKind::RelatesTo => "relates_to",
+            ResolutionKind::Contradicts => "contradicts",
+            ResolutionKind::Distinct => "distinct",
+            ResolutionKind::Abandoned => "abandoned",
+        }
+    }
+}
+
 /// One row to record, gathered by a command after its response is written.
 /// Every optional field is `None` when the command has nothing to report for
 /// it (a command with no code corpus never has `code_results`, for example).
@@ -35,6 +84,10 @@ pub struct EventFields<'a> {
     pub tokens_out: Option<i64>,
     pub latency_ms: Option<i64>,
     pub ok: bool,
+    /// `None` for every command but `memory add`.
+    pub reconcile: Option<ReconcileMode>,
+    /// `None` unless a `memory add` was blocked or carried a resolution.
+    pub resolution: Option<ResolutionKind>,
 }
 
 /// A stored `events` row, as the metrics computations read it back.
@@ -52,6 +105,9 @@ pub struct EventRow {
     pub tokens_out: Option<i64>,
     pub latency_ms: Option<i64>,
     pub ok: bool,
+    /// Kept as the stored text so a value a newer build recorded still reads.
+    pub reconcile: Option<String>,
+    pub resolution: Option<String>,
 }
 
 fn now_secs() -> i64 {
@@ -83,8 +139,8 @@ pub fn record_event_at(db_path: &Path, fields: EventFields) {
     let _ = conn.execute(
         "INSERT INTO events \
          (at, command, surface, trigger, actor_kind, session_ref, code_results, \
-          memory_results, returned_ids, tokens_out, latency_ms, ok) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+          memory_results, returned_ids, tokens_out, latency_ms, ok, reconcile, resolution) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             now_secs(),
             fields.command,
@@ -98,6 +154,8 @@ pub fn record_event_at(db_path: &Path, fields: EventFields) {
             fields.tokens_out,
             fields.latency_ms,
             fields.ok as i64,
+            fields.reconcile.map(ReconcileMode::as_str),
+            fields.resolution.map(ResolutionKind::as_str),
         ],
     );
 }
@@ -116,11 +174,14 @@ fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
         tokens_out: row.get(9)?,
         latency_ms: row.get(10)?,
         ok: row.get::<_, i64>(11)? != 0,
+        reconcile: row.get(12)?,
+        resolution: row.get(13)?,
     })
 }
 
 const EVENT_COLUMNS: &str = "at, command, surface, trigger, actor_kind, session_ref, \
-     code_results, memory_results, returned_ids, tokens_out, latency_ms, ok";
+     code_results, memory_results, returned_ids, tokens_out, latency_ms, ok, \
+     reconcile, resolution";
 
 impl MemoryStore {
     /// Every event whose `at` falls in `[window_start, window_end]` (both
@@ -205,6 +266,8 @@ mod tests {
             tokens_out: Some(120),
             latency_ms: Some(15),
             ok: true,
+            reconcile: None,
+            resolution: None,
         }
     }
 
@@ -227,6 +290,29 @@ mod tests {
         assert_eq!(row.tokens_out, Some(120));
         assert_eq!(row.latency_ms, Some(15));
         assert!(row.ok);
+    }
+
+    #[test]
+    fn reconcile_and_resolution_round_trip_and_default_to_null() {
+        let (tmp, store) = open_store();
+        let path = tmp.path().join("memory.db");
+        record_event_at(&path, fields("search", 0));
+        record_event_at(
+            &path,
+            EventFields {
+                reconcile: Some(ReconcileMode::Block),
+                resolution: Some(ResolutionKind::RelatesTo),
+                ..fields("memory.add", 0)
+            },
+        );
+
+        let rows = store.events_in_window(0, i64::MAX).expect("read");
+        assert_eq!(
+            (rows[0].reconcile.as_deref(), rows[0].resolution.as_deref()),
+            (None, None)
+        );
+        assert_eq!(rows[1].reconcile.as_deref(), Some("block"));
+        assert_eq!(rows[1].resolution.as_deref(), Some("relates_to"));
     }
 
     #[test]
