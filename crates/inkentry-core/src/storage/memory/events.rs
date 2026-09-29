@@ -1,9 +1,7 @@
-//! ADR-098 D5: the local `events` table.
-//!
-//! A best-effort record of command invocations, kept for the metrics events
-//! source (`inkentry_core::metrics`). Never part of the git-notes carrier and
-//! never read by a sync path — it is local working state in the same sense
-//! as any other projection detail, and `inkentry metrics clear` empties it.
+//! The local `events` table: a best-effort record of command invocations,
+//! kept for the metrics events source. Never part of the git-notes carrier
+//! and never read by a sync path — local working state that `inkentry
+//! metrics clear` empties.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,11 +11,11 @@ use rusqlite::Connection;
 
 use super::MemoryStore;
 
-/// How long [`record_event_at`] waits on a lock held by another writer before
-/// giving up. Short and deliberately not zero: `memory.db` is shared by every
-/// agent and linked worktree, and a read command must never wait long on a
-/// writer to record that it ran, but the busiest real contention (two
-/// commands finishing within the same instant) clears in well under this.
+// How long `record_event_at` waits on a lock held by another writer before
+// giving up. Short and deliberately not zero: memory.db is shared by every
+// agent and linked worktree, and a read command must never wait long on a
+// writer to record that it ran, but the busiest real contention clears in
+// well under this.
 const RECORD_BUSY_TIMEOUT_MS: u32 = 200;
 
 /// One row to record, gathered by a command after its response is written.
@@ -32,7 +30,7 @@ pub struct EventFields<'a> {
     pub code_results: Option<i64>,
     pub memory_results: Option<i64>,
     /// Comma-joined `entity_id`s of the memory entries returned (search,
-    /// context) or written (add) — never titles, paths or query text (D5).
+    /// context) or written (add) — never titles, paths or query text.
     pub returned_ids: Option<&'a str>,
     pub tokens_out: Option<i64>,
     pub latency_ms: Option<i64>,
@@ -66,13 +64,12 @@ fn now_secs() -> i64 {
 /// Best-effort insert into `events` at `db_path` (the project's `memory.db`).
 ///
 /// Opens its own short-lived connection with a short busy timeout rather than
-/// sharing a caller's, so this is the one place the "never make a read command
-/// wait to record that it ran" rule (D5) lives — every recording call site
-/// funnels through here instead of re-implementing the timeout. Any failure —
-/// no file at `db_path`, a lock still held past the timeout, a schema this
-/// build predates — silently drops the event; a command's exit status and
-/// output are never affected by this call, and nothing is ever logged, since
-/// a dropped event is an expected outcome of contention, not a fault.
+/// sharing a caller's, so every recording call site funnels through here
+/// instead of re-implementing the timeout. Any failure — no file at
+/// `db_path`, a lock still held past the timeout, a schema this build
+/// predates — silently drops the event; a command's exit status and output
+/// are never affected, and nothing is logged, since a dropped event is
+/// expected under contention, not a fault.
 pub fn record_event_at(db_path: &Path, fields: EventFields) {
     let Ok(conn) = Connection::open(db_path) else {
         return;
@@ -147,8 +144,7 @@ impl MemoryStore {
 
     /// `(command, count)` for every event since `cutoff` (inclusive), grouped
     /// by command and ordered by count descending — `inkentry status`'s 7-day
-    /// usage summary, now read from `events` (D5) rather than `index.db`'s
-    /// `usage` table.
+    /// usage summary.
     pub fn events_command_counts_since(&self, cutoff: i64) -> Result<Vec<(String, i64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT command, COUNT(*) FROM events \
@@ -164,9 +160,7 @@ impl MemoryStore {
     }
 
     /// Empty the `events` table — `inkentry metrics clear`. Nothing else in
-    /// `memory.db` is touched: the table is the whole of the local event log
-    /// (D5), and clearing it is the whole of the privacy story a separate
-    /// file would otherwise have given.
+    /// `memory.db` is touched: the table is the whole of the local event log.
     pub fn clear_events(&self) -> Result<usize> {
         Ok(self.conn.execute("DELETE FROM events", [])?)
     }

@@ -107,7 +107,7 @@ impl MemoryStore {
         Ok((id, created))
     }
 
-    /// Which identity this store already holds, said in the dump's terms.
+    // Which identity this store already holds, said in the dump's terms.
     fn identity_already_taken(&self, uuid: &str, remote_id: Option<&str>) -> anyhow::Error {
         let taken = |column: &str, value: &str| -> bool {
             self.conn
@@ -260,7 +260,7 @@ impl MemoryStore {
     }
 
     /// Every entry whose `entity_id` starts with `prefix`, so a caller can tell
-    /// a miss from a hit from an ambiguous handle (ADR-093 D2).
+    /// a miss from a hit from an ambiguous handle.
     ///
     /// A range over the unique index rather than a `LIKE`, which SQLite only
     /// turns into a range under the right collation and pragma. `'g'` is the
@@ -318,9 +318,9 @@ mod tests {
             .collect()
     }
 
-    /// The whole contract in one pass: a resolvable edge of either kind lands,
-    /// one with a missing endpoint is counted rather than failing the batch,
-    /// and applying the same batch again changes nothing.
+    // The whole contract in one pass: a resolvable edge of either kind lands,
+    // one with a missing endpoint is counted rather than failing the batch,
+    // and applying the same batch again changes nothing.
     #[test]
     fn import_carried_edges_applies_resolvable_edges_counts_dangling_and_is_idempotent() {
         register_sqlite_vec();
@@ -424,11 +424,11 @@ mod tests {
         assert_eq!(edge_rows(&store).len(), 1, "re-applying adds no row");
     }
 
-    /// The prefix read is what tells a quoted handle from an ambiguous one, so
-    /// it is pinned against crafted values: two that share the queried prefix,
-    /// one that shares only part of it, and one that shares none. Crafted
-    /// rather than hashed because entries sharing eight hex characters is a
-    /// 32-bit coincidence no fixture can produce from content.
+    // The prefix read is what tells a quoted handle from an ambiguous one, so
+    // it is pinned against crafted values: two sharing the queried prefix, one
+    // sharing only part of it, one sharing none. Crafted rather than hashed
+    // because entries sharing eight hex characters is a coincidence no
+    // fixture can produce from content.
     #[test]
     fn the_prefix_read_returns_every_candidate_and_stops_at_the_range_bound() {
         register_sqlite_vec();
@@ -479,9 +479,9 @@ mod tests {
         );
     }
 
-    /// `supersedes` has its own carrier field; a record carrying it in the edge
-    /// list is not something this build writes, so it is passed over rather
-    /// than turned into a second, unreconciled path to the same row.
+    // `supersedes` has its own carrier field; a record carrying it in the edge
+    // list is not something this build writes, so it is passed over rather
+    // than turned into a second, unreconciled path to the same row.
     #[test]
     fn import_carried_edges_passes_over_kinds_it_does_not_define() {
         register_sqlite_vec();

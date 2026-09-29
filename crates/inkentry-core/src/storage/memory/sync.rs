@@ -25,8 +25,8 @@ use super::{MemoryStore, NoteId, uuid_v7::uuid_v7_at};
 ///
 /// Carries the stable `uuid` (used as the cloud `external_id` / idempotency key)
 /// and **text only** — no embedding vector. The server backfills the embedding
-/// with its configured model (embedding-model conformance); shipping a local
-/// vector would reintroduce the embedding-space mismatch that conformance removed.
+/// with its configured model; shipping a local vector risks an embedding-space
+/// mismatch with it.
 #[derive(Debug, Clone)]
 pub struct SyncRow {
     /// The entry's identity (a UUIDv7), pushed as the cloud `external_id`.
@@ -83,10 +83,10 @@ impl MemoryStore {
     /// Collect local notes that are candidates to push. Returns text-only rows
     /// (no vectors) ordered oldest-first.
     ///
-    /// Per decision #183 the caller pushes only the rows `WHERE remote_id IS
-    /// NULL` (live entries not yet on the cloud), and tombstones archived rows
-    /// that *do* carry a `remote_id`. Both subsets are returned here; the caller
-    /// (`push_local`) partitions on `remote_id`/`archived`.
+    /// The caller pushes only the rows `WHERE remote_id IS NULL` (live entries
+    /// not yet on the cloud), and tombstones archived rows that *do* carry a
+    /// `remote_id`. Both subsets are returned here; the caller (`push_local`)
+    /// partitions on `remote_id`/`archived`.
     ///
     /// `include_archived` mirrors the caller's flag; archived rows are still
     /// returned (as tombstones) when requested so deletes propagate.
@@ -215,17 +215,15 @@ impl MemoryStore {
             .transpose()
     }
 
-    /// The pull cursor: the max cloud `remote_id` already synced locally
-    /// (decision #183).
+    /// The pull cursor: the max cloud `remote_id` already synced locally.
     ///
     /// `remote_id` holds the cloud-minted UUIDv7 `id`. Because UUIDv7 strings
-    /// sort lexically the same as their byte/time order, `MAX(remote_id)` is the
-    /// newest cloud id we have, and the cloud `/memory/since?since_id=<this>`
-    /// returns everything strictly after it. This replaces the old timestamp
-    /// watermark, which was frail under local↔remote clock drift — the cursor is
-    /// now derived from synced rows, not wall-clock time, and needs no separate
-    /// `sync_state` cache table. Returns `None` when nothing has been synced yet
-    /// (a full catch-up).
+    /// sort lexically the same as their byte/time order, `MAX(remote_id)` is
+    /// the newest cloud id we have, and the cloud `/memory/since?since_id=<this>`
+    /// returns everything strictly after it. The cursor is derived from synced
+    /// rows rather than wall-clock time, so it needs no separate cache table
+    /// and is immune to local↔remote clock drift. Returns `None` when nothing
+    /// has been synced yet (a full catch-up).
     pub fn max_remote_id(&self) -> Result<Option<String>> {
         let cursor: Option<String> = self
             .conn
@@ -276,10 +274,9 @@ impl MemoryStore {
     /// Count of active (non-archived) rows still in the push outbox
     /// (`remote_id IS NULL`), for the quiet `inkentry status` "N pending" line.
     ///
-    /// A read, not a mutation: unlike [`Self::rows_for_sync`] this never calls
-    /// [`Self::ensure_uuid`] and never materializes full rows, so calling it
-    /// repeatedly (e.g. every `status` invocation) cannot itself change what a
-    /// concurrent `rows_for_sync` sees.
+    /// A read, not a mutation: unlike [`Self::rows_for_sync`] this never
+    /// materializes full rows, so calling it repeatedly (e.g. every `status`
+    /// invocation) cannot itself change what a concurrent `rows_for_sync` sees.
     pub fn pending_sync_count(&self) -> Result<i64> {
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM notes WHERE status = 'active' AND remote_id IS NULL",

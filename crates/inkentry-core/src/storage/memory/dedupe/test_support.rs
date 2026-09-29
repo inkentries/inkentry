@@ -85,9 +85,8 @@ fn full_table_snapshot(
 pub(super) type TableSnapshot = Vec<Vec<rusqlite::types::Value>>;
 
 // Snapshot of every table `dedupe_entity_ids` can touch: `notes` +
-// `memory_edges` + `note_embeddings`, plus `note_tags`/`note_files` (ADR-101),
-// which the tags/linked_files merge now writes instead of the two dropped
-// `notes` columns.
+// `memory_edges` + `note_embeddings`, plus `note_tags`/`note_files`, which
+// the tags/linked_files merge writes to.
 pub(super) fn full_db_snapshot(
     store: &MemoryStore,
 ) -> (

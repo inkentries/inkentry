@@ -4,15 +4,13 @@ use super::notes::{row_to_note, row_to_note_with_distance};
 use super::{MemoryStore, Note, NoteId};
 
 /// The within-corpus relevance floor for a memory candidate's vector distance
-/// to the QA-prefixed query embedding (ADR-083). `note_embeddings` is a `vec0`
-/// `FLOAT[896]` table with the default L2 metric over L2-normalised vectors, so
-/// a reported `distance` is `sqrt(2 - 2·cos)`; `1.2032` L2 is cosine `0.2762`.
-/// Calibrated 2026-08-11 against `F2LLM-v2-330M@896`
-/// ([`crate::embeddings::MODEL_ID`]) under the QA instruction prefix "Given a
-/// question, retrieve passages that answer the question", from 10,000
-/// (CodeSearchNet query, unrelated note) negative pairs and 20 hand-written
-/// paraphrase positives (see `docs/adr/083-memory-relevance-gate-in-unified-search.md`).
-/// Changing `MODEL_ID` or that instruction string invalidates the calibration.
+/// to the QA-prefixed query embedding. `note_embeddings` is a `vec0`
+/// `FLOAT[896]` table with the default L2 metric over L2-normalised vectors,
+/// so a reported `distance` is `sqrt(2 - 2·cos)`; `1.2032` L2 is cosine
+/// `0.2762`. Calibrated against [`crate::embeddings::MODEL_ID`] under the QA
+/// instruction prefix, from a large negative sample and a small hand-written
+/// positive one. Changing `MODEL_ID` or that instruction string invalidates
+/// the calibration.
 pub const MEMORY_MAX_QA_DISTANCE: f64 = 1.2032;
 
 /// The duplicate-band floor for `memory add`'s pre-write reconciliation.
@@ -303,21 +301,18 @@ impl MemoryStore {
         Ok(notes)
     }
 
-    /// Vector-only memory retrieval, admitted candidates ranked by RRF (ADR-083).
-    ///
-    /// An earlier version of this method fused FTS5 BM25 with vector KNN. That
-    /// lexical door is retired: `memory_fts` matches the whole query as one
-    /// contiguous phrase, and measurement found it matched 0 of 500 negative and
-    /// 0 of 20 positive natural-language queries — inert in practice, not merely
-    /// weak. `query` is accepted for trait-signature parity with the code
-    /// corpus's hybrid search and is otherwise unused.
+    /// Vector-only memory retrieval, admitted candidates ranked by RRF.
+    /// `memory_fts` matches the whole query as one contiguous phrase, which is
+    /// inert for natural-language queries in practice, so no FTS5 door is
+    /// mixed in here. `query` is accepted for trait-signature parity with the
+    /// code corpus's hybrid search and is otherwise unused.
     ///
     /// When `gate` is `true`, a vector candidate is admitted only if its
     /// distance to the QA-prefixed query embedding is at most
     /// [`MEMORY_MAX_QA_DISTANCE`] — this is what stops an unrelated memory store
     /// from taking half of every unified-search page. `gate` is `false` for
-    /// `--only-memory`, which has no code corpus to protect slots from and is an
-    /// explicit request to see the full page (ADR-083 decision 5).
+    /// `--only-memory`, which has no code corpus to protect slots from and is
+    /// an explicit request to see the full page.
     ///
     /// RRF score: `1 / (k + rank_i)` where `k` is the shared [`crate::search::RRF_K`].
     /// With one candidate source the ranking is already distance order; RRF
@@ -460,10 +455,9 @@ mod tests {
         v
     }
 
-    // ADR-083 retired the lexical door inside `search_hybrid`: a note reachable
-    // only by an FTS match, with no embedding row at all, must never surface
-    // here. This proves the vector-only mechanism rather than merely asserting
-    // it in prose — pre-fix this note would have entered via `text_results`.
+    // A note reachable only by an FTS match, with no embedding row at all,
+    // must never surface here — proves the vector-only mechanism rather than
+    // merely asserting it in prose.
     #[test]
     fn search_hybrid_never_surfaces_a_text_only_match() {
         let store = open_store();
@@ -531,8 +525,8 @@ mod tests {
         );
     }
 
-    // `--only-memory` passes `gate = false`: no code corpus competes for slots,
-    // so every vector candidate is admitted (ADR-083 decision 5).
+    // `--only-memory` passes `gate = false`: no code corpus competes for
+    // slots, so every vector candidate is admitted.
     #[test]
     fn search_hybrid_ungated_admits_a_candidate_beyond_the_distance_floor() {
         let store = open_store();
@@ -595,10 +589,10 @@ mod tests {
         }
     }
 
-    /// A search term containing FTS5-special punctuation must never surface a
-    /// raw FTS5 parse error from `search_text` — it's always treated as a
-    /// literal term (quoted internally), so the call returns `Ok` (results or
-    /// empty) regardless of punctuation.
+    // A search term containing FTS5-special punctuation must never surface a
+    // raw FTS5 parse error from `search_text` — it's always treated as a
+    // literal term (quoted internally), so the call returns `Ok` regardless
+    // of punctuation.
     #[test]
     fn search_text_with_punctuation_never_errors() {
         let store = open_store();
@@ -639,9 +633,9 @@ mod tests {
         }
     }
 
-    /// A query term containing an embedded NUL byte must not surface a raw
-    /// FTS5 "unterminated string" parse error via this memory-search path
-    /// too (same fix as the code-search path in `storage::search::tests`).
+    // A query term containing an embedded NUL byte must not surface a raw
+    // FTS5 "unterminated string" parse error via this memory-search path
+    // either (mirrors the code-search path in `storage::search::tests`).
     #[test]
     fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
         let store = open_store();
@@ -665,7 +659,7 @@ mod tests {
         );
     }
 
-    /// Quoting the term as an FTS5 literal must not break normal matching.
+    // Quoting the term as an FTS5 literal must not break normal matching.
     #[test]
     fn search_text_plain_term_still_matches() {
         let store = open_store();
@@ -755,9 +749,8 @@ mod tests {
     }
 
     // A topic query returns ONLY the entries related to that topic (a strict
-    // subset when the store also holds unrelated entries), ordered ascending by
-    // valid_at. Pre-fix `search_timeline` ignored the topic entirely and
-    // returned every entry, so this asserts the relevance filter now works.
+    // subset when the store also holds unrelated entries), ordered ascending
+    // by valid_at.
     #[test]
     fn search_timeline_filters_to_relevant_subset_sorted_by_valid_at() {
         let store = seed_two_topic_store();
@@ -791,7 +784,7 @@ mod tests {
     }
 
     // A nonsense topic that matches nothing returns few or zero entries — NOT
-    // the whole store. Pre-fix this returned every entry regardless of topic.
+    // the whole store.
     #[test]
     fn search_timeline_nonsense_topic_returns_nothing() {
         let store = seed_two_topic_store();
