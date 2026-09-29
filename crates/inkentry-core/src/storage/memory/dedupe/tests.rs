@@ -6,7 +6,7 @@
 use super::test_support::*;
 use super::*;
 
-// ── AC22 (zero groups): all-zero counts, no writes, dry-run or not ──────
+// Zero groups: all-zero counts, no writes, dry-run or not.
 #[test]
 fn zero_duplicates_reports_all_zero_and_writes_nothing() {
     let store = open_store();
@@ -27,7 +27,7 @@ fn zero_duplicates_reports_all_zero_and_writes_nothing() {
     assert_eq!(note_count(&store), 1, "no row must be touched");
 }
 
-// ── AC9: --dry-run reports counts, makes no writes ──────────────────────
+// --dry-run reports counts, makes no writes.
 #[test]
 fn dry_run_reports_counts_and_writes_nothing() {
     let store = open_store();
@@ -75,7 +75,7 @@ fn note_tags(store: &crate::storage::MemoryStore, id: &crate::storage::NoteId) -
     tags
 }
 
-// ── AC10 + AC11: real run collapses to one row, survivor = earliest ────
+// A real run collapses the group to one row; the survivor is the earliest-created.
 #[test]
 fn real_run_collapses_group_survivor_is_earliest_created() {
     let store = open_store();
@@ -97,7 +97,7 @@ fn real_run_collapses_group_survivor_is_earliest_created() {
     assert!(store.get(&loser).unwrap().is_none(), "loser is gone");
 }
 
-// ── AC12 + AC13: tags/linked_files union add-wins, no survivor value dropped ─
+// tags/linked_files union add-wins; no survivor value is dropped.
 #[test]
 fn tags_and_linked_files_union_add_wins() {
     let store = open_store();
@@ -137,7 +137,7 @@ fn tags_and_linked_files_union_add_wins() {
     assert!(note.linked_files.contains(&"new.rs".to_string()));
 }
 
-// ── AC14: any row archived -> survivor becomes archived ─────────────────
+// Any row archived makes the survivor archived.
 #[test]
 fn any_archived_row_makes_survivor_archived() {
     let store = open_store();
@@ -153,7 +153,7 @@ fn any_archived_row_makes_survivor_archived() {
     assert_eq!(note.status, "archived");
 }
 
-// ── AC15: no row archived -> survivor status unchanged ──────────────────
+// No row archived leaves the survivor's status unchanged.
 #[test]
 fn no_archived_row_leaves_survivor_status_unchanged() {
     let store = open_store();
@@ -169,7 +169,7 @@ fn no_archived_row_leaves_survivor_status_unchanged() {
     assert_eq!(note.status, "active");
 }
 
-// ── AC16: survivor lacks superseded_by, another row has one -> adopted ──
+// The survivor lacks superseded_by; another row in the group has one, so it's adopted.
 #[test]
 fn survivor_adopts_lone_superseded_by_from_group() {
     let store = open_store();
@@ -189,7 +189,7 @@ fn survivor_adopts_lone_superseded_by_from_group() {
     assert_eq!(note.superseded_by, sup(&elsewhere));
 }
 
-// ── AC17: conflicting superseded_by values -> earliest wins, warn, no error ─
+// Conflicting superseded_by values: the earliest wins, a warning is logged, no error.
 #[test]
 fn conflicting_superseded_by_earliest_wins_no_error() {
     let store = open_store();
@@ -219,7 +219,7 @@ fn conflicting_superseded_by_earliest_wins_no_error() {
     );
 }
 
-// ── AC18: a row elsewhere pointing at a loser is rewritten to the survivor ─
+// A row elsewhere pointing at a loser is rewritten to point at the survivor.
 #[test]
 fn edge_elsewhere_pointing_at_loser_is_repointed_to_survivor() {
     let store = open_store();
@@ -240,7 +240,7 @@ fn edge_elsewhere_pointing_at_loser_is_repointed_to_survivor() {
     assert_eq!(note.superseded_by, sup(&survivor));
 }
 
-// ── AC19: a rewrite that would self-point is dropped to NULL instead ────
+// A rewrite that would self-point is dropped to NULL instead.
 #[test]
 fn rewrite_that_would_self_point_is_dropped_to_null() {
     let store = open_store();
@@ -262,7 +262,7 @@ fn rewrite_that_would_self_point_is_dropped_to_null() {
     );
 }
 
-// ── AC20: a loser's note_embeddings row is deleted; survivor's is untouched ─
+// A loser's note_embeddings row is deleted; the survivor's is untouched.
 #[test]
 fn loser_embedding_deleted_survivor_embedding_untouched() {
     let store = open_store();
@@ -292,7 +292,7 @@ fn loser_embedding_deleted_survivor_embedding_untouched() {
     );
 }
 
-// ── AC21: a failure injected partway through rolls back the whole run ───
+// A failure injected partway through rolls back the whole run.
 #[test]
 fn injected_fault_partway_rolls_back_whole_run() {
     let store = open_store();
@@ -329,10 +329,10 @@ fn injected_fault_partway_rolls_back_whole_run() {
     );
 }
 
-// Adversarial: fault mid-group (after a loser is deleted, before the
-// next loser in the same group is touched), checked byte-for-byte across
-// every table dedupe can touch, not just a row count. AC21's own test
-// only proves rollback at a group boundary; this proves it holds mid-group.
+// A fault mid-group (after a loser is deleted, before the next loser in the
+// same group is touched) must also roll back, checked byte-for-byte across
+// every table dedupe can touch — the group-boundary fault above doesn't
+// cover this case.
 #[test]
 fn injected_fault_mid_group_after_partial_loser_deletion_rolls_back_byte_for_byte() {
     let store = open_store();
@@ -384,10 +384,8 @@ fn injected_fault_mid_group_after_partial_loser_deletion_rolls_back_byte_for_byt
     let before = full_db_snapshot(&store);
     assert_eq!(before.0.len(), 4, "precondition: 4 notes seeded");
 
-    // Fault fires right after loser_a (index 0) is fully deleted
-    // (embedding + edges + note row gone) but before loser_b is touched
-    // at all: a genuinely different point than the group-boundary fault
-    // AC21's own test injects.
+    // Fault fires right after loser_a (index 0) is fully deleted (embedding +
+    // edges + note row gone) but before loser_b is touched at all.
     inject_fault_after_loser(0);
     let result = store.dedupe_entity_ids(false);
     clear_loser_fault();
@@ -418,8 +416,8 @@ fn injected_fault_mid_group_after_partial_loser_deletion_rolls_back_byte_for_byt
     let _ = loser_b; // seeded only to make this a real multi-loser group
 }
 
-// ── Adversarial: --dry-run must leave every column of every touched
-// table untouched, not just row count / one column. ────────────────────
+// --dry-run must leave every column of every touched table untouched, not
+// just row count or one column.
 #[test]
 fn dry_run_leaves_full_db_state_byte_for_byte_unchanged() {
     let store = open_store();
@@ -469,9 +467,8 @@ fn dry_run_leaves_full_db_state_byte_for_byte_unchanged() {
     );
 }
 
-// ── Adversarial: multiple external rows point at *different* losers
-// within the same duplicate group. Each must be independently repointed
-// to the survivor. ───────────────────────────────────────────────────────
+// Multiple external rows pointing at *different* losers within the same
+// duplicate group must each be independently repointed to the survivor.
 #[test]
 fn multiple_external_rows_pointing_at_different_losers_all_repoint_to_survivor() {
     let store = open_store();
@@ -507,9 +504,8 @@ fn multiple_external_rows_pointing_at_different_losers_all_repoint_to_survivor()
     );
 }
 
-// ── Adversarial: deleting a loser must remove edges in *both* directions
-// (edges the loser points from, and edges other notes point at the loser),
-// leaving no orphan. ────────────────────────────────────────────────────
+// Deleting a loser must remove edges in *both* directions (edges the loser
+// points from, and edges other notes point at the loser), leaving no orphan.
 #[test]
 fn loser_deletion_removes_memory_edges_in_both_directions_no_orphan() {
     let store = open_store();
@@ -546,10 +542,9 @@ fn loser_deletion_removes_memory_edges_in_both_directions_no_orphan() {
     let _ = survivor;
 }
 
-// Adversarial: relates_to/contradicts edges to a loser are dropped with the
-// row, not repointed, unlike tags/linked_files/superseded_by. ADR-068's
-// third amendment only specifies a merge rule
-// for superseded_by, not the memory_edges graph, so this pins the
+// relates_to/contradicts edges to a loser are dropped with the row, not
+// repointed, unlike tags/linked_files/superseded_by. The merge rule only
+// covers superseded_by, not the memory_edges graph, so this pins the
 // current (lossy) behavior as a known gap rather than a spec violation.
 #[test]
 fn relates_to_edge_to_external_note_is_dropped_not_repointed_known_gap() {

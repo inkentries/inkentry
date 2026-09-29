@@ -5,81 +5,51 @@ use tower::ServiceExt;
 
 use crate::db::ServerDb;
 
-use super::support::{make_app, post_note, register_sqlite_vec};
+use super::support::{make_app, post_note, post_note_reconciling, register_sqlite_vec};
 
-// Two semantically identical entries (identical embeddings) should trigger 409
-// and a `contradicts` edge should be inserted.
+// ADR-100 D4: similarity alone no longer 409s or writes a `contradicts` edge.
+// A near-identical second write is just stored, and reports the first entry
+// in its duplicate-band `candidates`.
 #[tokio::test]
-async fn conflict_detection_identical_embeddings_returns_409() {
+async fn a_near_identical_second_write_is_stored_and_reports_the_first_as_a_candidate() {
     let (app, _dim) = make_app(0.92);
-    // Use a very low threshold to ensure a conflict (0.0 = any non-zero similarity conflicts).
-    let (app_low, _dim) = make_app(0.0);
 
-    // First entry: must be 201.
     let embedding = vec![1.0_f32, 0.0, 0.0, 0.0];
-    let (status1, body1) = post_note(
-        app_low.clone(),
-        "test-project",
-        "Entry A",
-        embedding.clone(),
-    )
-    .await;
-    assert_eq!(
-        status1,
-        http::StatusCode::CREATED,
-        "first write must be 201; body: {body1}"
-    );
+    let (status1, body1) =
+        post_note(app.clone(), "test-project", "Entry A", embedding.clone()).await;
+    assert_eq!(status1, http::StatusCode::CREATED, "body: {body1}");
     let first_id = body1["id"].as_str().expect("id in response").to_string();
-    assert_eq!(body1["stored"], json!(true));
 
-    // Second entry with identical embedding: must be 409.
     let (status2, body2) = post_note(
-        app_low.clone(),
+        app.clone(),
         "test-project",
         "Entry B (duplicate)",
-        embedding.clone(),
+        embedding,
     )
     .await;
     assert_eq!(
         status2,
-        http::StatusCode::CONFLICT,
-        "second identical write must be 409; body: {body2}"
+        http::StatusCode::CREATED,
+        "a near-identical write is stored, not refused, without reconcile: \"block\"; body: {body2}"
     );
-    assert_eq!(
-        body2["stored"],
-        json!(true),
-        "stored must be true even on 409"
-    );
-
-    let conflicts = body2["conflicts"]
+    assert_eq!(body2["stored"], json!(true));
+    let candidates = body2["candidates"]
         .as_array()
-        .expect("conflicts array in 409 body");
-    assert!(!conflicts.is_empty(), "conflicts must not be empty");
-    let conflicting_ids: Vec<&str> = conflicts.iter().filter_map(|c| c["id"].as_str()).collect();
+        .expect("candidates array on a stored response");
+    assert!(!candidates.is_empty(), "candidates must not be empty");
+    let candidate_ids: Vec<&str> = candidates.iter().filter_map(|c| c["id"].as_str()).collect();
     assert!(
-        conflicting_ids.contains(&first_id.as_str()),
-        "first entry's id ({first_id}) must appear in conflicts; got: {conflicting_ids:?}"
+        candidate_ids.contains(&first_id.as_str()),
+        "first entry's id ({first_id}) must appear in candidates; got: {candidate_ids:?}"
     );
-
-    // Similarity should be > 0.
-    let similarity = conflicts[0]["similarity"]
-        .as_f64()
-        .expect("similarity field");
-    assert!(
-        similarity > 0.0,
-        "similarity must be positive; got {similarity}"
-    );
-
-    // Suppress unused variable warning from app (default threshold).
-    drop(app);
+    assert_eq!(candidates[0]["band"], json!("duplicate"));
 }
 
-// At default threshold (0.92), dissimilar entries must not conflict.
+// Orthogonal embeddings never land in either band.
 #[tokio::test]
-async fn conflict_detection_dissimilar_entries_no_conflict() {
+async fn dissimilar_entries_report_no_candidates() {
     let (app, _dim) = make_app(0.92);
 
-    // Orthogonal embeddings: cosine similarity = 0.
     let emb_a = vec![1.0_f32, 0.0, 0.0, 0.0];
     let emb_b = vec![0.0_f32, 1.0, 0.0, 0.0];
 
@@ -87,28 +57,114 @@ async fn conflict_detection_dissimilar_entries_no_conflict() {
     assert_eq!(status1, http::StatusCode::CREATED);
 
     let (status2, body2) = post_note(app.clone(), "proj-dissimilar", "Beta", emb_b).await;
-    assert_eq!(
-        status2,
-        http::StatusCode::CREATED,
-        "orthogonal entries must not conflict; body: {body2}"
+    assert_eq!(status2, http::StatusCode::CREATED, "body: {body2}");
+    assert!(
+        body2["candidates"].as_array().is_none_or(|c| c.is_empty()),
+        "orthogonal entries must not appear as candidates for each other"
     );
 }
 
-// threshold = 1.0 disables conflict detection entirely.
+// ADR-100 D2: `reconcile: "block"` with a non-empty duplicate band and no
+// resolutions refuses the write; the entry is never stored.
 #[tokio::test]
-async fn conflict_detection_disabled_at_threshold_one() {
-    let (app, _dim) = make_app(1.0);
-
-    // Use identical embeddings: but with threshold=1.0, no conflict should fire.
+async fn reconcile_block_refuses_a_duplicate_with_no_resolution() {
+    let (app, _dim) = make_app(0.92);
     let embedding = vec![1.0_f32, 0.0, 0.0, 0.0];
-    let (status1, _) = post_note(app.clone(), "proj-disabled", "X", embedding.clone()).await;
-    assert_eq!(status1, http::StatusCode::CREATED);
-    let (status2, body2) = post_note(app.clone(), "proj-disabled", "X dup", embedding).await;
+
+    let (status1, body1) = post_note(app.clone(), "proj-block", "Entry A", embedding.clone()).await;
+    assert_eq!(status1, http::StatusCode::CREATED, "body: {body1}");
+
+    let (status2, body2) = post_note_reconciling(
+        app.clone(),
+        "proj-block",
+        "Entry A restated",
+        embedding,
+        Some("block"),
+        json!([]),
+    )
+    .await;
+    assert_eq!(
+        status2,
+        http::StatusCode::CONFLICT,
+        "an unresolved duplicate must be refused under reconcile: \"block\"; body: {body2}"
+    );
+    assert_eq!(body2["stored"], json!(false));
+    assert!(body2["id"].is_null(), "nothing was written, so no id");
+    assert!(
+        !body2["candidates"]
+            .as_array()
+            .expect("candidates on a blocked response")
+            .is_empty()
+    );
+}
+
+// A `supersedes` resolution both unblocks the write and archives the entry
+// it names, in the same request.
+#[tokio::test]
+async fn reconcile_block_with_a_supersedes_resolution_writes_and_archives() {
+    let (app, _dim) = make_app(0.92);
+    let embedding = vec![1.0_f32, 0.0, 0.0, 0.0];
+
+    let (status1, body1) = post_note(app.clone(), "proj-resolve", "Old", embedding.clone()).await;
+    assert_eq!(status1, http::StatusCode::CREATED, "body: {body1}");
+    let old_id = body1["id"].as_str().expect("id").to_string();
+
+    let (status2, body2) = post_note_reconciling(
+        app.clone(),
+        "proj-resolve",
+        "Old restated",
+        embedding,
+        Some("block"),
+        json!([{"type": "supersedes", "id": old_id}]),
+    )
+    .await;
     assert_eq!(
         status2,
         http::StatusCode::CREATED,
-        "threshold=1.0 must disable conflict detection; body: {body2}"
+        "a supersedes resolution must unblock the write; body: {body2}"
     );
+    assert_eq!(body2["stored"], json!(true));
+
+    let get_req = Request::builder()
+        .method("GET")
+        .uri(format!("/v1/projects/proj-resolve/memory/{old_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_resp = app.oneshot(get_req).await.unwrap();
+    let bytes = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let old_note: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        old_note["status"], "archived",
+        "the superseded entry must be archived; got: {old_note}"
+    );
+}
+
+// A resolution naming an id outside the reported candidate set is still
+// accepted, as long as it resolves to a real entry (ADR-100 D2).
+#[tokio::test]
+async fn a_resolution_naming_an_id_outside_the_candidate_set_is_accepted() {
+    let (app, _dim) = make_app(0.92);
+    let emb_a = vec![1.0_f32, 0.0, 0.0, 0.0];
+    let emb_b = vec![0.0_f32, 1.0, 0.0, 0.0];
+
+    // Unrelated entry: never appears in the second write's candidates.
+    let (status1, body1) = post_note(app.clone(), "proj-outside", "Unrelated", emb_a).await;
+    assert_eq!(status1, http::StatusCode::CREATED, "body: {body1}");
+    let unrelated_id = body1["id"].as_str().expect("id").to_string();
+
+    let (status2, body2) = post_note_reconciling(
+        app.clone(),
+        "proj-outside",
+        "Something else",
+        emb_b,
+        None,
+        json!([{"type": "relates_to", "id": unrelated_id}]),
+    )
+    .await;
+    assert_eq!(status2, http::StatusCode::CREATED, "body: {body2}");
+    assert_eq!(body2["stored"], json!(true));
 }
 
 // ── Input-length caps ────────────────────────────────────────────────────

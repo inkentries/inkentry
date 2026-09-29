@@ -20,17 +20,13 @@ pub use lock::{LOCK_WAIT_BUDGET, LockAttempt, NotesLock, lock_notes};
 pub use publish::{PublishOutcome, SkipReason, publish_notes};
 pub use refs::NotesRefs;
 
-// ── Carry config: surviving history rewrites ─────────────────────────────────
-
-/// The ref inkentry stores memory notes on.
 const INKENTRY_NOTES_REF: &str = "refs/notes/inkentry";
 
-/// The tracking ref `git fetch` populates, per the refspec `inkentry init`
-/// configures. Fetching straight onto [`INKENTRY_NOTES_REF`] would force-update
-/// it and silently destroy local unpushed notes (ADR-069 D4).
+// Populated by git fetch (refspec set by inkentry init). Fetching directly
+// onto INKENTRY_NOTES_REF would force-update it and destroy local unpushed
+// notes.
 const INKENTRY_TRACKING_REF: &str = "refs/notes/origin/inkentry";
 
-/// The namespace git is willing to rewrite notes in.
 const NOTES_NAMESPACE: &str = "refs/notes/";
 
 /// What [`ensure_notes_rewrite_ref`] found or did.
@@ -44,22 +40,19 @@ pub enum RewriteRefStatus {
     Failed,
 }
 
-/// Point `notes.rewriteRef` at inkentry's notes ref in this repo.
+/// Points `notes.rewriteRef` at inkentry's notes ref in this repo.
 ///
-/// Gotcha: git carries a note onto a rewritten commit (`commit --amend`,
-/// `rebase`) only if `notes.rewriteRef` names the ref, and it has **no**
-/// built-in default, so an unconfigured repo silently orphans every entry.
-/// Pre-`init` git notes is the sole store, making that total loss.
+/// Without this, git only carries a note onto a rewritten commit (`commit
+/// --amend`, `rebase`) if `notes.rewriteRef` names it; there is no built-in
+/// default, so an unconfigured repo silently orphans every entry.
 ///
-/// `notes.rewriteMode` is deliberately left alone: its `concatenate` default
-/// keeps every JSON line, whereas `overwrite` and `ignore` each drop one side
-/// of a squashed pair, causing the loss this is meant to prevent.
+/// `notes.rewriteMode` is left alone: `concatenate` (the default) keeps every
+/// JSON line, while `overwrite`/`ignore` would drop one side of a squashed
+/// pair.
 ///
-/// Never returns an error: the write it guards may be an entry's only copy, so
-/// a config failure must not sink it.
+/// Never returns an error: a config failure must not sink the write it guards.
 pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> RewriteRefStatus {
-    // Reads local, global and system scopes, so a user who set this themselves
-    // anywhere is left alone. Absent (exit 1) means unset, not an error.
+    // Reads all config scopes; exit 1 means unset, not an error.
     let existing = run_git(git_root, &["config", "--get-all", "notes.rewriteRef"])
         .await
         .unwrap_or_default();
@@ -67,8 +60,8 @@ pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> Rew
         return RewriteRefStatus::AlreadyCovered;
     }
 
-    // Multi-valued: `--add` composes with any value the user already has, and
-    // writes to the repo-local config (never global).
+    // `--add` composes with any value the user already has, and writes to the
+    // repo-local config, never global.
     match run_git(
         git_root,
         &["config", "--add", "notes.rewriteRef", INKENTRY_NOTES_REF],
@@ -86,12 +79,10 @@ pub async fn ensure_notes_rewrite_ref(git_root: Option<&std::path::Path>) -> Rew
     }
 }
 
-/// Whether an existing `notes.rewriteRef` value already names inkentry's ref.
-///
-/// Values may be globs. git refuses to rewrite notes outside `refs/notes/`, so
-/// a glob only counts while it stays inside that namespace: `refs/notes/*`
-/// covers us, `refs/*` does not. A false negative only re-adds the exact ref,
-/// which stays correct, so matching a trailing `*` is enough.
+// Values may be globs; git only rewrites notes under refs/notes/, so a glob
+// counts only if it stays within that namespace (refs/notes/* covers us,
+// refs/* does not). A false negative just re-adds the exact ref, so matching
+// a trailing `*` is sufficient.
 fn rewrite_ref_covers_inkentry(value: &str) -> bool {
     let value = value.trim();
     if value == INKENTRY_NOTES_REF {
@@ -102,29 +93,21 @@ fn rewrite_ref_covers_inkentry(value: &str) -> bool {
     })
 }
 
-// ── Write-through helper (free function) ─────────────────────────────────────
-
-/// How a writer holds, or legitimately does not hold, the notes lock.
-///
-/// `Unlocked` is ADR-069 D8's one kept degradation, and it is a **returned
-/// value** so a caller can surface it: a `tracing::warn!` reaches nobody
-/// without `RUST_LOG`, and a degradation no caller can see is how silent data
-/// loss stayed invisible in the first place.
+// How a writer holds, or legitimately does not hold, the notes lock. Unlocked
+// is a returned value (not just a `tracing::warn!`) so a caller can surface a
+// degradation that would otherwise be invisible without RUST_LOG.
 #[must_use]
 enum WriterLock {
-    /// Held until dropped; the guard is retained only for its `Drop`.
+    // Held until dropped.
     Held { _guard: NotesLock },
-    /// The lock cannot exist here; the write proceeds unserialized.
+    // The lock cannot exist here; the write proceeds unserialized.
     Unlocked { path: PathBuf, reason: String },
 }
 
-/// Take the notes lock for a writer, per ADR-069 D8: hold it or fail, except
-/// where the lock cannot exist at all, which degrades unlocked and loudly.
-///
-/// `Ok(WriterLock::Unlocked { .. })` is that one degradation. `Err` is
-/// contention (someone else holds the lock; writing anyway is the #185 loss)
-/// or a failed path resolution (git itself is failing, and the writer's own
-/// git calls are next).
+// Holds the notes lock for a writer, or fails, except where the lock cannot
+// exist at all, which degrades to unlocked (logged) rather than failing.
+// `Err` is either contention (someone else holds it) or a failed path
+// resolution.
 async fn writer_lock(git_root: Option<&std::path::Path>) -> Result<WriterLock> {
     match lock_notes(git_root).await? {
         LockAttempt::Acquired(guard) => Ok(WriterLock::Held { _guard: guard }),
@@ -149,22 +132,14 @@ async fn writer_lock(git_root: Option<&std::path::Path>) -> Result<WriterLock> {
     }
 }
 
-/// Attempts for [`read_note_body`] before its failure is surfaced. The
-/// windows-latest losses were transient: the same read succeeded for every
-/// sibling writer moments apart, so a brief, bounded retry of a side-effect
-/// free read absorbs the flake without hiding a persistent failure.
 const NOTE_READ_ATTEMPTS: u32 = 4;
 
-/// Base backoff between read attempts; grows linearly per attempt.
 const NOTE_READ_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// [`read_note_body`], retried up to [`NOTE_READ_ATTEMPTS`] times.
-///
-/// Retries only genuine failures, never "no note found": the read has no side
-/// effects, so retrying cannot double-apply anything, and a persistent failure
-/// still reaches the caller as the `Err` that keeps a writer from wiping the
-/// note. Total added wait is bounded well under the lock budget, so a holder's
-/// cost stays local work (ADR-069 D9).
+// Retries only genuine read failures, never "no note found": since the read
+// has no side effects, retrying can't double-apply anything, and a
+// persistent failure still reaches the caller as Err rather than being
+// mistaken for an empty note.
 async fn read_note_body_with_retry(
     git_root: Option<&std::path::Path>,
     object: &str,
@@ -187,16 +162,11 @@ async fn read_note_body_with_retry(
     Err(last_err.expect("at least one attempt ran"))
 }
 
-/// Read the inkentry note body on `object`, distinguishing "no note" (`None`)
-/// from a failed read (`Err`).
-///
-/// The distinction is load-bearing: a writer that mistakes a failed read for
-/// "no note yet" rewrites the whole note as just its own line, erasing every
-/// sibling entry. Seen live on Windows CI, where a transient git failure
-/// inside the guarded section wiped 6 of 8 concurrent entries (#185).
-///
-/// Matches on the exit code, not the message: "no note found" exits 1, while
-/// infrastructure failures die with 128, and the message text is localized.
+// Distinguishes "no note" (None) from a failed read (Err): a writer that
+// mistakes a failed read for "no note yet" would rewrite the note as just
+// its own line, erasing every sibling entry. Matches on the exit code ("no
+// note found" exits 1; infrastructure failures die with 128), not the
+// message, which is localized.
 async fn read_note_body(
     git_root: Option<&std::path::Path>,
     object: &str,
@@ -225,28 +195,26 @@ async fn read_note_body(
 /// What [`append_to_git_notes`] did, beyond writing the entry.
 #[derive(Debug)]
 pub struct AppendOutcome {
-    /// The carry-config status ensured along the way; a CLI caller announces
-    /// it once.
+    /// The carry-config status ensured along the way; a caller announces it once.
     pub rewrite_ref: RewriteRefStatus,
-    /// Set when the write proceeded **without** the notes lock (ADR-069 D8's
-    /// one kept degradation, on a filesystem where the lock cannot exist).
-    /// The caller must show it to the user: this return value is the only
-    /// channel that works without `RUST_LOG`.
+    /// Set when the write proceeded without the notes lock (the one
+    /// filesystem where the lock cannot exist). The caller should show this
+    /// to the user: it is the only channel that works without `RUST_LOG`.
     pub lock_degradation: Option<String>,
 }
 
-/// Append a `NoteRecord` as a JSON line to `refs/notes/inkentry` on HEAD.
+/// Appends a `NoteRecord` as a JSON line to `refs/notes/inkentry` on HEAD.
 ///
-/// Read-modify-write with append semantics: the existing blob is read and its
-/// lines (inkentry records and foreign content alike) are preserved verbatim;
-/// the new record is appended as one JSON line; the combined text is written
-/// back with `git notes add -f`.
+/// Read-modify-write with append semantics: the existing blob's lines
+/// (inkentry records and foreign content alike) are preserved verbatim, the
+/// new record is appended as one JSON line, and the result is written back
+/// with `git notes add -f`.
 ///
 /// Serialized end to end by [`lock_notes`]; without it a concurrent writer
-/// reads the same body and silently drops this entry on write-back (#185).
-/// Per ADR-069 D8 a contended lock is an `Err` and nothing is written; only a
-/// lock that cannot exist on this filesystem degrades to an unlocked write,
-/// reported in [`AppendOutcome::lock_degradation`].
+/// can read the same body and silently drop this entry on write-back. A
+/// contended lock is an `Err` and nothing is written; only a lock that cannot
+/// exist on this filesystem degrades to an unlocked write, reported in
+/// [`AppendOutcome::lock_degradation`].
 ///
 /// # Arguments
 /// * `git_root` — directory passed to `git -C`; `None` uses the process CWD.
@@ -255,18 +223,16 @@ pub async fn append_to_git_notes(
     git_root: Option<&std::path::Path>,
     record: &NoteRecord,
 ) -> Result<AppendOutcome> {
-    // ── 1. Get HEAD sha ───────────────────────────────────────────────────────
     let head = run_git(git_root, &["rev-parse", "HEAD"])
         .await
         .map(|s| s.trim().to_string())?;
     append_to_git_notes_at(git_root, &head, record).await
 }
 
-/// [`append_to_git_notes`] against an explicit target object rather than
-/// `HEAD` — the one other place a note attaches to a specific commit
-/// (ADR-099 D3: an anchor record attaches to the *claimed* commit, which the
-/// hook or `memory anchor` resolves independently of the process's own
-/// `HEAD`).
+// append_to_git_notes against an explicit target object rather than HEAD —
+// the one other place a note attaches to a specific commit (an anchor record
+// attaches to the claimed commit, resolved independently of the process's
+// own HEAD).
 async fn append_to_git_notes_at(
     git_root: Option<&std::path::Path>,
     target: &str,
@@ -276,7 +242,7 @@ async fn append_to_git_notes_at(
     // lock: serializing it would widen the guarded section for nothing.
     let rewrite_ref = ensure_notes_rewrite_ref(git_root).await;
 
-    // Guards all four steps (D8). Bind the whole enum: `Held`'s guard must
+    // Guards all four steps below. Bind the whole enum: `Held`'s guard must
     // live to the end of the function.
     let lock = writer_lock(git_root).await?;
     let lock_degradation = match &lock {
@@ -289,12 +255,10 @@ async fn append_to_git_notes_at(
         )),
     };
 
-    // ── 2. Read existing note (may not exist) ─────────────────────────────────
     let existing = read_note_body_with_retry(git_root, target)
         .await
         .context("could not read the existing note, so not overwriting it")?;
 
-    // ── 3. Append new entry ───────────────────────────────────────────────────
     let new_line = serde_json::to_string(record)?;
 
     let combined = match existing {
@@ -304,14 +268,10 @@ async fn append_to_git_notes_at(
         _ => new_line,
     };
 
-    // ── 4. Write back ─────────────────────────────────────────────────────────
-    // The note body is passed via stdin (`-F -`) rather than as a `-m` argv
-    // value: this keeps arbitrary/attacker-influenced note content off the
-    // process argv (and therefore out of `ps`/process-list visibility) and
-    // means the body can never be misparsed as an option, regardless of its
-    // contents. `--` guards the trailing `<object>` (target sha) so it can't
-    // be interpreted as an option either, even though `target` is always a
-    // `rev-parse`-verified sha here.
+    // Passed via stdin (`-F -`) rather than `-m` argv: keeps note content off
+    // argv/`ps` visibility and avoids it being misparsed as an option. `--`
+    // guards the trailing object (target sha) the same way, though target is
+    // always a rev-parse-verified sha here.
     run_git_with_stdin(
         git_root,
         &[
@@ -337,10 +297,9 @@ async fn append_to_git_notes_at(
 /// What [`append_new_to_git_notes`] did.
 #[derive(Debug)]
 pub struct BatchAppendOutcome {
-    /// The carry-config status ensured along the way; a CLI caller announces
-    /// it once.
+    /// The carry-config status ensured along the way; a caller announces it once.
     pub rewrite_ref: RewriteRefStatus,
-    /// Set when the write proceeded **without** the notes lock, exactly as
+    /// Set when the write proceeded without the notes lock, exactly as
     /// [`AppendOutcome::lock_degradation`].
     pub lock_degradation: Option<String>,
     /// Records appended to HEAD's note.
@@ -350,33 +309,18 @@ pub struct BatchAppendOutcome {
     pub already_carried: usize,
 }
 
-/// Append every record in `records` whose entity is not already on
-/// `refs/notes/inkentry`, as JSON lines on HEAD's note, in one
-/// read-modify-write under a single lock.
+/// Appends every record in `records` not already on `refs/notes/inkentry`, as
+/// JSON lines on HEAD's note, in one read-modify-write under a single lock.
 ///
-/// This is [`append_to_git_notes`] for a whole back catalogue arriving at once
-/// (`inkentry import`), and it differs from it in exactly two ways.
+/// Differs from calling [`append_to_git_notes`] per record in two ways: it
+/// takes the lock once for the whole batch instead of once per record, and it
+/// skips any record whose entity is already on the ref (checked by entity id,
+/// not by presence in the local store, so a re-import does not duplicate the
+/// entry on every run).
 ///
-/// **One lock, one write.** Calling the single-record helper per entry would
-/// take and release the lock once per entry and rewrite the note N times, so a
-/// dump of a few hundred entries would hold and drop the lock a few hundred
-/// times while a concurrent `memory add` waits out its budget against each.
-/// The whole batch is one guarded section instead, which keeps ADR-069 D8's
-/// contract (hold the lock or write nothing) at a fraction of the contention.
-///
-/// **Records already on the ref are skipped.** A dump whose entries came off
-/// this carrier in the first place must not be written back to it. Appending
-/// them anyway would still converge — [`fold_records`] collapses copies by
-/// `entity_id` — but it would grow the ref by a full duplicate of the log on
-/// every re-import, and a reader inspecting the raw blob would see each entry
-/// twice. The gate is the ref's own entity set, never the local store's:
-/// presence in `memory.db` says nothing about presence here, and that gap is
-/// the whole reason imported memory did not travel.
-///
-/// A ref that cannot be read is an `Err` and nothing is written, matching the
-/// read-failure rule the single-record path already holds to: a writer that
-/// mistakes an unreadable ref for an empty one cannot tell a duplicate from a
-/// new entry.
+/// A ref that cannot be read is an `Err` and nothing is written: an unreadable
+/// ref cannot be told apart from an empty one, so treating it as empty risks
+/// writing a duplicate.
 pub async fn append_new_to_git_notes(
     git_root: Option<&std::path::Path>,
     records: &[NoteRecord],
@@ -398,9 +342,9 @@ pub async fn append_new_to_git_notes(
         Some(root) => GitNotesBackend::with_root(root.to_path_buf()),
         None => GitNotesBackend::new(),
     };
-    // Every reachable note, not just HEAD's: an entry this dump carries may
-    // have been written on any commit in the history. Reads take no lock, so
-    // this cannot re-enter the one held above.
+    // Every reachable note, not just HEAD's — an entry may have been written
+    // on any commit. Reads take no lock, so this can't re-enter the one held
+    // above.
     let carried: HashSet<String> = backend
         .folded_records()
         .await
@@ -470,33 +414,21 @@ pub async fn append_new_to_git_notes(
     })
 }
 
-/// Append a state-update record for an entity that already exists on the
-/// carrier: `base` supplies its content (`kind`/`title`/`body`/`tags`/
-/// `linked_files`/`source_ref`/`valid_at`) unchanged, while `status`,
-/// `invalid_at` and `superseded_by_entity_id` override its mutable state.
+/// Appends a state-update record for an entity already on the carrier:
+/// `base` supplies its content unchanged, while `status`, `invalid_at` and
+/// `superseded_by_entity_id` override its mutable state.
 ///
-/// **Never rewrites the entity's existing line(s) in place.** A live-git
-/// experiment (three-repo harness) showed why: a rewrite leaves a second
-/// machine, which holds the original line plus a divergent local note of its
-/// own, with both the rewritten and the stale original line after
-/// `cat_sort_uniq` unions them — the entity appears twice, with conflicting
-/// `status`. Appending a new line instead, and folding same-`entity_id` copies
-/// at read time ([`fold_records`]), converges regardless of merge order
-/// (ADR-068 A6): the fold's archival rule is monotonic, so whichever copy
-/// carries `status: "archived"` wins.
+/// Never rewrites the entity's existing line(s) in place — doing so can leave
+/// a second machine with both the rewritten and its own stale original line
+/// after a notes merge, so the entity would appear twice with conflicting
+/// status. Appending a new line and folding same-`entity_id` copies at read
+/// time ([`fold_records`]) converges regardless of merge order instead, since
+/// the fold's archival rule is monotonic.
 ///
-/// This append is **not** the "re-recording an unchanged entry" case ADR-068
-/// A6 calls a no-op — that no-op is scoped to a byte-for-byte-unchanged
-/// re-record, and does not apply here since this call always changes mutable
-/// state. Nothing in this module suppresses same-`entity_id` appends; keep it
-/// that way; a guard that did would silently swallow every state update this
-/// function writes.
-///
-/// Shared by three callers, all passing `superseded_by_entity_id: None`
-/// except the supersede pair: `memory archive`'s carrier write-through
-/// (`archive.rs`), `GitNotesBackend::archive` (git-notes as the primary
-/// store, not the carrier), and `memory supersede` / `memory add
-/// --supersedes` (the two carriers of a supersede edge, which do pass it).
+/// This call always changes mutable state, so it must never be skipped as a
+/// no-op the way an unchanged re-record is: nothing here suppresses a
+/// same-`entity_id` append, and a guard that did would silently swallow every
+/// state update this function writes.
 pub async fn append_state_update(
     git_root: Option<&std::path::Path>,
     base: &Note,
@@ -516,13 +448,13 @@ pub async fn append_state_update(
     append_to_git_notes(git_root, &record).await
 }
 
-/// Append a record carrying `edges` as outgoing edges of `base`'s entity, its
-/// mutable state left as `base` reports it.
+/// Appends a record carrying `edges` as outgoing edges of `base`'s entity,
+/// its mutable state left unchanged.
 ///
-/// Same append-only shape as [`append_state_update`], and for the same reason:
-/// the fold unions edge lists across copies, so an edge recorded here converges
-/// on every clone whatever order the copies merge in. `supersedes` is never
-/// passed here; it travels as `superseded_by_entity_id`.
+/// Same append-only shape as [`append_state_update`]: the fold unions edge
+/// lists across copies, so an edge recorded here converges regardless of
+/// merge order. `supersedes` is never passed here; it travels as
+/// `superseded_by_entity_id`.
 pub async fn append_edges(
     git_root: Option<&std::path::Path>,
     base: &Note,
@@ -532,12 +464,11 @@ pub async fn append_edges(
     append_to_git_notes(git_root, &record).await
 }
 
-/// Append an ADR-099 D3 anchor record for `base`'s entity to `target_commit`
-/// (the claimed commit — not necessarily `HEAD`, unlike every other append in
-/// this module). The record carries `base`'s content unchanged, exactly like
-/// [`append_state_update`], so an entity accidentally selected as its own
-/// fold group's base (never happens in practice: an anchor record is always
-/// created after the entity's original write) loses nothing.
+/// Appends an anchor record for `base`'s entity to `target_commit` (the
+/// claimed commit — not necessarily `HEAD`, unlike every other append in this
+/// module). Carries `base`'s content unchanged, like [`append_state_update`],
+/// so it loses nothing even if this entity's own fold group picked it as the
+/// base.
 pub async fn append_anchor_record(
     git_root: Option<&std::path::Path>,
     target_commit: &str,
@@ -556,8 +487,8 @@ pub async fn append_anchor_record(
     append_to_git_notes_at(git_root, target_commit, &record).await
 }
 
-/// The record an entity update appends: `base`'s content unchanged, keyed by
-/// its `entity_id`, with the mutable state the caller supplies.
+// The record an entity update appends: base's content unchanged, keyed by
+// its entity_id, with the mutable state the caller supplies.
 #[allow(clippy::too_many_arguments)]
 fn entity_update_record(
     base: &Note,
@@ -581,23 +512,21 @@ fn entity_update_record(
         source_ref: base.source_ref.clone(),
         valid_at: base.valid_at,
         invalid_at,
-        // Machine-local rowid link: never populated by this path, which keys
-        // entities by `entity_id` only (ADR-068 A6).
+        // Machine-local rowid link: never populated here; this path keys
+        // entities by entity_id only.
         superseded_by: None,
         remote_id: None,
         entity_id: Some(note_entity_id(base)),
         superseded_by_entity_id,
         edges,
-        // Carried forward defensively; the fold never picks a state-update
-        // record as its group's base (it is never the earliest-created copy),
-        // so this value is not what a reader ultimately sees.
+        // Carried forward defensively: the fold never picks a state-update
+        // record as its group's base, so this value is not what a reader
+        // ultimately sees.
         origin: base.origin.clone(),
         op,
         patch_id,
     }
 }
-
-// ── Read-path merge: making fetched notes visible ────────────────────────────
 
 /// What [`merge_tracking_notes`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -611,22 +540,20 @@ pub enum NotesMergeOutcome {
     LockUnavailable,
 }
 
-/// Merge fetched teammate notes ([`INKENTRY_TRACKING_REF`]) into the working ref
-/// so `memory list` / `context` can see them.
+/// Merges fetched teammate notes into the working ref so `memory list` /
+/// `context` can see them.
 ///
-/// Does **no** network. It merges only what the user's own `git fetch` already
-/// wrote, which is what lets reads work with the remote unreachable and keeps
-/// egress off a path the user never pointed at a remote (ADR-069 D5).
+/// Does no network: it merges only what the user's own `git fetch` already
+/// wrote, so reads still work with the remote unreachable.
 ///
 /// Never fails the caller: a read must not break because the merge could not
-/// run. A missing tracking ref is nothing to do (git exits 128 when both refs
-/// are empty, which is the un-fetched solo case), and an unavailable lock skips
-/// the merge rather than waiting the caller out.
+/// run. A missing tracking ref is nothing to do (the un-fetched, solo case),
+/// and an unavailable lock skips the merge rather than making the caller wait.
 pub async fn merge_tracking_notes(git_root: Option<&std::path::Path>) -> NotesMergeOutcome {
-    // Without this, a concurrent `append_to_git_notes` read-modify-write
-    // silently overwrites the merged entries (#185 / ADR-069 D6). Unlike a
-    // writer, every non-acquired outcome skips: the union is idempotent, so
-    // the next read catches up, and a read must never fail over the lock.
+    // Without this, a concurrent append_to_git_notes read-modify-write could
+    // silently overwrite the merged entries. Unlike a writer, every
+    // non-acquired outcome just skips: the union is idempotent, so the next
+    // read catches up, and a read must never fail over the lock.
     let _lock = match lock_notes(git_root).await {
         Ok(LockAttempt::Acquired(guard)) => guard,
         Ok(LockAttempt::Contended { .. }) | Ok(LockAttempt::Unusable { .. }) => {
@@ -662,8 +589,6 @@ pub async fn merge_tracking_notes(git_root: Option<&std::path::Path>) -> NotesMe
     }
 }
 
-/// Run a git subprocess, optionally in `dir`, and return stdout as a `String`.
-/// Returns `Err` if the process fails.
 async fn run_git(dir: Option<&std::path::Path>, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("git");
     if let Some(d) = dir {
@@ -681,9 +606,8 @@ async fn run_git(dir: Option<&std::path::Path>, args: &[&str]) -> Result<String>
     }
 }
 
-/// Run a git subprocess, optionally in `dir`, writing `stdin_data` to its
-/// stdin and returning stdout as a `String`. Used with `-F -` invocations so
-/// note bodies never appear on argv.
+// Writes stdin_data to the subprocess's stdin, so callers can pass note
+// bodies via `-F -` without putting them on argv.
 async fn run_git_with_stdin(
     dir: Option<&std::path::Path>,
     args: &[&str],
@@ -719,11 +643,9 @@ async fn run_git_with_stdin(
     }
 }
 
-/// ADR-099 D3's "earliest reachable, falling back to earliest" rule over a
-/// set of `(commit, created_at)` anchors (see
-/// [`GitNotesBackend::anchors_for_entity`]). A thin `pub` wrapper: the
-/// resolution logic itself lives in `fold` alongside the fold rules it must
-/// stay consistent with.
+/// Resolves "earliest reachable, falling back to earliest" over a set of
+/// `(commit, created_at)` anchors — see
+/// [`GitNotesBackend::anchors_for_entity`].
 pub fn resolve_source_ref(
     anchors: &[(String, i64)],
     reachable: impl Fn(&str) -> bool,
@@ -749,10 +671,9 @@ pub async fn is_ancestor(
     matches!(cmd.status().await, Ok(status) if status.success())
 }
 
-/// Every commit reachable from a local branch, tag or remote-tracking branch
-/// (ADR-099 D3a: "no longer reachable from any ref"). Deliberately excludes
-/// `refs/notes/*`, whose own commit-shaped history is not the code DAG this
-/// check cares about.
+/// Every commit reachable from a local branch, tag or remote-tracking branch.
+/// Deliberately excludes `refs/notes/*`, whose own commit-shaped history is
+/// not the code DAG this check cares about.
 pub async fn commits_reachable_from_any_ref(
     git_root: Option<&std::path::Path>,
 ) -> Result<HashSet<String>> {
@@ -769,10 +690,9 @@ pub async fn commits_reachable_from_any_ref(
     }
 }
 
-/// `git patch-id --stable` of `sha`'s diff, or `None` for a merge commit
-/// (ADR-099 D3: "Merge commits have no patch-id and carry none"). A root
-/// commit (no parent) still gets one, diffed against the empty tree, exactly
-/// as `git show`/`git patch-id` already do for it.
+/// `git patch-id --stable` of `sha`'s diff, or `None` for a merge commit. A
+/// root commit (no parent) still gets one, diffed against the empty tree,
+/// exactly as `git show`/`git patch-id` already do for it.
 pub async fn commit_patch_id(
     git_root: Option<&std::path::Path>,
     sha: &str,
@@ -817,11 +737,9 @@ pub async fn commit_patch_id(
     Ok(stdout.split_whitespace().next().map(str::to_string))
 }
 
-/// Hard cap on entries returned by `list()`.
-///
-/// Bounds output only, not work: the entity fold has to read every reachable
-/// note blob whatever the limit.
-/// Callers needing unbounded listing should use `--backend sqlite`.
+// Hard cap on entries returned by list(); bounds output only, not work: the
+// fold still reads every reachable note blob regardless. Use --backend
+// sqlite for unbounded listing.
 const GIT_NOTES_MAX_LIST: usize = 500;
 
 /// Memory backend backed by `git notes` in the `refs/notes/inkentry` namespace.
@@ -834,11 +752,8 @@ const GIT_NOTES_MAX_LIST: usize = 500;
 /// # Concurrency
 /// `add` and `archive` both do read-modify-write and rewrite the note with
 /// `git notes add -f`, appending a new JSON line rather than mutating an
-/// existing one (`archive` appends a `status: "archived"` state-update via
-/// [`append_state_update`], resolving its target by `entity_id` first, per
-/// ADR-068 A6). Each is serialized by [`lock_notes`], which is keyed on the
-/// git **common** dir so that worktrees sharing one notes ref contend on one
-/// lock (#185).
+/// existing one. Each is serialized by [`lock_notes`], keyed on the git
+/// common dir so worktrees sharing one notes ref contend on one lock.
 ///
 /// # Unsupported methods
 /// Semantic search (`search`, `search_hybrid`, `search_timeline`, `search_text`),
@@ -876,10 +791,10 @@ impl GitNotesBackend {
         cmd
     }
 
-    /// Exposes the configured root to the free-function carrier helpers
-    /// (`append_state_update` et al.), which take `Option<&Path>` rather than
-    /// `&GitNotesBackend`: they are shared with the SQLite-primary write-through
-    /// path, which has no `GitNotesBackend` to borrow from.
+    // Exposes the root to the free-function carrier helpers
+    // (append_state_update et al.), which take Option<&Path> since they're
+    // shared with the SQLite-primary write-through path that has no
+    // GitNotesBackend to borrow.
     fn git_root(&self) -> Option<&std::path::Path> {
         self.git_root.as_deref()
     }
@@ -897,10 +812,9 @@ impl GitNotesBackend {
         }
     }
 
-    /// Write a inkentry note body to `object` via `git notes add -f -F - --
-    /// <object>`, passing `body` over stdin. Keeps note content (which may
-    /// contain arbitrary user/LLM text) off argv, and the `--` separator
-    /// stops `object` from being parsed as an option.
+    // Writes the note body via `git notes add -f -F - -- <object>`, over
+    // stdin: keeps note content (which may be arbitrary user/LLM text) off
+    // argv, and `--` stops object from being parsed as an option.
     async fn add_note_stdin(&self, object: &str, body: &str) -> Result<()> {
         let mut cmd = self.git();
         cmd.args([
@@ -940,12 +854,10 @@ impl GitNotesBackend {
         Ok(self.run(&["rev-parse", "HEAD"]).await?.trim().to_string())
     }
 
-    /// `(commit_sha, note_blob_sha)` for every commit reachable from HEAD that
-    /// carries a inkentry note, in reverse-chronological (newest first) order.
-    ///
-    /// Only commits reachable from HEAD are listed: memory travels with the
-    /// code that carries it, so a teammate's note on a fetched-but-unmerged
-    /// commit stays invisible until that commit is merged.
+    // (commit_sha, note_blob_sha) for every commit reachable from HEAD that
+    // carries a note, newest first. Only HEAD-reachable commits are listed:
+    // memory travels with the code that carries it, so a teammate's note on
+    // a fetched-but-unmerged commit stays invisible until merged.
     async fn noted_commits(&self) -> Result<Vec<(String, String)>> {
         // `git notes --ref=inkentry list` → "<note-blob-sha> <commit-sha>"
         let list_out = self
@@ -992,11 +904,10 @@ impl GitNotesBackend {
         Ok(pairs)
     }
 
-    /// `(commit_sha, note_blob_sha)` for every noted commit, reachable from
-    /// HEAD or not — unlike [`noted_commits`](Self::noted_commits), which
-    /// filters to HEAD's history. ADR-099 D3a's reconciliation pass needs
-    /// exactly the commits that filter would drop: an anchor whose commit a
-    /// rebase orphaned.
+    // (commit_sha, note_blob_sha) for every noted commit, reachable or not —
+    // unlike noted_commits, which filters to HEAD's history. The
+    // reconciliation pass needs exactly the commits that filter would drop:
+    // an anchor whose commit a rebase orphaned.
     async fn all_noted_commits(&self) -> Result<Vec<(String, String)>> {
         let list_out = self
             .git()
@@ -1018,8 +929,7 @@ impl GitNotesBackend {
     }
 
     /// Every record on the ref paired with its attachment commit, reachable
-    /// or not (ADR-099 D3a). The unfiltered counterpart of
-    /// [`records_with_commit`](Self::records_with_commit).
+    /// or not.
     pub async fn all_noted_records(&self) -> Result<Vec<(String, NoteRecord)>> {
         let noted = self.all_noted_commits().await?;
         let blob_shas: Vec<String> = noted.iter().map(|(_, blob)| blob.clone()).collect();
@@ -1034,9 +944,9 @@ impl GitNotesBackend {
         Ok(out)
     }
 
-    /// Note blob shas only, for the lenient batch read `folded_records` uses:
-    /// listing/lookup reads must not break because one historical note is
-    /// unreadable (see [`read_note_blobs`](Self::read_note_blobs)).
+    // Note blob shas only, for the lenient batch read folded_records uses:
+    // listing/lookup reads must not break because one historical note is
+    // unreadable.
     async fn noted_blobs(&self) -> Result<Vec<String>> {
         Ok(self
             .noted_commits()
@@ -1046,12 +956,10 @@ impl GitNotesBackend {
             .collect())
     }
 
-    /// Read every listed note blob in one `git cat-file --batch`, in the order
-    /// given.
-    ///
-    /// The fold needs every reachable blob, so a per-commit `git notes show`
-    /// would cost one subprocess each (~13 ms). Write paths keep `show`: they
-    /// read exactly one note.
+    // Reads every listed note blob in one `git cat-file --batch`, in request
+    // order. The fold needs every reachable blob, so a per-commit `git notes
+    // show` would cost one subprocess each (~13ms); write paths keep `show`
+    // since they read exactly one note.
     async fn read_note_blobs(&self, blob_shas: &[String]) -> Result<Vec<String>> {
         if blob_shas.is_empty() {
             return Ok(vec![]);
@@ -1092,11 +1000,10 @@ impl GitNotesBackend {
         parse_cat_file_batch(&out.stdout)
     }
 
-    /// Read the raw note blob for `commit_sha` (empty string if no note).
-    ///
-    /// A failed read is an `Err`, never an empty blob: `append_record` writes
-    /// back what this returns, so conflating the two turns one transient git
-    /// failure into a wiped note (#185).
+    // Raw note blob for commit_sha (empty string if no note). A failed read
+    // is Err, never an empty blob: append_record writes back what this
+    // returns, so conflating the two would turn a transient git failure into
+    // a wiped note.
     async fn read_note_blob(&self, commit_sha: &str) -> Result<String> {
         Ok(
             read_note_body_with_retry(self.git_root.as_deref(), commit_sha)
@@ -1105,8 +1012,8 @@ impl GitNotesBackend {
         )
     }
 
-    /// Append `record` as a new JSON line to `object`'s note, preserving every
-    /// existing line (inkentry records and foreign content) byte-for-byte.
+    // Appends record as a new JSON line to object's note, preserving every
+    // existing line byte-for-byte.
     async fn append_record(&self, object: &str, record: &NoteRecord) -> Result<()> {
         // git notes is the primary store on this path (`--backend git-notes`),
         // so an unconfigured carry ref orphans the only copy. Status is dropped:
@@ -1125,16 +1032,14 @@ impl GitNotesBackend {
         self.add_note_stdin(object, &combined).await
     }
 
-    /// Every entry on the ref, folded to one record per entity, no filtering
-    /// or limit truncation — the shared basis for `collect()`'s filtered
-    /// listing and `get()`'s single-entity lookup, so both see the same
-    /// folded state (ADR-068 A6/E4): a record's `status`/
-    /// `superseded_by_entity_id` must reflect every state-update appended
-    /// for its entity (e.g. via `append_state_update`), not just whichever
-    /// raw line happens to carry its original numeric `id`.
-    ///
-    /// The only site that sees every commit's records, so the only site that
-    /// can fold an entity's copies together.
+    // Every entry on the ref, folded to one record per entity, no filtering
+    // or limit truncation — the shared basis so collect()'s listing and
+    // get()'s lookup see the same folded state: a record's
+    // status/superseded_by must reflect every state-update appended for its
+    // entity, not just whichever raw line carries its original id.
+    //
+    // The only site that sees every commit's records, so the only site that
+    // can fold an entity's copies together.
     async fn folded_records(&self) -> Result<Vec<NoteRecord>> {
         let blob_shas = self.noted_blobs().await?;
 
@@ -1189,14 +1094,13 @@ impl GitNotesBackend {
             .collect())
     }
 
-    /// Every inkentry record on the ref, each paired with the commit its note is
-    /// anchored to (newest commit first). Unlike [`folded_records`] this keeps
-    /// the per-commit provenance the `--source-ref` anchor lookup needs, so it
-    /// does not fold; callers fold (or anchor) as they need.
-    ///
-    /// `noted_commits` and `read_note_blobs` share one order (the latter reads
-    /// the former's blob shas in request order), so zipping them attributes each
-    /// blob's records to the right commit.
+    // Every record on the ref, each paired with its anchor commit, newest
+    // first. Unlike folded_records this keeps per-commit provenance and does
+    // not fold; callers fold or anchor as they need.
+    //
+    // noted_commits and read_note_blobs share one order (the latter reads
+    // the former's blob shas in request order), so zipping them attributes
+    // each blob's records to the right commit.
     async fn records_with_commit(&self) -> Result<Vec<(String, NoteRecord)>> {
         let noted = self.noted_commits().await?;
         let blob_shas: Vec<String> = noted.iter().map(|(_, blob)| blob.clone()).collect();
@@ -1216,12 +1120,12 @@ impl GitNotesBackend {
     ///
     /// The anchor — the git-notes attachment (commit → note object) — is the
     /// only place a `memory add` entry records which commit it belongs to: its
-    /// SQLite `source_ref` column stays NULL (that column is harvest provenance,
-    /// ADR-062), so a `source_ref` column query can never surface it. Prefix
-    /// matching mirrors that column's `LIKE 'prefix%'` semantics — a plain
-    /// string prefix over the full commit sha — rather than git's own
-    /// abbreviated-object resolution, so a prefix that is ambiguous to git still
-    /// matches every noted commit it is a prefix of.
+    /// SQLite `source_ref` column stays NULL, so a `source_ref` column query
+    /// can never surface it. Prefix matching mirrors that column's `LIKE
+    /// 'prefix%'` semantics — a plain string prefix over the full commit sha
+    /// — rather than git's own abbreviated-object resolution, so an
+    /// ambiguous-to-git prefix still matches every noted commit it is a
+    /// prefix of.
     pub async fn entity_ids_anchored_to(&self, sha_prefix: &str) -> Result<Vec<String>> {
         let records = self.records_with_commit().await?;
         Ok(fold::all_anchor_commits(&records)
@@ -1232,10 +1136,8 @@ impl GitNotesBackend {
     }
 
     /// Every explicit `op: "anchor"` commit claimed for `entity_id`, each
-    /// paired with the `created_at` of the record that claimed it (ADR-099
-    /// D3). Excludes the base write-time attachment — see
-    /// [`fold::anchors_for_entity`]'s doc for why. Feeds
-    /// [`fold::resolve_source_ref`].
+    /// paired with the `created_at` of the record that claimed it. Excludes
+    /// the base write-time attachment.
     pub async fn anchors_for_entity(&self, entity_id: &str) -> Result<Vec<(String, i64)>> {
         let records = self.records_with_commit().await?;
         Ok(fold::anchors_for_entity(&records, entity_id))
@@ -1243,16 +1145,14 @@ impl GitNotesBackend {
 
     /// The distinct set of full commit shas that at least one entry's memory
     /// note is anchored to — the write-time attachment plus every commit
-    /// carrying an explicit `op: "anchor"` record (ADR-099 D3), so
-    /// `rec.commit_coverage` counts an entry anchored later, not only at
-    /// `memory add` time.
+    /// carrying an explicit `op: "anchor"` record, so a caller counts an
+    /// entry anchored later, not only at `memory add` time.
     ///
-    /// Same resolution as [`entity_ids_anchored_to`] (`records_with_commit` +
-    /// [`fold::all_anchor_commits`]), read from the commit side instead of the
-    /// entity side: `rec.commit_coverage` (ADR-098) needs "is this commit
-    /// covered" for every commit in a window, and calling
-    /// `entity_ids_anchored_to` once per commit would re-walk the whole notes
-    /// ref each time. One pass here, then a caller checks membership.
+    /// Same resolution as [`entity_ids_anchored_to`], read from the commit
+    /// side instead of the entity side: a caller needing "is this commit
+    /// covered" for every commit in a window would otherwise re-walk the
+    /// whole notes ref by calling `entity_ids_anchored_to` per commit. One
+    /// pass here, then the caller checks membership.
     pub async fn anchored_commit_shas(&self) -> Result<HashSet<String>> {
         let records = self.records_with_commit().await?;
         Ok(fold::all_anchor_commits(&records)
@@ -1261,11 +1161,11 @@ impl GitNotesBackend {
             .collect())
     }
 
-    /// Note-anchored entries whose anchor commit begins with `sha_prefix`, as
-    /// folded `Note`s. The git-notes analogue of the SQLite `source_ref` filter,
-    /// used when git notes is the primary store (`--backend git-notes` / the
-    /// pre-init carrier); the SQLite-primary path resolves the same anchors via
-    /// [`entity_ids_anchored_to`] and reads the authoritative rows back instead.
+    // Note-anchored entries whose anchor commit begins with sha_prefix, as
+    // folded Notes. The git-notes analogue of the SQLite source_ref filter,
+    // used when git notes is the primary store; the SQLite-primary path
+    // resolves the same anchors via entity_ids_anchored_to and reads the
+    // rows back instead.
     async fn list_anchored_to(
         &self,
         sha_prefix: &str,
@@ -1310,7 +1210,7 @@ impl GitNotesBackend {
             record_in_window(record, include_archived, as_of)
         });
 
-        // Stable over first-encounter order, so ties keep blob order (D2).
+        // Stable over first-encounter order, so ties keep blob order.
         folded.sort_by_key(|r| r.created_at);
         if folded.len() > limit {
             // Keep the newest, as the sqlite backend's `ORDER BY created_at
@@ -1322,15 +1222,15 @@ impl GitNotesBackend {
     }
 }
 
-/// Whether a folded record survives the archived / point-in-time gate shared by
-/// [`GitNotesBackend::collect`] and [`GitNotesBackend::list_anchored_to`].
-/// `kind` filtering (only `collect` does it) stays with the caller.
-///
-/// A point-in-time (`as_of`) query is governed entirely by the temporal window,
-/// independent of archived status: an entry archived or superseded AFTER T was
-/// live at T and must be returned, so the archived gate is skipped whenever
-/// `as_of` is set and `include_archived` then only affects the current-view
-/// listing.
+// Whether a folded record survives the archived / point-in-time gate shared
+// by collect() and list_anchored_to(). kind filtering (collect only) stays
+// with the caller.
+//
+// A point-in-time (as_of) query is governed entirely by the temporal window,
+// independent of archived status: an entry archived or superseded after T
+// was live at T and must be returned, so the archived gate is skipped
+// whenever as_of is set; include_archived then only affects the
+// current-view listing.
 fn record_in_window(record: &NoteRecord, include_archived: bool, as_of: Option<i64>) -> bool {
     if let Some(ts) = as_of {
         let effective = record.valid_at.unwrap_or(record.created_at);
@@ -1348,11 +1248,9 @@ fn record_in_window(record: &NoteRecord, include_archived: bool, as_of: Option<i
     true
 }
 
-/// Permissively parse the inkentry records from one note blob.
-///
-/// The blob is JSON Lines interleaved with foreign content (prose, other
-/// tools' lines). Foreign lines are skipped without error; only a record from
-/// a newer, incompatible `schema_version` returns an error.
+// Permissively parses the inkentry records from one note blob (JSON Lines
+// interleaved with foreign content). Foreign lines are skipped; only a
+// newer, incompatible schema_version returns an error.
 fn parse_records(blob: &str) -> Result<Vec<NoteRecord>> {
     let mut records = Vec::new();
     for line in blob.lines() {
@@ -1374,10 +1272,9 @@ fn parse_records(blob: &str) -> Result<Vec<NoteRecord>> {
     Ok(records)
 }
 
-/// Split `git cat-file --batch` output into one body per requested object.
-///
-/// Each record is `<sha> <type> <size>\n<size bytes>\n`. The size header is the
-/// only safe delimiter: a note body contains newlines of its own.
+// Splits `git cat-file --batch` output into one body per requested object.
+// Each record is "<sha> <type> <size>\n<size bytes>\n"; the size header is
+// the only safe delimiter since a note body has newlines of its own.
 fn parse_cat_file_batch(out: &[u8]) -> Result<Vec<String>> {
     let mut bodies = Vec::new();
     let mut rest = out;
@@ -1416,9 +1313,9 @@ fn parse_cat_file_batch(out: &[u8]) -> Result<Vec<String>> {
     Ok(bodies)
 }
 
-/// Classify one line of a note blob: `Some(record)` if it parses as a JSON
-/// *object* deserializing into `NoteRecord`. Non-JSON, non-object JSON, blank,
-/// and prose lines are foreign (`None`).
+// Classifies one line of a note blob: Some(record) if it parses as a JSON
+// object deserializing into NoteRecord; non-JSON, non-object, blank, and
+// prose lines are foreign (None).
 fn parse_inkentry_line(line: &str) -> Option<NoteRecord> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -1432,12 +1329,12 @@ fn parse_inkentry_line(line: &str) -> Option<NoteRecord> {
     serde_json::from_value(value).ok()
 }
 
-/// The framing `git cat-file --batch` emits, pinned against git 2.55.
+// The framing `git cat-file --batch` emits, pinned against git 2.55.
 #[cfg(test)]
 mod cat_file_batch {
     use super::*;
 
-    /// One object: `<sha> <type> <size>\n<body>\n`.
+    // One object: `<sha> <type> <size>\n<body>\n`.
     fn framed(sha: &str, body: &str) -> String {
         format!("{sha} blob {}\n{body}\n", body.len())
     }
@@ -1447,8 +1344,8 @@ mod cat_file_batch {
         assert!(parse_cat_file_batch(b"").expect("parse").is_empty());
     }
 
-    /// A note body holds newlines of its own, so only the size header can
-    /// delimit it: a body line that mimics a header must not split it.
+    // A note body holds newlines of its own, so only the size header can
+    // delimit it: a body line that mimics a header must not split it.
     #[test]
     fn a_body_that_mimics_a_header_is_not_split() {
         let body = "line one\ndeadbeef blob 99\nline three";
@@ -1459,8 +1356,8 @@ mod cat_file_batch {
         );
     }
 
-    /// One unreadable note must not fail the whole read: git reports
-    /// `<sha> missing` with no body and still exits 0.
+    // One unreadable note must not fail the whole read: git reports
+    // `<sha> missing` with no body and still exits 0.
     #[test]
     fn a_missing_object_yields_an_empty_body_and_the_batch_survives() {
         let out = format!(
@@ -1475,8 +1372,9 @@ mod cat_file_batch {
         );
     }
 
-    /// `git notes add --allow-empty` writes the empty blob. Git still emits the
-    /// body's trailing newline, so a zero-length body must not read as truncated.
+    // `git notes add --allow-empty` writes the empty blob. Git still emits
+    // the body's trailing newline, so a zero-length body must not read as
+    // truncated.
     #[test]
     fn an_empty_blob_parses_as_an_empty_body() {
         assert_eq!(
@@ -1490,8 +1388,8 @@ mod cat_file_batch {
         assert!(parse_cat_file_batch(b"aaa blob 99\nshort\n").is_err());
     }
 
-    /// Records are consumed in request order, so a body can never be attributed
-    /// to the wrong note.
+    // Consumed in request order, so a body is never attributed to the wrong
+    // note.
     #[test]
     fn bodies_come_back_in_request_order() {
         let out = format!("{}{}", framed("aaa", "one"), framed("bbb", "two"));
@@ -1502,7 +1400,6 @@ mod cat_file_batch {
         );
     }
 
-    /// A repo carrying one note, and that note's blob sha.
     fn repo_with_one_note() -> (tempfile::TempDir, String) {
         crate::test_support::isolate_git_config();
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -1539,13 +1436,11 @@ mod cat_file_batch {
         (dir, blob)
     }
 
-    /// The batch has to drain stdout while it writes stdin. Sending the whole
-    /// request first deadlocks: git stops reading once its stdout pipe fills,
-    /// and the fold reads every reachable blob, so `GIT_NOTES_MAX_LIST` does not
-    /// bound the request size.
-    ///
-    /// 5000 shas is ~205 KiB in and ~340 KiB out, past the 64 KiB pipe buffer
-    /// both ways. A regression here hangs, so the read is bounded to fail loudly.
+    // The batch must drain stdout while writing stdin: git stops reading
+    // once its stdout pipe fills, and the fold reads every reachable blob,
+    // so GIT_NOTES_MAX_LIST doesn't bound the request size. 5000 shas is
+    // ~205KiB in, ~340KiB out — past the 64KiB pipe buffer both ways, so a
+    // regression here hangs instead of failing loudly.
     #[tokio::test]
     async fn a_request_past_the_pipe_buffer_does_not_deadlock() {
         let (dir, blob) = repo_with_one_note();

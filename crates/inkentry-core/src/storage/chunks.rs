@@ -4,9 +4,9 @@ use rusqlite::OptionalExtension;
 use super::Database;
 use crate::search::lexical::identifier_subwords;
 
-/// The identifier sub-words the code full-text index holds beside a chunk's
-/// own text: `(name_words, body_words)`, the latter drawn from the docstring
-/// (inside the `metadata` JSON) and the content. `None` when nothing splits.
+// The identifier sub-words the code full-text index holds beside a chunk's
+// own text: `(name_words, body_words)`, the latter drawn from the docstring
+// (inside the `metadata` JSON) and the content. `None` when nothing splits.
 pub(crate) fn chunk_subwords(
     name: Option<&str>,
     content: &str,
@@ -72,8 +72,8 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Backfill token_count for all chunks where it is still 0 (existing indexes).
-    /// Returns the number of rows updated.
+    /// Backfills `token_count` for chunks where it is still 0. Returns the
+    /// number of rows updated.
     pub fn backfill_token_counts(&self) -> Result<usize> {
         let mut stmt = self
             .conn
@@ -94,19 +94,17 @@ impl Database {
         Ok(count)
     }
 
-    /// Return chunks the embed queue must (re-)process: those with **no** vector
-    /// yet (never embedded) and those flagged `embed_pending = 1` (a stored
-    /// vector that no longer reflects the chunk's current `embedding_text()` and
-    /// must be re-embedded in place), less the chunks flagged `text_only`
-    /// (ADR-104), which are never queued. Returns the raw fields needed to
-    /// reconstruct the exact `Chunk::embedding_text()` document format plus the
-    /// stored token estimate: `(chunk_id, name, metadata_json, summary, content,
+    /// Chunks the embed queue must (re-)process: those with no vector yet
+    /// (never embedded) and those flagged `embed_pending = 1` (a stored vector
+    /// that no longer reflects the chunk's current `embedding_text()`),
+    /// excluding `text_only` chunks, which are never queued. Returns the raw
+    /// fields needed to reconstruct `Chunk::embedding_text()` plus the stored
+    /// token estimate: `(chunk_id, name, metadata_json, summary, content,
     /// token_count)`. `token_count` may be 0 on a pre-backfill index.
     ///
-    /// A plain re-`index` skips unchanged files by file-hash, so those chunks
-    /// never reach the embed phase on their own; the index command unions the
-    /// rows returned here into the embed batch so unchanged-but-unembedded
-    /// chunks still get embedded without reparsing.
+    /// A plain re-`index` skips unchanged files by file-hash, so the index
+    /// command unions these rows into the embed batch to still embed
+    /// unchanged-but-unembedded chunks without reparsing.
     #[allow(clippy::type_complexity)]
     pub fn chunks_missing_embeddings(
         &self,
@@ -120,18 +118,15 @@ impl Database {
             usize,
         )>,
     > {
-        // Priority bands within the one queue, data-driven, no cold/warm
-        // branching:
-        //   - (e.chunk_id IS NOT NULL) ASC leads, so never-embedded chunks (no
-        //     vector, key 0) always sort ahead of pending re-embeds (have a
-        //     vector, key 1): coverage is bought before refinement.
-        //   - graph_rank DESC then puts PageRank-central code first. PageRank now
-        //     runs before the embed phase, so this is honest on a cold first
-        //     index too; a repo with no edges leaves every rank at the 0.0
-        //     default and this key is inert.
-        //   - f.mtime DESC orders by file recency; legacy/pre-migration rows
-        //     carry mtime 0 and deterministically sort last.
-        //   - c.id is the final deterministic tiebreak.
+        // Priority bands within one queue, data-driven, no cold/warm branching:
+        //   - (e.chunk_id IS NOT NULL) ASC: never-embedded chunks (key 0) sort
+        //     ahead of pending re-embeds (key 1) — coverage before refinement.
+        //   - graph_rank DESC: PageRank runs before the embed phase, so ranks
+        //     are already populated even on a cold first index; a repo with no
+        //     edges leaves every rank at 0.0, making this key inert.
+        //   - f.mtime DESC: file recency; legacy/pre-migration rows carry
+        //     mtime 0 and sort last.
+        //   - c.id: final deterministic tiebreak.
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.id, c.name, c.metadata, c.summary, c.content, c.token_count
              FROM chunks c
@@ -162,8 +157,7 @@ impl Database {
         Ok(())
     }
 
-    /// Fetch full `SearchResult` rows for a list of chunk IDs (used for graph
-    /// neighbour enrichment in `ask`).
+    /// Fetches full `SearchResult` rows for a list of chunk IDs.
     pub fn chunks_by_ids(&self, ids: &[i64]) -> Result<Vec<crate::search::SearchResult>> {
         if ids.is_empty() {
             return Ok(vec![]);
@@ -210,12 +204,10 @@ impl Database {
         Ok(out)
     }
 
-    /// Return all chunks for a file path (exact match or LIKE suffix).
-    /// Used by the `chunks` subcommand and `cat-chunks` plumbing command.
+    /// Returns all chunks for a file path (exact match or LIKE suffix).
     pub fn chunks_for_file(&self, path: &str) -> Result<Vec<crate::search::SearchResult>> {
-        // Escape LIKE metacharacters in the user-supplied path so that '%' and '_'
-        // in real file names are treated as literals. ESCAPE '\\' activates the
-        // backslash escape character in the SQLite LIKE expression.
+        // Escapes LIKE metacharacters in the path so '%' and '_' in real file
+        // names are treated as literals.
         let escaped = super::escape_like(path);
         let suffix_pattern = format!("%{escaped}");
         let mut stmt = self.conn.prepare(
@@ -254,9 +246,8 @@ impl Database {
     /// (`summary IS NULL`). Returns `(id, name, metadata_json, content)`, ordered
     /// by id for a deterministic pass. A stored `""` (composed but suppressed for
     /// a secret hit, or genuinely empty) is not `NULL`, so it is never
-    /// recomputed on a plain re-index — matching the existing refill guard.
-    /// Title-less chunks are excluded here; their slot is built by tier-3 MMR
-    /// selection, not structural composition.
+    /// recomputed on a plain re-index. Title-less chunks are excluded here;
+    /// their slot is built by tier-3 MMR selection, not structural composition.
     #[allow(clippy::type_complexity)]
     pub fn named_chunks_needing_summary(
         &self,
@@ -399,7 +390,6 @@ mod tests {
     use super::Database;
     use std::sync::OnceLock;
 
-    /// Register the sqlite-vec extension exactly once per test process.
     fn register_sqlite_vec() {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
@@ -417,7 +407,6 @@ mod tests {
         Database::open(std::path::Path::new(":memory:")).expect("failed to open in-memory Database")
     }
 
-    /// Insert two chunks and return their ids.
     fn seed_two_chunks(db: &Database) -> (i64, i64) {
         let file_id = db
             .upsert_file("src/lib.rs", Some("rust"), "deadbeef", 0)
@@ -431,8 +420,7 @@ mod tests {
         (a, b)
     }
 
-    /// Upsert one file at `mtime` (unix secs) and insert a named chunk per entry
-    /// in `names`, returning the chunk ids in insertion order.
+    // `mtime` is unix seconds; returns chunk ids in insertion order.
     fn seed_file_chunks(db: &Database, path: &str, mtime: i64, names: &[&str]) -> Vec<i64> {
         let file_id = db
             .upsert_file(path, Some("rust"), "h", mtime)
@@ -488,15 +476,12 @@ mod tests {
         assert_eq!(missing_ids(&db), product);
         assert_eq!(db.refresh_pending_count().unwrap(), 0);
 
-        // Nor does tier 3 refine one that kept a vector from before the rule.
+        // A text_only chunk that already carries a vector is still no tier-3 candidate.
         db.insert_embedding(window, &[0.2f32; 896]).unwrap();
         assert!(db.titleless_chunks_needing_selection().unwrap().is_empty());
     }
 
-    /// Cold index: every `graph_rank` is the 0.0 default, so the embed queue is
-    /// ordered by `files.mtime DESC` (most-recently-modified file first) with
-    /// `chunks.id` breaking ties within a file — and this is deterministic
-    /// across repeated calls on the same data.
+    // Cold: every `graph_rank` is the 0.0 default.
     #[test]
     fn chunks_missing_embeddings_cold_orders_by_mtime_desc_then_id() {
         let db = open_db();
@@ -518,9 +503,7 @@ mod tests {
         );
     }
 
-    /// Warm re-index: the prior run's `graph_rank DESC` leads (hot code first);
-    /// chunks with no rank yet (`graph_rank = 0`, e.g. newly added) sort after,
-    /// ordered by `mtime DESC`.
+    // Warm: newly added chunks (`graph_rank = 0`) sort after ranked ones, by mtime DESC.
     #[test]
     fn chunks_missing_embeddings_warm_orders_by_graph_rank_then_mtime() {
         let db = open_db();
@@ -541,9 +524,7 @@ mod tests {
         );
     }
 
-    /// Legacy/pre-migration rows carry `mtime = 0` (or `modified()` was
-    /// unavailable). They must not error and must sort deterministically after
-    /// positive mtimes, `chunks.id` breaking ties.
+    // `mtime = 0` also covers a `modified()` call that failed.
     #[test]
     fn chunks_missing_embeddings_legacy_mtime_zero_sorts_last() {
         let db = open_db();
@@ -558,12 +539,10 @@ mod tests {
         );
     }
 
-    /// A bulk-copied file tree (e.g. `cp -r` or a fresh checkout) commonly
-    /// leaves every file with an *identical* mtime, and a cold index leaves
-    /// every chunk's `graph_rank` at the shared `0.0` default. With both
-    /// leading keys tied across many rows, the ordering must not fall through
-    /// to SQLite's unspecified tie-break: `c.id` must fully determine the
-    /// order, identically across repeated calls.
+    // A bulk-copied tree (`cp -r`, a fresh checkout) commonly gives every file
+    // the same mtime, tying both leading sort keys; `c.id` must still fully
+    // determine the order rather than falling through to SQLite's unspecified
+    // tie-break.
     #[test]
     fn chunks_missing_embeddings_many_ties_are_fully_determined_by_id() {
         let db = open_db();
@@ -597,10 +576,7 @@ mod tests {
         );
     }
 
-    /// Many chunks can share the same *non-zero* `graph_rank` too (e.g. several
-    /// leaf functions PageRank scores to the same value). Ties within a shared
-    /// rank must fall through to `mtime DESC`, then `c.id`, not collapse to an
-    /// arbitrary order.
+    // Several leaf functions can share one non-zero PageRank score too.
     #[test]
     fn chunks_missing_embeddings_tied_nonzero_rank_falls_back_to_mtime_then_id() {
         let db = open_db();
@@ -623,9 +599,8 @@ mod tests {
         );
     }
 
-    /// A file with a modification time far in the future (clock skew, or a
-    /// deliberately touched file) must sort ahead of every normal-mtime row,
-    /// and the query must not error or panic on a large positive `i64`.
+    // A skewed clock or a deliberately touched file can leave mtime far in the
+    // future; the query must not error or panic on a large positive `i64`.
     #[test]
     fn chunks_missing_embeddings_future_mtime_sorts_first_no_panic() {
         let db = open_db();
@@ -642,10 +617,8 @@ mod tests {
         );
     }
 
-    /// A negative mtime (not producible by `stat_mtime`'s own fallback, which
-    /// always yields 0 on failure, but defensive against any other write path)
-    /// must not error the ORDER BY and must sort after both positive and
-    /// zero/legacy mtimes.
+    // `stat_mtime`'s own fallback always yields 0, never negative, but the
+    // ORDER BY must still not error on a negative value from any other write path.
     #[test]
     fn chunks_missing_embeddings_negative_mtime_sorts_last_no_error() {
         let db = open_db();
@@ -661,17 +634,13 @@ mod tests {
         );
     }
 
-    /// A chunk with no matching `embeddings` row must surface via
-    /// `chunks_missing_embeddings` (the parse phase unions these into the embed
-    /// batch so a parse-only index doesn't leave chunks permanently
-    /// unembedded). Once an embedding is inserted, the chunk
-    /// drops out of the result.
+    // The parse phase unions this query's rows into the embed batch, so a
+    // parse-only index never leaves a chunk permanently unembedded.
     #[test]
     fn chunks_missing_embeddings_finds_unembedded_then_clears() {
         let db = open_db();
         let (a, b) = seed_two_chunks(&db);
 
-        // Both chunks parsed, neither embedded yet.
         let mut missing: Vec<i64> = db
             .chunks_missing_embeddings()
             .expect("query missing")
@@ -681,7 +650,6 @@ mod tests {
         missing.sort();
         assert_eq!(missing, vec![a, b], "both unembedded chunks are missing");
 
-        // Embed one; only the other remains missing.
         db.insert_embedding(a, &[0.1f32; 896])
             .expect("insert embedding");
         let still_missing: Vec<i64> = db
@@ -693,9 +661,6 @@ mod tests {
         assert_eq!(still_missing, vec![b], "embedded chunk drops out");
     }
 
-    /// The tiered queue puts never-embedded chunks (no vector) ahead of pending
-    /// re-embeds (a vector present, `embed_pending = 1`) via the leading
-    /// `(e.chunk_id IS NOT NULL) ASC` key, and excludes fully-current chunks.
     #[test]
     fn chunks_missing_embeddings_never_embedded_sort_before_pending_reembeds() {
         let db = open_db();
@@ -717,10 +682,7 @@ mod tests {
         );
     }
 
-    /// `named_chunks_needing_summary` returns only named chunks whose summary is
-    /// still NULL — a title-less chunk (tier-3's domain) and an already-composed
-    /// (or suppressed `\"\"`) summary are both excluded, so a plain re-index never
-    /// recomputes them.
+    // A suppressed summary is stored as `""`, not NULL, so it's excluded too.
     #[test]
     fn named_chunks_needing_summary_excludes_titleless_and_already_composed() {
         let db = open_db();
@@ -766,15 +728,14 @@ mod tests {
         assert!(!got.contains(&titleless));
     }
 
-    /// Callees are returned in the graph's deterministic `ORDER BY target_name`,
-    /// regardless of edge insertion order — the invariant that keeps a composed
-    /// summary byte-identical across runs.
+    // Keeps a composed summary byte-identical across runs, regardless of edge
+    // insertion order.
     #[test]
     fn callees_for_symbol_are_ordered_deterministically() {
         use crate::indexer::graph::{Edge, EdgeKind};
         let db = open_db();
         db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
-        // Insert in a deliberately unsorted order.
+        // Inserted in a deliberately unsorted order.
         let edge = |target: &str| Edge {
             source_file: "a.rs".to_string(),
             source_name: Some("caller".to_string()),
@@ -791,13 +752,10 @@ mod tests {
         );
     }
 
-    /// The tier-3 writer sets the summary slot and the re-embed flag together;
-    /// the selection candidate query returns only title-less chunks that already
-    /// have a primary vector and no summary yet.
     #[test]
     fn titleless_selection_candidates_and_pending_writer() {
         let db = open_db();
-        // Prose: an unnamed window of code is text-only and never a candidate.
+        // Prose is an unnamed, text-only window: never a selection candidate.
         let file_id = db.upsert_file("notes.txt", Some("text"), "h", 0).unwrap();
         let titleless = db
             .insert_chunk(file_id, "verbatim", None, 1, 4, "prose here", None, 4)
@@ -856,10 +814,9 @@ mod tests {
         );
     }
 
-    /// Chunking across SQLITE_MAX_BIND (issue #405 §3): an input list longer
-    /// than the bind budget must run multiple statements without a prepare/bind
-    /// error and concatenate the result vecs, matching the single-statement
-    /// result for the real ids.
+    // An input list longer than SQLITE_MAX_BIND must run multiple statements
+    // without a prepare/bind error, concatenating results to match the
+    // single-statement result for the real ids.
     #[test]
     fn chunks_by_ids_chunks_and_concatenates() {
         use super::super::sql::SQLITE_MAX_BIND;

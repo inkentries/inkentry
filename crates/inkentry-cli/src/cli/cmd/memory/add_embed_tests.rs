@@ -37,6 +37,9 @@ fn add_args(title: &str, body: &str) -> MemoryAddArgs {
         valid_at: None,
         supersedes: None,
         relates_to: None,
+        contradicts: None,
+        distinct_from: None,
+        reconcile: false,
         commit: None,
         format: "text".to_string(),
     }
@@ -125,14 +128,19 @@ impl wiremock::Respond for RecordStoreStateOnArrival {
     }
 }
 
+// The embed runs before the write, so the pre-write candidate pool sees the
+// same vector the entry is stored with. The entry is still durably stored by
+// the time `memory_add` returns: the write happens after the embed attempt
+// completes (successfully or not), so a lost or stalled embed still cannot
+// lose the entry.
 #[tokio::test]
 #[serial_test::serial(inkentry_no_server_env, server_state_dir_env)]
-async fn the_entry_is_stored_before_the_embed_request_is_sent() {
+async fn the_embed_request_is_sent_before_the_entry_is_stored() {
     let (tmp, mem_path) = fresh_project();
-    let title = "Durable before embedding";
+    let title = "Embedded before write";
 
-    let present = Arc::new(AtomicBool::new(false));
-    let carried = Arc::new(AtomicBool::new(false));
+    let present = Arc::new(AtomicBool::new(true));
+    let carried = Arc::new(AtomicBool::new(true));
     let requests = Arc::new(AtomicUsize::new(0));
     let server = MockServer::start().await;
     mount_health(&server).await;
@@ -153,7 +161,7 @@ async fn the_entry_is_stored_before_the_embed_request_is_sent() {
     super::add::memory_add(
         add_args(
             title,
-            "the entry must be readable before its vector is asked for",
+            "the candidate pool must be checked against the same vector the entry stores",
         ),
         &mem_path,
         &cfg_for(tmp.path()),
@@ -169,14 +177,22 @@ async fn the_entry_is_stored_before_the_embed_request_is_sent() {
         "the add path should have sent exactly one embed request"
     );
     assert!(
-        present.load(Ordering::SeqCst),
-        "the entry must already be readable from memory.db when the embed request \
-         arrives, so a lost or stalled embed cannot lose the entry"
+        !present.load(Ordering::SeqCst),
+        "the entry must not yet be in memory.db when the embed request arrives: \
+         D1 embeds ahead of the write so the pre-write candidate pool uses this vector"
     );
     assert!(
-        carried.load(Ordering::SeqCst),
-        "the write-through carrier record must also already be written when the \
-         embed request arrives"
+        !carried.load(Ordering::SeqCst),
+        "the write-through carrier record must not yet exist when the embed \
+         request arrives either"
+    );
+    assert!(
+        stored_titles(&mem_path).contains(&title.to_string()),
+        "the entry must still be durably stored once memory_add returns"
+    );
+    assert!(
+        carrier_holds(tmp.path(), title),
+        "the write-through carrier record must also exist once memory_add returns"
     );
 }
 

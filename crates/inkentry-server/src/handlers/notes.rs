@@ -44,26 +44,95 @@ pub struct AddNoteRequest {
     /// Precision of a pushed `vector`; must be `fp32`. Required whenever
     /// `vector` is present.
     pub vector_precision: Option<String>,
+    /// ADR-100 D4: `"block"` refuses the write when the pre-store candidate
+    /// pool's duplicate band is non-empty and `resolutions` is empty. Any
+    /// other value (including absent) behaves as before this field existed.
+    /// Only meaningful when the client also sees `memory.reconcile` on
+    /// `GET /v1/health`; a server that predates this field simply ignores it.
+    #[serde(default)]
+    pub reconcile: Option<String>,
+    /// One resolution per blocking candidate (ADR-100 D2), applied in the
+    /// same transaction as the write. `type` is one of `supersedes`,
+    /// `relates_to`, `contradicts`, `distinct`; `distinct` records nothing.
+    /// An id naming an entry outside the reported candidate set is accepted,
+    /// as long as it resolves to a real active-or-archived entry in the
+    /// project.
+    #[serde(default)]
+    pub resolutions: Vec<ResolutionRequest>,
+}
+
+/// One element of [`AddNoteRequest::resolutions`].
+#[derive(Deserialize, ToSchema)]
+pub struct ResolutionRequest {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct AddNoteResponse {
-    /// Whether the note was stored (always true for 201/409).
+    /// Whether the note was stored. `false` only on a 409 refused under
+    /// `reconcile: "block"` (ADR-100 D2) — every other status this route
+    /// returns means the entry was written.
     pub stored: bool,
-    /// Identity of the created note: a UUIDv7 minted by this server.
-    pub id: String,
-    /// Conflicting entries (only present on 409).
+    /// Identity of the created note: a UUIDv7 minted by this server. Absent
+    /// when `stored` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Conflicting entries. Always empty from this build: retired in favour
+    /// of `candidates`/`related` (ADR-100 D4). Kept on the wire, never
+    /// populated, so an older client reading it sees no conflicts rather than
+    /// a missing field.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<ConflictEntry>,
+    /// The duplicate band (ADR-100 D1/D2), computed before the write.
+    /// Present on both a refused (`stored: false`) and a stored response.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateEntry>,
+    /// The related band (ADR-100 D3). Present only alongside a stored entry.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<CandidateEntry>,
 }
 
-/// A single conflicting memory entry returned in a 409 response.
+/// A single conflicting memory entry returned in a 409 response. Retired
+/// (ADR-100 D4); the type is kept only so `AddNoteResponse::conflicts`'s wire
+/// shape is unchanged for a client still reading it.
 #[derive(Serialize, ToSchema)]
 pub struct ConflictEntry {
     pub id: String,
     pub title: String,
     /// Cosine similarity to the new entry (0.0–1.0).
     pub similarity: f32,
+}
+
+/// One pre-write candidate (ADR-100 D1), as reported over the wire.
+#[derive(Serialize, ToSchema)]
+pub struct CandidateEntry {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f64>,
+    /// `"duplicate"` or `"related"`.
+    pub band: String,
+}
+
+impl From<inkentry_core::storage::Candidate> for CandidateEntry {
+    fn from(c: inkentry_core::storage::Candidate) -> Self {
+        Self {
+            id: c.id,
+            kind: c.kind,
+            title: c.title,
+            created_at: c.created_at,
+            distance: c.distance,
+            band: match c.band {
+                inkentry_core::storage::CandidateBand::Duplicate => "duplicate",
+                inkentry_core::storage::CandidateBand::Related => "related",
+            }
+            .to_string(),
+        }
+    }
 }
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
@@ -140,9 +209,13 @@ pub struct AnchorUpdateRequest {
 /// entry is stored without a vector (text search only, no KNN). A `vector` must
 /// arrive with its `vector_model` and `vector_precision`, or it is refused.
 ///
-/// Returns **201** on success. Returns **409** when the new entry is semantically
-/// close to one or more existing active entries (similarity ≥ conflict_threshold).
-/// The entry is still stored in both cases; the 409 is informational.
+/// Candidates are computed before the write (ADR-100 D1): active entries
+/// within the duplicate or related distance band. Returns **201** and stores
+/// the entry unless `reconcile: "block"` is set and the duplicate band is
+/// non-empty with no `resolutions` supplied, in which case it returns **409**
+/// with `stored: false` and nothing is written. `resolutions` (`supersedes`,
+/// `relates_to`, `contradicts`, `distinct`) are applied in the same
+/// transaction as a stored write.
 /// Returns **422** when the entry contains prompt-injection patterns.
 /// Returns **429** (with `Retry-After`) when the entry needs server-side
 /// embedding and the interactive embed admission lane is full.
@@ -157,7 +230,7 @@ pub struct AnchorUpdateRequest {
         (status = 201, description = "Note created", body = AddNoteResponse),
         (status = 400, description = "Invalid request, or a pushed vector that violates the contract: wrong model tag, wrong precision, wrong dimension, a non-finite component, or an L2 magnitude outside [0.5, 1.5]", body = ErrorBody),
         (status = 401, description = "Unauthorized", body = ErrorBody),
-        (status = 409, description = "Note stored but conflicts with existing entries", body = AddNoteResponse),
+        (status = 409, description = "Refused: reconcile: \"block\" and an unresolved duplicate-band candidate (stored: false)", body = AddNoteResponse),
         (status = 422, description = "Entry rejected: prompt injection detected"),
         (status = 429, description = "Interactive embed admission lane full; retry after the given delay", body = ErrorBody),
     ),
@@ -206,7 +279,8 @@ pub async fn add_note(
 
     // Server-side embedding: embed the entry when no client vector is supplied.
     // Done before the DB lock is taken, under an admission permit: see
-    // `embed_for_storage`.
+    // `embed_for_storage`. This is also what ADR-100 D1 needs embedded first:
+    // the candidate pool below is computed against this same vector.
     let server_embedding: Option<Vec<f32>> = if body.vector.is_none() {
         let text = storage_embedding_text(&body.title, &body.body);
         // `add_note` is a person waiting on their own write: interactive lane.
@@ -225,7 +299,39 @@ pub async fn add_note(
     let model = db.embedding_model.clone();
     let project = db.upsert_project(&project_id, dim, &model)?;
 
-    let (rowid, note_id) = db.add_note(
+    // ADR-100 D1: candidates before the write. No FTS half exists on this
+    // schema (see `ServerDb::find_candidates`), so with no embedding this is
+    // empty and the write proceeds exactly as D1 requires either way.
+    let candidates = db.find_candidates(project.id, embedding, None)?;
+    let (duplicate, related): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|c| matches!(c.band, inkentry_core::storage::CandidateBand::Duplicate));
+
+    // ADR-100 D2: refuse rather than store, only under an explicit opt-in and
+    // only with nothing to resolve the duplicate. Nothing is written here.
+    if body.reconcile.as_deref() == Some("block")
+        && !duplicate.is_empty()
+        && body.resolutions.is_empty()
+    {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(AddNoteResponse {
+                stored: false,
+                id: None,
+                conflicts: vec![],
+                candidates: duplicate.into_iter().map(Into::into).collect(),
+                related: related.into_iter().map(Into::into).collect(),
+            }),
+        )
+            .into_response());
+    }
+
+    let resolutions: Vec<(String, String)> = body
+        .resolutions
+        .iter()
+        .map(|r| (r.kind.clone(), r.id.clone()))
+        .collect();
+    let (rowid, note_id) = db.add_note_with_resolutions(
         project.id,
         &body.kind,
         &body.title,
@@ -233,7 +339,7 @@ pub async fn add_note(
         &body.tags,
         &body.linked_files,
         embedding,
-        None,
+        &resolutions,
     )?;
 
     // This route stores text-only rather than failing, exactly as the batch
@@ -248,52 +354,16 @@ pub async fn add_note(
     if embedding.is_none() {
         state.repair_signal.raise();
     }
-
-    // ── Conflict detection ────────────────────────────────────────────────────
-    // Only run if the entry has an embedding and conflict detection is enabled
-    // (threshold < 1.0).
-    let threshold = state.conflict_threshold;
-    if let Some(vec) = embedding
-        && threshold < 1.0
-    {
-        let max_distance = 1.0 - threshold;
-        let nearby = db.search_notes_for_conflicts(project.id, vec, max_distance, rowid, 5)?;
-        if !nearby.is_empty() {
-            // Insert `contradicts` edges for each conflict.
-            for candidate in &nearby {
-                if let Err(e) = db.add_edge(rowid, candidate.rowid, "contradicts") {
-                    tracing::warn!(
-                        "failed to insert contradicts edge {note_id}→{}: {e}",
-                        candidate.id
-                    );
-                }
-            }
-            let conflicts: Vec<ConflictEntry> = nearby
-                .into_iter()
-                .map(|c| ConflictEntry {
-                    id: c.id,
-                    title: c.title,
-                    similarity: (1.0 - c.distance as f32).clamp(0.0, 1.0),
-                })
-                .collect();
-            return Ok((
-                StatusCode::CONFLICT,
-                Json(AddNoteResponse {
-                    stored: true,
-                    id: note_id,
-                    conflicts,
-                }),
-            )
-                .into_response());
-        }
-    }
+    let _ = rowid;
 
     Ok((
         StatusCode::CREATED,
         Json(AddNoteResponse {
             stored: true,
-            id: note_id,
+            id: Some(note_id),
             conflicts: vec![],
+            candidates: duplicate.into_iter().map(Into::into).collect(),
+            related: related.into_iter().map(Into::into).collect(),
         }),
     )
         .into_response())

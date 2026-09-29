@@ -1,6 +1,6 @@
-//! State-source metric computation (ADR-098 D3), against a project's
-//! `memory.db` and, when available, its git history. Every value here is
-//! reproducible from a commit and a repository — no events, no evals.
+// State-source metric computation, against a project's `memory.db` and, when
+// available, its git history. Every value here is reproducible from a commit
+// and a repository — no events, no evals.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -9,18 +9,16 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::storage::memory::{MemoryEdge, MemoryStore, Note, NoteId};
 use crate::storage::note_kind::NOTE_KINDS;
 
-/// harvest.rs's existing near-duplicate threshold (`crates/inkentry-cli/src/
-/// cli/cmd/memory/harvest.rs::DEDUP_THRESHOLD`), reused here rather than
-/// re-derived so the two never drift apart.
+// Mirrors inkentry-cli's harvest dedup threshold (`DEDUP_THRESHOLD`); kept in
+// sync by hand so the two never drift apart.
 const NEAR_DUPLICATE_THRESHOLD: f64 = 0.15;
 
-/// Kinds `cmp.review_items_per_day` counts (ADR-098 D3).
+// Kinds `cmp.review_items_per_day` counts.
 const REVIEW_KINDS: &[&str] = &["decision", "requirement", "question", "antipattern"];
 
-/// Per-kind section limits `cmp.tokens_context_estimate` sums over, mirroring
-/// `inkentry-cli`'s `cli/cmd/context.rs::SECTIONS` defaults (handoff 3,
-/// question 10, decision 10, requirement 10). Kept in sync by hand: a change
-/// to those defaults should update this list too.
+// Per-kind section limits `cmp.tokens_context_estimate` sums over, mirroring
+// inkentry-cli's `context` command section defaults. Kept in sync by hand: a
+// change to those defaults should update this list too.
 const CONTEXT_SECTIONS: &[(&str, usize)] = &[
     ("handoff", 3),
     ("question", 10),
@@ -29,8 +27,7 @@ const CONTEXT_SECTIONS: &[(&str, usize)] = &[
 ];
 
 /// A ratio with its numerator and denominator carried alongside the computed
-/// value (ADR-098: "every rate carries its numerator and denominator").
-/// `value` is `None` when `denominator` is 0, never a fabricated `0.0`.
+/// value. `value` is `None` when `denominator` is 0, never a fabricated `0.0`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Rate {
     pub numerator: u64,
@@ -58,9 +55,7 @@ pub struct MedianSeconds {
 }
 
 /// [`Rate`]'s shape plus the count of active entries excluded from both the
-/// numerator and the denominator for lacking a stored embedding (ADR-098:
-/// "entries without a vector are excluded ... and the count of excluded
-/// entries is reported").
+/// numerator and the denominator for lacking a stored embedding.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct NearDuplicateRate {
     pub numerator: u64,
@@ -69,24 +64,23 @@ pub struct NearDuplicateRate {
     pub excluded_without_vector: u64,
 }
 
-/// The four origin buckets `rec.entries.by_origin` always reports, present
-/// with a 0 count when the store holds none of it — the same "key set never
-/// depends on what happens to be stored" rule `total`/`active`/`in_window`
-/// already follow for kind.
+// The four origin buckets `rec.entries.by_origin` always reports, present
+// with a 0 count when the store holds none of it — the same "key set never
+// depends on what happens to be stored" rule `total`/`active`/`in_window`
+// already follow for kind.
 const ORIGIN_BUCKETS: &[&str] = &["human", "agent", "harvest", "unknown"];
 
-/// `rec.entries` (ADR-098 D3). Every canonical kind is present in
+/// `rec.entries`. Every canonical kind is present in
 /// `total`/`active`/`in_window` with a 0 count when the store holds none of
-/// it, so the key set never depends on what happens to be stored;
-/// `by_origin` (D6) follows the same rule over the four origin buckets.
+/// it, so the key set never depends on what happens to be stored; `by_origin`
+/// follows the same rule over the four origin buckets.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EntryCounts {
     pub total: BTreeMap<String, u64>,
     pub active: BTreeMap<String, u64>,
     pub in_window: BTreeMap<String, u64>,
     /// Active entries by `origin.actor_kind`, or `unknown` for an entry with
-    /// no origin recorded (an entry written before D6, or with no caller
-    /// declaration).
+    /// no origin recorded.
     pub by_origin: BTreeMap<String, u64>,
 }
 
@@ -104,7 +98,7 @@ pub struct GitWindowFacts {
     pub anchored_commit_shas: HashSet<String>,
 }
 
-/// The `state` block of an `inkentry.metrics/1` snapshot (ADR-098 D3, D7).
+/// The `state` block of an `inkentry.metrics/1` snapshot.
 #[derive(Debug, Clone, Serialize)]
 pub struct StateMetrics {
     #[serde(rename = "rec.entries")]
@@ -174,10 +168,10 @@ pub struct StatusMetricsSummary {
     pub cmp_review_items_per_day: Rate,
     #[serde(rename = "rec.unresolved_conflicts")]
     pub rec_unresolved_conflicts: u64,
-    /// ADR-098 D3/D5: the compact events subset `inkentry status` shows under
-    /// "use, last 7 days" (explicit vs hook columns, automation rate). Always
-    /// the fixed [`super::EVENTS_WINDOW_DAYS`] window, independent of
-    /// `window_days` above (which only governs the state fields).
+    /// The compact events subset `inkentry status` shows under "use, last 7
+    /// days" (explicit vs hook columns, automation rate). Always the fixed
+    /// [`super::EVENTS_WINDOW_DAYS`] window, independent of `window_days`
+    /// above (which only governs the state fields).
     pub events: super::EventsMetrics,
 }
 
@@ -185,7 +179,7 @@ pub struct StatusMetricsSummary {
 /// window_end]`. `commit_shas_in_window`/`anchored_commit_shas` are `None`
 /// together exactly when [`compute_state_metrics`]'s `git` is `None` (no git
 /// repository); passed in rather than fetched here so the caller can use the
-/// cheaper, `--numstat`-free commit listing ([`super::git::commit_shas_in_window`]).
+/// cheaper, `--numstat`-free commit listing.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_status_metrics_summary(
     store: &MemoryStore,
@@ -260,8 +254,7 @@ pub fn compute_status_metrics_summary(
 /// (both inclusive, unix seconds). `git` is `None` when `project_root` is not
 /// a git repository (or has no commits yet), in which case every
 /// commit-derived metric is omitted from the result rather than reported as
-/// zero (ADR-098: "a project that is not a git repository gets no
-/// commit-based metrics").
+/// zero.
 pub fn compute_state_metrics(
     store: &MemoryStore,
     window_start: i64,
@@ -339,11 +332,9 @@ fn in_window(ts: i64, start: i64, end: i64) -> bool {
     ts >= start && ts <= end
 }
 
-/// Whether `note` was valid (created and not yet superseded/archived-with-a-
-/// timestamp) at `ts`. Mirrors the `as_of` window `MemoryStore::list_filtered`
-/// already applies (`COALESCE(valid_at, created_at) <= ts AND (invalid_at IS
-/// NULL OR invalid_at > ts)`), read here off an already-fetched `Note` rather
-/// than re-queried, since the caller needs it as a filter over an in-memory set.
+// Mirrors the `as_of` window `MemoryStore::list_filtered` applies via SQL,
+// read here off an already-fetched `Note` since the caller needs it as a
+// filter over an in-memory set.
 fn active_at(note: &Note, ts: i64) -> bool {
     let starts_at = note.valid_at.unwrap_or(note.created_at);
     starts_at <= ts && note.invalid_at.is_none_or(|inv| inv > ts)
@@ -378,11 +369,9 @@ fn entry_counts(all_notes: &[Note], window_start: i64, window_end: i64) -> Entry
     }
 }
 
-/// `rec.supersede_rate` = entries superseded in the window (any kind, via the
-/// `supersedes` edge's own `created_at`) divided by active *decisions* at
-/// window start. ADR-098 D3 states the numerator as "entries superseded" and
-/// the denominator as "active decisions" without restricting the numerator's
-/// kind to `decision` too; taken literally here.
+// `rec.supersede_rate` = entries superseded in the window (any kind, via the
+// `supersedes` edge's own `created_at`) divided by active *decisions* at
+// window start — the numerator is not restricted to kind `decision`.
 fn supersede_rate(
     all_notes: &[Note],
     supersede_edges: &[MemoryEdge],
@@ -400,10 +389,9 @@ fn supersede_rate(
     Rate::new(numerator, denominator)
 }
 
-/// `rec.time_to_supersede_p50`: median of `superseder.created_at -
-/// superseded.created_at` over `supersedes` edges created in the window.
-/// `supersedes` edges are stored `(from_id = superseder, to_id = superseded)`
-/// (see `storage::memory::edges::add_note_superseding`/`supersede`).
+// `rec.time_to_supersede_p50`: median of `superseder.created_at -
+// superseded.created_at` over `supersedes` edges created in the window.
+// `supersedes` edges are stored `(from_id = superseder, to_id = superseded)`.
 fn time_to_supersede_p50(
     supersede_edges: &[MemoryEdge],
     created_at_by_id: &HashMap<&NoteId, i64>,
@@ -425,15 +413,11 @@ fn time_to_supersede_p50(
     }
 }
 
-/// `rec.open_question_age_p50`, as closely as this schema can express it.
-///
-/// ADR-098 defines an open question as `kind='question'` with no `answer`
-/// related to it, but the schema has no edge kind dedicated to "this answers
-/// that question" — only the generic `relates_to`. The closest honest
-/// definition: a `question` is open unless a `relates_to` edge (either
-/// direction) connects it to an entry of kind `answer`. Restricted to
-/// currently-active questions, since an archived/superseded one is no longer
-/// part of the open review surface.
+// `rec.open_question_age_p50`: the schema has no edge kind dedicated to "this
+// answers that question", only the generic `relates_to`, so a `question` is
+// open unless a `relates_to` edge (either direction) connects it to an entry
+// of kind `answer`. Restricted to currently-active questions, since an
+// archived/superseded one is no longer part of the open review surface.
 fn open_question_age_p50(
     all_notes: &[Note],
     relates_to_edges: &[MemoryEdge],
@@ -460,11 +444,10 @@ fn open_question_age_p50(
     }
 }
 
-/// `rec.near_duplicate_rate`: active entries having another active entry
-/// within cosine distance 0.15, using only stored embeddings (no re-embed, no
-/// network). Reuses [`MemoryStore::search`] — the same vector KNN path
-/// `inkentry harvest`'s own dedup check already runs distances through — so
-/// this shares its distance semantics rather than defining a second one.
+// `rec.near_duplicate_rate`: active entries having another active entry
+// within cosine distance 0.15, using only stored embeddings (no re-embed, no
+// network). Reuses `MemoryStore::search` — the same vector KNN path
+// `inkentry harvest`'s own dedup check runs — so distance semantics match.
 fn near_duplicate_rate(store: &MemoryStore, all_notes: &[Note]) -> Result<NearDuplicateRate> {
     let mut excluded_without_vector = 0u64;
     let mut with_vector: Vec<(&Note, Vec<u8>)> = Vec::new();
@@ -499,8 +482,8 @@ fn near_duplicate_rate(store: &MemoryStore, all_notes: &[Note]) -> Result<NearDu
     })
 }
 
-/// `rec.unresolved_conflicts`: `contradicts` edges whose both endpoints are
-/// currently active (i.e. neither has since been superseded or archived).
+// `rec.unresolved_conflicts`: `contradicts` edges whose both endpoints are
+// currently active (neither has since been superseded or archived).
 fn unresolved_conflicts(
     contradicts_edges: &[MemoryEdge],
     status_by_id: &HashMap<&NoteId, &str>,
@@ -514,12 +497,10 @@ fn unresolved_conflicts(
         .count() as u64
 }
 
-/// `rec.commit_coverage`: commits in the window with at least one entry whose
-/// `source_ref` names that commit, or whose git-notes anchor does. Takes the
-/// commit list and the anchor set as plain slices/sets rather than
-/// [`GitWindowFacts`] so `inkentry status`'s cheap summary can share this
-/// without paying for `--numstat` (which `GitWindowFacts` also carries, for
-/// `cmp.lines_per_decision`).
+// `rec.commit_coverage`: commits in the window with at least one entry whose
+// `source_ref` names that commit, or whose git-notes anchor does. Takes plain
+// slices/sets rather than `GitWindowFacts` so `inkentry status`'s cheap
+// summary can share this without paying for `--numstat`.
 fn commit_coverage(
     store: &MemoryStore,
     commit_shas: &[String],
@@ -561,15 +542,12 @@ fn unanchored_rate(all_notes: &[Note], now: i64) -> Rate {
     Rate::new(numerator, denominator)
 }
 
-/// `cmp.tokens_context_estimate`: token count of the entries `inkentry
-/// context`'s default (no `--kind`, no `--limit`, no `--budget`) view would
-/// print, using the existing chars/4 estimator
-/// (`crate::search::tokens::estimate_tokens`) inkentry-cli's own `--budget`
-/// packing already uses for the same notes. Named `_estimate` because that
-/// heuristic is exactly what it is, not an exact tokenizer count. Omits the
-/// cross-project dependency pass and the conventions section that porcelain
-/// `context` also prints: both would pull in another project's index or the
-/// local code index, which a memory-only snapshot has no business touching.
+// `cmp.tokens_context_estimate`: token count of the entries `inkentry
+// context`'s default view would print, using the same chars/4 estimator
+// (`crate::search::tokens::estimate_tokens`) inkentry-cli's `--budget` packing
+// uses. Omits the cross-project dependency pass and the conventions section
+// that porcelain `context` also prints: both would pull in another project's
+// index or the local code index, which a memory-only snapshot shouldn't touch.
 fn context_tokens_estimate(store: &MemoryStore) -> Result<u64> {
     let mut tokens = 0u64;
     for (kind, limit) in CONTEXT_SECTIONS {
@@ -582,10 +560,8 @@ fn context_tokens_estimate(store: &MemoryStore) -> Result<u64> {
     Ok(tokens)
 }
 
-/// Median of a set of non-negative durations. `None` on an empty input; for
-/// an even-sized input this averages the two middle values (integer
-/// division, which is exact for the odd case and merely rounds down by at
-/// most half a second for the even one).
+// `None` on an empty input; an even-sized input averages the two middle
+// values with integer division, rounding down by at most half a second.
 pub(super) fn median(mut values: Vec<i64>) -> Option<i64> {
     if values.is_empty() {
         return None;

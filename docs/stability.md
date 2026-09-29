@@ -97,6 +97,17 @@ code, while the "stdout empty on `2`" guarantee that scripts rely on is intact.
 Porcelain commands use `0`/`1` with their own documented meanings and do not
 follow the plumbing convention.
 
+**`memory add` exit `3`** ([ADR-100](adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md) D2a):
+new in 1.x, and additive per the rule above, since it exists only on the
+opt-in `--reconcile` path (or `reconcile = "block"` under `[memory]` in
+`.inkentry/config.toml`) — no caller that saw `0`/`1`/`2` before this exists
+sees a changed exit code. It means the write was refused: the new entry
+landed in the duplicate band of an existing one and no resolution
+(`--supersedes`/`--relates-to`/`--contradicts`/`--distinct-from <id>`) was
+given, so nothing was written. Stdout carries the same `candidates`/`related`
+shape `--format json` documents. Without `--reconcile`, `memory add` writes
+as it always has and never returns `3`.
+
 ### Structured output from porcelain commands
 
 Most porcelain commands take a `--format` flag that switches stdout from the
@@ -167,6 +178,14 @@ Within `/v1/`:
 
 - **Allowed:** new routes, new optional request fields, new response fields, new
   enum values in a field documented as open.
+- **`POST .../memory`'s 409** ([ADR-100](adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md) D4):
+  no longer fires from a similarity check alone; a client that sends no
+  `reconcile` field simply stops seeing it from this route. It fires again,
+  with `stored: false` rather than the old `stored: true`, only for a client
+  that opted in by sending `reconcile: "block"` — a request shape no
+  pre-ADR-100 client ever sent. `AddNoteResponse.id` is additive-optional
+  (`Option<String>`, absent exactly when `stored` is `false`) for the same
+  reason: no response a pre-ADR-100 server ever sent omitted it.
 - **Not allowed:** removing a route or method, removing or renaming a response
   field, making an optional request field required, narrowing an accepted type,
   or changing the meaning of a status code.

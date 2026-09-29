@@ -21,14 +21,14 @@ pub struct NoteInput {
     /// ID of an existing entry that this entry supersedes.
     /// When set, the old entry's invalid_at is set to now() atomically.
     pub supersedes: Option<NoteId>,
-    /// Who or what is adding this entry (ADR-098 D6). `None` when the caller
-    /// declared no actor.
+    /// Who or what is adding this entry. `None` when the caller declared no
+    /// actor.
     pub origin: Option<super::origin::Origin>,
 }
 
-/// The page size the team client asks for per request when walking a listing to
-/// resolve a quoted handle — the size of one page, not a bound on the walk,
-/// which reads every page. The server may return fewer (it caps a page).
+// The page size the team client asks for per request when walking a listing
+// to resolve a quoted handle — the size of one page, not a bound on the walk,
+// which reads every page. The server may return fewer (it caps a page).
 pub(crate) const ENTITY_ID_PAGE_SIZE: usize = 1_000;
 
 /// What a handle lookup found, and whether the backend could see far enough to
@@ -37,9 +37,8 @@ pub(crate) const ENTITY_ID_PAGE_SIZE: usize = 1_000;
 /// The distinction is the whole point of the type: an empty result from a store
 /// the backend read to the end says the entry is not there, and an empty result
 /// from a partial read says only that it was not in the part that was read.
-/// Reporting the second as the first denies an entry that was never looked for,
-/// which for the id ADR-093 tells people to quote is the failure that record
-/// exists to prevent.
+/// Reporting the second as the first would deny an entry that was never
+/// looked for, for the very id people are told to quote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityIdLookup {
     /// Every entry in the store was examined.
@@ -62,6 +61,37 @@ impl EntityIdLookup {
     }
 }
 
+/// One resolution the caller supplied for a blocking candidate. The id is
+/// advice, not a lock: a caller may name one outside the candidate set the
+/// server or store last reported.
+#[derive(Debug, Clone)]
+pub enum Resolution {
+    Supersedes(NoteId),
+    RelatesTo(NoteId),
+    Contradicts(NoteId),
+    /// The similarity is incidental; records nothing.
+    Distinct(NoteId),
+}
+
+/// Outcome of [`MemoryBackend::add_with_reconcile`].
+pub enum AddOutcome {
+    /// Written (or reused; see [`MemoryBackend::add`] for what `created`
+    /// means). `candidates` is the duplicate band, `related` is the related
+    /// band — both computed before the write, both empty for a backend that
+    /// does not reconcile.
+    Created {
+        id: NoteId,
+        created: bool,
+        candidates: Vec<super::memory::Candidate>,
+        related: Vec<super::memory::Candidate>,
+    },
+    /// Refused: `reconcile` was on, the duplicate band was non-empty, and
+    /// `resolutions` was empty. Nothing was written.
+    Blocked {
+        candidates: Vec<super::memory::Candidate>,
+    },
+}
+
 /// Abstraction over local SQLite and remote HTTP memory stores.
 #[async_trait]
 pub trait MemoryBackend: Send {
@@ -71,6 +101,23 @@ pub trait MemoryBackend: Send {
     /// backend, see `MemoryStore::add_note`). Backends that cannot detect this
     /// (git notes, remote) always return `true`.
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)>;
+    /// Attempt the write, honouring `reconcile`/`resolutions` when the
+    /// backend can reconcile server-side. Every backend but
+    /// [`super::remote::RemoteMemoryBackend`] just calls [`Self::add`] and
+    /// reports no candidates: correct for a caller that already decided
+    /// whether to write before reaching this (the local SQLite path computes
+    /// and acts on candidates in the CLI layer, ahead of `add`) or that never
+    /// blocks by contract (git notes import, batch/sync). Not a provided
+    /// (default) method: `async_trait` needs `Self: Sync` to give a default
+    /// body's `&self` await point a `Send` future, and this trait's objects
+    /// are erased as `dyn MemoryBackend + Send` throughout, not `+ Sync` —
+    /// so each backend writes its own one-line passthrough instead.
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        reconcile: bool,
+        resolutions: &[Resolution],
+    ) -> Result<AddOutcome>;
     /// Topic-filtered search over ALL notes (incl. archived), ordered by
     /// valid_at/created_at ASC — the `memory timeline` retrieval.
     ///
@@ -102,12 +149,11 @@ pub trait MemoryBackend: Send {
     -> Result<Vec<Note>>;
     /// Semantic (vector KNN) search, ranked by Reciprocal Rank Fusion.
     /// `as_of`: if set, only entries valid at that Unix timestamp are returned.
-    /// `gate`: apply the local backend's within-corpus relevance floor
-    /// (ADR-083) — `true` for the default unified search, where memory
-    /// competes with code for shared result slots; `false` for `--only-memory`,
-    /// which has no slots to protect and returns the full page. Backends other
-    /// than the local SQLite one are outside ADR-083's calibration and ignore
-    /// it.
+    /// `gate`: apply the local backend's within-corpus relevance floor —
+    /// `true` for the default unified search, where memory competes with code
+    /// for shared result slots; `false` for `--only-memory`, which has no
+    /// slots to protect and returns the full page. Backends other than the
+    /// local SQLite one ignore it.
     async fn search_hybrid(
         &self,
         query_blob: &[u8],
@@ -135,8 +181,8 @@ pub trait MemoryBackend: Send {
     ) -> Result<Vec<Note>>;
     async fn get(&self, id: NoteId) -> Result<Option<Note>>;
     /// The ids of the entries whose `entity_id` starts with `prefix`, for
-    /// resolving the handle a user quotes (ADR-093 D2). More than one means the
-    /// prefix is ambiguous and the caller must refuse to pick.
+    /// resolving the handle a user quotes. More than one means the prefix is
+    /// ambiguous and the caller must refuse to pick.
     ///
     /// A backend that cannot read its whole store says so with
     /// [`EntityIdLookup::Bounded`] rather than letting a partial read pass for
@@ -159,8 +205,6 @@ pub trait MemoryBackend: Send {
     /// `"sqlite"`, `"git-notes"`, `"remote"`.
     fn backend_kind(&self) -> &'static str;
 }
-
-// ── Local SQLite backend ──────────────────────────────────────────────────────
 
 /// Wraps `MemoryStore` in a `tokio::sync::Mutex` so `LocalMemoryBackend: Send + Sync`,
 /// satisfying the `async-trait` Send constraint without needing spawn_blocking.
@@ -212,6 +256,24 @@ impl MemoryBackend for LocalMemoryBackend {
             store.set_origin(&id, origin)?;
         }
         Ok((id, created))
+    }
+
+    // The CLI layer resolves candidates and blocking itself, ahead of
+    // calling `add` on this backend (see `cli/cmd/memory/add.rs`), so this
+    // never has anything to reconcile by the time it is reached.
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        _reconcile: bool,
+        _resolutions: &[Resolution],
+    ) -> Result<AddOutcome> {
+        let (id, created) = self.add(input).await?;
+        Ok(AddOutcome::Created {
+            id,
+            created,
+            candidates: Vec::new(),
+            related: Vec::new(),
+        })
     }
 
     async fn search_timeline(

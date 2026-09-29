@@ -345,7 +345,7 @@
           "memory"
         ],
         "summary": "Add a memory entry to a project. The project is auto-created on first write.",
-        "description": "The `vector` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN). A `vector` must\narrive with its `vector_model` and `vector_precision`, or it is refused.\n\nReturns **201** on success. Returns **409** when the new entry is semantically\nclose to one or more existing active entries (similarity ≥ conflict_threshold).\nThe entry is still stored in both cases; the 409 is informational.\nReturns **422** when the entry contains prompt-injection patterns.\nReturns **429** (with `Retry-After`) when the entry needs server-side\nembedding and the interactive embed admission lane is full.",
+        "description": "The `vector` field is optional. If omitted and the server's embedder is ready,\nthe server embeds the entry before storage. If neither is available, the\nentry is stored without a vector (text search only, no KNN). A `vector` must\narrive with its `vector_model` and `vector_precision`, or it is refused.\n\nCandidates are computed before the write (ADR-100 D1): active entries\nwithin the duplicate or related distance band. Returns **201** and stores\nthe entry unless `reconcile: \"block\"` is set and the duplicate band is\nnon-empty with no `resolutions` supplied, in which case it returns **409**\nwith `stored: false` and nothing is written. `resolutions` (`supersedes`,\n`relates_to`, `contradicts`, `distinct`) are applied in the same\ntransaction as a stored write.\nReturns **422** when the entry contains prompt-injection patterns.\nReturns **429** (with `Retry-After`) when the entry needs server-side\nembedding and the interactive embed admission lane is full.",
         "operationId": "add_note",
         "parameters": [
           {
@@ -400,7 +400,7 @@
             }
           },
           "409": {
-            "description": "Note stored but conflicts with existing entries",
+            "description": "Refused: reconcile: \"block\" and an unresolved duplicate-band candidate (stored: false)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1333,6 +1333,20 @@
             },
             "description": "Source file paths this entry is linked to."
           },
+          "reconcile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ADR-100 D4: `\"block\"` refuses the write when the pre-store candidate\npool's duplicate band is non-empty and `resolutions` is empty. Any\nother value (including absent) behaves as before this field existed.\nOnly meaningful when the client also sees `memory.reconcile` on\n`GET /v1/health`; a server that predates this field simply ignores it."
+          },
+          "resolutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResolutionRequest"
+            },
+            "description": "One resolution per blocking candidate (ADR-100 D2), applied in the\nsame transaction as the write. `type` is one of `supersedes`,\n`relates_to`, `contradicts`, `distinct`; `distinct` records nothing.\nAn id naming an entry outside the reported candidate set is accepted,\nas long as it resolves to a real active-or-archived entry in the\nproject."
+          },
           "tags": {
             "type": "array",
             "items": {
@@ -1373,24 +1387,40 @@
       "AddNoteResponse": {
         "type": "object",
         "required": [
-          "stored",
-          "id"
+          "stored"
         ],
         "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CandidateEntry"
+            },
+            "description": "The duplicate band (ADR-100 D1/D2), computed before the write.\nPresent on both a refused (`stored: false`) and a stored response."
+          },
           "conflicts": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ConflictEntry"
             },
-            "description": "Conflicting entries (only present on 409)."
+            "description": "Conflicting entries. Always empty from this build: retired in favour\nof `candidates`/`related` (ADR-100 D4). Kept on the wire, never\npopulated, so an older client reading it sees no conflicts rather than\na missing field."
           },
           "id": {
-            "type": "string",
-            "description": "Identity of the created note: a UUIDv7 minted by this server."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Identity of the created note: a UUIDv7 minted by this server. Absent\nwhen `stored` is `false`."
+          },
+          "related": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CandidateEntry"
+            },
+            "description": "The related band (ADR-100 D3). Present only alongside a stored entry."
           },
           "stored": {
             "type": "boolean",
-            "description": "Whether the note was stored (always true for 201/409)."
+            "description": "Whether the note was stored. `false` only on a 409 refused under\n`reconcile: \"block\"` (ADR-100 D2) — every other status this route\nreturns means the entry was written."
           }
         }
       },
@@ -1561,6 +1591,43 @@
           }
         }
       },
+      "CandidateEntry": {
+        "type": "object",
+        "description": "One pre-write candidate (ADR-100 D1), as reported over the wire.",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "created_at",
+          "band"
+        ],
+        "properties": {
+          "band": {
+            "type": "string",
+            "description": "`\"duplicate\"` or `\"related\"`."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "distance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "CodeSearchRequest": {
         "type": "object",
         "description": "Request body for `POST /v1/projects/{project_id}/search`.",
@@ -1609,7 +1676,7 @@
       },
       "ConflictEntry": {
         "type": "object",
-        "description": "A single conflicting memory entry returned in a 409 response.",
+        "description": "A single conflicting memory entry returned in a 409 response. Retired\n(ADR-100 D4); the type is kept only so `AddNoteResponse::conflicts`'s wire\nshape is unchanged for a client still reading it.",
         "required": [
           "id",
           "title",
@@ -2002,6 +2069,22 @@
             "type": "integer",
             "format": "int64",
             "description": "Total entries including archived."
+          }
+        }
+      },
+      "ResolutionRequest": {
+        "type": "object",
+        "description": "One element of [`AddNoteRequest::resolutions`].",
+        "required": [
+          "type",
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
           }
         }
       },

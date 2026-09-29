@@ -139,12 +139,11 @@ impl Database {
         Ok(out)
     }
 
-    /// Return all (source_name, target_name) pairs from graph_edges where
+    /// Every (source_name, target_name) pair from graph_edges where
     /// source_name is non-NULL. Used by PageRank computation after indexing.
-    /// Excludes the `mentions` rows an index built before they were retired
-    /// may still hold: they were never structural, and would skew PageRank.
-    /// One call site can resolve to several `target_file` rows; it still
-    /// counts once.
+    /// Excludes `mentions` rows an older index may still hold: they were
+    /// never structural, and would skew PageRank. One call site can resolve
+    /// to several `target_file` rows; it still counts once.
     pub fn graph_edges_all(&self) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT source_name, target_name FROM graph_edges \
@@ -163,9 +162,9 @@ mod tests {
     use crate::indexer::graph::{Edge, EdgeKind};
     use std::sync::OnceLock;
 
-    /// Register the sqlite-vec extension exactly once per test process.
-    /// `Database::open` creates a `vec0` virtual table, which requires the
-    /// extension to be loaded before any connection is opened.
+    // Registers the sqlite-vec extension exactly once per test process.
+    // Database::open creates a vec0 virtual table, which requires the
+    // extension to be loaded before any connection is opened.
     fn register_sqlite_vec() {
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
@@ -183,7 +182,6 @@ mod tests {
         Database::open(std::path::Path::new(":memory:")).expect("failed to open in-memory Database")
     }
 
-    /// Insert one named chunk in `src/lib.rs` and return its chunk id.
     fn insert_named_chunk(db: &Database, file_id: i64, name: &str) -> i64 {
         db.insert_chunk(
             file_id,
@@ -221,16 +219,12 @@ mod tests {
         (file_id, caller_id, callee_id)
     }
 
-    // -------------------------------------------------------------------------
-    // chunking across SQLITE_MAX_BIND (issue #405 §3)
-    //
-    // Chunking is keyed purely off input-slice length vs `SQLITE_MAX_BIND`, so
-    // driving each function with an input list longer than the boundary forces
-    // the multi-statement path. Only a few elements correspond to real DB rows;
-    // the rest are non-matching filler. We assert (a) no prepare/bind error,
-    // (b) the result equals the known single-statement result, and (c) that we
-    // genuinely crossed >1 chunk.
-    // -------------------------------------------------------------------------
+    // Chunking is keyed purely off input-slice length vs SQLITE_MAX_BIND, so
+    // driving each function with an input list longer than the boundary
+    // forces the multi-statement path. Only a few elements correspond to
+    // real DB rows; the rest are non-matching filler. Assert (a) no
+    // prepare/bind error, (b) the result equals the known single-statement
+    // result, and (c) that we genuinely crossed >1 chunk.
 
     use super::super::sql::SQLITE_MAX_BIND;
 
@@ -292,10 +286,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // empty-input early-return (issue #405 §2.2 step 1)
-    // -------------------------------------------------------------------------
-
     #[test]
     fn graph_functions_empty_input_early_return() {
         let db = open_db();
@@ -306,8 +296,6 @@ mod tests {
             "graph_neighbor_chunks must early-return [] on empty input"
         );
     }
-
-    // ── target_file ─────────────────────────────────────────────────────────
 
     fn call(source_file: &str, source: &str, target: &str, target_file: Option<&str>) -> Edge {
         Edge {
@@ -383,7 +371,7 @@ mod tests {
             ],
         )
         .unwrap();
-        // A same-named caller in another file is its own edge, as it always was.
+        // A same-named caller in another file is its own edge.
         db.replace_edges("src/b.ts", &[call("src/b.ts", "run", "helper", None)])
             .unwrap();
 

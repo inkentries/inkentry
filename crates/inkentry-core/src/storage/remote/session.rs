@@ -1,10 +1,10 @@
-//! The bearer a remote memory backend sends, and its renewal.
-//!
-//! A WorkOS access token lives about five minutes, so a cloud session stored at
-//! login is stale for most commands that use it. Rotating it takes the WorkOS
-//! client, which lives in inkentry-cli; inkentry-core cannot depend on that, so
-//! the CLI installs a [`SessionRefresher`] once at startup and every remote
-//! backend opened afterwards consults it.
+// The bearer a remote memory backend sends, and its renewal.
+//
+// A WorkOS access token lives about five minutes, so a cloud session stored at
+// login is stale for most commands that use it. Rotating it takes the WorkOS
+// client, which lives in inkentry-cli; inkentry-core cannot depend on that, so
+// the CLI installs a `SessionRefresher` once at startup and every remote
+// backend opened afterwards consults it.
 
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
@@ -16,9 +16,9 @@ use crate::config::Config;
 
 /// Supplies and renews the bearer for a server origin.
 ///
-/// Implementations own origin scoping (ADR-071 D2, ADR-095): only a cloud
-/// session issued for `server_url`'s origin is ever rotated; a self-hosted
-/// server key or an `INKENTRY_SERVER_KEY` override passes through unchanged.
+/// Implementations own origin scoping: only a cloud session issued for
+/// `server_url`'s origin is ever rotated; a self-hosted server key or an
+/// `INKENTRY_SERVER_KEY` override passes through unchanged.
 #[async_trait]
 pub trait SessionRefresher: Send + Sync {
     /// The bearer for `server_url`, rotated first when it is an expired cloud
@@ -55,9 +55,9 @@ struct Renewal {
 
 struct State {
     token: Option<String>,
-    // Whether `token` has been through `SessionRefresher::current` yet. Done
-    // lazily, on the first request, so opening a backend that never sends one
-    // costs no WorkOS round trip.
+    // Whether `token` has been through `SessionRefresher::current` yet;
+    // primed lazily, on the first request, so opening a backend that never
+    // sends one costs no WorkOS round trip.
     primed: bool,
 }
 
@@ -72,7 +72,7 @@ pub struct Bearer {
 }
 
 impl Bearer {
-    /// A bearer that is sent as-is and never renewed.
+    /// A bearer sent as-is and never renewed.
     pub fn fixed(token: Option<String>) -> Self {
         Self {
             state: tokio::sync::Mutex::new(State {
@@ -113,7 +113,7 @@ impl Bearer {
         Ok(state.token.clone())
     }
 
-    /// Whether a bearer other than `sent` is now available to resend with.
+    // Whether a bearer other than `sent` is now available to resend with.
     async fn renew_after_rejection(&self, sent: Option<&str>) -> Result<bool> {
         let (Some(r), Some(sent)) = (&self.renewal, sent) else {
             return Ok(false);
@@ -136,10 +136,10 @@ impl Bearer {
         }
     }
 
-    /// Run `attempt` with the current bearer; on a `401`, renew it once and run
-    /// `attempt` again. A second `401` is returned to the caller as-is, so the
-    /// credential hint it produces is only ever reached once renewal has been
-    /// tried or cannot apply.
+    // Runs `attempt` with the current bearer; on a `401`, renews it once and
+    // runs `attempt` again. A second `401` is returned to the caller as-is,
+    // so the credential hint it produces is only reached once renewal has
+    // been tried or cannot apply.
     pub(super) async fn send<F, Fut>(&self, attempt: F) -> Result<reqwest::Response>
     where
         F: Fn(Option<String>) -> Fut,
@@ -166,8 +166,8 @@ pub(super) fn authorize(
     }
 }
 
-/// Send `req` through `bearer`, classifying a transport failure the way every
-/// remote backend does.
+// Sends `req` through `bearer`, classifying a transport failure the way
+// every remote backend does.
 pub(super) async fn send_request(
     bearer: &Bearer,
     base_url: &str,

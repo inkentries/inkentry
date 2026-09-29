@@ -118,7 +118,10 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     // embeddings, so advertise the semantic caps and a non-zero dim only then.
     let ready_backend = state.embedder.backend();
 
-    let mut capabilities = vec!["memory".to_string()];
+    // ADR-100 D4: candidates-before-store and `reconcile`/`resolutions` are
+    // supported regardless of embedder readiness (an unready embedder just
+    // means an empty candidate pool, the same degraded case D1 accepts).
+    let mut capabilities = vec!["memory".to_string(), "memory.reconcile".to_string()];
     if let Some(backend) = &ready_backend {
         capabilities.push("index.embed".to_string());
         capabilities.push("search.semantic".to_string());

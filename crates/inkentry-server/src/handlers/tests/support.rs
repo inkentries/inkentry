@@ -67,14 +67,53 @@ pub(super) async fn post_note(
     title: &str,
     vector: Vec<f32>,
 ) -> (http::StatusCode, Value) {
-    let body = json!({
-        "kind": "note",
-        "title": title,
-        "body": "test body",
-        "vector": vector,
-        "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
-        "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
-    });
+    post_note_json(
+        app,
+        slug,
+        json!({
+            "kind": "note",
+            "title": title,
+            "body": "test body",
+            "vector": vector,
+            "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+            "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
+        }),
+    )
+    .await
+}
+
+// Like `post_note`, but with `reconcile`/`resolutions` (ADR-100 D2/D4) set on
+// the request alongside the vector.
+pub(super) async fn post_note_reconciling(
+    app: axum::Router,
+    slug: &str,
+    title: &str,
+    vector: Vec<f32>,
+    reconcile: Option<&str>,
+    resolutions: Value,
+) -> (http::StatusCode, Value) {
+    post_note_json(
+        app,
+        slug,
+        json!({
+            "kind": "note",
+            "title": title,
+            "body": "test body",
+            "vector": vector,
+            "vector_model": inkentry_core::embeddings::pushed_vector_model_tag(),
+            "vector_precision": inkentry_core::embeddings::PUSHED_VECTOR_PRECISION,
+            "reconcile": reconcile,
+            "resolutions": resolutions,
+        }),
+    )
+    .await
+}
+
+pub(super) async fn post_note_json(
+    app: axum::Router,
+    slug: &str,
+    body: Value,
+) -> (http::StatusCode, Value) {
     let req = Request::builder()
         .method("POST")
         .uri(format!("/v1/projects/{slug}/memory"))

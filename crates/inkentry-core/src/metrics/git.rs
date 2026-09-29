@@ -1,14 +1,14 @@
-//! Plain commit-history facts for a metrics snapshot: HEAD's identity and the
-//! commits reachable from it that fall inside a window. Deliberately
-//! separate from `storage::git_notes`, which reads the memory carrier
-//! (`refs/notes/inkentry`) rather than commit history.
+// Plain commit-history facts for a metrics snapshot: HEAD's identity and the
+// commits reachable from it that fall inside a window. Deliberately separate
+// from `storage::git_notes`, which reads the memory carrier
+// (`refs/notes/inkentry`) rather than commit history.
 
 use anyhow::Result;
 use std::path::Path;
 use tokio::process::Command;
 
-/// A commit reachable from HEAD, with its committer time and the net lines
-/// changed (added + removed) it introduced.
+// A commit reachable from HEAD, with its committer time and the net lines
+// changed (added + removed) it introduced.
 #[derive(Debug, Clone)]
 pub struct CommitInWindow {
     pub sha: String,
@@ -16,11 +16,9 @@ pub struct CommitInWindow {
     pub lines_changed: u64,
 }
 
-/// HEAD's commit sha and committer time (unix seconds), or `None` when `root`
-/// is not inside a git repository, or is one with no commits yet. Both cases
-/// leave nothing to anchor a window to, so the caller treats them alike
-/// (ADR-098: "a project that is not a git repository gets no commit-based
-/// metrics").
+// `None` when `root` is not inside a git repository, or is one with no
+// commits yet — both leave nothing to anchor a window to, so the caller
+// treats them alike.
 pub async fn head_commit(root: &Path) -> Option<(String, i64)> {
     let out = Command::new("git")
         .args(["log", "-1", "--format=%H%x1f%ct"])
@@ -40,13 +38,8 @@ fn parse_head_line(s: &str) -> Option<(String, i64)> {
     Some((sha.to_string(), ct))
 }
 
-/// The full sha and committer time of every commit reachable from HEAD whose
-/// committer time falls in `[window_start, window_end]` (both inclusive),
-/// without per-commit diff stats.
-///
-/// Cheaper than [`commits_in_window`]: no `--numstat`, so git never computes
-/// a diff for any commit. Used by `inkentry status`'s cheap `rec.commit_coverage`
-/// check, which has no use for `cmp.lines_per_decision`'s line counts.
+// Cheaper than `commits_in_window`: no `--numstat`, so git never computes a
+// diff for any commit. Used where the caller only needs shas, not line counts.
 pub async fn commit_shas_in_window(
     root: &Path,
     window_start: i64,
@@ -77,17 +70,13 @@ fn parse_sha_committer_lines(text: &str, window_start: i64, window_end: i64) -> 
         .collect()
 }
 
-/// Commits reachable from HEAD whose committer time falls in
-/// `[window_start, window_end]` (both inclusive), each carrying its own lines
-/// added + removed.
-///
-/// One `git log --numstat` call covers the whole history; the window filter
-/// runs on the parsed committer timestamps here rather than via git's own
-/// `--since`/`--until`, so the boundary matches exactly the committer time
-/// the snapshot header reports HEAD under — git's date-string parsing is not
-/// guaranteed to agree with a raw epoch comparison. Binary files (numstat's
-/// `-\t-\tpath`) contribute 0; merge commits carry no numstat under plain
-/// `git log` and so contribute 0 too, matching the tool's own default.
+// One `git log --numstat` call covers the whole history; the window filter
+// runs on the parsed committer timestamps here rather than via git's own
+// `--since`/`--until`, so the boundary matches exactly the committer time the
+// snapshot header reports HEAD under — git's date-string parsing is not
+// guaranteed to agree with a raw epoch comparison. Binary files (numstat's
+// `-\t-\tpath`) and merge commits (no numstat under plain `git log`) both
+// contribute 0 lines.
 pub async fn commits_in_window(
     root: &Path,
     window_start: i64,
@@ -111,11 +100,10 @@ pub async fn commits_in_window(
         .collect())
 }
 
-/// Marker prefixing each commit's formatted header line, distinguishing it
-/// from a numstat data line. Arbitrary but distinctive; a numstat path could
-/// in principle collide with it, which would misattribute one file's line
-/// count to the wrong commit — a cosmetic risk for a review-surface metric,
-/// not a correctness-critical one.
+// Prefixes each commit's formatted header line, distinguishing it from a
+// numstat data line. A numstat path could in principle collide with it,
+// misattributing one file's line count to the wrong commit — a cosmetic risk
+// for a review-surface metric, not a correctness-critical one.
 const HEADER_MARKER: &str = "@@inkentry@@";
 
 fn parse_log_numstat(text: &str) -> Vec<CommitInWindow> {

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::collections::HashSet;
 
-use super::backend::{EntityIdLookup, MemoryBackend, NoteInput};
+use super::backend::{AddOutcome, EntityIdLookup, MemoryBackend, NoteInput, Resolution};
 use super::memory::{MemoryEdge, Note, NoteId};
 use crate::embeddings::{PUSHED_VECTOR_PRECISION, blob_to_vec, pushed_vector_model_tag};
 
@@ -24,18 +24,17 @@ pub use sync::{
 pub use wire_types::ConflictInfo;
 use wire_types::*;
 
-/// Characters that must be percent-encoded inside a single URL **path segment**.
-///
-/// `derive_project_id` produces slugs that contain `/` (`local/<blake3-hex>`,
-/// `github.com/owner/repo`). Inserted raw into `/v1/projects/{project_id}/…`
-/// the slashes split the segment and break axum routing (→ 404). We percent-encode
-/// the slug so the whole slug occupies exactly one captured `{project_id}` segment;
-/// axum percent-decodes it back to the original slug server-side, so the
-/// persistence key (`projects.slug`, UNIQUE) is unchanged. See inkentry decision #106.
-///
-/// Mirrors `PROJECT_ID_SEGMENT` / `encode_project_id` in
-/// `inkentry-cli/src/server_client.rs` — duplicated here because inkentry-core
-/// cannot depend on inkentry-cli.
+// Characters that must be percent-encoded inside a single URL path segment.
+//
+// `project_id` slugs can contain `/` (`local/<blake3-hex>`,
+// `github.com/owner/repo`); inserted raw into `/v1/projects/{project_id}/…`
+// the slashes split the segment and break axum routing. Percent-encoding
+// keeps the whole slug in one captured segment; axum decodes it back
+// server-side, so the persisted slug is unchanged.
+//
+// Mirrors `PROJECT_ID_SEGMENT`/`encode_project_id` in
+// `inkentry-cli/src/server_client.rs` — duplicated here because inkentry-core
+// cannot depend on inkentry-cli.
 const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -49,18 +48,16 @@ const PROJECT_ID_SEGMENT: &AsciiSet = &CONTROLS
     .add(b'/')
     .add(b'%');
 
-/// Percent-encode a `project_id` slug for safe use as a single URL path segment.
-///
-/// Only the segment is encoded (not the surrounding URL); `/` → `%2F` etc.
+// Percent-encodes a `project_id` slug for safe use as a single URL path
+// segment; only the segment is encoded, not the surrounding URL.
 pub(super) fn encode_project_id(project_id: &str) -> String {
     utf8_percent_encode(project_id, PROJECT_ID_SEGMENT).to_string()
 }
 
-/// Percent-encode a note id for safe use as a single URL path segment.
-///
-/// Ids are opaque tokens supplied by the caller, so an id containing `/` or
-/// `%` would otherwise re-shape the request path rather than address an entry.
-/// A no-op for the ids either peer actually mints (decimal integers, UUIDs).
+// Percent-encodes a note id for safe use as a single URL path segment. Ids
+// are opaque caller-supplied tokens, so one containing `/` or `%` would
+// otherwise re-shape the request path. A no-op for the ids either peer
+// actually mints (decimal integers, UUIDs).
 fn encode_path_segment(id: &NoteId) -> String {
     utf8_percent_encode(id.as_str(), PROJECT_ID_SEGMENT).to_string()
 }
@@ -77,9 +74,6 @@ pub struct RemoteMemoryBackend {
 
 impl RemoteMemoryBackend {
     fn url(&self, path: &str) -> String {
-        // Percent-encode the project_id path segment: slugs contain `/`
-        // (`local/<hex>`, `github.com/owner/repo`) which would otherwise split
-        // the segment and break axum routing → 404. See inkentry decision #106.
         format!(
             "{}/v1/projects/{}/{}",
             self.base_url.trim_end_matches('/'),
@@ -88,14 +82,10 @@ impl RemoteMemoryBackend {
         )
     }
 
-    /// Send an authenticated request, classifying any transport failure once.
-    ///
-    /// When a connection to this origin already failed earlier in this process,
-    /// the attempt is skipped and the same failure is reported immediately,
-    /// rather than spending another connect timeout to reach a conclusion that
-    /// is already known. That is a latency shortcut and nothing more: the error
-    /// is the one an attempt would have produced, and which store this backend
-    /// talks to is decided before this is ever called.
+    // Sends an authenticated request, classifying any transport failure once.
+    // When a connection to this origin already failed earlier in this
+    // process, the attempt is skipped and the same failure reported
+    // immediately: a latency shortcut, never a different outcome.
     async fn send(&self, req: reqwest::RequestBuilder, op: &str) -> Result<reqwest::Response> {
         session::send_request(&self.bearer, &self.base_url, req, op).await
     }
@@ -106,7 +96,7 @@ impl RemoteMemoryBackend {
 ///
 /// A 401/403 from a self-hosted server is a missing per-origin key more often
 /// than anything else, and nothing migrates one into place on the user's
-/// behalf any more (ADR-088 D3), so the error is where they learn the command.
+/// behalf, so the error is where they learn the command.
 ///
 /// Callers must have renewed an expired cloud session before reaching this
 /// (the memory backends do so in `Bearer::send`); otherwise `inkentry login`
@@ -121,22 +111,18 @@ pub fn credential_hint(status: reqwest::StatusCode, base_url: &str) -> String {
     )
 }
 
-/// How a request failed before it ever carried a reply.
+// How a request failed before it ever carried a reply.
 enum ConnectFailure {
-    /// Nothing answered: refused, unresolvable, or a connect that ran out of
-    /// time.
+    // Nothing answered: refused, unresolvable, or a connect that ran out of
+    // time.
     Unreachable,
-    /// Something answered and then the TLS handshake failed. Carries the short
-    /// cause, which is what tells the operator which certificate to fix.
+    // Something answered and then the TLS handshake failed. Carries the short
+    // cause, which is what tells the operator which certificate to fix.
     Tls(String),
 }
 
-/// Classify a transport failure, or `None` when the request reached the server
-/// and failed after that.
-///
-/// A request that timed out *after* the server accepted the connection is
-/// deliberately not classified here. That is a slow server rather than an
-/// absent one, and it keeps the wording it has always had.
+// Classifies a transport failure, or `None` when the request reached the
+// server and failed after that (a slow server, not an absent one).
 fn classify(err: &reqwest::Error) -> Option<ConnectFailure> {
     if !err.is_connect() {
         return None;
@@ -152,10 +138,10 @@ fn classify(err: &reqwest::Error) -> Option<ConnectFailure> {
     }
 }
 
-/// Why the connection never came up, in the few words that change what the
-/// reader does next: nothing listening on that port, versus a connect that
-/// never drew any answer at all (a dropped SYN, which is how a filtering
-/// firewall looks from this side).
+// Why the connection never came up, in the few words that change what the
+// reader does next: nothing listening on that port, versus a connect that
+// never drew any answer at all (a dropped SYN, as a filtering firewall looks
+// from this side).
 fn connect_detail(err: &reqwest::Error) -> &'static str {
     if err.is_timeout() {
         return "connect timed out";
@@ -172,25 +158,17 @@ fn connect_detail(err: &reqwest::Error) -> &'static str {
     "could not connect"
 }
 
-/// The clause naming the mode, appended to every headline here.
-///
-/// Naming the mode is true by construction wherever this is reached:
-/// [`open_memory_backend`](super::open_memory_backend) builds
-/// [`RemoteMemoryBackend`] and [`CloudApiMemoryBackend`] only under
-/// [`SyncMode::CloudFirst`](crate::config::SyncMode::CloudFirst), the one mode
-/// that moves the store of record off this machine and therefore has no local
-/// copy it could serve instead.
+// The clause naming the mode, appended to every headline here. True by
+// construction: `open_memory_backend` builds these backends only under
+// `cloud_first`, the one mode with no local copy to fall back to.
 const NO_FALLBACK: &str = "mode is cloud_first, which does not fall back to the local store";
 
-/// Headline for a server that is not answering at all.
 fn unreachable_message(base_url: &str, detail: &str) -> String {
     format!("team server unreachable at {base_url} ({detail}); {NO_FALLBACK}")
 }
 
-/// Headline for a server that answered and then failed the TLS handshake.
-///
-/// Deliberately says the server is running: the whole point of separating this
-/// from the unreachable wording is that restarting the server cannot fix it.
+// Deliberately says the server is running: the whole point of separating this
+// from the unreachable wording is that restarting the server cannot fix it.
 fn tls_message(base_url: &str, cause: &str) -> String {
     format!(
         "TLS handshake with the team server at {base_url} failed ({cause}); it accepted the \
@@ -200,13 +178,10 @@ fn tls_message(base_url: &str, cause: &str) -> String {
     )
 }
 
-/// Context for a send that failed at the transport layer.
-///
-/// `op` names the request as it always has. A connect-stage failure
-/// additionally gets the diagnosis as the *headline*, because a raw transport
-/// error printed under a URL reads as a malfunction rather than as "that server
-/// is not answering" or "that certificate is not trusted", which is the one
-/// thing the reader needs to know.
+// Context for a send that failed at the transport layer. A connect-stage
+// failure gets the diagnosis as the headline, because a raw transport error
+// printed under a URL reads as a malfunction rather than "that server is not
+// answering" or "that certificate is not trusted".
 pub(super) fn transport_error(err: reqwest::Error, base_url: &str, op: &str) -> anyhow::Error {
     let headline = match classify(&err) {
         Some(ConnectFailure::Unreachable) => {
@@ -226,8 +201,8 @@ pub(super) fn transport_error(err: reqwest::Error, base_url: &str, op: &str) -> 
     }
 }
 
-/// [`transport_error`] for the retrying send path, whose transport failure
-/// arrives already wrapped in its route label.
+// `transport_error` for the retrying send path, whose transport failure
+// arrives already wrapped in its route label.
 pub(super) fn unreachable_headline(err: anyhow::Error, base_url: &str) -> anyhow::Error {
     let headline = match err.downcast_ref::<reqwest::Error>().and_then(classify) {
         Some(ConnectFailure::Unreachable) => {
@@ -246,11 +221,9 @@ pub(super) fn unreachable_headline(err: anyhow::Error, base_url: &str) -> anyhow
     }
 }
 
-/// The error a request reports when it is skipped because a connection to the
-/// same origin already failed in this process.
-///
-/// Deliberately the same conclusion an attempt would have reached, reported
-/// sooner. It is never a different outcome, and never a fallback.
+// The error a request reports when it is skipped because a connection to the
+// same origin already failed in this process — the same conclusion an
+// attempt would have reached, reported sooner, never a fallback.
 pub(super) fn already_unreachable(base_url: &str, op: &str) -> anyhow::Error {
     anyhow::anyhow!("{op}").context(unreachable_message(
         base_url,
@@ -258,7 +231,7 @@ pub(super) fn already_unreachable(base_url: &str, op: &str) -> anyhow::Error {
     ))
 }
 
-/// [`reqwest::Response::error_for_status`] plus [`credential_hint`].
+// `reqwest::Response::error_for_status` plus `credential_hint`.
 pub(super) trait CheckedResponse: Sized {
     fn checked(self, base_url: &str) -> Result<Self>;
 }
@@ -274,11 +247,23 @@ impl CheckedResponse for reqwest::Response {
     }
 }
 
-// ── Trait implementation ──────────────────────────────────────────────────────
-
 #[async_trait]
 impl MemoryBackend for RemoteMemoryBackend {
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)> {
+        match self.add_with_reconcile(input, false, &[]).await? {
+            AddOutcome::Created { id, created, .. } => Ok((id, created)),
+            AddOutcome::Blocked { .. } => {
+                anyhow::bail!("server refused the write although reconciliation was not requested")
+            }
+        }
+    }
+
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        reconcile: bool,
+        resolutions: &[Resolution],
+    ) -> Result<AddOutcome> {
         let vector = input.embedding.as_deref().map(blob_to_vec);
         // The tags only mean anything alongside a vector, and the accept side
         // refuses a vector that arrives without them.
@@ -311,6 +296,11 @@ impl MemoryBackend for RemoteMemoryBackend {
             origin_actor_kind,
             origin_tool,
             origin_model,
+            // A server that predates this field simply ignores it and
+            // answers with the pre-existing 409 shape, which
+            // `AddNoteResponse::stored`'s default reads correctly.
+            reconcile: reconcile.then_some("block"),
+            resolutions: resolutions.iter().map(ResolutionWire::from).collect(),
         };
         // A write with no client vector makes the server embed, so it runs
         // under the server's embed admission queue and can be shed with a
@@ -339,12 +329,22 @@ impl MemoryBackend for RemoteMemoryBackend {
 
         let status = http_resp.status();
 
-        // 409 means "stored but conflicting" — treat as success but emit a warning.
         if status == reqwest::StatusCode::CONFLICT {
             let resp = http_resp
                 .json::<AddNoteResponse>()
                 .await
                 .context("parsing POST /memory 409 response")?;
+
+            if !resp.stored {
+                // A duplicate-band candidate with no resolution; nothing was
+                // written.
+                return Ok(AddOutcome::Blocked {
+                    candidates: resp.candidates.into_iter().map(Into::into).collect(),
+                });
+            }
+
+            // An older server has no blocking concept: stored but
+            // conflicting is success, with a legacy warning.
             if !resp.conflicts.is_empty() {
                 eprintln!("warning: memory entry conflicts with existing entries:");
                 for c in &resp.conflicts {
@@ -354,9 +354,17 @@ impl MemoryBackend for RemoteMemoryBackend {
                     );
                 }
             }
+            let id = resp
+                .id
+                .context("server reported the entry as stored but sent no id")?;
             // server.db doesn't enforce this amendment's promoted index, so
             // there is nothing for this backend to detect as a reuse.
-            return Ok((resp.id, true));
+            return Ok(AddOutcome::Created {
+                id,
+                created: true,
+                candidates: Vec::new(),
+                related: Vec::new(),
+            });
         }
 
         let resp = http_resp
@@ -365,12 +373,20 @@ impl MemoryBackend for RemoteMemoryBackend {
             .json::<AddNoteResponse>()
             .await
             .context("parsing POST /memory response")?;
-        // Server-minted cross-machine id (ADR-059 D2). No local store to persist
-        // into on this backend; surface it for diagnostics.
+        // Server-minted cross-machine id; no local store to persist into on
+        // this backend, so surface it for diagnostics.
         if let Some(remote_id) = &resp.remote_id {
             tracing::debug!(remote_id, "server assigned remote_id for new memory entry");
         }
-        Ok((resp.id, true))
+        let id = resp
+            .id
+            .context("server reported the entry as stored but sent no id")?;
+        Ok(AddOutcome::Created {
+            id,
+            created: true,
+            candidates: resp.candidates.into_iter().map(Into::into).collect(),
+            related: resp.related.into_iter().map(Into::into).collect(),
+        })
     }
 
     /// Remote backend: timeline search falls back to regular semantic search.
@@ -383,12 +399,9 @@ impl MemoryBackend for RemoteMemoryBackend {
         self.search(query_blob, query, limit, None).await
     }
 
-    /// The server has no native embedder client-side hook — it embeds `query`
-    /// server-side (see `inkentry-server::handlers::search_notes`). The
-    /// pre-computed `query_blob` is what local backends use for KNN; the
-    /// remote backend ignores it and sends the raw query text instead, or the
-    /// server's required `query: String` field is missing and axum rejects
-    /// the request with 422 before the handler ever runs (spelunk-cloud/spelunk#359).
+    /// The server embeds `query` server-side. The pre-computed `query_blob` is
+    /// what local backends use for KNN; the remote backend ignores it and
+    /// sends the raw query text instead.
     async fn search(
         &self,
         _query_blob: &[u8],
@@ -414,7 +427,7 @@ impl MemoryBackend for RemoteMemoryBackend {
         Ok(resp.into_notes().into_iter().map(Into::into).collect())
     }
 
-    /// Remote backend: BM25 text search is not supported — falls back to semantic search.
+    /// Remote backend: BM25 text search is not supported.
     async fn search_text(
         &self,
         _query: &str,
@@ -428,9 +441,9 @@ impl MemoryBackend for RemoteMemoryBackend {
     }
 
     /// Remote backend: hybrid search falls back to semantic search
-    /// (server-side FTS is not available in this client). ADR-083's relevance
-    /// gate is calibrated for the local SQLite backend's embedding space only,
-    /// so `gate` is unused here.
+    /// (server-side FTS is not available in this client). The relevance gate
+    /// is calibrated for the local SQLite backend's embedding space only, so
+    /// `gate` is unused here.
     async fn search_hybrid(
         &self,
         query_blob: &[u8],
@@ -493,18 +506,12 @@ impl MemoryBackend for RemoteMemoryBackend {
     /// The team server pages its listing by `offset`, so a handle resolves
     /// against the whole store rather than one page: walk it, collecting every
     /// match so an ambiguous prefix is still caught when its entries fall on
-    /// different pages. A store read to its empty tail is `Complete`; the walk
-    /// advances by the count actually returned, since the server caps a page
-    /// below what is asked for, and ends on the empty page, not a short one.
+    /// different pages. A store read to its empty tail is `Complete`.
     ///
-    /// Two guards keep the walk finite when a peer does not page as asked. A
-    /// server one release behind has no `offset` on its list route, and an
-    /// unknown query parameter is dropped rather than refused, so it returns the
-    /// same first page for every request and the empty tail never comes. A page
-    /// that adds no entry not already seen means the offset is not advancing, so
-    /// the read is reported `Bounded` rather than looped; a hard page ceiling
-    /// backstops that guard. Either way an older peer degrades to the same
-    /// honest bounded result the single-page read once gave, never a hang.
+    /// Two guards keep the walk finite when a peer does not page as asked: a
+    /// page that adds no entry not already seen means the offset is not
+    /// advancing, so the read is reported `Bounded` rather than looped, and a
+    /// hard page ceiling backstops that guard.
     async fn note_ids_for_entity_id_prefix(&self, prefix: &str) -> Result<EntityIdLookup> {
         // Far above any project-sized store; the no-progress guard is what
         // actually stops a non-paging peer, this only backstops it.
