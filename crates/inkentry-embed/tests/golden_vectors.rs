@@ -2,8 +2,7 @@
 //
 // The workspace pins llama-cpp-2 / llama-cpp-sys-2 exact because a llama.cpp
 // change can move the embedding space, which would force a MODEL_ID change and
-// re-embed every index and memory store. The old guard was the cross-engine
-// candle<->llama parity suite, removed with candle; this replaces it.
+// re-embed every index and memory store.
 //
 // Ignored by default (it needs the canonical GGUF). Run it deliberately when
 // bumping llama-cpp-2:

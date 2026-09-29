@@ -8,24 +8,23 @@ use inkentry_core::embeddings::blob_to_vec;
 
 use crate::uuid_v7::uuid_v7_at;
 
-/// The `ServerNote` projection, in [`row_to_note`]'s column order.
-///
-/// `n` is the entry, `s` its successor: `notes.superseded_by` stores a rowid,
-/// and the wire carries the successor's exported identity, so the join is what
-/// keeps the rowid inside this module (ADR-078).
+// The `ServerNote` projection, in `row_to_note`'s column order.
+//
+// `n` is the entry, `s` its successor: `notes.superseded_by` stores a rowid,
+// and the wire carries the successor's exported identity, so the join is what
+// keeps the rowid inside this module.
 const NOTE_COLUMNS: &str = "n.sync_id, n.kind, n.title, n.body, n.tags, n.linked_files, \
                             n.created_at, n.status, s.sync_id, n.remote_id";
 
-/// How many vector-KNN hits [`ServerDb::find_candidates`] pulls before
-/// banding and capping to `MAX_CANDIDATES_PER_BAND` (ADR-100 D1/D5).
+// How many vector-KNN hits `ServerDb::find_candidates` pulls before banding
+// and capping to `MAX_CANDIDATES_PER_BAND`.
 const CANDIDATE_POOL: usize = 20;
 
 const NOTE_SOURCE: &str = "notes n LEFT JOIN notes s ON s.id = n.superseded_by";
 
 /// Typed error for an embedding-dimension mismatch on a project. Kept distinct
 /// from `anyhow::Error` so callers (the HTTP layer) can map it to a safe,
-/// specific 400 response without sniffing the error message for substrings —
-/// see `AppError::BadRequest` in `lib.rs`.
+/// specific 400 response without sniffing the error message for substrings.
 #[derive(Debug)]
 pub struct DimensionMismatch {
     pub slug: String,
@@ -49,7 +48,7 @@ impl std::error::Error for DimensionMismatch {}
 /// Typed error for an embedding-model mismatch on a project — a same-dim
 /// successor model that would silently corrupt the KNN space. Distinct from
 /// `anyhow::Error` so the HTTP layer maps it to a 400 without message sniffing,
-/// exactly as [`DimensionMismatch`] does (`AppError::Internal` in `lib.rs`).
+/// exactly as [`DimensionMismatch`] does.
 #[derive(Debug)]
 pub struct ModelMismatch {
     pub slug: String,
@@ -95,9 +94,9 @@ pub struct Project {
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct ServerNote {
     // Stored as `notes.sync_id`. The `notes.id` rowid beside it is a join key
-    // for `note_embeddings` and never leaves this module (ADR-078); the doc
-    // comment below is published in the OpenAPI document, so it stays on the
-    // API's side of that line.
+    // for `note_embeddings` and never leaves this module; the doc comment
+    // below is published in the OpenAPI document, so it stays on the API's
+    // side of that line.
     /// The entry's identity: a UUIDv7 minted by this server.
     pub id: String,
     /// Kind: `decision`, `requirement`, `note`, `question`, `handoff`, or `intent`.
@@ -260,20 +259,20 @@ impl ServerDb {
         Ok(())
     }
 
-    /// Assign a `sync_id` to every row that predates migration 007.
-    ///
-    /// Idempotent and cheap once caught up (the `WHERE sync_id IS NULL` scan
-    /// returns nothing). Runs unconditionally on every open so a legacy
-    /// database is fully backfilled before any request is served — `sync_id`
-    /// is the note's exported identity (ADR-078), so a row without one is a
-    /// note the HTTP API cannot name.
-    ///
-    /// Each id's v7 timestamp is seeded from that row's own `created_at`, not
-    /// the wall clock. A server that has held team data since before migration
-    /// 007 backfills its whole back catalogue in one pass; minting from the
-    /// clock would stamp every historical row with the same instant and
-    /// discard the ordering v7 exists to carry, irreversibly and for all of
-    /// history at once.
+    // Assign a `sync_id` to every row that predates migration 007.
+    //
+    // Idempotent and cheap once caught up (the `WHERE sync_id IS NULL` scan
+    // returns nothing). Runs unconditionally on every open so a legacy
+    // database is fully backfilled before any request is served — `sync_id`
+    // is the note's exported identity, so a row without one is a note the
+    // HTTP API cannot name.
+    //
+    // Each id's v7 timestamp is seeded from that row's own `created_at`, not
+    // the wall clock. A server that has held team data since before migration
+    // 007 backfills its whole back catalogue in one pass; minting from the
+    // clock would stamp every historical row with the same instant and
+    // discard the ordering v7 exists to carry, irreversibly and for all of
+    // history at once.
     fn backfill_missing_sync_ids(&self) -> Result<()> {
         let stale: Vec<(i64, i64)> = {
             let mut stmt = self.conn.prepare_cached(
@@ -316,8 +315,6 @@ impl ServerDb {
             .context("reading instance_id")?;
         Ok(id)
     }
-
-    // ── Projects ──────────────────────────────────────────────────────────────
 
     /// Get or auto-create a project by slug. On first write, records the
     /// embedding dimension and model for subsequent validation. `incoming_model`
@@ -415,10 +412,8 @@ impl ServerDb {
         Ok(projects)
     }
 
-    // ── Notes ─────────────────────────────────────────────────────────────────
-
-    /// Resolve an exported note identity to the rowid the storage layer joins
-    /// on. `None` when no live-or-archived row in this project carries it.
+    // Resolve an exported note identity to the rowid the storage layer joins
+    // on. `None` when no live-or-archived row in this project carries it.
     fn resolve_rowid(&self, project_id: i64, note_id: &str) -> Result<Option<i64>> {
         self.conn
             .query_row(
@@ -433,7 +428,7 @@ impl ServerDb {
     /// Returns `(rowid, note_id)`: the internal join key, and the entry's
     /// exported UUIDv7 identity. Every caller that hands an id across the wire
     /// uses the second — the first addresses `note_embeddings` and nothing
-    /// else (ADR-078).
+    /// else.
     #[allow(clippy::too_many_arguments)]
     pub fn add_note(
         &self,
@@ -461,7 +456,7 @@ impl ServerDb {
 
     /// [`Self::add_note`], but the row's `sync_id` (the exported note identity /
     /// `since_id` cursor) is restored from `sync_id_override` when supplied
-    /// rather than minted (ADR-092 force-restore).
+    /// rather than minted.
     ///
     /// The override must be a well-formed UUIDv7 the caller has already
     /// validated (the batch handler rejects a malformed one with a 400 before
@@ -494,11 +489,11 @@ impl ServerDb {
         };
         // `sync_id` is minted here (server-side, arrival order), independent of
         // the caller-supplied `remote_id` (a pushing client's own external_id,
-        // used only for push idempotency) — see migration 007. Every insert path
-        // (single-note POST and batch push) goes through this one function, so
-        // every new row gets one. A `--force` restore instead supplies the
-        // server's own previously-minted id here so the row keeps its original
-        // identity across the fleet (ADR-092).
+        // used only for push idempotency). Every insert path (single-note POST
+        // and batch push) goes through this one function, so every new row
+        // gets one. A `--force` restore instead supplies the server's own
+        // previously-minted id here so the row keeps its original identity
+        // across the fleet.
         let sync_id = match sync_id_override {
             Some(id) => id.to_string(),
             None => Uuid::now_v7().to_string(),
@@ -522,10 +517,9 @@ impl ServerDb {
         Ok((note_id, sync_id))
     }
 
-    /// [`Self::add_note`], with `resolutions` (`(kind, target_id)` pairs,
-    /// ADR-100 D2/D4) applied against the new row in the same transaction.
-    /// Rolls back the insert if a resolution errors, so a write never lands
-    /// half-resolved.
+    /// [`Self::add_note`], with `resolutions` (`(kind, target_id)` pairs)
+    /// applied against the new row in the same transaction. Rolls back the
+    /// insert if a resolution errors, so a write never lands half-resolved.
     #[allow(clippy::too_many_arguments)]
     pub fn add_note_with_resolutions(
         &self,
@@ -571,7 +565,6 @@ impl ServerDb {
     /// push idempotency key). Scoped to the project and to live rows only: an
     /// archived row with the same `remote_id` does not count as existing, so a
     /// re-push after archiving creates a fresh row rather than a no-op.
-    /// Mirrors cloud-api's `find_by_external_ids`.
     ///
     /// `has_embedding` travels with the id because a dedupe-skip has to report
     /// whether the row it matched is in the vector index, and a batch is up to
@@ -840,17 +833,16 @@ impl ServerDb {
         Ok(candidates)
     }
 
-    /// The pre-write candidate pool for `POST .../memory` (ADR-100 D1/D4/D5):
-    /// vector KNN over the project's active entries, banded and capped by the
-    /// same [`inkentry_core::storage::classify_candidates`] `memory add` and
+    /// The pre-write candidate pool for `POST .../memory`: vector KNN over the
+    /// project's active entries, banded and capped by the same
+    /// [`inkentry_core::storage::classify_candidates`] `memory add` and
     /// `harvest` use. `exclude_rowid` drops a self-match (the entry just
     /// written, when re-checking after a store).
     ///
     /// Vector-only: unlike the local store, this schema carries no full-text
     /// index over notes, so there is no lexical half to union in. With no
-    /// embedding this returns no candidates at all — a stricter version of
-    /// D1's "FTS only, write proceeds" fallback, since there is no FTS here
-    /// either; the write still always proceeds regardless.
+    /// embedding this returns no candidates at all; the write still always
+    /// proceeds regardless.
     pub fn find_candidates(
         &self,
         project_id: i64,
@@ -891,7 +883,7 @@ impl ServerDb {
         Ok(classify_candidates(vector_hits, Vec::new(), None))
     }
 
-    /// Applies one D2/D4 resolution against an already-stored entry
+    /// Applies one resolution against an already-stored entry
     /// (`new_rowid`/`new_sync_id`). `target_id` naming an entry outside the
     /// reported candidate set is accepted, same as the local store: the id
     /// only has to resolve to a real row in this project, not one of the
@@ -971,17 +963,15 @@ impl ServerDb {
         Ok(changed > 0)
     }
 
-    /// ADR-099 D5: set `source_ref` on an entry that may have synced before a
-    /// commit claimed it. `source_ref` has no dedicated column on this
-    /// schema (same as `source_commit` on create, `handlers::batch`): it
-    /// folds into `tags` as a `git:<sha>` entry, the convention
-    /// `harvested_shas`/`source_commit_from_tags` already read. Replaces any
-    /// existing `git:` tag rather than appending a second one, so this stays
-    /// idempotent on a resend (the client has no local record of whether a
-    /// previous push already delivered this) and matches D3's "one
-    /// `source_ref` per entry" projection. Overwrites unconditionally, unlike
-    /// `archive_note`'s active-only guard: an anchor is not a lifecycle
-    /// transition.
+    /// Set `source_ref` on an entry that may have synced before a commit
+    /// claimed it. `source_ref` has no dedicated column on this schema (same
+    /// as `source_commit` on create): it folds into `tags` as a `git:<sha>`
+    /// entry, the convention `harvested_shas`/`source_commit_from_tags`
+    /// already read. Replaces any existing `git:` tag rather than appending a
+    /// second one, so this stays idempotent on a resend (the client has no
+    /// local record of whether a previous push already delivered this).
+    /// Overwrites unconditionally, unlike `archive_note`'s active-only guard:
+    /// an anchor is not a lifecycle transition.
     pub fn set_note_source_ref(
         &self,
         project_id: i64,
@@ -1099,8 +1089,8 @@ impl ServerDb {
     }
 
     /// Count of active (non-archived) notes for a project — the `total` the
-    /// `since_id` delta-pull returns (ADR-092), counted the same way the client
-    /// counts its local active set so the two are directly comparable. Matches
+    /// `since_id` delta-pull returns, counted the same way the client counts
+    /// its local active set so the two are directly comparable. Matches
     /// the `since` feed's own `status != 'archived'` filter (only `active` and
     /// `archived` statuses exist), so `total` is the true size of what a full
     /// pull would deliver.
@@ -1139,8 +1129,6 @@ pub struct ProjectStats {
     pub total: i64,
     pub embedding_dim: usize,
 }
-
-// ── Row mappers ──────────────────────────────────────────────────────────────
 
 fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -1193,8 +1181,8 @@ fn row_to_note_with_distance(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server
     })
 }
 
-/// Extract a `git:<sha>` tag's sha, mirroring `harvested_shas`'s parsing of
-/// the same tag convention. Returns the first match, if any.
+// Extract a `git:<sha>` tag's sha, mirroring `harvested_shas`'s parsing of
+// the same tag convention. Returns the first match, if any.
 fn source_commit_from_tags(tags: &[String]) -> Option<String> {
     tags.iter()
         .find_map(|t| t.strip_prefix("git:").map(str::to_string))
@@ -1220,8 +1208,6 @@ fn now_unix() -> i64 {
         .as_secs() as i64
 }
 
-// Need blob_to_vec for search — it's in embeddings module so the import works.
-// But we also need vec_to_blob for the vec0 match query. Both are in inkentry_core::embeddings.
 impl ServerDb {
     /// Convenience: decode a raw embedding blob to f32 vec for use with search_notes.
     pub fn decode_embedding(blob: &[u8]) -> Vec<f32> {
@@ -1233,10 +1219,10 @@ impl ServerDb {
 mod tests {
     use super::*;
 
-    /// Register the sqlite-vec extension once per test process. `ServerDb::open`
-    /// creates a `vec0` virtual table, so the extension must be auto-registered
-    /// before any in-memory DB is opened. `sqlite3_auto_extension` is
-    /// process-global, hence the `OnceLock` guard.
+    // Register the sqlite-vec extension once per test process. `ServerDb::open`
+    // creates a `vec0` virtual table, so the extension must be auto-registered
+    // before any in-memory DB is opened. `sqlite3_auto_extension` is
+    // process-global, hence the `OnceLock` guard.
     fn register_sqlite_vec() {
         use std::sync::OnceLock;
         static INIT: OnceLock<()> = OnceLock::new();
@@ -1250,10 +1236,6 @@ mod tests {
         });
     }
 
-    // Assert that a UUID string is in canonical 8-4-4-4-12 form and every
-    // non-dash character is a lowercase hex digit. This mirrors what the rest
-    // of the codebase expects of instance_id (a 36-char UUID, see the health
-    // handler in handlers.rs).
     fn assert_canonical_uuid(id: &str) {
         assert_eq!(id.len(), 36, "instance_id must be 36 chars: {id}");
         let parts: Vec<&str> = id.split('-').collect();
@@ -1270,10 +1252,9 @@ mod tests {
         }
     }
 
-    /// Re-opening a persistent DB re-runs `migrate()`; migration 004's
-    /// `ALTER TABLE ADD COLUMN remote_id` is not idempotent in SQLite, so the
-    /// second open must not fail. Also confirms `remote_id` is queryable and
-    /// defaults to NULL on existing rows.
+    // Re-opening a persistent DB re-runs `migrate()`; migration 004's
+    // `ALTER TABLE ADD COLUMN remote_id` is not idempotent in SQLite, so the
+    // second open must not fail.
     #[test]
     fn reopen_is_idempotent_and_remote_id_defaults_null() {
         register_sqlite_vec();
@@ -1299,11 +1280,8 @@ mod tests {
         assert_eq!(notes[0].remote_id, None, "existing row defaults to NULL");
     }
 
-    /// Migration 006 must re-scope `remote_id` uniqueness to per-project: two
-    /// different projects reusing the same `remote_id` must both succeed at
-    /// the DB layer. Migration 004 indexed `remote_id` alone (global), which
-    /// collided here even though `find_by_remote_ids`'s idempotency lookup was
-    /// always scoped to `project_id`.
+    // `remote_id` uniqueness is scoped per-project: two different projects
+    // reusing the same `remote_id` must both succeed at the DB layer.
     #[test]
     fn remote_id_uniqueness_is_scoped_per_project_not_global() {
         register_sqlite_vec();
@@ -1357,9 +1335,6 @@ mod tests {
         );
     }
 
-    /// Within the SAME project, `remote_id` uniqueness must still be enforced
-    /// at the DB layer (the invariant migration 004 set out to establish is
-    /// not lost by narrowing its scope in migration 006).
     #[test]
     fn remote_id_uniqueness_still_enforced_within_same_project() {
         register_sqlite_vec();
@@ -1396,10 +1371,6 @@ mod tests {
         );
     }
 
-    /// `find_by_remote_ids` is active-only: an archived note's `remote_id`
-    /// does not count as "existing", so a re-push after archiving creates a
-    /// fresh live row (matches cloud-api's `archived_at IS NULL` filter in
-    /// `find_by_external_ids`).
     #[test]
     fn find_by_remote_ids_ignores_archived_notes() {
         register_sqlite_vec();
@@ -1438,9 +1409,6 @@ mod tests {
         );
     }
 
-    /// `find_by_remote_ids` must scope to `project_id`: a note in a different
-    /// project with the same `remote_id` string must never appear in another
-    /// project's idempotency lookup.
     #[test]
     fn find_by_remote_ids_scopes_to_project() {
         register_sqlite_vec();
@@ -1493,8 +1461,6 @@ mod tests {
         assert_eq!(id1, id2, "instance_id must be stable across calls");
     }
 
-    /// A same-dim write with a different model id returns the typed
-    /// `ModelMismatch`, which the HTTP layer maps to a 400 (see `lib.rs`).
     #[test]
     fn upsert_project_model_mismatch_is_typed_error() {
         register_sqlite_vec();
@@ -1512,8 +1478,6 @@ mod tests {
         assert_eq!(mismatch.got, "model-b");
     }
 
-    /// A legacy project row with NULL `embedding_model` is lazy-stamped on the
-    /// next write rather than rejected.
     #[test]
     fn upsert_project_null_model_is_lazy_stamped() {
         register_sqlite_vec();
@@ -1532,12 +1496,10 @@ mod tests {
         assert_eq!(p.embedding_model.as_deref(), Some("model-a"));
     }
 
-    // ── sync_id backfill + notes_since_id cursoring ─────────────────────────
-
-    /// A note created via `add_note` (the single-note POST path, `remote_id =
-    /// NULL`) still gets a `sync_id` — minted unconditionally at insert time,
-    /// independent of `remote_id` — and is retrievable via the `since_id`
-    /// cursor from the nil cursor.
+    // A note created via `add_note` (the single-note POST path, `remote_id =
+    // NULL`) still gets a `sync_id` — minted unconditionally at insert time,
+    // independent of `remote_id` — and is retrievable via the `since_id`
+    // cursor from the nil cursor.
     #[test]
     fn add_note_mints_sync_id_even_with_no_remote_id() {
         register_sqlite_vec();
@@ -1557,9 +1519,9 @@ mod tests {
         assert_canonical_uuid(&rows[0].sync_id);
     }
 
-    /// Seed a row with `sync_id` left NULL, as a server that predates
-    /// migration 007 would hold it. Migration 008's trigger refuses such an
-    /// insert, so it is dropped for the duration; the next open recreates it.
+    // Seed a row with `sync_id` left NULL, as a server that predates
+    // migration 007 would hold it. Migration 008's trigger refuses such an
+    // insert, so it is dropped for the duration; the next open recreates it.
     fn seed_legacy_row(db: &ServerDb, project_id: i64, title: &str, created_at: i64) {
         db.conn
             .execute_batch("DROP TRIGGER IF EXISTS notes_sync_id_required_on_insert")
@@ -1573,10 +1535,9 @@ mod tests {
             .expect("seed legacy row with no sync_id");
     }
 
-    /// A pre-existing row created before migration 007 is backfilled on the
-    /// next open, so legacy data is not stranded outside the `since_id`
-    /// cursor — and, since `sync_id` is now the exported identity, so that it
-    /// is addressable over HTTP at all.
+    // A pre-existing row created before migration 007 is backfilled on the
+    // next open, so legacy data is not stranded outside the `since_id`
+    // cursor, and is addressable over HTTP at all.
     #[test]
     fn reopen_backfills_sync_id_for_legacy_rows() {
         register_sqlite_vec();
@@ -1608,10 +1569,10 @@ mod tests {
         assert_eq!(note.title, "legacy");
     }
 
-    /// The backfill seeds each id's v7 timestamp from that row's own
-    /// `created_at`. Minting from the wall clock would stamp a whole back
-    /// catalogue with the migration instant, collapsing the ordering v7
-    /// exists to carry — irreversibly, since ids are never re-minted.
+    // The backfill seeds each id's v7 timestamp from that row's own
+    // `created_at`. Minting from the wall clock would stamp a whole back
+    // catalogue with the migration instant, collapsing the ordering v7
+    // exists to carry — irreversibly, since ids are never re-minted.
     #[test]
     fn backfilled_ids_sort_in_creation_order_not_migration_order() {
         register_sqlite_vec();
@@ -1643,9 +1604,9 @@ mod tests {
         );
     }
 
-    /// Uniqueness is unconditional, not the `WHERE sync_id IS NOT NULL`
-    /// partial index an additive nullable column needed. Two entries sharing
-    /// an identity would make `{note_id}` ambiguous on every route.
+    // Uniqueness is unconditional, not the `WHERE sync_id IS NOT NULL`
+    // partial index an additive nullable column needed. Two entries sharing
+    // an identity would make `{note_id}` ambiguous on every route.
     #[test]
     fn two_entries_cannot_share_an_exported_identity() {
         register_sqlite_vec();
@@ -1672,8 +1633,6 @@ mod tests {
         );
     }
 
-    /// The exported identity cannot be null: a write path that skipped
-    /// minting one would store a note the HTTP API has no way to name.
     #[test]
     fn a_note_cannot_be_stored_without_an_exported_identity() {
         register_sqlite_vec();
@@ -1711,8 +1670,8 @@ mod tests {
         );
     }
 
-    /// `notes.id` is a storage surrogate for the vec0 join, not an identity:
-    /// nothing a caller can reach exposes it (ADR-078).
+    // `notes.id` is a storage surrogate for the vec0 join, not an identity:
+    // nothing a caller can reach exposes it.
     #[test]
     fn the_integer_rowid_is_not_addressable_over_the_query_surface() {
         register_sqlite_vec();
@@ -1744,7 +1703,6 @@ mod tests {
         );
     }
 
-    /// `superseded_by` stores a rowid and exports the successor's identity.
     #[test]
     fn supersede_links_the_pair_by_exported_identity() {
         register_sqlite_vec();
@@ -1776,8 +1734,6 @@ mod tests {
         );
     }
 
-    /// A successor that does not resolve is "nothing matched", not a foreign
-    /// key error escaping as a 500.
     #[test]
     fn superseding_by_an_unknown_identity_changes_nothing() {
         register_sqlite_vec();
@@ -1801,10 +1757,6 @@ mod tests {
         assert_eq!(old.status, "active", "the entry must be untouched");
     }
 
-    /// `notes_since_id` orders by `sync_id` (arrival order at this server),
-    /// and the cursor is exclusive: re-querying with the last-seen `sync_id`
-    /// returns nothing further, and paging from an intermediate cursor skips
-    /// exactly the entries already seen.
     #[test]
     fn notes_since_id_cursor_is_exclusive_and_orders_by_arrival() {
         register_sqlite_vec();
@@ -1858,9 +1810,6 @@ mod tests {
         );
     }
 
-    /// `notes_since_id` excludes archived entries, matching `notes_since`'s
-    /// existing behaviour (tombstone propagation over a team server is a
-    /// separate, not-yet-implemented gap).
     #[test]
     fn notes_since_id_excludes_archived_entries() {
         register_sqlite_vec();
@@ -1893,9 +1842,6 @@ mod tests {
         );
     }
 
-    /// `notes_since_id` surfaces `source_commit` extracted from the
-    /// `git:<sha>` tag convention, mirroring how `push_memory_batch` stores
-    /// it and `harvested_shas` reads it back.
     #[test]
     fn notes_since_id_extracts_source_commit_from_git_tag() {
         register_sqlite_vec();
