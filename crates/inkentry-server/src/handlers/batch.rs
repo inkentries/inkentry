@@ -14,11 +14,8 @@ use super::{
     validate_optional_uuid_v7, validate_project_slug, validate_pushed_vector, validate_title_body,
 };
 
-// ── Batch push (wire parity with cloud-api's POST /memory/batch) ────────────
-
-/// One entry in a `POST /memory/batch` request. Field-for-field match of the
-/// CLI's `BatchPushItem` (`inkentry-core/src/storage/remote/sync.rs`) and of
-/// the hosted peer's batch item, so one client payload means the same thing
+/// One entry in a `POST /memory/batch` request. Wire-compatible with the
+/// hosted peer's batch item, so one client payload means the same thing
 /// wherever it is sent.
 #[derive(Deserialize, ToSchema)]
 pub struct BatchNoteItem {
@@ -99,15 +96,12 @@ pub struct BatchPushResponse {
 /// Batch-create memory entries. Idempotent on `external_id`: a live note
 /// already carrying the given `external_id` is skipped, not duplicated.
 ///
-/// Wire-compatible with the CLI's `BatchPushItem`/`CloudSyncClient::push_batch`
-/// (the same client cloud-api's `/memory/batch` serves); `inkentry plumbing push`
-/// and `inkentry sync` target this route on an OSS team server exactly as they
-/// do against cloud-api. Always returns **207** with a per-entry result list;
-/// a request-level validation failure (oversized batch, a title/body over the
-/// configured caps, or an injection match) rejects the whole batch (4xx/422)
-/// with nothing stored, before any entry is written. A batch needing
-/// server-side embedding is bulk work, shed with **429** when the bulk embed
-/// admission lane is full, on the same terms as every other bulk embed route.
+/// Always returns **207** with a per-entry result list; a request-level
+/// validation failure (oversized batch, a title/body over the configured
+/// caps, or an injection match) rejects the whole batch (4xx/422) with
+/// nothing stored, before any entry is written. A batch needing server-side
+/// embedding is bulk work, shed with **429** when the bulk embed admission
+/// lane is full, on the same terms as every other bulk embed route.
 #[utoipa::path(
     post,
     path = "/v1/projects/{project_id}/memory/batch",
@@ -139,8 +133,8 @@ pub async fn push_memory_batch(
         )));
     }
 
-    // ── Whole-batch validation up front: nothing is stored unless every entry
-    // passes (mirrors cloud-api's batch; see routes/memory.rs). ────────────
+    // Whole-batch validation up front: nothing is stored unless every entry
+    // passes.
     let configured_dim = state.db.lock().await.embedding_dim;
     for (i, entry) in body.entries.iter().enumerate() {
         validate_title_body(&entry.title, entry.body.as_deref().unwrap_or(""))
@@ -158,7 +152,7 @@ pub async fn push_memory_batch(
             )));
         }
         // A malformed client-supplied id rejects the whole batch here, before
-        // any write, rather than being silently ignored and minted (ADR-092).
+        // any write, rather than being silently ignored and minted.
         validate_optional_uuid_v7(entry.id.as_deref()).map_err(|e| prefix_batch_error(e, i))?;
         if let Some(m) =
             crate::security::scan_for_injection(&entry.title, entry.body.as_deref().unwrap_or(""))
@@ -186,7 +180,7 @@ pub async fn push_memory_batch(
     // Embed every entry that needs a server-side vector in one batched call,
     // before the DB lock is taken — a routine `sync` push is 50 entries, and
     // embedding them one at a time under the global lock stalls every other
-    // request on the server for the whole batch. See `embed_for_storage`.
+    // request on the server for the whole batch.
     //
     // Entries that turn out to be dedupe-skips are embedded too and their
     // vectors dropped: which ones those are is only knowable from the DB, and
@@ -275,8 +269,8 @@ pub async fn push_memory_batch(
         // On this create branch the `(project_id, external_id)` is new, so an
         // id supplied by `--force` restores the row under its original
         // identity; absent (every normal write) the server mints one. A dedupe
-        // hit never reaches here, so a supplied id can never override a stored
-        // row (ADR-092). The value was validated up front.
+        // hit never reaches here, so a supplied id can never override a
+        // stored row. The value was validated up front.
         let (_rowid, note_id) = db.add_note_with_sync_id(
             project.id,
             &entry.kind,
@@ -325,8 +319,8 @@ pub async fn push_memory_batch(
         .into_response())
 }
 
-/// Prefix a validation `AppError::BadRequest` message with the failing entry's
-/// index, matching cloud-api's `"entry {i}: ..."` batch-error convention.
+// Prefixes a validation `AppError::BadRequest` message with the failing
+// entry's index.
 fn prefix_batch_error(err: AppError, i: usize) -> AppError {
     match err {
         AppError::BadRequest(msg) => AppError::BadRequest(format!("entry {i}: {msg}")),

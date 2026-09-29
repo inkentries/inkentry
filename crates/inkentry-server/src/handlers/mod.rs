@@ -31,8 +31,6 @@ pub use sync::*;
 #[cfg(test)]
 mod tests;
 
-// ── Input validation caps ─────────────────────────────────────────────────────
-
 /// Max length (chars) for a memory entry's `title`.
 pub const MAX_TITLE_LEN: usize = 500;
 /// Max length (chars) for a memory entry's `body`.
@@ -41,17 +39,14 @@ pub const MAX_BODY_LEN: usize = 50_000;
 pub const MAX_SLUG_LEN: usize = 200;
 /// Max number of chunks accepted in a single `/index/embed` request. Also
 /// advertised in `/v1/health`'s `limits.max_batch_chunks` so a client can size
-/// its calibrated batch without guessing (see `HealthResponse`).
+/// its calibrated batch without guessing.
 pub const MAX_EMBED_BATCH: usize = 256;
 /// Max number of entries accepted in a single `POST /memory/batch` request.
-/// Matches cloud-api's cap and comfortably exceeds the CLI's own push chunk
-/// size (`PUSH_BATCH_CHUNK_SIZE` in `sync.rs`), so a legitimate CLI push never
-/// trips it.
+/// Comfortably exceeds a legitimate CLI push's own chunk size, so a real push
+/// never trips it.
 pub const MAX_BATCH_ENTRIES: usize = 200;
 
-/// Reject a title/body pair that exceeds the configured caps. Shared by every
-/// handler that accepts free-text memory content (`add_note`, `supersede`'s
-/// linked note content is validated at insert time, etc.).
+// Shared by every handler that accepts free-text memory content.
 fn validate_title_body(title: &str, body: &str) -> Result<(), AppError> {
     if title.chars().count() > MAX_TITLE_LEN {
         return Err(AppError::BadRequest(format!(
@@ -68,29 +63,17 @@ fn validate_title_body(title: &str, body: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Full-contract validation for a client-pushed embedding vector.
-///
-/// A client may push its own vector to skip server-side embedding, but only if
-/// it matches what this server would have produced: same model family, fp32,
-/// same dimension, no non-finite components, and an L2 magnitude inside
-/// `[0.5, 1.5]`. `None` (no vector supplied) always passes, since pushing one
-/// is optional and the server embeds instead.
-///
-/// The magnitude window exists because the vector index ranks by Euclidean
-/// distance, which agrees with cosine similarity only across vectors of equal
-/// length. A vector that was never L2-normalised therefore ranks against
-/// unrelated entries, and nothing downstream can distinguish it from a good
-/// one. The window is wide: it catches a vector that was never normalised, or
-/// a zero vector, rather than policing floating-point error around 1.0. A
-/// vector outside it is refused rather than rescaled, so the mismatch reaches
-/// the caller instead of being hidden.
-///
-/// The model tag and precision are **required** whenever a vector is present.
-/// An untagged vector cannot be checked against what this server embeds with,
-/// so accepting one would put a vector of unknown provenance next to the
-/// server's own in the same index, where nothing downstream could tell them
-/// apart. Refusing surfaces the mismatch to the caller instead of silently
-/// re-embedding behind its back.
+// A client may push its own vector to skip server-side embedding, but only
+// if it matches what this server would have produced: tagged with the right
+// model and precision, the right dimension, no non-finite components, and an
+// L2 magnitude inside [0.5, 1.5] — wide enough to catch an unnormalised or
+// zero vector without policing float error around 1.0. `None` always passes.
+// The index ranks by Euclidean distance, which agrees with cosine similarity
+// only across vectors of equal length, so an unnormalised vector would rank
+// against unrelated entries with nothing downstream able to tell. A vector
+// or tag outside contract is refused rather than coerced, so the mismatch
+// reaches the caller instead of silently landing next to the server's own
+// vectors in the same index.
 fn validate_pushed_vector(
     vector: Option<&[f32]>,
     model: Option<&str>,
@@ -151,13 +134,10 @@ fn validate_pushed_vector(
     Ok(())
 }
 
-/// Validate an optional client-supplied entry `id` (ADR-092).
-///
-/// `None` always passes; the server mints its own id. A present value must be a
-/// well-formed UUIDv7 — it parses as a UUID and its version field is 7 (the
-/// entry-identity scheme, ADR-078). A malformed id is rejected `400` rather than
-/// coerced, so a bad id surfaces loudly instead of producing a divergent
-/// identity.
+// `None` always passes; the server mints its own id. A present value must
+// be a well-formed UUIDv7. A malformed id is rejected 400 rather than
+// coerced, so a bad id surfaces loudly instead of producing a divergent
+// identity.
 fn validate_optional_uuid_v7(id: Option<&str>) -> Result<(), AppError> {
     let Some(id) = id else {
         return Ok(());
@@ -173,9 +153,8 @@ fn validate_optional_uuid_v7(id: Option<&str>) -> Result<(), AppError> {
     }
 }
 
-/// Reject a `project_id` path parameter that is empty or unreasonably long.
-/// Project ids are human slugs (e.g. `inkentries/inkentry`), not UUIDs, so this
-/// is a length/sanity cap rather than a UUID-format check.
+// Project ids are human slugs (e.g. `inkentries/inkentry`), not UUIDs, so
+// this is a length/sanity cap rather than a UUID-format check.
 fn validate_project_slug(slug: &str) -> Result<(), AppError> {
     if slug.is_empty() {
         return Err(AppError::BadRequest("project_id must not be empty".into()));
@@ -189,9 +168,8 @@ fn validate_project_slug(slug: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Test-only override for the generation budget `llm_generate_with_timeout`
-/// enforces (production uses `crate::REQUEST_TIMEOUT`). Lets tests inject a
-/// millisecond-scale budget. `#[cfg(test)]`-gated, inert in the release binary.
+// Lets tests inject a millisecond-scale generation budget in place of
+// `crate::REQUEST_TIMEOUT`.
 #[cfg(test)]
 static GENERATION_TIMEOUT_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<Duration>>> =
     std::sync::OnceLock::new();
@@ -223,14 +201,11 @@ fn generation_timeout() -> Duration {
     crate::REQUEST_TIMEOUT
 }
 
-/// Run an LLM backend's `generate` call with a wall-clock budget, so a hung/slow
-/// backend can't hold the spawned generation task (and the SSE connection it
-/// feeds) open forever.
-///
-/// `/llm/complete` returns its SSE `Response` as soon as the stream is built
-/// and hands generation to a detached `tokio::spawn`, so the router-level
-/// `TimeoutLayer` never sees this work. This wraps the generation call with the
-/// same budget to close that gap without changing the SSE framing.
+// `/llm/complete` returns its SSE `Response` as soon as the stream is built
+// and hands generation to a detached `tokio::spawn`, so the router-level
+// `TimeoutLayer` never sees this work. This applies the same budget to the
+// generation call itself, so a hung/slow backend can't hold the task (and
+// the SSE connection it feeds) open forever.
 async fn llm_generate_with_timeout(
     llm: Arc<dyn inkentry_core::llm::LlmBackend>,
     messages: Vec<inkentry_core::llm::Message>,
@@ -247,22 +222,16 @@ async fn llm_generate_with_timeout(
             tracing::warn!(
                 "{label} LLM generate exceeded the {budget:?} generation budget; aborting",
             );
-            // Dropping `tx`-holding future here closes the channel; the SSE
-            // stream's `rx.recv()` loop sees `None` and ends the connection
-            // (with whatever partial output was already sent).
+            // Dropping the tx-holding future here closes the channel, so the
+            // SSE stream's rx.recv() loop sees None and ends the connection.
         }
     }
 }
 
-/// Build the rate-limiter bucket key for an authenticated inference request:
-/// `"<principal>|<client-ip>"`. Keying on IP as well as principal means a
-/// shared team API key (a single `Principal::ApiKey` string, or the empty
-/// string when no key is configured at all) doesn't collapse every distinct
-/// client onto one shared bucket: each caller gets its own budget.
-///
-/// Both halves must be outside the caller's control or the budget is not a
-/// budget. See [`crate::client_ip`] for why the address half comes from the TCP
-/// peer rather than `X-Forwarded-For`.
+// Keying on IP as well as principal means a shared team API key doesn't
+// collapse every distinct client onto one shared rate-limit bucket: each
+// caller gets its own budget. Both halves must be outside the caller's
+// control or the budget is not a budget.
 fn rate_limit_key(
     auth_ctx: &AuthContext,
     headers: &HeaderMap,
@@ -277,11 +246,10 @@ fn rate_limit_key(
     format!("{principal}|{ip}")
 }
 
-/// Resolve the embedder for an embed-consuming handler, translating the slot's
-/// readiness into the correct HTTP error when it is not `ready`:
-/// - `loading`     → `503` + `Retry-After: 5` (transient: CLI keeps polling)
-/// - `unavailable` → `503` (terminal: CLI stops polling, surfaces the error)
-/// - `disabled`    → `400` (permanent misconfiguration for this request)
+// Translates the embedder slot's readiness into the correct HTTP error when
+// it is not `ready`: `loading` -> 503 + Retry-After (transient, CLI keeps
+// polling); `unavailable` -> 503 (terminal, CLI surfaces the error);
+// `disabled` -> 400 (permanent misconfiguration for this request).
 fn require_embedder(
     state: &AppState,
     disabled_msg: &str,
@@ -295,8 +263,7 @@ fn require_embedder(
                 .embedder
                 .detail()
                 .unwrap_or_else(|| "embedder warming up, retry shortly".to_string());
-            // Log the real cause: a 503 here is the model still loading, not a
-            // generic outage. Keeps the transient case out of error logs.
+            // debug, not warn: this is expected during warm-up, not an outage.
             tracing::debug!(%detail, "embed request rejected: embedder still loading");
             Err(AppError::EmbedderWarmingUp {
                 terminal: false,
@@ -321,29 +288,17 @@ fn require_embedder(
     }
 }
 
-/// Embed memory-entry text for the storage routes (`add_note`,
-/// `push_memory_batch`) and the repair sweep, which store text-only rather than
-/// failing when no vector can be produced.
-///
-/// The `lane` is the caller's, not the text's: `add_note` is a person waiting
-/// (interactive), while a batch push and the repair sweep — including its
-/// per-row fallback, one text at a time — are background work (bulk). The gate
-/// and the embed run on that declared lane.
-///
-/// Two invariants live here rather than at each call site, where both have been
-/// broken silently:
-///
-/// - **Never called with the `ServerDb` lock held.** That lock is global, so an
-///   embed awaited under it stalls every other request on the server — memory
-///   CRUD, `/memory/stream`'s poll loop and liveness alike — until the whole
-///   batch finishes.
-/// - **Runs under an [`crate::EmbedAdmission`] permit** on `lane`, like every
-///   other embed-consuming route, so a storage write cannot bypass the bound on
-///   how many callers may wait on the embedder. The permit is released when this
-///   returns.
-///
-/// The whole slice goes in one call: batching is both what keeps the lock-free
-/// window short and what makes the embed itself cheaper.
+// Embeds memory-entry text for the storage routes and the repair sweep,
+// storing text-only rather than failing when no vector can be produced.
+// `lane` is the caller's, not the text's (interactive for a person waiting,
+// bulk for a batch push or the repair sweep).
+//
+// Must never be called with the `ServerDb` lock held: that lock is global,
+// so an embed awaited under it stalls every other request until the whole
+// batch finishes. Runs under an EmbedAdmission permit on `lane` like every
+// other embed-consuming route, so a storage write can't bypass the bound on
+// concurrent embedder callers. The whole slice goes in one call, keeping
+// the lock-free window short and the embed itself cheaper.
 pub(crate) async fn embed_for_storage(
     state: &AppState,
     texts: &[&str],
@@ -352,8 +307,7 @@ pub(crate) async fn embed_for_storage(
     if texts.is_empty() {
         return Ok(StorageEmbedding::Vectors(Vec::new()));
     }
-    // Only the *ready* backend embeds; loading/unavailable/disabled stores
-    // text-only, since a memory write must not block on model warm-up.
+    // A memory write must not block on model warm-up.
     let Some(embedder) = state.embedder.backend() else {
         return Ok(StorageEmbedding::NotReady);
     };
@@ -376,33 +330,28 @@ pub(crate) async fn embed_for_storage(
     }
 }
 
-/// Outcome of [`embed_for_storage`].
-///
-/// The two degraded arms are kept apart for [`crate::repair`], not for the
-/// write paths: a write signals repair either way, but the repair pass must
-/// stop on `NotReady` (nothing it retries can make progress) and fall back to
-/// smaller units on `Failed` (one text in the page is poison and the rest are
-/// still embeddable).
+// The two degraded arms are kept apart for the repair pass, not for the
+// write paths: repair must stop on `NotReady` (nothing it retries can make
+// progress) but fall back to smaller units on `Failed` (one text in the
+// page is poison, the rest are still embeddable).
 pub(crate) enum StorageEmbedding {
-    /// One vector per input text, in input order.
+    // One vector per input text, in input order.
     Vectors(Vec<Vec<f32>>),
-    /// No backend is ready: loading, unavailable, or disabled.
+    // No backend is ready: loading, unavailable, or disabled.
     NotReady,
-    /// The embedder answered with an error, or with a vector count that does
-    /// not line up with the input. A count mismatch is a failure rather than a
-    /// partial success on purpose: with the input-to-output mapping unknown,
-    /// any assignment could attach a vector to the wrong text.
+    // An error, or a vector count that doesn't line up with the input —
+    // treated as a failure rather than a partial success, since with the
+    // input-to-output mapping unknown any assignment could attach a vector
+    // to the wrong text.
     Failed,
 }
 
-/// The one text a memory row is embedded from. Both write paths and the repair
-/// pass call this, so a repaired row's vector cannot describe a differently
-/// shaped string than the one the push path would have produced.
+// Both write paths and the repair pass call this, so a repaired row's
+// vector cannot describe a differently shaped string than the push path
+// would have produced.
 pub(crate) fn storage_embedding_text(title: &str, body: &str) -> String {
     format!("title: {title} | text: {body}")
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn require_project(db: &crate::db::ServerDb, slug: &str) -> Result<crate::db::Project, AppError> {
     validate_project_slug(slug)?;

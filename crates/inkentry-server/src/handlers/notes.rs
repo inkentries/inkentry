@@ -14,8 +14,6 @@ use super::{
     validate_project_slug, validate_pushed_vector, validate_title_body,
 };
 
-// ── Request / Response types ──────────────────────────────────────────────────
-
 #[derive(Deserialize, ToSchema)]
 pub struct AddNoteRequest {
     /// Kind of memory entry: `decision`, `requirement`, `note`, `question`, `handoff`, `intent`.
@@ -44,15 +42,15 @@ pub struct AddNoteRequest {
     /// Precision of a pushed `vector`; must be `fp32`. Required whenever
     /// `vector` is present.
     pub vector_precision: Option<String>,
-    /// ADR-100 D4: `"block"` refuses the write when the pre-store candidate
-    /// pool's duplicate band is non-empty and `resolutions` is empty. Any
-    /// other value (including absent) behaves as before this field existed.
-    /// Only meaningful when the client also sees `memory.reconcile` on
-    /// `GET /v1/health`; a server that predates this field simply ignores it.
+    /// `"block"` refuses the write when the pre-store candidate pool's
+    /// duplicate band is non-empty and `resolutions` is empty. Any other
+    /// value (including absent) stores unconditionally. Only meaningful when
+    /// the client also sees `memory.reconcile` on `GET /v1/health`; a server
+    /// that predates this field simply ignores it.
     #[serde(default)]
     pub reconcile: Option<String>,
-    /// One resolution per blocking candidate (ADR-100 D2), applied in the
-    /// same transaction as the write. `type` is one of `supersedes`,
+    /// One resolution per blocking candidate, applied in the same
+    /// transaction as the write. `type` is one of `supersedes`,
     /// `relates_to`, `contradicts`, `distinct`; `distinct` records nothing.
     /// An id naming an entry outside the reported candidate set is accepted,
     /// as long as it resolves to a real active-or-archived entry in the
@@ -72,31 +70,30 @@ pub struct ResolutionRequest {
 #[derive(Serialize, ToSchema)]
 pub struct AddNoteResponse {
     /// Whether the note was stored. `false` only on a 409 refused under
-    /// `reconcile: "block"` (ADR-100 D2) — every other status this route
-    /// returns means the entry was written.
+    /// `reconcile: "block"` — every other status this route returns means
+    /// the entry was written.
     pub stored: bool,
     /// Identity of the created note: a UUIDv7 minted by this server. Absent
     /// when `stored` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Conflicting entries. Always empty from this build: retired in favour
-    /// of `candidates`/`related` (ADR-100 D4). Kept on the wire, never
-    /// populated, so an older client reading it sees no conflicts rather than
-    /// a missing field.
+    /// Always empty from this build. Kept on the wire, never populated, so
+    /// an older client reading it sees no conflicts rather than a missing
+    /// field.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<ConflictEntry>,
-    /// The duplicate band (ADR-100 D1/D2), computed before the write.
-    /// Present on both a refused (`stored: false`) and a stored response.
+    /// The duplicate band, computed before the write. Present on both a
+    /// refused (`stored: false`) and a stored response.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateEntry>,
-    /// The related band (ADR-100 D3). Present only alongside a stored entry.
+    /// The related band. Present only alongside a stored entry.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<CandidateEntry>,
 }
 
-/// A single conflicting memory entry returned in a 409 response. Retired
-/// (ADR-100 D4); the type is kept only so `AddNoteResponse::conflicts`'s wire
-/// shape is unchanged for a client still reading it.
+/// A single conflicting memory entry returned in a 409 response. Never
+/// populated; the type is kept only so `AddNoteResponse::conflicts`'s wire
+/// shape doesn't break for a client still reading it.
 #[derive(Serialize, ToSchema)]
 pub struct ConflictEntry {
     pub id: String,
@@ -105,7 +102,7 @@ pub struct ConflictEntry {
     pub similarity: f32,
 }
 
-/// One pre-write candidate (ADR-100 D1), as reported over the wire.
+/// One pre-write candidate, as reported over the wire.
 #[derive(Serialize, ToSchema)]
 pub struct CandidateEntry {
     pub id: String,
@@ -176,10 +173,10 @@ pub struct CountResponse {
 
 /// Object envelope for the list and search read endpoints.
 ///
-/// A JSON response root must be an object, never a bare array (ADR-076: the
-/// memory wire contract). `entries` carries the notes; `total` is their count
-/// in this response, which is already `limit`-capped, not a project-wide count
-/// (that has its own `/stats` route).
+/// A JSON response root must be an object, never a bare array. `entries`
+/// carries the notes; `total` is their count in this response, which is
+/// already `limit`-capped, not a project-wide count (that has its own
+/// `/stats` route).
 #[derive(Serialize, ToSchema)]
 pub struct NoteListResponse {
     pub entries: Vec<crate::db::ServerNote>,
@@ -192,15 +189,13 @@ pub struct SupersedeRequest {
     pub new_id: String,
 }
 
-/// ADR-099 D5: an entry can sync before a commit claims it; this carries the
-/// anchor once it exists.
+/// An entry can sync before a commit claims it; this carries the anchor once
+/// it exists.
 #[derive(Deserialize, ToSchema)]
 pub struct AnchorUpdateRequest {
     /// The commit sha the client resolved `source_ref` to.
     pub source_ref: String,
 }
-
-// ── Memory CRUD ───────────────────────────────────────────────────────────────
 
 /// Add a memory entry to a project. The project is auto-created on first write.
 ///
@@ -209,8 +204,8 @@ pub struct AnchorUpdateRequest {
 /// entry is stored without a vector (text search only, no KNN). A `vector` must
 /// arrive with its `vector_model` and `vector_precision`, or it is refused.
 ///
-/// Candidates are computed before the write (ADR-100 D1): active entries
-/// within the duplicate or related distance band. Returns **201** and stores
+/// Candidates are computed before the write: active entries within the
+/// duplicate or related distance band. Returns **201** and stores
 /// the entry unless `reconcile: "block"` is set and the duplicate band is
 /// non-empty with no `resolutions` supplied, in which case it returns **409**
 /// with `stored: false` and nothing is written. `resolutions` (`supersedes`,
@@ -277,10 +272,8 @@ pub async fn add_note(
             .into_response());
     }
 
-    // Server-side embedding: embed the entry when no client vector is supplied.
-    // Done before the DB lock is taken, under an admission permit: see
-    // `embed_for_storage`. This is also what ADR-100 D1 needs embedded first:
-    // the candidate pool below is computed against this same vector.
+    // Embed before the DB lock is taken, under an admission permit: the
+    // candidate pool below is computed against this same vector.
     let server_embedding: Option<Vec<f32>> = if body.vector.is_none() {
         let text = storage_embedding_text(&body.title, &body.body);
         // `add_note` is a person waiting on their own write: interactive lane.
@@ -299,16 +292,15 @@ pub async fn add_note(
     let model = db.embedding_model.clone();
     let project = db.upsert_project(&project_id, dim, &model)?;
 
-    // ADR-100 D1: candidates before the write. No FTS half exists on this
-    // schema (see `ServerDb::find_candidates`), so with no embedding this is
-    // empty and the write proceeds exactly as D1 requires either way.
+    // No FTS half exists on this schema, so with no embedding this is empty
+    // and the write proceeds unconditionally either way.
     let candidates = db.find_candidates(project.id, embedding, None)?;
     let (duplicate, related): (Vec<_>, Vec<_>) = candidates
         .into_iter()
         .partition(|c| matches!(c.band, inkentry_core::storage::CandidateBand::Duplicate));
 
-    // ADR-100 D2: refuse rather than store, only under an explicit opt-in and
-    // only with nothing to resolve the duplicate. Nothing is written here.
+    // Refuse rather than store, only under an explicit opt-in and only with
+    // nothing to resolve the duplicate. Nothing is written here.
     if body.reconcile.as_deref() == Some("block")
         && !duplicate.is_empty()
         && body.resolutions.is_empty()
@@ -464,7 +456,7 @@ pub async fn search_notes(
     )?;
 
     // A memory search query is interactive: it takes the reserved lane and is
-    // never shed nor left waiting behind a bulk index batch (ADR-096); a full
+    // never shed nor left waiting behind a bulk index batch; a full
     // interactive lane still sheds with 429 rather than queuing silently.
     let _admission = state
         .embed_admission
@@ -581,8 +573,8 @@ pub async fn supersede_note(
     Ok(Json(BoolResponse { changed }))
 }
 
-/// ADR-099 D5: set `source_ref` on an already-synced entry once a commit
-/// claims it locally. Idempotent and unconditional (unlike `archive`/
+/// Set `source_ref` on an already-synced entry once a commit claims it
+/// locally. Idempotent and unconditional (unlike `archive`/
 /// `supersede`, which guard on `status = 'active'`): the client has no local
 /// record of whether a previous push already delivered this, so it resends
 /// on every push/sync, and a repeat must not error.

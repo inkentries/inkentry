@@ -10,8 +10,6 @@ use crate::{AppError, AppState, ErrorBody};
 
 use super::{require_embedder, validate_project_slug};
 
-// ── Code search (query embedding proxy) ───────────────────────────────────────
-
 /// Request body for `POST /v1/projects/{project_id}/search`.
 #[derive(Deserialize, ToSchema)]
 pub struct CodeSearchRequest {
@@ -84,14 +82,12 @@ pub async fn project_search(
     validate_project_slug(&project_id)?;
     let mode = body.mode.as_str();
 
-    // Validate mode.
     if !matches!(mode, "hybrid" | "semantic" | "text") {
         return Err(AppError::BadRequest(format!(
             "invalid mode '{mode}'; must be one of: hybrid, semantic, text"
         )));
     }
 
-    // Text mode: no embedding needed.
     if mode == "text" {
         return Ok(Json(CodeSearchResponse {
             mode: "text".to_string(),
@@ -99,7 +95,6 @@ pub async fn project_search(
         }));
     }
 
-    // Semantic / hybrid: require an embedder.
     let embedder = require_embedder(
         &state,
         "semantic/hybrid search requires an embedder, but this server was built \
@@ -107,9 +102,9 @@ pub async fn project_search(
     )?;
 
     // A code search query is interactive: it takes the reserved lane, so it is
-    // never shed nor left waiting behind a running bulk `/index/embed` batch
-    // (ADR-096). A full interactive lane still sheds with 429 rather than
-    // queuing silently past the client's own timeout.
+    // never shed nor left waiting behind a running bulk `/index/embed` batch.
+    // A full interactive lane still sheds with 429 rather than queuing
+    // silently past the client's own timeout.
     let _admission = state
         .embed_admission
         .try_acquire(crate::EmbedLane::Interactive)?;
