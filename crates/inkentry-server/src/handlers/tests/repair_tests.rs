@@ -96,8 +96,6 @@ async fn signal_is_pending(signal: &RepairSignal) -> bool {
         .is_ok()
 }
 
-// ── Both degrade paths signal ─────────────────────────────────────────
-
 // Since the embed moved off the lock into one batched call, an embed error
 // drops the vector for every entry in the request rather than for one. It also
 // happens long after the embedder became ready, so no readiness transition
@@ -194,8 +192,6 @@ async fn a_fully_embedded_batch_raises_no_signal() {
     );
 }
 
-// ── Coalescing and quiescence ─────────────────────────────────────────
-
 #[tokio::test]
 async fn signals_coalesce_into_one_wakeup() {
     let signal = RepairSignal::new();
@@ -217,8 +213,6 @@ async fn signals_coalesce_into_one_wakeup() {
 async fn an_unraised_signal_never_wakes_the_worker() {
     assert!(!signal_is_pending(&RepairSignal::new()).await);
 }
-
-// ── HTTP-level status quo the field must not disturb ──────────────────
 
 #[tokio::test]
 async fn a_failed_embed_leaves_whole_batch_validation_ordering_alone() {
@@ -244,8 +238,6 @@ async fn a_failed_embed_leaves_whole_batch_validation_ordering_alone() {
         "the rejected batch must have written nothing, so this is a create: {listed}"
     );
 }
-
-// ── The sweep ─────────────────────────────────────────────────────────
 
 // How many active rows in this state have no vector, read straight from the
 // store: the only honest way to check, since a stored row's absence from the
@@ -449,8 +441,6 @@ async fn a_row_deleted_mid_sweep_acquires_no_orphan_vector() {
     );
 }
 
-// ── Sweep discipline ──────────────────────────────────────────────────
-
 // Nothing the sweep could retry makes a not-ready embedder answer, so it stops
 // rather than grinding through a backlog it cannot fix.
 #[tokio::test]
@@ -498,10 +488,9 @@ impl inkentry_core::embeddings::EmbeddingBackend for PoisonEmbedder {
     }
 }
 
-// One bad text must cost one vector. Before the retry ladder, a batched embed
-// that failed dropped the vector for every entry in the request; if the sweep
-// gave up on a page the same way, the poison would keep costing the whole page
-// on every pass forever.
+// One bad text must cost one vector: if the sweep gave up on a whole page the
+// way a batched embed failure does, the poison would keep costing the whole
+// page on every pass forever.
 #[tokio::test]
 async fn a_poisonous_row_costs_only_its_own_vector() {
     let state = make_state_with_slot(4, crate::EmbedderSlot::loading());
@@ -628,15 +617,11 @@ async fn a_sweep_stops_quietly_when_the_request_path_holds_every_permit() {
     assert_eq!(sweep(&ready).await.repaired, 1, "and it retries later");
 }
 
-// The failure the distinction above exists to prevent, end to end through the
-// worker rather than through a single sweep.
-//
-// A permit is released silently. If a sweep that met a saturated request path
-// simply returned, the rows it had not reached would wait for an unrelated
-// future write or a restart, and on a healthy server there is no such write:
-// every subsequent one gets its vector at insert time and raises nothing.
-// These are the rows a client's sync believes already landed, so nothing
-// re-pushes them either.
+// If a sweep that met a saturated request path simply returned, the rows it
+// had not reached would wait for an unrelated future write or a restart, and
+// on a healthy server there is no such write: every subsequent one gets its
+// vector at insert time and raises nothing. These are the rows a client's
+// sync believes already landed, so nothing re-pushes them either.
 #[tokio::test]
 async fn a_backlog_left_by_a_saturated_request_path_still_completes() {
     let state = make_state_with_slot(4, crate::EmbedderSlot::loading());
@@ -721,8 +706,6 @@ async fn a_sweep_holds_no_admission_permit_once_it_returns() {
         );
     }
 }
-
-// ── The worker ────────────────────────────────────────────────────────
 
 // A sweep that could not finish must not ask for another, or a durable embed
 // outage becomes a loop that reruns the whole backlog as fast as it can fail.
@@ -821,8 +804,6 @@ async fn the_worker_sweeps_when_signalled() {
     panic!("a signalled worker must repair the backlog");
 }
 
-// ── The re-push round trip ────────────────────────────────────────────
-
 // The full loop the field exists to close. A client whose entries all landed
 // vectorless sees nothing but skips from then on, so the skip has to carry the
 // truth, raise the repair signal, and eventually flip to `true` on its own.
@@ -871,8 +852,6 @@ async fn a_vectorless_row_reported_on_re_push_is_repaired_and_then_reports_true(
         "and it stops asking for repair once there is nothing to repair"
     );
 }
-
-// ── Rows that arrived with their own vector ───────────────────────────
 
 // A client-pushed vector is a third way a row acquires one, and it lands
 // without the embedder being consulted at all. "Is this row vectorless?"

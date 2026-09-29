@@ -9,7 +9,6 @@ use super::support::{
     MockEmbedder, get_health_json, make_app, make_app_with_embedder, make_app_with_slot,
 };
 
-// GET /v1/health should return JSON with `status`, `version`, and `capabilities`.
 #[tokio::test]
 async fn health_returns_json_with_capabilities() {
     let (app, _) = make_app(0.92);
@@ -47,7 +46,6 @@ async fn health_returns_json_with_capabilities() {
         json["started_by"].is_null(),
         "started_by must be null in test (None)"
     );
-    // make_app has no embedder → disabled.
     assert_eq!(
         json["embedder"]["state"],
         json!("disabled"),
@@ -71,7 +69,6 @@ async fn health_returns_json_with_capabilities() {
     );
 }
 
-// GET /v1/health with a mock embedder of dim 4 must report `embedding_dim: 4`.
 #[tokio::test]
 async fn health_embedding_dim_with_embedder() {
     let app = make_app_with_embedder(4);
@@ -91,7 +88,6 @@ async fn health_embedding_dim_with_embedder() {
         json!(4),
         "embedding_dim must match the mock embedder dimension (4)"
     );
-    // Capabilities must include index.embed when embedder is present.
     let caps = json["capabilities"].as_array().unwrap();
     assert!(
         caps.iter().any(|c| c == "index.embed"),
@@ -102,16 +98,14 @@ async fn health_embedding_dim_with_embedder() {
         json!("ready"),
         "embedder.state must be 'ready' when the embedder is loaded"
     );
-    // `MockEmbedder` doesn't override `token_cap()`, so it gets the
-    // trait's default `None`: same as any backend with no known cap. Only
-    // the real `LlamaEmbedder` has a host-derived cap to report.
+    // `MockEmbedder` doesn't override `token_cap()`, so it reports the trait's
+    // default `None`; only `LlamaEmbedder` has a host-derived cap.
     assert!(
         json["limits"]["embedder_token_cap"].is_null(),
         "embedder_token_cap must be null for a backend with no known cap"
     );
 }
 
-// GET /v1/health with no embedder (the default make_app) must report `embedding_dim: 0`.
 #[tokio::test]
 async fn health_embedding_dim_without_embedder() {
     let (app, _) = make_app(0.92);
@@ -133,11 +127,6 @@ async fn health_embedding_dim_without_embedder() {
     );
 }
 
-// ── Readiness / warm-up contract ─────────────────────────────────────
-
-// While the embedder is `loading`, `/v1/health` is still live (200), reports
-// `embedder.state: "loading"`, withholds the semantic capabilities, and keeps
-// `embedding_dim: 0`: i.e. health is live *before* the model is ready.
 #[tokio::test]
 async fn health_live_while_embedder_loading() {
     let slot = crate::EmbedderSlot::loading();
@@ -163,19 +152,15 @@ async fn health_live_while_embedder_loading() {
     );
 }
 
-// The readiness cell flips `loading → ready`: after `set_ready`, health
-// reports `ready`, advertises the caps, and surfaces the real `embedding_dim`.
 #[tokio::test]
 async fn health_reflects_loading_to_ready_transition() {
     let slot = crate::EmbedderSlot::loading();
-    // Before: loading.
     let app = make_app_with_slot(4, slot.clone());
     assert_eq!(
         get_health_json(app).await["embedder"]["state"],
         json!("loading")
     );
 
-    // Publish the backend (as the background load task would).
     slot.set_ready(Arc::new(MockEmbedder { dim: 4 }));
 
     let app = make_app_with_slot(4, slot);
@@ -189,9 +174,7 @@ async fn health_reflects_loading_to_ready_transition() {
     assert!(caps.iter().any(|c| c == "index.embed"));
 }
 
-// The production load path readies the slot through `set_ready_with_engine`,
-// which fills the engine/device identity `/v1/health` reports (the deliverable
-// that lets a field report name the engine and device without server logs).
+// `set_ready_with_engine`, unlike `set_ready`, fills the engine/device identity.
 #[tokio::test]
 async fn health_reports_engine_and_device_when_readied_with_identity() {
     let slot = crate::EmbedderSlot::loading();
@@ -212,7 +195,6 @@ async fn health_reports_engine_and_device_when_readied_with_identity() {
     );
 }
 
-// A failed load flips `loading → unavailable`, carrying the error detail.
 #[tokio::test]
 async fn health_reflects_load_failure() {
     let slot = crate::EmbedderSlot::loading();
@@ -228,11 +210,9 @@ async fn health_reflects_load_failure() {
     assert_eq!(json["embedding_dim"], json!(0));
 }
 
-// `accepts_pushed_vectors` is the gate the CLI's sync push reads before
-// attaching a locally-computed vector. It is ready-gated rather than constant:
-// this server can only honour a pushed vector once its own embedder is ready
-// and its dimension is known, because that dimension is what the stored-vector
-// contract is checked against.
+// A pushed vector can only be honoured once this server's own embedder is
+// ready and its dimension known, since that dimension gates the stored-vector
+// contract.
 #[tokio::test]
 async fn health_advertises_accepts_pushed_vectors_when_embedder_ready() {
     let json = get_health_json(make_app_with_embedder(4)).await;
@@ -268,13 +248,9 @@ async fn health_withholds_accepts_pushed_vectors_unless_embedder_ready() {
     );
 }
 
-// The CLI's version-skew suite replays recorded peer health bodies. Those
-// recordings are only evidence of what a peer sends while the live body still
-// carries the same keys: once this handler and the recording drift, the replay
-// keeps passing against a shape no peer emits. The `handlers.rs` split is
-// exactly the kind of change that can drop a key without any test here
-// noticing, so the live body is compared to the recording rather than assumed
-// equal to it.
+// The CLI's version-skew suite replays a recorded peer health body assuming
+// it still shares keys with the live one; this test guards that assumption
+// so a dropped key doesn't go unnoticed.
 #[tokio::test]
 async fn live_health_keys_match_the_recorded_peer_fixture() {
     fn keys(value: &Value, at: &str) -> Vec<String> {

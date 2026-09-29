@@ -1,25 +1,11 @@
-// ── Liveness while an embed is in flight ─────────────────────────────────
-//
-// A liveness probe must never be able to wait on a backend's embed lock. If a
-// backend takes a forward-pass mutex synchronously from inside an `async fn`,
-// a probe that waits on it blocks a tokio worker instead of yielding it:
-// enough concurrent probes park enough workers that unrelated endpoints stop
-// being polled and the server reads as unreachable.
-//
-// `ParkingEmbedder` reproduces that structure rather than its timing:
-// `embed()` takes a forward-pass mutex inside `spawn_blocking` and parks there
-// on a test-controlled gate, so "an embed is in flight" is a state these tests
-// can assert against, with no sleeps and no wall-clock race. `cap_location` is
-// the mock's one degree of freedom, and
-// `harness_detects_a_cap_read_behind_the_forward_pass_mutex` uses it to prove
-// these bounds actually catch the coupling they guard against.
-//
-// What this module gates is the server-side property: health, and endpoints
-// that need no embedder, stay prompt given a backend whose cap read is
-// lock-free. The shipped `LlamaEmbedder` reads its cap from a field (no lock)
-// and dispatches embeds to worker threads over a channel, so it never holds
-// such a lock on an async task; these tests keep that server-side guarantee
-// honest against any backend.
+// A liveness probe must never wait on a backend's embed lock: a backend that
+// takes a forward-pass mutex synchronously from inside an `async fn` blocks a
+// tokio worker per waiting probe, and enough of those make the server read as
+// unreachable. `ParkingEmbedder` reproduces that lock structure (not its
+// timing) behind a test-controlled gate, so "an embed is in flight" is a
+// state these tests can assert against with no sleeps or wall-clock race.
+// `cap_location` lets `harness_detects_a_cap_read_behind_the_forward_pass_mutex`
+// prove the bounds below actually catch the coupling they guard against.
 mod liveness_under_embed {
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};

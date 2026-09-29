@@ -3,9 +3,6 @@ use serde_json::json;
 
 use super::support::{list_notes_via_http, make_app, note_item, post_batch};
 
-// Mixed outcomes: a pre-existing external_id (skip) alongside brand-new
-// ones (create). Counts and per-item results must align, and result
-// order must match input order.
 #[tokio::test]
 async fn batch_mixed_outcomes_counts_and_order_match() {
     let (app, _dim) = make_app(0.92);
@@ -39,17 +36,8 @@ async fn batch_mixed_outcomes_counts_and_order_match() {
     assert_eq!(results[2]["status"], json!("created"));
 }
 
-// a dedupe-skip must still carry an id
-//
-// Before this fix, a "skipped" result always carried `id: null`. The
-// ADR-037 P2 local relay stamps a pushed row's `remote_id` from this
-// response; if a first "created" ack is buffered but the CLI's local
-// stamp then fails (e.g. `SQLITE_BUSY`), a later re-push of the same row
-// durably lands as "skipped": and with no id to recover from that
-// response, the row was stuck outbox-pending forever, not even fixable
-// by a manual `inkentry sync` (same code path). The id on a skip must be
-// the SAME id the original create was assigned.
-
+// The id on a skip must be the same id the original create was assigned, or
+// a caller that lost track of the create has nothing to recover it from.
 #[tokio::test]
 async fn batch_skip_dedupe_hit_carries_the_same_id_as_the_original_create() {
     let (app, _dim) = make_app(0.92);
@@ -88,10 +76,9 @@ async fn batch_skip_dedupe_hit_carries_the_same_id_as_the_original_create() {
     );
 }
 
-// An external_id repeated WITHIN one batch must not crash the request:
-// the first occurrence creates, the second is treated as an idempotent
-// skip (matching the across-request idempotency contract) rather than
-// hitting the unique index and 500ing the whole batch.
+// An external_id repeated within one batch: the first occurrence creates, the
+// second is treated as an idempotent skip rather than hitting the unique
+// index and 500ing the whole batch.
 #[tokio::test]
 async fn batch_intra_batch_duplicate_external_id_skips_not_500() {
     let (app, _dim) = make_app(0.92);
@@ -122,10 +109,7 @@ async fn batch_intra_batch_duplicate_external_id_skips_not_500() {
     );
 }
 
-// Two different projects reusing the same external_id in independent
-// batch requests must both create: this is the HTTP-level counterpart
-// to `db::tests::remote_id_uniqueness_is_scoped_per_project_not_global`,
-// proving the fix end-to-end through the route.
+// external_id uniqueness is scoped per project, not global.
 #[tokio::test]
 async fn batch_same_external_id_different_projects_both_create() {
     let (app, _dim) = make_app(0.92);

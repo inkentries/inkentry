@@ -9,10 +9,6 @@ use super::support::{
     make_app_with_auth_key, note_item, post_batch, post_note,
 };
 
-// ── POST /memory/batch ────────────────────────────────────────────────
-
-// Unauthenticated `POST /memory/batch` against a server with an auth key
-// configured must 401, like every sibling memory route: not 404/405.
 #[tokio::test]
 async fn batch_unauthenticated_returns_401() {
     let app = make_app_with_auth_key(Some("secret"));
@@ -24,7 +20,6 @@ async fn batch_unauthenticated_returns_401() {
     );
 }
 
-// A correctly authenticated request against the same route must succeed.
 #[tokio::test]
 async fn batch_authenticated_returns_207() {
     let app = make_app_with_auth_key(Some("secret"));
@@ -40,7 +35,6 @@ async fn batch_authenticated_returns_207() {
     assert_eq!(resp.status(), http::StatusCode::MULTI_STATUS);
 }
 
-// Exactly `MAX_BATCH_ENTRIES` entries must be accepted.
 #[tokio::test]
 async fn batch_at_cap_is_accepted() {
     let (app, _dim) = make_app(0.92);
@@ -55,7 +49,6 @@ async fn batch_at_cap_is_accepted() {
     );
 }
 
-// `MAX_BATCH_ENTRIES + 1` must be rejected with 400 and nothing written.
 #[tokio::test]
 async fn batch_over_cap_returns_400_and_writes_nothing() {
     let (app, _dim) = make_app(0.92);
@@ -71,8 +64,6 @@ async fn batch_over_cap_returns_400_and_writes_nothing() {
     );
 }
 
-// An empty `entries` array is a valid, trivial batch: 207 with all-zero
-// counts, not an error.
 #[tokio::test]
 async fn batch_empty_entries_returns_207_zero_counts() {
     let (app, _dim) = make_app(0.92);
@@ -84,11 +75,8 @@ async fn batch_empty_entries_returns_207_zero_counts() {
     assert_eq!(body["results"], json!([]));
 }
 
-// An entry missing the required `external_id` field entirely fails JSON
-// deserialization (the field is a required `String`, not `Option`).
-// Axum's `Json` extractor rejects this before the handler ever runs,
-// as a 422 (its default deserialization-failure status): must not
-// panic or 500.
+// A missing required field fails JSON deserialization; axum's `Json`
+// extractor rejects it as 422 before the handler ever runs.
 #[tokio::test]
 async fn batch_entry_missing_external_id_field_is_rejected_not_500() {
     let (app, _dim) = make_app(0.92);
@@ -101,9 +89,8 @@ async fn batch_entry_missing_external_id_field_is_rejected_not_500() {
     );
 }
 
-// An entry with an empty-string `external_id` is rejected by the
-// explicit check (distinct from the missing-field case above), and
-// nothing in the batch is written.
+// An empty-string `external_id` is rejected by the explicit check, distinct
+// from the missing-field case above.
 #[tokio::test]
 async fn batch_entry_empty_external_id_returns_400_and_writes_nothing() {
     let (app, _dim) = make_app(0.92);
@@ -117,9 +104,8 @@ async fn batch_entry_empty_external_id_returns_400_and_writes_nothing() {
     );
 }
 
-// Whole-batch validation atomicity: entry 7 of 10 fails (oversized
-// title). Nothing: not even the 6 valid entries ahead of it: must be
-// written, proving validation runs to completion before any write.
+// Entry 7 of 10 fails validation; even the 6 valid entries ahead of it must
+// not be written, proving validation runs to completion before any write.
 #[tokio::test]
 async fn batch_validation_failure_mid_batch_writes_nothing() {
     let (app, _dim) = make_app(0.92);
@@ -137,9 +123,6 @@ async fn batch_validation_failure_mid_batch_writes_nothing() {
     );
 }
 
-// A batch containing a prompt-injection-flagged entry is rejected
-// (422) with nothing written, same atomicity guarantee as field-length
-// validation.
 #[tokio::test]
 async fn batch_injection_entry_returns_422_and_writes_nothing() {
     let (app, _dim) = make_app(0.92);
@@ -160,12 +143,10 @@ async fn batch_injection_entry_returns_422_and_writes_nothing() {
     );
 }
 
-// `GET /v1/projects/{slug}/memory/batch`: matchit resolves the static
-// `/memory/batch` path segment over the `/memory/{note_id}` param
-// capture regardless of method, so a GET here does NOT fall through to
-// `get_note` with note_id="batch" as one might assume: it matches the
-// static route (POST-only) and axum reports 405 Method Not Allowed for
-// the non-POST method. Either way, it must not be a 500 or a panic.
+// matchit resolves the static `/memory/batch` segment over the
+// `/memory/{note_id}` param capture regardless of method, so a GET here
+// hits the POST-only static route and gets 405, not `get_note` with
+// note_id="batch".
 #[tokio::test]
 async fn get_memory_batch_is_not_500() {
     let (app, _dim) = make_app(0.92);
@@ -187,7 +168,6 @@ async fn get_memory_batch_is_not_500() {
     );
 }
 
-// Same as above for DELETE.
 #[tokio::test]
 async fn delete_memory_batch_is_not_500() {
     let (app, _dim) = make_app(0.92);
@@ -204,11 +184,8 @@ async fn delete_memory_batch_is_not_500() {
     );
 }
 
-// Regression guard for the routing invariant this story's fix depends
-// on: the pre-existing `{note_id}` GET/DELETE/archive/supersede routes
-// must still resolve correctly now that `/memory/batch` is a literal
-// sibling registered in the same router. Both now speak the same
-// identity, so the batch route's id is directly usable against them.
+// The `{note_id}` routes must still resolve now that `/memory/batch` is a
+// literal sibling registered in the same router.
 #[tokio::test]
 async fn note_id_routes_still_work_alongside_batch_route() {
     let (app, dim) = make_app(0.92);
@@ -244,13 +221,10 @@ async fn note_id_routes_still_work_alongside_batch_route() {
     );
 }
 
-// ── Server-side embedding of a batch ──────────────────────────────────
-
 // Maps any text containing `slot-<n>` to the one-hot vector at index n, so
-// a stored entry's vector is recoverable through `/memory/search`: which
-// makes a mis-paired batch vector visible instead of silent. Real
-// embedders return near-identical vectors for these test strings, which
-// would let any pairing pass.
+// a mis-paired batch vector is visible in `/memory/search` instead of
+// silent. Real embedders return near-identical vectors for these test
+// strings, which would let any pairing pass.
 struct SlotEmbedder {
     dim: usize,
 }
@@ -301,7 +275,7 @@ async fn nearest_title(app: &axum::Router, slug: &str, query: &str) -> String {
 }
 
 // One batched embed call serves the whole request, so each vector must be
-// paired back to the entry it was produced for — including across entries
+// paired back to the entry it was produced for, including across entries
 // that brought their own vector and are skipped by the embed.
 #[tokio::test]
 async fn batch_pairs_each_server_side_vector_with_its_own_entry() {
@@ -340,8 +314,6 @@ async fn batch_pairs_each_server_side_vector_with_its_own_entry() {
          server-side one"
     );
 }
-
-// ── Client-pushed vectors ─────────────────────────────────────────────
 
 fn pushed_entry(external_id: &str, title: &str, vector: Value) -> Value {
     json!({
@@ -382,9 +354,8 @@ async fn batch_with_a_pushed_vector_never_calls_the_embedder_for_that_entry() {
     );
 }
 
-// The old `embedding` name is gone rather than aliased. Unknown fields are
-// ignored on this wire by contract, so the cut shows up as the name carrying
-// no meaning: the entry is embedded server-side as if it had sent nothing.
+// The old `embedding` field name is not aliased; unknown fields are ignored
+// on this wire, so it carries no meaning and the entry is embedded server-side.
 #[tokio::test]
 async fn batch_no_longer_honours_the_old_embedding_field_name() {
     let (app, embedded) = app_with_recording_embedder(4);
@@ -406,7 +377,6 @@ async fn batch_no_longer_honours_the_old_embedding_field_name() {
     );
 }
 
-// The dimension guard predates the rename and must still bite through it.
 #[tokio::test]
 async fn batch_rejects_a_pushed_vector_of_the_wrong_dimension() {
     let (app, _) = make_app(0.92);
@@ -648,7 +618,6 @@ async fn batch_rejects_a_zero_pushed_vector_and_writes_nothing() {
     );
 }
 
-// Non-regression: a text-only push is unchanged by any of the above.
 #[tokio::test]
 async fn batch_without_a_vector_still_takes_the_server_side_embed_branch() {
     let (app, embedded) = app_with_recording_embedder(4);
@@ -661,11 +630,9 @@ async fn batch_without_a_vector_still_takes_the_server_side_embed_branch() {
     );
 }
 
-// ── `embedded`: whether the stored row is in the vector index ──────────
-
-// The whole point of the field: an entry accepted while no embedder can serve
-// it is still stored and still counted as created, but the caller is told
-// plainly that it is not searchable by vector.
+// An entry accepted while no embedder can serve it is still stored and
+// counted as created, but the caller is told plainly it is not searchable
+// by vector.
 #[tokio::test]
 async fn batch_reports_embedded_false_when_no_embedder_is_ready() {
     for slot in [
@@ -768,15 +735,12 @@ async fn a_dedupe_hit_is_not_given_the_pushed_payloads_vector() {
     );
 }
 
-// ── Client-supplied `id` on create (ADR-092 force-restore) ─────────────
-
 const NIL_CURSOR: &str = "00000000-0000-0000-0000-000000000000";
 
 // A `--force` restore re-sends each entry's own prior server id. On the create
-// branch (a new `(project_id, external_id)`) the row must be inserted under that
-// id rather than a freshly minted one, so it keeps its original identity across
-// the fleet. Proven both in the create ack and in the `since_id` feed the whole
-// fleet cursors on.
+// branch (a new `(project_id, external_id)`) the row must be inserted under
+// that id rather than a freshly minted one, so it keeps its original identity
+// across the fleet.
 #[tokio::test]
 async fn batch_ingest_restores_a_row_under_a_supplied_uuidv7_id_on_create() {
     let (app, _dim) = make_app(0.92);
@@ -804,9 +768,8 @@ async fn batch_ingest_restores_a_row_under_a_supplied_uuidv7_id_on_create() {
     );
 }
 
-// A malformed `id` rejects the whole batch with a 400 and writes nothing —
-// never silently ignored-and-minted. A valid entry ahead of the bad one proves
-// the atomicity (even the good entry is not written).
+// A malformed `id` rejects the whole batch with a 400 and writes nothing,
+// never silently ignored-and-minted.
 #[tokio::test]
 async fn batch_ingest_malformed_id_rejects_whole_batch_and_writes_nothing() {
     let (app, _dim) = make_app(0.92);
@@ -823,9 +786,9 @@ async fn batch_ingest_malformed_id_rejects_whole_batch_and_writes_nothing() {
     );
 }
 
-// A well-formed UUID of the wrong version (v4) is still rejected: entry identity
-// is UUIDv7 (ADR-078), so a non-v7 id must surface loudly rather than be minted
-// over.
+// A well-formed UUID of the wrong version (v4) is still rejected: entry
+// identity is UUIDv7, so a non-v7 id must surface loudly rather than be
+// minted over.
 #[tokio::test]
 async fn batch_ingest_non_v7_uuid_id_is_rejected() {
     let (app, _dim) = make_app(0.92);

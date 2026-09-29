@@ -6,30 +6,18 @@ use crate::handlers::{clear_generation_timeout_override, set_generation_timeout_
 
 use super::support::{spawn_test_server, spawn_test_server_with_embed};
 
-// A normal (non-exempt, non-streaming) route whose handler outlives the
-// injected `TimeoutLayer` budget must be aborted with `408`. Control case
-// proving the layer is enforced on the wire, not merely configured.
-//
 // Uses `add_note` (a synchronous handler awaiting the DB lock) rather than
-// `/llm/complete`, which returns its SSE `Response` immediately
-// and so can't be bound by `TimeoutLayer`. Its DB mutex is held externally
-// so `state.db.lock().await` blocks past the injected budget.
-// ── TimeoutLayer / SSE exemption ──────────────────────────────────────
-//
-// These bind the real router (via `router_with_timeout`, injecting a short
-// millisecond-scale budget) to a real TCP listener and drive it with a real
-// HTTP client, so they prove actual wire behaviour: a connection genuinely
-// held open past the timeout window, not just router wiring.
-
+// `/llm/complete`, which returns its SSE `Response` immediately and so can't
+// be bound by `TimeoutLayer`. These bind the real router to a real TCP
+// listener and drive it with a real HTTP client, to prove actual wire
+// behaviour rather than just router wiring.
 #[tokio::test]
 async fn normal_route_exceeding_timeout_returns_408() {
     let request_timeout = std::time::Duration::from_millis(200);
     let (base, db) = spawn_test_server(None, request_timeout).await;
 
-    // Hold the DB mutex for well past the timeout, from outside any
-    // request: simulates a slow synchronous handler. `lock_owned`
-    // yields a `'static` guard so it can be held across the spawned
-    // task's await point.
+    // `lock_owned` yields a `'static` guard so it can be held across the
+    // spawned task's await point, simulating a slow synchronous handler.
     let guard = db.lock_owned().await;
     let hold_for = request_timeout * 5;
     let release_task = tokio::spawn(async move {
@@ -60,14 +48,6 @@ async fn normal_route_exceeding_timeout_returns_408() {
 
     release_task.await.expect("release task panicked");
 }
-
-// ── Generation-side timeout on `/llm/complete` ─────────────
-//
-// `normal_route_exceeding_timeout_returns_408` proves the router's
-// `TimeoutLayer` can't bound this endpoint. This is the other half:
-// proving `llm_generate_with_timeout` actually cuts a hung backend off
-// within budget: without it, deleting the `tokio::time::timeout(...)`
-// wrapper would compile and pass every other test.
 
 // An LLM backend whose `generate()` never returns and never sends a token:
 // models a hung inference backend, the case `llm_generate_with_timeout`
@@ -180,12 +160,9 @@ async fn llm_complete_cuts_off_hanging_llm_backend() {
     }
 }
 
-// `/memory/stream` must survive well past the `TimeoutLayer` budget that
-// kills every other route. This is the actual proof the exemption works:
-// we hold a real SSE connection open, past the injected timeout window,
-// polling for bytes the whole time, and confirm the server never closes
-// or resets it (no error, no early EOF) and it is still readable after
-// the deadline has elapsed.
+// Holds a real SSE connection open past the injected timeout window, polling
+// for bytes the whole time, and confirms the server never closes or resets
+// it (no error, no early EOF).
 #[tokio::test]
 async fn memory_stream_survives_past_timeout_window() {
     // Deliberately short so the test doesn't take 30 real seconds: proves
@@ -257,13 +234,6 @@ async fn memory_stream_survives_past_timeout_window() {
     }
 }
 
-// ── TimeoutLayer / `/index/embed` exemption ───────────────────────────────
-//
-// Same proof style as the `/memory/stream` exemption above: bind the real
-// router with the general and embed timeouts injected independently
-// (mirroring the `REQUEST_TIMEOUT` vs `EMBED_REQUEST_TIMEOUT` split) and
-// drive it with a real HTTP client.
-
 // An embedder backend that sleeps for a fixed duration before returning a
 // zero vector per input: models a slow (e.g. CPU-only, cold-cache, or
 // oversized-chunk) embed call on real hardware, the case
@@ -285,14 +255,9 @@ impl inkentry_core::embeddings::EmbeddingBackend for SlowEmbedder {
     }
 }
 
-// `/index/embed` must survive well past the *general* `TimeoutLayer`
-// budget that kills every other synchronous route (proved by
-// `normal_route_exceeding_timeout_returns_408` above) as long as it stays
-// under its own, separately-injected `embed_request_timeout`: this is
-// the actual proof the exemption works, not just that the two constants
-// exist. A slow embed call (bounded here, unbounded model inference in
-// production) must complete successfully instead of being cut off at the
-// general budget.
+// `/index/embed` must survive well past the *general* `TimeoutLayer` budget
+// that kills every other synchronous route, as long as it stays under its
+// own, separately-injected `embed_request_timeout`.
 #[tokio::test]
 async fn embed_survives_general_timeout_budget() {
     let general_timeout = std::time::Duration::from_millis(100);

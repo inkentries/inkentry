@@ -1,8 +1,5 @@
-// Integration-style test suite for the `handlers` module: builds a full
-// `axum::Router` via `AppState`/`router(...)` and drives it with
-// `tower::ServiceExt::oneshot` (or a real bound TCP listener for the
-// timeout/concurrency themes). Split by theme; shared setup lives in
-// `support`.
+// Most themes drive the router via `tower::ServiceExt::oneshot`; timeout and
+// concurrency bind a real TCP listener instead.
 
 mod support;
 
