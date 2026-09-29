@@ -1,11 +1,7 @@
-//! ADR-099: `inkentry memory anchor`, the post-commit hook's claim command
-//! (D2), the `--commit`/`memory anchor <id>` escape hatches (D4), and D3a's
-//! hook-free rewrite reconciliation.
-//!
-//! Every entry point here is best-effort by design: a commit must never fail
-//! because this plumbing stumbled, so every internal error is swallowed
-//! rather than returned. Nothing is ever printed to stdout — the hook
-//! redirects it away, but the command holds to that on its own too.
+// Every entry point here is best-effort: a commit must never fail because
+// this plumbing stumbled, so internal errors are swallowed rather than
+// returned. Nothing is ever printed to stdout, even though the hook already
+// redirects it away.
 
 use std::path::Path;
 
@@ -19,8 +15,7 @@ use crate::storage::{
 };
 
 pub(super) async fn memory_anchor(args: MemoryAnchorArgs, mem_path: &Path) -> Result<()> {
-    // Never touched: no project, or the project has never been `init`ed, is
-    // simply nothing to do (ADR-099: "nothing else in this ADR applies").
+    // No project, or never `init`ed: nothing to do.
     if !mem_path.exists() {
         return Ok(());
     }
@@ -48,12 +43,10 @@ pub(super) async fn memory_anchor(args: MemoryAnchorArgs, mem_path: &Path) -> Re
     Ok(())
 }
 
-/// The same handle resolution `resolve_note` (`resolve.rs`) does over a
-/// `dyn MemoryBackend` — the exact id first, then an unambiguous `entity_id`
-/// prefix — reimplemented over a raw `MemoryStore` since this plumbing
-/// command never goes through `open_memory_backend`. An ambiguous or unknown
-/// handle is silently skipped rather than guessed (D4: this runs from a hook,
-/// and an id a caller can type by hand is inherently exact enough to trust).
+// Exact id first, then an unambiguous `entity_id` prefix — the same
+// resolution `resolve.rs`'s `resolve_note` does, reimplemented here since
+// this plumbing bypasses `open_memory_backend`. An ambiguous or unknown
+// handle is skipped rather than guessed: this runs from a hook.
 fn resolve_note(store: &MemoryStore, token: &crate::storage::NoteId) -> Option<Note> {
     if let Ok(Some(note)) = store.get(token) {
         return Some(note);
@@ -68,9 +61,9 @@ fn resolve_note(store: &MemoryStore, token: &crate::storage::NoteId) -> Option<N
         .and_then(|id| store.get(&id).ok().flatten())
 }
 
-/// `git rev-parse --verify <ref>^{commit}`: the exact sha `--commit` names,
-/// whether it was given as `HEAD`, a branch, or a raw sha. `None` on any
-/// failure (unborn HEAD, an unresolvable ref) — the caller does nothing.
+// Resolves `commit_ref` (HEAD, branch, or sha) to a full commit sha via
+// `git rev-parse --verify <ref>^{commit}`. `None` on any failure; the caller
+// then does nothing.
 async fn resolve_target_commit(git_root: &Path, commit_ref: &str) -> Option<String> {
     let out = tokio::process::Command::new("git")
         .current_dir(git_root)
@@ -84,11 +77,9 @@ async fn resolve_target_commit(git_root: &Path, commit_ref: &str) -> Option<Stri
         .filter(|s| !s.is_empty())
 }
 
-/// D2: claim every pending row written in this worktree whose `head_at_write`
-/// grew into `target` — by ordinary ancestry against `target`'s first parent,
-/// or, for `commit --amend`, by equalling the commit `HEAD@{1}` names (the one
-/// `target` replaced). Never by recency, branch, or session (ADR-099
-/// rationale table).
+// Claims a pending row written in this worktree when its `head_at_write` is
+// an ancestor of `target` (ordinary commit) or equals `HEAD@{1}` (the commit
+// `--amend` replaced). Never by recency, branch, or session.
 async fn claim_pending(store: &MemoryStore, git_root: &Path, target: &str) {
     let Some(worktree) = inkentry_core::utils::current_worktree_git_dir(git_root) else {
         return;
@@ -132,10 +123,9 @@ async fn rev_parse(git_root: &Path, rev: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Write the anchor record (D3), resolve `source_ref` across every anchor the
-/// entity now carries (D3: "the earliest one that is reachable from a ref,
-/// falling back to the earliest"), and drop the pending row if there was one
-/// (D2/D4 both end here).
+// Writes the anchor record, then resolves `source_ref` to the earliest
+// anchor reachable from a ref (falling back to the earliest overall), and
+// clears any pending row for this entity.
 pub(super) async fn anchor_note_now(
     store: &MemoryStore,
     git_root: &Path,
@@ -169,9 +159,8 @@ pub(super) async fn anchor_note_now(
     let _ = store.remove_pending_anchor(&note.entity_id);
 }
 
-/// D4 escape hatch for `memory add --commit`: anchor the just-written entry
-/// to a commit immediately, no ancestry test, and skip recording a pending
-/// row for it in the first place.
+// Escape hatch for `memory add --commit`: anchors the entry immediately, no
+// ancestry test, and never records a pending row for it.
 pub(crate) async fn anchor_now(
     mem_path: &Path,
     target: &str,
@@ -189,12 +178,10 @@ pub(crate) async fn anchor_now(
     Ok(())
 }
 
-/// D1: record where `entity_id` was written, for the post-commit hook (or a
-/// later `inkentry index` reconciliation pass) to claim. A no-op outside a
-/// git repository or with HEAD unborn — "nothing else in this ADR applies to
-/// such a project" — and best-effort otherwise: a failure here must not fail
-/// the entry it describes, which is already durably stored by the time this
-/// runs.
+// Records where `entity_id` was written, for the post-commit hook (or a
+// later `inkentry index` reconciliation) to claim. No-op outside a git repo
+// or with HEAD unborn; best-effort otherwise, since the entry is already
+// durably stored by the time this runs.
 pub(crate) async fn record_pending(mem_path: &Path, entity_id: &str) -> Result<()> {
     let git_root = std::env::current_dir()?;
     let Some(worktree) = inkentry_core::utils::current_worktree_git_dir(&git_root) else {
@@ -208,17 +195,13 @@ pub(crate) async fn record_pending(mem_path: &Path, entity_id: &str) -> Result<(
     Ok(())
 }
 
-// ── D3a: hook-free rewrite reconciliation ───────────────────────────────────
-
-/// Run from `inkentry index` (the pass that already runs after local history
-/// moves — see `crates/inkentry-cli/src/cli/cmd/index/mod.rs`). Best-effort
-/// and silent: a failure here must never fail an index run.
-///
-/// For every noted commit no longer reachable from any ref, looks for exactly
-/// one reachable commit with the same patch-id and adds a second anchor there
-/// (the old one is kept). For every pending row whose `head_at_write` is
-/// unreachable, the same lookup repoints it at the replacement so the next
-/// ordinary commit in that worktree can claim it.
+// Runs from `inkentry index`, after local history moves. Best-effort and
+// silent: a failure here must never fail an index run.
+//
+// For each noted commit no longer reachable from any ref, looks for exactly
+// one reachable commit sharing its patch-id and adds a second anchor there
+// (the old one stays). Each pending row whose `head_at_write` is unreachable
+// is repointed the same way, so the next commit in that worktree can claim it.
 pub(crate) async fn reconcile_anchors(mem_path: &Path, project_root: &Path) -> Result<()> {
     if !mem_path.exists() {
         return Ok(());
@@ -241,9 +224,8 @@ async fn patch_id_of(store: &MemoryStore, git_root: &Path, sha: &str) -> Option<
     computed
 }
 
-/// One reachable commit sharing `patch_id`, or `None` if there is not exactly
-/// one (ambiguous or no match is always a safe, sanctioned outcome — ADR-099
-/// D3a).
+// The one reachable commit sharing `patch_id`, or `None` if there isn't
+// exactly one — ambiguous and no-match are both safe outcomes here.
 async fn find_unique_match(
     store: &MemoryStore,
     git_root: &Path,

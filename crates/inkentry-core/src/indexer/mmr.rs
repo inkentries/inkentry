@@ -125,8 +125,8 @@ pub fn mmr_rank(unit_vectors: &[Vec<f32>], centroid: &[f32], lambda: f32) -> Vec
     selected
 }
 
-/// Cosine similarity of two equal-length vectors; 0.0 for a zero vector or a
-/// length mismatch (never a NaN or a panic).
+// Cosine similarity of two equal-length vectors; 0.0 for a zero vector or a
+// length mismatch (never a NaN or a panic).
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;

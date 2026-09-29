@@ -1,7 +1,7 @@
-// ADR-099: `memory add` records a pending anchor, and the post-commit hook's
-// `memory anchor --commit HEAD` claims it per D2's rule — same worktree, and
-// `head_at_write` is the claimed commit's first parent or an ancestor of it,
-// or the commit an amend replaced. Never by recency, branch, or session.
+// `memory add` records a pending anchor; `memory anchor --commit HEAD` claims
+// it in the same worktree when `head_at_write` is an ancestor of the claimed
+// commit, or is the commit an amend replaced. Never by recency, branch, or
+// session.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{inkentry_bin_in, register_sqlite_vec};
@@ -136,8 +136,6 @@ fn source_ref_of(db: &Path, entity_id: &str) -> Option<String> {
         .unwrap()
 }
 
-// ── D1: pending anchors are recorded, and only inside a git repo ───────────
-
 #[test]
 fn a_write_with_no_commit_stays_pending() {
     let tmp = TempDir::new().unwrap();
@@ -184,8 +182,6 @@ fn non_git_project_records_no_pending_row_and_does_not_error() {
     );
 }
 
-// ── D2: ancestry claims, never recency, branch, or session ─────────────────
-
 #[test]
 fn ancestry_claims_a_pending_entry_once_a_commit_grows_out_of_it() {
     let tmp = TempDir::new().unwrap();
@@ -216,8 +212,7 @@ fn ancestry_claims_across_a_branch_created_at_commit_time() {
     init_repo(&repo);
     let db = repo.join("memory.db");
 
-    // Written "on main", committed "on feature" — the entry belongs to that
-    // commit, and ancestry must see it (ADR-099 D2 rationale).
+    // Written on main, committed on feature: ancestry must still see it.
     let entity_id = add_note(
         home.path(),
         &repo,
@@ -249,7 +244,7 @@ fn switching_to_an_unrelated_branch_does_not_claim_the_pending_entry() {
 
     add_note(home.path(), &repo, &db, "entry on main");
 
-    // An unrelated branch that does NOT build on main's tip.
+    // Does not build on main's tip.
     git(&repo, &["switch", "-q", "--orphan", "unrelated"]);
     std::fs::write(repo.join("g.txt"), "y").unwrap();
     git(&repo, &["add", "."]);
@@ -279,8 +274,8 @@ fn amend_is_claimed_via_the_commit_it_replaced() {
     let entity_id = add_note(home.path(), &repo, &db, "written just before the amend");
 
     // Amend replaces HEAD with a new sha whose parent is unchanged, so
-    // ordinary ancestry (against the new commit's first parent) does not see
-    // the pre-amend commit; `HEAD@{1}` names it instead.
+    // ordinary ancestry against the new commit's first parent misses the
+    // pre-amend commit; `HEAD@{1}` names it instead.
     std::fs::write(repo.join("f.txt"), "x2").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "--amend", "-m", "first (amended)"]);
@@ -290,8 +285,6 @@ fn amend_is_claimed_via_the_commit_it_replaced() {
     assert_eq!(pending_count(&db), 0, "the amended commit must claim it");
     assert!(source_ref_of(&db, &entity_id).is_some());
 }
-
-// ── D2 condition 1: same worktree only ──────────────────────────────────────
 
 #[test]
 fn a_commit_in_one_linked_worktree_claims_only_that_worktrees_pending_entries() {
@@ -321,7 +314,6 @@ fn a_commit_in_one_linked_worktree_claims_only_that_worktrees_pending_entries() 
     let linked_entity = add_note(home.path(), &linked, &db, "written in the linked worktree");
     assert_eq!(pending_count(&db), 2);
 
-    // Commit only in the main worktree.
     std::fs::write(main_repo.join("f.txt"), "x").unwrap();
     git(&main_repo, &["add", "."]);
     git(&main_repo, &["commit", "-q", "-m", "main worktree commit"]);
@@ -335,8 +327,6 @@ fn a_commit_in_one_linked_worktree_claims_only_that_worktrees_pending_entries() 
     assert!(source_ref_of(&db, &main_entity).is_some());
     assert_eq!(source_ref_of(&db, &linked_entity), None);
 }
-
-// ── D4: the explicit escape hatches ─────────────────────────────────────────
 
 #[test]
 fn memory_add_with_commit_anchors_immediately_and_skips_the_pending_row() {
@@ -385,8 +375,6 @@ fn memory_anchor_with_explicit_ids_anchors_by_hand() {
     assert_eq!(pending_count(&db), 0);
     assert_eq!(source_ref_of(&db, &entity_id), Some(sha));
 }
-
-// ── Hook plumbing: never fails, never prints ────────────────────────────────
 
 #[test]
 fn memory_anchor_exits_zero_and_silent_even_with_no_store_at_all() {
