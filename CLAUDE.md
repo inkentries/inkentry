@@ -219,7 +219,10 @@ storage/
                    choke point every write path funnels a raw tag through
     file_links.rs — resolve_file_link: linked-file path normalisation + git/disk
                    state resolution (ADR-101 D3)
-    search.rs    — memory FTS + semantic search
+    search.rs    — memory FTS + semantic search; MEMORY_MAX_QA_DISTANCE (ADR-083) and
+                   MEMORY_DUPLICATE_DISTANCE (ADR-100 D1) relevance/duplicate floors;
+                   classify_candidates + MemoryStore::find_candidates, the shared
+                   pre-write banding `memory add`, `harvest` and inkentry-server call (D5)
     events.rs    — ADR-098 D5: the local `events` table. record_event_at is the
                    one best-effort, short-busy-timeout write path every recording
                    call site funnels through; events_in_window/
@@ -229,7 +232,10 @@ storage/
                    reassign) and the `patch_id_cache` seen-set; both local
                    working state, never carried by the git-notes carrier
     tests.rs     — integration tests for NoteStore
-  backend.rs     — StorageBackend trait (local vs remote)
+  backend.rs     — StorageBackend trait (local vs remote); Resolution + AddOutcome and
+                   MemoryBackend::add_with_reconcile (ADR-100 D2/D4) — every backend but
+                   RemoteMemoryBackend just passes through to `add`, since the local
+                   sqlite path resolves D2 in the CLI layer before it ever calls `add`
   remote/
     mod.rs         — RemoteMemoryBackend struct + URL helpers + MemoryBackend impl
     session.rs     — Bearer + SessionRefresher: the CLI installs a refresher at
@@ -361,7 +367,12 @@ cli/
       worktree.rs    — git worktree handling for index
     memory/
       mod.rs          — `inkentry memory` dispatch
-      add.rs          — memory add subcommand
+      add.rs          — memory add subcommand; ADR-100 D1/D2/D2a: embeds ahead of the
+                        write, computes duplicate/related candidates via
+                        MemoryStore::find_candidates, and blocks (exit 3, EXIT_RECONCILE_
+                        CANDIDATES) on an unresolved duplicate-band one under --reconcile
+                        or [memory] reconcile = "block" — local sqlite path only; the
+                        remote path reconciles server-side via add_with_reconcile
       anchor.rs       — ADR-099: `memory anchor` (D2 claim rule + the D4 escape
                         hatches), and `reconcile_anchors` (D3a, called from
                         `inkentry index`). Plumbing: always exits 0, never
@@ -407,12 +418,18 @@ cli/
 ```
 main.rs            — entry point: parse args, register sqlite-vec, start Axum server
 lib.rs             — AppState, router, auth_middleware, AppError, ApiDoc (utoipa)
-db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard
+db.rs              — ServerDb: SQLite schema, memory CRUD, KNN search, embedding dim guard;
+                     find_candidates (ADR-100 D1/D5, vector-only — this schema carries no
+                     FTS index over notes) and add_note_with_resolutions (D2/D4, one
+                     transaction) via inkentry-core's shared classify_candidates
 handlers/
   mod.rs           — shared validation/rate-limit helpers, module re-exports
-  health.rs        — GET /v1/health
+  health.rs        — GET /v1/health; advertises memory.reconcile (ADR-100 D4)
   projects.rs      — list_projects, project_stats
-  notes.rs         — note CRUD wire types + add/list/get/search/delete/archive/supersede handlers
+  notes.rs         — note CRUD wire types + add/list/get/search/delete/archive/supersede handlers;
+                     add_note computes candidates before storing and honours reconcile/
+                     resolutions (ADR-100 D1/D2/D4); no longer writes contradicts from a
+                     bare similarity check
   batch.rs         — POST /memory/batch (wire parity with cloud-api)
   sync.rs          — harvested_shas, GET /memory/since, GET /memory/stream (SSE)
   index.rs         — POST /index/embed (server-side embedding, not stored)

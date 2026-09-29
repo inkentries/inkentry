@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use super::super::memory::{Note, NoteId};
+use super::super::backend::Resolution;
+use super::super::memory::{Candidate, Note, NoteId};
 
 // ── Wire types (match server JSON schema) ─────────────────────────────────────
 
@@ -34,17 +35,94 @@ pub(super) struct AddNoteRequest {
     pub(super) origin_tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) origin_model: Option<String>,
+    // `"block"` asks the server to refuse the write on a non-empty duplicate
+    // band with no `resolutions`. Sent only when the server advertises
+    // `memory.reconcile` on `/v1/health`; an older server ignores an
+    // unrecognised field and behaves exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reconcile: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) resolutions: Vec<ResolutionWire>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ResolutionWire {
+    #[serde(rename = "type")]
+    pub(super) kind: &'static str,
+    pub(super) id: String,
+}
+
+impl From<&Resolution> for ResolutionWire {
+    fn from(r: &Resolution) -> Self {
+        let (kind, id) = match r {
+            Resolution::Supersedes(id) => ("supersedes", id),
+            Resolution::RelatesTo(id) => ("relates_to", id),
+            Resolution::Contradicts(id) => ("contradicts", id),
+            Resolution::Distinct(id) => ("distinct", id),
+        };
+        Self {
+            kind,
+            id: id.to_string(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
 pub(super) struct AddNoteResponse {
-    pub(super) id: NoteId,
+    // Absent when `stored` is `false`: nothing was written, so there is no id
+    // to report.
+    #[serde(default)]
+    pub(super) id: Option<NoteId>,
+    // `true` unless the server refused the write under `reconcile: "block"`.
+    // Defaults to `true` so a server predating this field, whose response
+    // carries no `stored` field at all, reads exactly as it always has.
+    #[serde(default = "default_true")]
+    pub(super) stored: bool,
     #[serde(default)]
     pub(super) conflicts: Vec<ConflictInfo>,
+    // The duplicate band, present on both a blocked and a stored response.
+    #[serde(default)]
+    pub(super) candidates: Vec<CandidateWire>,
+    // The related band, present only alongside a stored entry.
+    #[serde(default)]
+    pub(super) related: Vec<CandidateWire>,
     /// Server-assigned cross-machine id, if the server minted one. Absent on
     /// older servers → `None`.
     #[serde(default)]
     pub(super) remote_id: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub(super) struct CandidateWire {
+    pub(super) id: String,
+    pub(super) kind: String,
+    pub(super) title: String,
+    pub(super) created_at: i64,
+    #[serde(default)]
+    pub(super) distance: Option<f64>,
+    pub(super) band: String,
+}
+
+impl From<CandidateWire> for Candidate {
+    fn from(w: CandidateWire) -> Self {
+        use super::super::memory::CandidateBand;
+        Candidate {
+            id: w.id,
+            kind: w.kind,
+            title: w.title,
+            created_at: w.created_at,
+            distance: w.distance,
+            band: if w.band == "duplicate" {
+                CandidateBand::Duplicate
+            } else {
+                CandidateBand::Related
+            },
+        }
+    }
 }
 
 /// Conflict information returned by the server when a new note is semantically

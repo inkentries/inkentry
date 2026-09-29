@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::collections::HashSet;
 
-use super::super::backend::{EntityIdLookup, MemoryBackend, NoteInput};
+use super::super::backend::{AddOutcome, EntityIdLookup, MemoryBackend, NoteInput, Resolution};
 use super::super::memory::{MemoryEdge, Note, NoteId};
 use super::{Bearer, CheckedResponse, encode_project_id, session};
 use wire::*;
@@ -194,6 +194,23 @@ impl MemoryBackend for CloudApiMemoryBackend {
             .await
             .context("parsing POST /memory response")?;
         Ok((created.id, true))
+    }
+
+    // The hosted cloud API has its own conflict handling (409, stored, warn)
+    // above, so this just delegates and never blocks.
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        _reconcile: bool,
+        _resolutions: &[Resolution],
+    ) -> Result<AddOutcome> {
+        let (id, created) = self.add(input).await?;
+        Ok(AddOutcome::Created {
+            id,
+            created,
+            candidates: Vec::new(),
+            related: Vec::new(),
+        })
     }
 
     async fn search_timeline(

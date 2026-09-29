@@ -7,15 +7,23 @@ use crate::{
     indexer::secrets::contains_secret,
     server_client::ServerInferenceClient,
     storage::{
-        CarriedEdge, GitNotesBackend, MemoryBackend, MemoryStore, NoteId, NoteInput, NoteRecord,
-        RewriteRefStatus, append_state_update, append_to_git_notes, note_entity_id, now_millis,
-        now_secs, open_memory_backend, unresolvable_id_message,
+        AddOutcome, Candidate, CandidateBand, CarriedEdge, GitNotesBackend, MemoryBackend,
+        MemoryStore, NoteInput, NoteRecord, Resolution, RewriteRefStatus, append_state_update,
+        append_to_git_notes, note_entity_id, now_millis, now_secs, open_memory_backend,
+        unresolvable_id_message,
     },
 };
 
 // Bounds the embedder being held by a bulk index pass, where the wait runs to
 // minutes; a healthy embed takes tens of milliseconds.
 pub(super) const INTERACTIVE_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+// Exit status for a `memory add` refused under `--reconcile` (or
+// `[memory] reconcile = "block"`) with an unresolved duplicate-band
+// candidate. Additive-only per `docs/stability.md`: it exists only on this
+// opt-in path, so no caller that exits `0`/`1`/`2` today sees a changed exit
+// code.
+pub(super) const EXIT_RECONCILE_CANDIDATES: i32 = 3;
 
 pub(super) fn pending_embedding_warning(reason: &str) -> String {
     format!(
@@ -125,13 +133,82 @@ pub(super) async fn memory_add(
     // The id `add` surfaces is the portable one, not the per-machine row id.
     let entity_id = crate::storage::entity_id::entity_id(&args.kind, &title, &body);
 
+    // Opt-in blocking, and the resolutions a caller may have supplied for a
+    // candidate this same invocation is about to report.
+    let reconcile_on = args.reconcile || cfg.reconcile_block();
+    let resolutions: Vec<Resolution> = [
+        args.supersedes.clone().map(Resolution::Supersedes),
+        args.relates_to.clone().map(Resolution::RelatesTo),
+        args.contradicts.clone().map(Resolution::Contradicts),
+        args.distinct_from.clone().map(Resolution::Distinct),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let has_resolution = !resolutions.is_empty();
+
     // Only a local row can have a vector attached after the fact, so only there
     // can the write go first; other backends take the vector as part of the add
     // and have no local backfill.
     let store_first = !placeholder_path
         && !(cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some());
-    // Git notes hold no vector.
-    let embedding = if store_first || pre_init_notes {
+
+    // The local sqlite-primary store is the only backend with a searchable
+    // index to reconcile against, so candidates are computed only on this
+    // path. Embedding moves ahead of the write here (ADR-096's reserved
+    // interactive lane is what keeps that bounded) so the vector that feeds
+    // the KNN half is the same one the entry is stored with — there is no
+    // separate post-write attach any more on this path.
+    let mut pre_write_embedding: Option<Vec<u8>> = None;
+    let mut embed_failure_reason: Option<String> = None;
+    let mut duplicate_candidates: Vec<Candidate> = Vec::new();
+    let mut related_candidates: Vec<Candidate> = Vec::new();
+    if store_first {
+        let embed_text = format!("title: {title} | text: {body}");
+        match embed_with_budget(cfg, &embed_text).await {
+            Ok(blob) => pre_write_embedding = Some(blob),
+            Err(reason) => embed_failure_reason = Some(reason),
+        }
+        if let Ok(store) = MemoryStore::open(mem_path) {
+            let candidates = store
+                .find_candidates(pre_write_embedding.as_deref(), &title, None)
+                .unwrap_or_default();
+            for c in candidates {
+                match c.band {
+                    CandidateBand::Duplicate => duplicate_candidates.push(c),
+                    CandidateBand::Related => related_candidates.push(c),
+                }
+            }
+        }
+    }
+
+    // Nothing is written. The candidate set is advice, not a lock (a
+    // resolution naming an id outside it is still accepted below).
+    if store_first && reconcile_on && !duplicate_candidates.is_empty() && !has_resolution {
+        print_blocked_candidates(&args.format, &duplicate_candidates, &related_candidates)?;
+        // Best-effort, same as the success-path record below: `ok: false`
+        // distinguishes a blocked write from one that wrote nothing because
+        // it errored. `returned_ids` is empty — nothing was written to name.
+        super::super::events::record(
+            cfg,
+            mem_path,
+            backend_override,
+            "memory.add",
+            None,
+            Some(duplicate_candidates.len() as i64),
+            &[],
+            None,
+            started,
+            false,
+        );
+        std::process::exit(EXIT_RECONCILE_CANDIDATES);
+    }
+
+    // Git notes hold no vector; the remote backend embeds as part of its own
+    // request (see `add_with_reconcile`), not ahead of it.
+    let embedding = if store_first {
+        pre_write_embedding
+    } else if pre_init_notes {
         None
     } else {
         let embed_text = format!("title: {title} | text: {body}");
@@ -189,6 +266,24 @@ pub(super) async fn memory_add(
         relates_to_entity_id = Some(note_entity_id(&target));
     }
 
+    // Mirrors the `--relates-to` preflight above: resolved before the write,
+    // by the target's `entity_id` for the same carrier reason.
+    let mut contradicts_entity_id: Option<String> = None;
+    if let Some(con_id) = args.contradicts.as_ref()
+        && !pre_init_notes
+    {
+        let backend = match backend_for_add.take() {
+            Some(backend) => backend,
+            None => open_memory_backend(cfg, mem_path, backend_override).await?,
+        };
+        let target = backend.get(con_id.clone()).await?;
+        backend_for_add = Some(backend);
+        let Some(target) = target else {
+            anyhow::bail!("{}", unresolvable_id_message(con_id));
+        };
+        contradicts_entity_id = Some(note_entity_id(&target));
+    }
+
     // Pre-init there is no primary store; the carrier is the sole writer, so the
     // id is minted the way the backends do. Held past the write so the
     // `--relates-to` edge goes through the same handle.
@@ -200,25 +295,59 @@ pub(super) async fn memory_add(
             Some(backend) => backend,
             None => open_memory_backend(cfg, mem_path, backend_override).await?,
         };
-        let added = backend
-            .add(NoteInput {
-                kind: args.kind.clone(),
-                title: title.clone(),
-                body: body.clone(),
-                tags: tags.clone(),
-                linked_files: files.clone(),
-                embedding,
-                source_ref: None,
-                valid_at,
-                supersedes: args.supersedes.clone(),
-                origin: crate::storage::Origin::from_caller(&cfg.caller),
-            })
-            .await?;
+        let note_input = NoteInput {
+            kind: args.kind.clone(),
+            title: title.clone(),
+            body: body.clone(),
+            tags: tags.clone(),
+            linked_files: files.clone(),
+            embedding,
+            source_ref: None,
+            valid_at,
+            supersedes: args.supersedes.clone(),
+            origin: crate::storage::Origin::from_caller(&cfg.caller),
+        };
+        // The local sqlite path already resolved candidates above, so it
+        // writes unconditionally here; the remote path reconciles
+        // server-side — it is the only backend that can still block at this
+        // point. Sent only when the server advertises `memory.reconcile`;
+        // against an older server this is `false` and the write goes through
+        // exactly as it always has, including the legacy stored:true 409.
+        let added = if store_first {
+            backend.add(note_input).await?
+        } else {
+            let remote_reconcile = reconcile_on
+                && capability::get_tier(cfg)
+                    .await
+                    .caps()
+                    .is_some_and(|c| c.memory_reconcile);
+            match backend
+                .add_with_reconcile(note_input, remote_reconcile, &resolutions)
+                .await?
+            {
+                AddOutcome::Created {
+                    id,
+                    created,
+                    candidates,
+                    related,
+                } => {
+                    duplicate_candidates = candidates;
+                    related_candidates = related;
+                    (id, created)
+                }
+                AddOutcome::Blocked { candidates } => {
+                    print_blocked_candidates(&args.format, &candidates, &[])?;
+                    std::process::exit(EXIT_RECONCILE_CANDIDATES);
+                }
+            }
+        };
         primary_backend = Some(backend);
         added
     };
 
     // The remote backend reports edge ops as a no-op, hence the kind check.
+    // `--supersedes`/`--relates-to`/`--contradicts` sent to it as
+    // `resolutions` are applied server-side instead.
     if let Some(rel_id) = args.relates_to.as_ref()
         && let Some(backend) = primary_backend.as_ref()
         && matches!(backend.backend_kind(), "sqlite" | "git-notes")
@@ -227,6 +356,15 @@ pub(super) async fn memory_add(
             .add_edge(&id, rel_id, "relates_to")
             .await
             .with_context(|| format!("recording relates_to edge to {rel_id}"))?;
+    }
+    if let Some(con_id) = args.contradicts.as_ref()
+        && let Some(backend) = primary_backend.as_ref()
+        && matches!(backend.backend_kind(), "sqlite" | "git-notes")
+    {
+        backend
+            .add_edge(&id, con_id, "contradicts")
+            .await
+            .with_context(|| format!("recording contradicts edge to {con_id}"))?;
     }
 
     // Suppressed when git notes is already the primary store, to avoid a double
@@ -256,6 +394,11 @@ pub(super) async fn memory_add(
             edges: relates_to_entity_id
                 .iter()
                 .map(|to| CarriedEdge::new("relates_to", to.clone()))
+                .chain(
+                    contradicts_entity_id
+                        .iter()
+                        .map(|to| CarriedEdge::new("contradicts", to.clone())),
+                )
                 .collect(),
             origin: crate::storage::Origin::from_caller(&cfg.caller),
             op: None,
@@ -323,15 +466,13 @@ pub(super) async fn memory_add(
         }
     }
 
-    // Embedding only after the entry is durable, so a stalled embed costs the
-    // vector, not the entry. A vectorless entry is what `memory reindex` and
-    // sync's repair already look for.
-    let mut pending_embedding = None;
+    // The embed already ran ahead of the write; a vectorless entry
+    // (`embed_failure_reason`) is what `memory reindex` and sync's repair
+    // already look for.
+    let pending_embedding = embed_failure_reason;
     if store_first {
-        // Closed so the attach does not contend with our own idle connection.
+        // Closed now that the write is durable.
         drop(primary_backend);
-        let doc = format!("title: {title} | text: {body}");
-        pending_embedding = embed_and_attach(cfg, mem_path, &id, &doc).await;
 
         // ADR-099 D1/D4: record where this write happened, or anchor it to a
         // known commit immediately. Best-effort — an entry is already durably
@@ -362,6 +503,15 @@ pub(super) async fn memory_add(
                     .iter()
                     .map(|(path, state)| serde_json::json!({"path": path, "state": state}))
                     .collect();
+            }
+            // Additive fields, present whenever the pre-write reconciliation
+            // found something — empty (and so omitted) on the paths that
+            // don't compute candidates at all (git notes, pre-init).
+            if !duplicate_candidates.is_empty() {
+                obj["candidates"] = serde_json::to_value(&duplicate_candidates)?;
+            }
+            if !related_candidates.is_empty() {
+                obj["related"] = serde_json::to_value(&related_candidates)?;
             }
             if format == "jsonl" {
                 println!("{}", serde_json::to_string(&obj)?);
@@ -418,18 +568,16 @@ pub(super) async fn memory_add(
     Ok(())
 }
 
-// Returns `Some(reason)` when the entry is left without a vector. Attaches via
-// `insert_embedding`, as backfill does, so both paths are identical on disk.
-async fn embed_and_attach(
-    cfg: &Config,
-    mem_path: &std::path::Path,
-    id: &NoteId,
-    doc: &str,
-) -> Option<String> {
+// Embeds ahead of the write, within the ADR-096 interactive budget, so the
+// vector that feeds the pre-write candidate KNN is the one the entry is
+// stored with. `Err` names why there is no vector; the write still proceeds
+// without one — a write may be the only copy of a thought, and the embedder
+// never gets to block it.
+async fn embed_with_budget(cfg: &Config, doc: &str) -> Result<Vec<u8>, String> {
     use crate::embeddings::vec_to_blob;
 
     let Some(client) = ServerInferenceClient::from_config(cfg) else {
-        return Some("no embedder was reachable".to_string());
+        return Err("no embedder was reachable".to_string());
     };
     let sp = super::super::ui::spinner("Embedding…");
     // Dropping the future cancels the request, adding no load to a saturated
@@ -437,29 +585,74 @@ async fn embed_and_attach(
     let result = tokio::time::timeout(INTERACTIVE_EMBED_BUDGET, client.embed_text(doc)).await;
     sp.finish_and_clear();
 
-    let vec = match result {
-        Ok(Ok(vec)) => vec,
+    match result {
+        Ok(Ok(vec)) => Ok(vec_to_blob(&vec)),
         Ok(Err(e)) => {
-            tracing::warn!("embedding entry {id} failed: {e:#}");
-            return Some("embedding it failed".to_string());
+            tracing::warn!("embedding entry failed: {e:#}");
+            Err("embedding it failed".to_string())
         }
-        Err(_elapsed) => {
-            return Some(format!(
-                "embedding it did not finish within {}s",
-                INTERACTIVE_EMBED_BUDGET.as_secs()
-            ));
-        }
-    };
+        Err(_elapsed) => Err(format!(
+            "embedding it did not finish within {}s",
+            INTERACTIVE_EMBED_BUDGET.as_secs()
+        )),
+    }
+}
 
-    match MemoryStore::open(mem_path)
-        .and_then(|store| store.insert_embedding(id, &vec_to_blob(&vec)))
-    {
-        Ok(()) => None,
-        Err(e) => {
-            tracing::warn!("storing the embedding for entry {id} failed: {e:#}");
-            Some("its vector could not be stored".to_string())
+// Prints the blocked response for a `--reconcile`/`[memory] reconcile =
+// "block"` write with an unresolved duplicate-band candidate. Nothing has
+// been written when this runs.
+fn print_blocked_candidates(
+    format: &str,
+    duplicate_candidates: &[Candidate],
+    related_candidates: &[Candidate],
+) -> Result<()> {
+    match crate::utils::effective_format(format) {
+        "json" | "jsonl" => {
+            let obj = serde_json::json!({
+                "created": false,
+                "reason": "candidates",
+                "candidates": duplicate_candidates,
+                "related": related_candidates,
+            });
+            println!("{}", serde_json::to_string_pretty(&obj)?);
+        }
+        _ => {
+            println!(
+                "Not written: this entry looks like a duplicate of {} existing \
+                 entr{}. Resolve with --supersedes/--relates-to/--contradicts/--distinct-from <id>, \
+                 or drop --reconcile.",
+                duplicate_candidates.len(),
+                if duplicate_candidates.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+            );
+            println!();
+            for c in duplicate_candidates {
+                println!(
+                    "  #{}  [{}]  {}  (dist: {:.4})",
+                    c.id,
+                    c.kind,
+                    c.title,
+                    c.distance.unwrap_or(0.0)
+                );
+            }
+            if !related_candidates.is_empty() {
+                println!();
+                println!("Related (not blocking):");
+                for c in related_candidates {
+                    match c.distance {
+                        Some(d) => {
+                            println!("  #{}  [{}]  {}  (dist: {d:.4})", c.id, c.kind, c.title)
+                        }
+                        None => println!("  #{}  [{}]  {}", c.id, c.kind, c.title),
+                    }
+                }
+            }
         }
     }
+    Ok(())
 }
 
 async fn fetch_url_content(url: &str) -> Result<(String, String)> {

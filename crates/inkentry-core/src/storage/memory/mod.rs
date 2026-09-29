@@ -25,6 +25,10 @@ pub use file_links::{FileState, ResolvedFileLink, normalize_relative_path, resol
 pub use import::CarriedEdgeImport;
 pub use import_state::NotesImportMarker;
 pub use note_id::{NoteId, unresolvable_id_message};
+pub use search::{
+    Candidate, CandidateBand, CandidateHit, MAX_CANDIDATES_PER_BAND, MEMORY_DUPLICATE_DISTANCE,
+    MEMORY_MAX_QA_DISTANCE, classify_candidates,
+};
 pub use sync::{SyncEdge, SyncRow};
 pub use tags::normalize_tag;
 pub use uuid_v7::uuid_v7_at;

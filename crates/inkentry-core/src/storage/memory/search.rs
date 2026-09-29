@@ -15,7 +15,200 @@ use super::{MemoryStore, Note, NoteId};
 /// Changing `MODEL_ID` or that instruction string invalidates the calibration.
 pub const MEMORY_MAX_QA_DISTANCE: f64 = 1.2032;
 
+/// The duplicate-band floor for `memory add`'s pre-write reconciliation.
+/// Same scale as [`MEMORY_MAX_QA_DISTANCE`] — L2 over the L2-normalised
+/// `note_embeddings` vectors — but not independently calibrated: it is the
+/// same top-1 near-duplicate threshold harvest's own dedup check uses,
+/// promoted to a shared constant. `0.15` L2 is cosine `0.98875`
+/// (`cos = 1 - distance²/2`): tight enough that only a near-restatement of
+/// an existing entry lands here.
+pub const MEMORY_DUPLICATE_DISTANCE: f64 = 0.15;
+
+/// At most this many candidates are kept per band.
+pub const MAX_CANDIDATES_PER_BAND: usize = 5;
+
+/// How many candidates the pool query fed into `classify_candidates` fetches,
+/// per source (vector, FTS), before banding and capping to
+/// [`MAX_CANDIDATES_PER_BAND`].
+const CANDIDATE_POOL: usize = 20;
+
+/// Which band a pre-write candidate landed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CandidateBand {
+    /// Distance below [`MEMORY_DUPLICATE_DISTANCE`]: blocks the write under
+    /// `--reconcile` unless the caller resolves it.
+    Duplicate,
+    /// Distance below [`MEMORY_MAX_QA_DISTANCE`] (or an FTS-only title match,
+    /// which carries no distance): returned alongside a successful write;
+    /// never blocks.
+    Related,
+}
+
+/// One retrieval hit feeding [`classify_candidates`]: a vector-KNN result
+/// carries a real L2 distance; an FTS-only title match carries `None` — a
+/// BM25 score is not a distance and must never be treated as one, so an
+/// FTS-only hit can only ever land in the [`CandidateBand::Related`] band.
+#[derive(Debug, Clone)]
+pub struct CandidateHit {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub created_at: i64,
+    pub distance: Option<f64>,
+}
+
+/// A pre-write candidate: `id` is what the caller hands back as
+/// `--supersedes`/`--relates-to`/`--contradicts`/`--distinct-from`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Candidate {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f64>,
+    pub band: CandidateBand,
+}
+
+/// Bands and ranks a candidate pool the same way for every caller
+/// (`memory add`, `harvest`, inkentry-server). `exclude_id`, when given, drops
+/// a self-match. Within a band, a candidate carrying a distance sorts by
+/// distance then `id`; a distance-less (FTS-only) candidate sorts after every
+/// distance-bearing one, by `id`. At most [`MAX_CANDIDATES_PER_BAND`] survive
+/// per band. A hit whose distance clears neither band is dropped.
+pub fn classify_candidates(
+    vector_hits: Vec<CandidateHit>,
+    fts_hits: Vec<CandidateHit>,
+    exclude_id: Option<&str>,
+) -> Vec<Candidate> {
+    use std::collections::HashMap;
+
+    let mut by_id: HashMap<String, Candidate> = HashMap::new();
+
+    for hit in vector_hits {
+        if exclude_id.is_some_and(|e| e == hit.id) {
+            continue;
+        }
+        let d = hit.distance.unwrap_or(f64::INFINITY);
+        let band = if d < MEMORY_DUPLICATE_DISTANCE {
+            CandidateBand::Duplicate
+        } else if d < MEMORY_MAX_QA_DISTANCE {
+            CandidateBand::Related
+        } else {
+            continue;
+        };
+        by_id.entry(hit.id.clone()).or_insert(Candidate {
+            id: hit.id,
+            kind: hit.kind,
+            title: hit.title,
+            created_at: hit.created_at,
+            distance: Some(d),
+            band,
+        });
+    }
+
+    for hit in fts_hits {
+        if exclude_id.is_some_and(|e| e == hit.id) {
+            continue;
+        }
+        by_id.entry(hit.id.clone()).or_insert(Candidate {
+            id: hit.id,
+            kind: hit.kind,
+            title: hit.title,
+            created_at: hit.created_at,
+            distance: None,
+            band: CandidateBand::Related,
+        });
+    }
+
+    let order = |a: &Candidate, b: &Candidate| match (a.distance, b.distance) {
+        (Some(x), Some(y)) => x.total_cmp(&y).then_with(|| a.id.cmp(&b.id)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.id.cmp(&b.id),
+    };
+
+    let mut duplicates: Vec<Candidate> = Vec::new();
+    let mut related: Vec<Candidate> = Vec::new();
+    for c in by_id.into_values() {
+        match c.band {
+            CandidateBand::Duplicate => duplicates.push(c),
+            CandidateBand::Related => related.push(c),
+        }
+    }
+    duplicates.sort_by(order);
+    related.sort_by(order);
+    duplicates.truncate(MAX_CANDIDATES_PER_BAND);
+    related.truncate(MAX_CANDIDATES_PER_BAND);
+
+    duplicates.into_iter().chain(related).collect()
+}
+
 impl MemoryStore {
+    /// FTS5 match over the note title only — the lexical half of the
+    /// pre-write candidate pool, narrower than [`MemoryStore::search_text`],
+    /// which also matches body and tags. Active entries only; `limit` is
+    /// capped the same way `search_text` caps its own.
+    pub fn search_title_fts(&self, title: &str, limit: usize) -> Result<Vec<Note>> {
+        let limit = limit.min(1_000);
+        let sql = format!(
+            "SELECT n.uuid, n.kind, n.title, n.body,
+                    n.created_at, n.status, n.superseded_by, n.source_ref,
+                    n.valid_at, n.invalid_at, n.entity_id,
+                    n.origin_actor_kind, n.origin_tool, n.origin_model
+             FROM memory_fts
+             JOIN notes n ON memory_fts.rowid = n.id
+             WHERE memory_fts.title MATCH ?1
+               AND n.status = 'active'
+             ORDER BY bm25(memory_fts), n.uuid
+             LIMIT {limit}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let fts_query = crate::utils::fts5_quote_literal(title);
+        let mut notes = stmt
+            .query_map(rusqlite::params![fts_query], row_to_note)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.hydrate_tags_and_files(&mut notes)?;
+        Ok(notes)
+    }
+
+    /// The pre-write candidate pool for `memory add`: vector KNN over active
+    /// entries (when `embedding` is available) unioned with
+    /// an FTS5 title match, banded and capped by [`classify_candidates`].
+    /// `exclude_id`, when given, drops a self-match (used when re-checking an
+    /// entry already in the store). With no embedding, candidates come from
+    /// the title match alone, so they can only ever land in the related band
+    /// — the embedder never gets to block a write.
+    pub fn find_candidates(
+        &self,
+        embedding: Option<&[u8]>,
+        title: &str,
+        exclude_id: Option<&NoteId>,
+    ) -> Result<Vec<Candidate>> {
+        let vector_hits = match embedding {
+            Some(blob) => self.search(blob, CANDIDATE_POOL, None)?,
+            None => Vec::new(),
+        };
+        let fts_hits = self.search_title_fts(title, CANDIDATE_POOL)?;
+
+        let to_hit = |n: Note, keep_distance: bool| CandidateHit {
+            id: n.id.to_string(),
+            kind: n.kind,
+            title: n.title,
+            created_at: n.created_at,
+            distance: if keep_distance { n.distance } else { None },
+        };
+        let vector_hits: Vec<CandidateHit> =
+            vector_hits.into_iter().map(|n| to_hit(n, true)).collect();
+        let fts_hits: Vec<CandidateHit> = fts_hits.into_iter().map(|n| to_hit(n, false)).collect();
+
+        Ok(classify_candidates(
+            vector_hits,
+            fts_hits,
+            exclude_id.map(NoteId::as_str),
+        ))
+    }
     /// Semantic KNN search. Returns active notes ordered by ascending distance.
     /// When `as_of` is `Some(ts)`, only entries valid at that Unix timestamp are returned.
     pub fn search(&self, query_blob: &[u8], limit: usize, as_of: Option<i64>) -> Result<Vec<Note>> {
@@ -236,7 +429,10 @@ impl MemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryStore, NoteId};
+    use super::{
+        CandidateBand, CandidateHit, MAX_CANDIDATES_PER_BAND, MEMORY_DUPLICATE_DISTANCE,
+        MEMORY_MAX_QA_DISTANCE, MemoryStore, NoteId, classify_candidates,
+    };
     use std::sync::OnceLock;
 
     fn register_sqlite_vec() {
@@ -659,6 +855,165 @@ mod tests {
             active_only.len(),
             1,
             "search_text must exclude the archived entry (active-only)"
+        );
+    }
+
+    fn hit(id: &str, distance: Option<f64>) -> CandidateHit {
+        CandidateHit {
+            id: id.to_string(),
+            kind: "decision".to_string(),
+            title: id.to_string(),
+            created_at: 0,
+            distance,
+        }
+    }
+
+    #[test]
+    fn a_near_identical_distance_lands_in_the_duplicate_band() {
+        let candidates = classify_candidates(vec![hit("a", Some(0.05))], vec![], None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].band, CandidateBand::Duplicate);
+    }
+
+    #[test]
+    fn a_related_distance_lands_in_the_related_band() {
+        let candidates = classify_candidates(
+            vec![hit(
+                "a",
+                Some((MEMORY_DUPLICATE_DISTANCE + MEMORY_MAX_QA_DISTANCE) / 2.0),
+            )],
+            vec![],
+            None,
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].band, CandidateBand::Related);
+    }
+
+    #[test]
+    fn a_distance_beyond_both_bands_is_dropped() {
+        let candidates = classify_candidates(
+            vec![hit("a", Some(MEMORY_MAX_QA_DISTANCE + 0.5))],
+            vec![],
+            None,
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn ordering_is_distance_then_id() {
+        let candidates = classify_candidates(
+            vec![
+                hit("z", Some(0.02)),
+                hit("a", Some(0.02)),
+                hit("m", Some(0.01)),
+            ],
+            vec![],
+            None,
+        );
+        let ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["m", "a", "z"],
+            "closer distance first, ties broken by id"
+        );
+    }
+
+    #[test]
+    fn at_most_five_survive_per_band() {
+        let vector_hits: Vec<CandidateHit> = (0..8)
+            .map(|i| hit(&format!("n{i}"), Some(0.01 + i as f64 * 0.001)))
+            .collect();
+        let candidates = classify_candidates(vector_hits, vec![], None);
+        assert_eq!(candidates.len(), MAX_CANDIDATES_PER_BAND);
+        assert!(
+            candidates
+                .iter()
+                .all(|c| c.band == CandidateBand::Duplicate)
+        );
+    }
+
+    #[test]
+    fn an_fts_only_candidate_never_lands_in_the_duplicate_band() {
+        let candidates = classify_candidates(vec![], vec![hit("a", None)], None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].band, CandidateBand::Related);
+        assert_eq!(candidates[0].distance, None);
+    }
+
+    #[test]
+    fn a_distance_bearing_candidate_sorts_ahead_of_an_fts_only_one() {
+        let candidates = classify_candidates(
+            vec![hit("far", Some(MEMORY_MAX_QA_DISTANCE - 0.01))],
+            vec![hit("aaa", None)],
+            None,
+        );
+        let ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["far", "aaa"]);
+    }
+
+    #[test]
+    fn excluded_id_never_appears_as_its_own_candidate() {
+        let candidates = classify_candidates(vec![hit("self", Some(0.01))], vec![], Some("self"));
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn a_hit_present_in_both_sources_keeps_the_vector_distance() {
+        let candidates =
+            classify_candidates(vec![hit("a", Some(0.01))], vec![hit("a", None)], None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].distance, Some(0.01));
+    }
+
+    #[test]
+    fn find_candidates_bands_a_near_identical_and_a_related_entry() {
+        let store = open_store();
+        let query_blob = crate::embeddings::vec_to_blob(&unit_vec(1.0));
+        // 0.99 -> L2 distance ~0.1415, inside the duplicate band.
+        let dup = embedded_note(&store, "Near duplicate", 0.99);
+        // 0.9 -> L2 distance ~0.4587, inside the related band, outside the duplicate one.
+        let related = embedded_note(&store, "Related entry", 0.9);
+
+        let candidates = store
+            .find_candidates(Some(&query_blob), "unrelated title", None)
+            .expect("find_candidates ok");
+
+        let by_band = |band: CandidateBand| -> Vec<String> {
+            candidates
+                .iter()
+                .filter(|c| c.band == band)
+                .map(|c| c.id.clone())
+                .collect()
+        };
+        assert_eq!(by_band(CandidateBand::Duplicate), vec![dup.to_string()]);
+        assert_eq!(by_band(CandidateBand::Related), vec![related.to_string()]);
+    }
+
+    #[test]
+    fn find_candidates_with_no_embedding_falls_back_to_the_title_match_alone() {
+        let store = open_store();
+        let (id, _) = store
+            .add_note(
+                "decision",
+                "Use exponential backoff for retries",
+                "body",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let candidates = store
+            .find_candidates(None, "Use exponential backoff for retries", None)
+            .expect("find_candidates ok");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, id.to_string());
+        assert_eq!(
+            candidates[0].band,
+            CandidateBand::Related,
+            "an FTS-only match must never block, even on an exact title match"
         );
     }
 }

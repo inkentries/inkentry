@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::collections::HashSet;
 
-use super::backend::{EntityIdLookup, MemoryBackend, NoteInput};
+use super::backend::{AddOutcome, EntityIdLookup, MemoryBackend, NoteInput, Resolution};
 use super::memory::{MemoryEdge, Note, NoteId};
 use crate::embeddings::{PUSHED_VECTOR_PRECISION, blob_to_vec, pushed_vector_model_tag};
 
@@ -250,6 +250,20 @@ impl CheckedResponse for reqwest::Response {
 #[async_trait]
 impl MemoryBackend for RemoteMemoryBackend {
     async fn add(&self, input: NoteInput) -> Result<(NoteId, bool)> {
+        match self.add_with_reconcile(input, false, &[]).await? {
+            AddOutcome::Created { id, created, .. } => Ok((id, created)),
+            AddOutcome::Blocked { .. } => {
+                anyhow::bail!("server refused the write although reconciliation was not requested")
+            }
+        }
+    }
+
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        reconcile: bool,
+        resolutions: &[Resolution],
+    ) -> Result<AddOutcome> {
         let vector = input.embedding.as_deref().map(blob_to_vec);
         // The tags only mean anything alongside a vector, and the accept side
         // refuses a vector that arrives without them.
@@ -282,6 +296,11 @@ impl MemoryBackend for RemoteMemoryBackend {
             origin_actor_kind,
             origin_tool,
             origin_model,
+            // A server that predates this field simply ignores it and
+            // answers with the pre-existing 409 shape, which
+            // `AddNoteResponse::stored`'s default reads correctly.
+            reconcile: reconcile.then_some("block"),
+            resolutions: resolutions.iter().map(ResolutionWire::from).collect(),
         };
         // A write with no client vector makes the server embed, so it runs
         // under the server's embed admission queue and can be shed with a
@@ -310,12 +329,22 @@ impl MemoryBackend for RemoteMemoryBackend {
 
         let status = http_resp.status();
 
-        // 409 means "stored but conflicting" — treat as success but emit a warning.
         if status == reqwest::StatusCode::CONFLICT {
             let resp = http_resp
                 .json::<AddNoteResponse>()
                 .await
                 .context("parsing POST /memory 409 response")?;
+
+            if !resp.stored {
+                // A duplicate-band candidate with no resolution; nothing was
+                // written.
+                return Ok(AddOutcome::Blocked {
+                    candidates: resp.candidates.into_iter().map(Into::into).collect(),
+                });
+            }
+
+            // An older server has no blocking concept: stored but
+            // conflicting is success, with a legacy warning.
             if !resp.conflicts.is_empty() {
                 eprintln!("warning: memory entry conflicts with existing entries:");
                 for c in &resp.conflicts {
@@ -325,7 +354,17 @@ impl MemoryBackend for RemoteMemoryBackend {
                     );
                 }
             }
-            return Ok((resp.id, true));
+            let id = resp
+                .id
+                .context("server reported the entry as stored but sent no id")?;
+            // server.db doesn't enforce this amendment's promoted index, so
+            // there is nothing for this backend to detect as a reuse.
+            return Ok(AddOutcome::Created {
+                id,
+                created: true,
+                candidates: Vec::new(),
+                related: Vec::new(),
+            });
         }
 
         let resp = http_resp
@@ -339,7 +378,15 @@ impl MemoryBackend for RemoteMemoryBackend {
         if let Some(remote_id) = &resp.remote_id {
             tracing::debug!(remote_id, "server assigned remote_id for new memory entry");
         }
-        Ok((resp.id, true))
+        let id = resp
+            .id
+            .context("server reported the entry as stored but sent no id")?;
+        Ok(AddOutcome::Created {
+            id,
+            created: true,
+            candidates: resp.candidates.into_iter().map(Into::into).collect(),
+            related: resp.related.into_iter().map(Into::into).collect(),
+        })
     }
 
     /// Remote backend: timeline search falls back to regular semantic search.

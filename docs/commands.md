@@ -1258,6 +1258,7 @@ Store and query project context, decisions, and requirements. See
 
 ```
 inkentry memory add --title "..." [--body "..."] [--kind decision] [--tags auth,db] [--files src/auth.rs] [--commit <sha>] [--format text|json|jsonl]
+inkentry memory add --title "..." [--reconcile] [--supersedes <id>] [--relates-to <id>] [--contradicts <id>] [--distinct-from <id>]
 inkentry memory add --from-url <url> [--title "override"] [--kind requirement]
 inkentry memory anchor --commit <ref> [<id>...]   # claims pending entries, or anchors <id>... by hand
 inkentry memory list [--kind decision] [--tag auth] [--file src/auth.rs] [--limit 20] [--format text|json] [--local-only]
@@ -1323,6 +1324,46 @@ since a decision about a file often precedes the file. `memory list --tag
 <tag>` and `--file <path>` are exact filters over this vocabulary, backed by
 an index; `--tag` is normalised the same way a write is, and `--file` expects
 the exact repository-relative path `memory show`/`--format json` prints.
+
+**Reconciling before the write** ([ADR-100](adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md)).
+`memory add` embeds the new entry, then looks for candidates among active
+entries: a vector KNN unioned with an FTS5 match on the title. Each candidate
+lands in one band — `duplicate` (distance below the threshold `harvest` uses
+for its own near-duplicate check) or `related` (distance below the same
+relevance floor [ADR-083](adr/083-memory-relevance-gate-in-unified-search.md)
+calibrated for `search`) — at most five per band. If the embedder cannot
+answer in time, candidates come from the title match alone, which can only
+ever land in `related`: the embedder never blocks a write. The response gains
+`candidates` (duplicate band) and `related` (related band) fields either way.
+
+By default this is informational only: the write proceeds and you see what it
+found. Pass `--reconcile`, or set `reconcile = "block"` under `[memory]` in
+`.inkentry/config.toml`, to make a non-empty duplicate band refuse the write
+until you resolve it:
+
+```
+inkentry memory add --title "Use exponential backoff" --kind decision --reconcile
+# Not written: duplicate of #a1b2c3d4e5f6 "Use exponential backoff for retries"
+```
+
+Resolve with one flag naming the id: `--supersedes <id>` (archives the old
+entry, as it already does today), `--relates-to <id>` (records a `relates_to`
+edge), `--contradicts <id>` (records a `contradicts` edge — both entries
+stand, but disagree), or `--distinct-from <id>` (records nothing; the
+similarity was incidental). An id outside the reported candidate set is still
+accepted, as long as it resolves to a real entry.
+
+A blocked write exits `3` — new in 1.x, additive per
+[the stability contract](stability.md#exit-codes) — and prints the same JSON
+shape `--format json` would (`{"created": false, "reason": "candidates",
+"candidates": [...], "related": [...]}`) or a readable table in text mode.
+Nothing is written. This is opt-in for the life of 1.x: git-notes import,
+`memory sync`, `inkentry import`, and the server's batch/sync endpoints never
+block on similarity, and `harvest` keeps skipping a duplicate-band candidate
+on its own, unprompted (it has no caller to ask). `--expand-graph` and
+`context` follow `contradicts` edges the same way they follow `relates_to`;
+`context` marks an entry carrying an unresolved `contradicts` edge (both
+sides still active).
 
 **Memory kinds:** `decision` · `context` · `requirement` · `note` · `intent` ·
 `answer` · `handoff` · `question` · `antipattern`

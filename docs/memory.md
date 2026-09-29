@@ -488,9 +488,54 @@ inkentry memory add --title "New auth approach" --kind decision --body "..." \
 # Mark two entries as related — creates a relates_to edge
 inkentry memory add --title "Follow-up note" --kind note --body "..." \
               --relates-to <other-id>
+
+# Mark two entries as disagreeing — creates a contradicts edge
+inkentry memory add --title "New approach" --kind decision --body "..." \
+              --contradicts <other-id>
 ```
 
 When `--body` is omitted, `inkentry` opens `$VISUAL` or `$EDITOR` (falling back to `vi`). Lines starting with `#` are stripped (comment convention).
+
+### Reconciling against existing entries before the write
+
+Every `memory add` embeds the new entry and checks it against active entries
+before writing: a near-identical one lands in the `duplicate` band, a related
+one in the `related` band, each capped at five and returned in the response
+(`candidates` and `related` respectively) — informational by default, so a
+plain `memory add` behaves exactly as it always has.
+
+Pass `--reconcile` (or set `reconcile = "block"` under `[memory]` in
+`.inkentry/config.toml`, a team-wide policy rather than a personal one) to
+make a non-empty `duplicate` band refuse the write instead:
+
+```bash
+$ inkentry memory add --title "Use exponential backoff for retries" --kind decision --reconcile
+Not written: this entry looks like a duplicate of 1 existing entry. Resolve
+with --supersedes/--relates-to/--contradicts/--distinct-from <id>, or drop
+--reconcile.
+
+  #a1b2c3d4e5f6  [decision]  Use exponential backoff on retry  (dist: 0.0821)
+```
+
+Repeat the command with a resolution naming the entry: `--supersedes <id>`
+replaces it (existing behaviour), `--relates-to <id>` and `--contradicts
+<id>` each record an edge without archiving anything, and `--distinct-from
+<id>` records nothing — the similarity was incidental. The id does not have
+to be one of the reported candidates, as long as it names a real entry.
+
+A blocked write exits `3` and writes nothing; see [`memory
+add`](commands.md#inkentry-memory) for the full flag reference and the exit
+code's place in the stability contract. `--expand-graph` and `inkentry
+context` follow `contradicts` edges the same way they follow `relates_to`
+(see [Relationship graph](#relationship-graph) below); `context` marks an
+entry carrying an unresolved `contradicts` edge.
+
+This is opt-in for 1.x: without `--reconcile`, a duplicate is written like
+any other entry, just with `candidates` in the response. Paths with no
+caller to ask never block: git-notes import, `memory sync`, `inkentry
+import`, and a team server's batch/sync endpoints report candidates but
+never refuse a write over similarity, and `harvest` keeps skipping a
+duplicate-band candidate on its own rather than asking.
 
 ### Tags and linked files
 

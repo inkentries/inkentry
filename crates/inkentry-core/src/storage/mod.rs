@@ -19,7 +19,9 @@ mod specs;
 mod sql;
 mod stats;
 
-pub use backend::{EntityIdLookup, LocalMemoryBackend, MemoryBackend, NoteInput};
+pub use backend::{
+    AddOutcome, EntityIdLookup, LocalMemoryBackend, MemoryBackend, NoteInput, Resolution,
+};
 pub(crate) use chunks::chunk_subwords;
 pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
 pub use db::{Database, GRAPH_EDGES_REEXTRACT};
@@ -37,9 +39,11 @@ pub use git_notes::{
 };
 pub use graph::GraphEdge;
 pub use memory::{
-    CarriedEdgeImport, DedupeSummary, FileState, MemoryEdge, MemoryStore, NoteId,
-    NotesImportMarker, PendingAnchor, ResolvedFileLink, SyncEdge, SyncRow, normalize_relative_path,
-    normalize_tag, resolve_file_link, unresolvable_id_message, uuid_v7_at,
+    Candidate, CandidateBand, CandidateHit, CarriedEdgeImport, DedupeSummary, FileState,
+    MAX_CANDIDATES_PER_BAND, MEMORY_DUPLICATE_DISTANCE, MEMORY_MAX_QA_DISTANCE, MemoryEdge,
+    MemoryStore, NoteId, NotesImportMarker, PendingAnchor, ResolvedFileLink, SyncEdge, SyncRow,
+    classify_candidates, normalize_relative_path, normalize_tag, resolve_file_link,
+    unresolvable_id_message, uuid_v7_at,
 };
 pub use note_kind::{NOTE_KINDS, is_valid_note_kind, parse_note_kind};
 pub use note_record::{CarriedEdge, NoteRecord, carrier_token, now_millis, now_secs};

@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
 
-use super::super::backend::{EntityIdLookup, MemoryBackend, NoteInput};
+use super::super::backend::{AddOutcome, EntityIdLookup, MemoryBackend, NoteInput, Resolution};
 use super::super::memory::{MemoryEdge, Note, NoteId};
 use super::super::note_record::{CarriedEdge, NoteRecord, now_millis, now_secs, record_to_note};
 use super::GitNotesBackend;
@@ -48,6 +48,23 @@ impl MemoryBackend for GitNotesBackend {
         // Git notes are append-only: this backend never detects or collapses
         // a collision, so every add is reported as a fresh insert.
         Ok((crate::storage::note_record::carrier_token(id), true))
+    }
+
+    // Git notes has no searchable index to reconcile against — an import
+    // path with no caller to ask never blocks anyway — so this always writes.
+    async fn add_with_reconcile(
+        &self,
+        input: NoteInput,
+        _reconcile: bool,
+        _resolutions: &[Resolution],
+    ) -> Result<AddOutcome> {
+        let (id, created) = self.add(input).await?;
+        Ok(AddOutcome::Created {
+            id,
+            created,
+            candidates: Vec::new(),
+            related: Vec::new(),
+        })
     }
 
     async fn list(
