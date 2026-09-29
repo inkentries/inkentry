@@ -622,7 +622,7 @@ impl utoipa::Modify for SecurityAddon {
 ///
 /// - `RequestBodyLimitLayer` + `ConcurrencyLimitLayer` apply to every route.
 /// - `TimeoutLayer` (30s) applies to everything except `/memory/stream` (SSE)
-///   and `/index/embed` (its own [`EMBED_REQUEST_TIMEOUT`]).
+///   and `/index/embed` (its own `EMBED_REQUEST_TIMEOUT`).
 /// - Per-handler input caps are enforced in the [`handlers`] module.
 pub fn router(state: AppState) -> Router {
     router_with_timeouts(state, REQUEST_TIMEOUT, EMBED_REQUEST_TIMEOUT)

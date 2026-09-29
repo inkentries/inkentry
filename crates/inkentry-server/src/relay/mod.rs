@@ -127,7 +127,7 @@ pub struct RelayPushRequest {
 
 /// Body of `POST /local/relay/ack`: the CLI confirming which polled entries
 /// it durably applied to `memory.db`, so the relay can retire exactly those
-/// and keep offering the rest on the next poll. See [`RelaySession::poll`]'s
+/// and keep offering the rest on the next poll. See [`RelayRegistry::poll`]'s
 /// doc comment for why this handshake exists.
 #[derive(Debug, Deserialize)]
 pub struct RelayAckRequest {
@@ -183,7 +183,7 @@ impl From<RemoteEntry> for RelayPulledEntry {
 /// long-running process, surviving any single CLI invocation. A poll is a
 /// **peek**, not a drain: the CLI applies the returned entries
 /// locally, then confirms which ones it actually applied via
-/// `POST /local/relay/ack` (see [`RelaySession::poll`] / [`RelaySession::ack`]).
+/// `POST /local/relay/ack` (see [`RelayRegistry::poll`] / [`RelayRegistry::ack`]).
 /// A crashed or failed apply between poll and ack simply sees the same
 /// entries again on the next poll.
 #[derive(Debug, Default, Serialize)]
