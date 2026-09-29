@@ -616,6 +616,7 @@ porcelain health check.
 - [Commands reference](commands.md) — every flag and option
 - [Memory](memory.md) — storing project context across sessions
 - [Agent Guide](agent-guide.md) — using `inkentry` with AI coding agents
+- [Agent contract](agent-contract.md) — what an agent records, and how
 - [Remote agents](remote-agents.md) — running an agent in a Docker container against your local server
 - [Server setup](server-setup.md): exposing inkentry-server to remote agents over TLS
 - [Building from source](building.md) — for contributors and platform builders

@@ -54,6 +54,7 @@ to document it. A git hook complements this: a post-commit step runs
 nothing slips through. Nothing else about how you work has to change.
 
 - [Agent Guide](agent-guide.md): how a session should use inkentry, plus automatic capture and JSON output
+- [Agent contract](agent-contract.md): what an agent records, when, and how it links each entry
 - [AGENTS.md template](examples/AGENTS.md): a project-convention file that tells your agent to reach for inkentry first
 - [Installing the agent skill](plugin.md): inkentry as an Agent Plugins plugin, for Claude Code and other clients
 - Automatic capture: [`inkentry hooks install`](commands.md#inkentry-hooks) plus [`inkentry harvest`](commands.md#inkentry-harvest)

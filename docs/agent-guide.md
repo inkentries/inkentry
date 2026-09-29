@@ -22,6 +22,18 @@ A productive agentic session with `inkentry` looks like this:
 
 This loop compounds: each session leaves better context for the next, whether that's the same agent resuming or a different one picking up.
 
+## The write contract
+
+The read side of inkentry is a search. The write side is the agent: inkentry
+stores what it is given and never judges it, so what memory holds is what the
+agent chose to write. [The agent contract](agent-contract.md) says what that is:
+the nine kinds with an example that belongs and one that does not, how to write
+a title and a body, when to write and when not to, how to choose tags and link
+files, the reconcile loop (`--reconcile`, exit status `3`, and the four ways to
+resolve a candidate), how to record an update, and the environment variables
+that declare who is calling. The agent skill carries a copy, so an agent that
+has the skill has the contract.
+
 ## Machine-readable output
 
 Set `AGENT=true` and every `inkentry` command returns JSON:
@@ -158,6 +170,8 @@ inkentry index .
 
 `inkentry context` is designed as the single agent entry point. At session start it first surfaces active agent sessions — other live `intent` entries, plus a warning for any file you have already changed that another active intent claims — then retrieves the most agent-relevant memory sections (handoffs, open questions, decisions, requirements) sorted newest-first, giving the agent a full picture of both in-flight and prior work.
 
+With the Claude Code plugin installed, its session-start hook runs this for you, including after a compaction (see [Hooks](#hooks)).
+
 Flags:
 - `--format json` — machine-readable output
 - `--kind decision` — narrow to one section
@@ -229,43 +243,25 @@ To exclude files or directories from indexing, add a `.inkentryignore` file (sam
 
 ## Storing decisions
 
-Every non-obvious choice should be stored. Agent surfaces write with
-`--reconcile` on ([ADR-100](adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md)):
-an agent is exactly the caller who can read what it found and resolve it,
-which is the case a human running `memory add` by hand usually is not.
+What to record, when, and how to link it is written once, in
+[the agent contract](agent-contract.md). This section is the short version: one
+command, with `--reconcile`, which agent surfaces write with.
 
 ```bash
-inkentry memory add \
+inkentry memory add --reconcile --format json \
+  --kind decision \
   --title "Chose sqlite-vec over hnswlib for vector search" \
   --body "No C++ dependency, single file, good enough performance for <1M vectors. Revisit if we need ANN at scale." \
-  --kind decision \
   --tags storage,embeddings \
-  --reconcile
+  --files src/storage/search.rs
 ```
 
-Doing this consistently means future agents (and future you) can retrieve the rationale:
+Doing this consistently means future agents (and future you) can retrieve the
+rationale:
 
 ```bash
 inkentry search "why did we choose sqlite-vec" --only-memory
 ```
-
-**The reconcile loop.** With `--reconcile`, a write that lands in the
-duplicate band of an existing entry exits `3` and prints `candidates`
-instead of writing anything — read them, decide how the new entry relates to
-what is already there, and repeat the command with a resolution:
-
-```bash
-inkentry memory add --title "..." --kind decision --body "..." --reconcile
-# exit 3: {"created": false, "reason": "candidates", "candidates": [...], "related": [...]}
-inkentry memory add --title "..." --kind decision --body "..." --reconcile \
-  --supersedes <id>   # or --relates-to / --contradicts / --distinct-from <id>
-```
-
-The hooks and the [agent skill](https://github.com/inkentries/agent-plugin)
-pass `--reconcile` on your behalf on the invocations they own. A write that
-does not land in the duplicate band, or one made without `--reconcile`,
-behaves exactly as before — `candidates`/`related` are additive fields on the
-response either way.
 
 **git-notes write-through:** with `store_in_git_notes` enabled (the default),
 `inkentry memory add` also appends the entry to `refs/notes/inkentry` on `HEAD`,
@@ -314,67 +310,58 @@ reasoning behind the code, not just the code, without anyone stopping to author
 it. Harvest is additive and idempotent, so re-running it does not duplicate
 entries.
 
-## Storing questions for async resolution
+## Hooks
 
-When you hit a decision point mid-task:
+There are two kinds of hook, and they do different jobs.
 
-```bash
-inkentry memory add \
-  --title "Should verify re-embed from disk or from stored chunk content?" \
-  --kind question \
-  --tags verify,indexer
-```
+**The git hook** (`inkentry hooks install`, above) runs in your clone after a
+commit: it claims the commit's pending memory entries with
+`inkentry memory anchor --commit HEAD`, then re-indexes and harvests. Git does
+not clone hooks, so it exists only where someone installed it.
 
-Pick it up later:
+**Agent hooks** run inside the agent, whichever clone it is working in. The
+[Claude Code plugin](plugin.md) ships four, and they call the CLI as follows.
+Anyone wiring another agent can do the same; each call needs no inference
+server.
 
-```bash
-AGENT=true inkentry memory list --kind question
-```
+| When | Command | What comes back |
+|---|---|---|
+| Session start, including after a compaction | `inkentry context --budget <N> --format text` | The context sections, then a final `tokens used: X/N` line. A store with no entries prints only that line. |
+| Before an edit to a file | `inkentry memory list --file <path> --format json` | A JSON array of entries linked to that exact repository-relative path (`id`, `entity_id`, `kind`, `title`, `body`, `tags`, `linked_files`, `created_at`, `status`). With none, the text `No memory entries found.` and exit `0`, not `[]`. |
+| After an agent's `git commit` | `inkentry memory anchor --commit HEAD` | Nothing, and always exit `0`. It is the git hook's command, run again for clones without the hook. |
+| When the agent is about to stop | `inkentry memory add --reconcile ...` (run by the agent, at the hook's prompt) | See [the reconcile loop](agent-contract.md#7-the-reconcile-loop). |
 
-When resolved:
+Two details matter to anyone writing one:
 
-```bash
-inkentry memory add \
-  --title "verify re-embeds from stored chunk content" \
-  --body "Avoids file I/O and keeps behaviour consistent with what was originally indexed. Disk content may have changed since last index." \
-  --kind answer \
-  --tags verify,indexer
-```
+- `--file` matches the path exactly as `memory show` or `--format json` prints
+  it, repository-relative with forward slashes. `./src/auth.rs` and an absolute
+  path match nothing.
+- Outside an inkentry project `context` exits `1` and `memory anchor` exits
+  `0`. A hook that must never fail an action swallows the exit status and
+  prints nothing on stderr.
 
-## Signalling intent
+An agent hook declares itself with `INKENTRY_TRIGGER=hook INKENTRY_ACTOR=agent
+INKENTRY_TOOL=<tool> INKENTRY_SESSION_REF=<session id>`, so the events it
+causes are counted apart from what the agent chose to run
+([caller declaration](config-reference.md#caller-declaration-adr-098-d5d6)).
+The commands the agent runs itself carry `INKENTRY_TRIGGER=explicit`.
 
-Use the `intent` kind to broadcast to teammates (human or agent) that you are actively working on a given area. Active intents are surfaced at session start by `inkentry context`, in an "Active agent sessions" section, along with a warning for any file you have already modified that another active intent claims — so collaborators see ongoing work before starting overlapping changes.
+## Questions, intents and handoffs
 
-```bash
-inkentry memory add \
-  --title "Refactoring auth middleware to support OAuth2" \
-  --kind intent \
-  --tags auth,middleware \
-  --files src/auth/middleware.rs
-```
+The contract says what each of these entries contains
+([question](agent-contract.md#question), [answer](agent-contract.md#answer),
+[intent](agent-contract.md#intent), [handoff](agent-contract.md#handoff)). What
+follows is how they are picked up again.
 
-When the work is done, archive the intent:
-
-```bash
-inkentry memory archive <id>
-```
-
-## Handing off between sessions
-
-At the end of a session, write a handoff note:
-
-```bash
-inkentry memory add \
-  --title "Handoff: rate limiting plan 60% done" \
-  --body "Implemented token bucket in src/ratelimit/bucket.rs. Next: wire middleware, add tests, update docs. Open question: should limits be per-IP or per-API-key?" \
-  --kind handoff
-```
-
-At the start of the next session, read it:
-
-```bash
-inkentry context
-```
+- **Questions.** `AGENT=true inkentry memory list --kind question` lists what is
+  open. Answer one with an `answer` entry written with `--relates-to <question
+  id>`; that link is what closes it.
+- **Intents.** Active intents surface at session start in the "Active agent
+  sessions" section of `inkentry context`, with a warning for any file you have
+  already modified that another active intent claims. When the work is done,
+  archive the intent: `inkentry memory archive <id>`.
+- **Handoffs.** The next session reads the latest handoffs with
+  `inkentry context`.
 
 ## Multi-agent coordination
 
@@ -709,7 +696,7 @@ inkentry search "<topic>" --budget 4000                        # fit within toke
 inkentry plumbing graph-edges --symbol <symbol>
 inkentry index .                                              # incremental, blake3-gated
 
-# Session end — store decisions for next session
-inkentry memory add --title "Decision: ..." --kind decision --reconcile
-inkentry memory add --title "Handoff: ..." --kind handoff
+# Session end — record what was decided (rules: agent-contract.md)
+inkentry memory add --reconcile --format json --kind decision --title "..." --body "..."
+inkentry memory add --kind handoff --title "Handoff: ..." --body "done, next, open"
 ```

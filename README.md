@@ -206,6 +206,7 @@ the first five minutes to running a shared memory server for a team.
 - [Getting Started](docs/getting-started.md): install, index your first project, run your first retrieval
 - [Memory](docs/memory.md): decisions, context, and requirements across sessions
 - [Agent Guide](docs/agent-guide.md): wiring inkentry into AI coding agents
+- [Agent contract](docs/agent-contract.md): what an agent records, when, and how it links each entry
 - [Commands](docs/commands.md): full reference for every subcommand
 - [Stability contract](docs/stability.md): which surfaces semver freezes, and which are free to change
 - [Architecture](docs/architecture.md): system design for contributors

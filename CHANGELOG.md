@@ -19,6 +19,13 @@ once, and no vector is discarded.
 
 ### Added
 
+- **The agent contract**, [`docs/agent-contract.md`](docs/agent-contract.md):
+  what an agent records in memory and how. It gives the nine kinds with an
+  example that belongs and one that does not, the title and body rules, when to
+  write and when not to, tag and file discipline, the `--reconcile` loop and its
+  four resolutions, how to record an update, and the caller declaration. The
+  agent skill carries a copy, and the agent guide now points to it and documents
+  the commands the Claude Code plugin's hooks call.
 - **`memory add` reconciles against existing entries before it writes.**
   It embeds the new entry, then bands active entries near it as `duplicate`
   (near-restatement) or `related`, at most five each; the response gains

@@ -18,6 +18,17 @@ supported alongside the standard rather than through it:
 /plugin install inkentry@inkentry
 ```
 
+## Hooks
+
+For Claude Code the plugin also ships hooks that read and write memory without
+the agent having to remember to: context at session start (and after a
+compaction), the entries linked to a file before it is edited, `memory anchor`
+after an agent commit, and one prompt at the end of a session to record what was
+decided. They never block or fail an action. The file lookup, the anchor and the
+stop prompt need inkentry 1.2.0 or later and do nothing on an older CLI. The commands they call are listed under
+[Hooks](agent-guide.md#hooks) in the agent guide, and what an agent is asked to
+write is [the agent contract](agent-contract.md).
+
 ## Other agents
 
 Agent Plugins 1.0.0 defines the package, not the delivery: distribution and
