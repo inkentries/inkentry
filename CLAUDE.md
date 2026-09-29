@@ -139,7 +139,7 @@ metrics/
   events.rs      — the use.*/auto.* metric computations (D3) over EventRow rows
                    from the local `events` table (D5): session grouping,
                    automation rates, per-command call counts, latency/token
-                   medians
+                   medians, `use.reconcile_outcomes`
 
 indexer/
   mod.rs         — re-exports Chunk, ChunkKind, SourceParser
@@ -227,7 +227,9 @@ storage/
                    one best-effort, short-busy-timeout write path every recording
                    call site funnels through; events_in_window/
                    events_command_counts_since/clear_events back the metrics
-                   events source, status's 7-day usage summary, and `metrics clear`
+                   events source, status's 7-day usage summary, and `metrics clear`;
+                   ReconcileMode/ResolutionKind name the `reconcile`/`resolution`
+                   columns a `memory add` row carries
     anchors.rs   — ADR-099 D1/D3a: `pending_anchors` CRUD (record/claim/list/
                    reassign) and the `patch_id_cache` seen-set; both local
                    working state, never carried by the git-notes carrier
@@ -274,6 +276,9 @@ migrations/  (crates/inkentry-core/migrations/)
                            write's worktree/HEAD, until a commit claims it)
                            and `patch_id_cache` (D3a's seen-set); both local
                            working state, never carried or synced
+  memory_015.sql — step 15: nullable `events.reconcile`/`events.resolution`
+                           columns (what `memory add` did about its neighbours);
+                           pure additions, no data pass
 ```
 
 ### inkentry-cli (`crates/inkentry-cli/src/`)
@@ -325,7 +330,8 @@ cli/
     events.rs    — ADR-098 D5: `record()`, the one call every recording command
                    (search, context, memory add/supersede/list/show, harvest, sync)
                    funnels through. Gates on a local sqlite store existing and not
-                   being remote-primary; builds EventFields from Config::caller
+                   being remote-primary; builds EventFields from Config::caller;
+                   `record_memory_add` also carries the reconcile mode/resolution
     fusion.rs    — cross-corpus rank fusion + the unified code/memory result envelope (ADR-081)
     harvest.rs   — `inkentry harvest` handler (top-level; capture memory from
                    git history + session logs). Shares its implementation and

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use inkentry_core::storage::memory::{EventFields, record_event_at};
+use inkentry_core::storage::memory::{EventFields, ReconcileMode, ResolutionKind, record_event_at};
 
 use crate::config::{Config, SyncMode};
 
@@ -32,6 +32,42 @@ pub(crate) fn record(
     started: Instant,
     ok: bool,
 ) {
+    record_with_outcome(
+        cfg,
+        mem_path,
+        backend_override,
+        command,
+        code_results,
+        memory_results,
+        returned_ids,
+        tokens_out,
+        started,
+        ok,
+        None,
+    );
+}
+
+// What a `memory add` did about its neighbours: the mode in force, and how the
+// write ended when it was blocked or carried a resolution.
+pub(crate) struct ReconcileOutcome {
+    pub mode: ReconcileMode,
+    pub resolution: Option<ResolutionKind>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_with_outcome(
+    cfg: &Config,
+    mem_path: &Path,
+    backend_override: Option<&str>,
+    command: &str,
+    code_results: Option<i64>,
+    memory_results: Option<i64>,
+    returned_ids: &[String],
+    tokens_out: Option<i64>,
+    started: Instant,
+    ok: bool,
+    outcome: Option<ReconcileOutcome>,
+) {
     if !mem_path.exists() || !is_local_store(cfg, backend_override) {
         return;
     }
@@ -51,7 +87,36 @@ pub(crate) fn record(
             tokens_out,
             latency_ms: Some(latency_ms),
             ok,
+            reconcile: outcome.as_ref().map(|o| o.mode),
+            resolution: outcome.and_then(|o| o.resolution),
         },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_memory_add(
+    cfg: &Config,
+    mem_path: &Path,
+    backend_override: Option<&str>,
+    memory_results: Option<i64>,
+    returned_ids: &[String],
+    tokens_out: Option<i64>,
+    started: Instant,
+    ok: bool,
+    outcome: ReconcileOutcome,
+) {
+    record_with_outcome(
+        cfg,
+        mem_path,
+        backend_override,
+        "memory.add",
+        None,
+        memory_results,
+        returned_ids,
+        tokens_out,
+        started,
+        ok,
+        Some(outcome),
     );
 }
 

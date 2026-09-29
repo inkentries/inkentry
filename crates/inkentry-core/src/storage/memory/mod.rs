@@ -20,7 +20,7 @@ mod uuid_v7;
 
 pub use anchors::PendingAnchor;
 pub use dedupe::DedupeSummary;
-pub use events::{EventFields, EventRow, record_event_at};
+pub use events::{EventFields, EventRow, ReconcileMode, ResolutionKind, record_event_at};
 pub use file_links::{FileState, ResolvedFileLink, normalize_relative_path, resolve_file_link};
 pub use import::CarriedEdgeImport;
 pub use import_state::NotesImportMarker;
@@ -48,7 +48,7 @@ mod tests;
 // `user_version` is one i32 per file, shared with every stamp that ladder
 // ever wrote, so a fresh numbering would make an old product's store read
 // as a *newer* one.
-pub(super) const MEMORY_SCHEMA_VERSION: i32 = 14;
+pub(super) const MEMORY_SCHEMA_VERSION: i32 = 15;
 
 // The highest `user_version` the pre-rename migration ladder ever stamped. A
 // store carrying any stamp at or below this was written by an older product

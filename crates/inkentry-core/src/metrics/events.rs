@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
-use crate::storage::memory::EventRow;
+use crate::storage::memory::{EventRow, ReconcileMode, ResolutionKind};
 
 use super::state::{Rate, median};
 
@@ -51,6 +51,27 @@ impl CallCounts {
     }
 }
 
+/// `use.reconcile_outcomes`: how `memory add` writes that were blocked or
+/// carried a resolution ended.
+///
+/// A blocked write stores nothing and is recorded as `abandoned`; the retry
+/// that resolves it is a separate event, so `abandoned` counts blocks, not
+/// writes that were never retried. `blocked` is the count of blocks, and each
+/// resolution kind is a count of writes that carried it, in whichever
+/// reconcile mode they ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReconcileOutcomes {
+    pub blocked: u64,
+    /// Every resolution kind, present with a 0 count when none was recorded.
+    pub by_resolution: BTreeMap<String, u64>,
+}
+
+impl ReconcileOutcomes {
+    pub fn is_empty(&self) -> bool {
+        self.blocked == 0 && self.by_resolution.values().all(|n| *n == 0)
+    }
+}
+
 /// The `events` block of an `inkentry.metrics/1` snapshot.
 ///
 /// `use.acted_on_rate` and `use.recall_miss_rate` are not computed here:
@@ -67,6 +88,8 @@ pub struct EventsMetrics {
     pub use_search_hit_rate: Rate,
     #[serde(rename = "use.search_before_write")]
     pub use_search_before_write: Rate,
+    #[serde(rename = "use.reconcile_outcomes")]
+    pub use_reconcile_outcomes: ReconcileOutcomes,
     #[serde(rename = "auto.read_rate")]
     pub auto_read_rate: Rate,
     #[serde(rename = "auto.write_rate")]
@@ -121,6 +144,8 @@ pub fn compute_events_metrics(rows: &[EventRow], window_days: u32) -> EventsMetr
         Rate::new(numerator, adds.len() as u64)
     };
 
+    let use_reconcile_outcomes = reconcile_outcomes(rows);
+
     let auto_read_rate = automation_rate(rows, READ_COMMANDS);
     let auto_write_rate = automation_rate(rows, WRITE_COMMANDS);
 
@@ -148,12 +173,42 @@ pub fn compute_events_metrics(rows: &[EventRow], window_days: u32) -> EventsMetr
         use_sessions_with_context,
         use_search_hit_rate,
         use_search_before_write,
+        use_reconcile_outcomes,
         auto_read_rate,
         auto_write_rate,
         calls,
         by_actor,
         latency_ms_p50,
         tokens_out_p50,
+    }
+}
+
+fn reconcile_outcomes(rows: &[EventRow]) -> ReconcileOutcomes {
+    let mut by_resolution: BTreeMap<String, u64> = ResolutionKind::ALL
+        .iter()
+        .map(|k| (k.as_str().to_string(), 0))
+        .collect();
+    let mut blocked = 0;
+    for r in rows.iter().filter(|r| r.command == "memory.add") {
+        if r.reconcile.as_deref() == Some(ReconcileMode::Block.as_str())
+            && r.resolution.as_deref() == Some(ResolutionKind::Abandoned.as_str())
+            && !r.ok
+        {
+            blocked += 1;
+        }
+        // A kind this build does not know, recorded by a newer one, is not
+        // counted rather than added as a bucket.
+        if let Some(n) = r
+            .resolution
+            .as_deref()
+            .and_then(|kind| by_resolution.get_mut(kind))
+        {
+            *n += 1;
+        }
+    }
+    ReconcileOutcomes {
+        blocked,
+        by_resolution,
     }
 }
 
@@ -199,11 +254,21 @@ mod tests {
             tokens_out: None,
             latency_ms: None,
             ok: true,
+            reconcile: None,
+            resolution: None,
         }
     }
 
     fn with_session(mut r: EventRow, session: &str) -> EventRow {
         r.session_ref = Some(session.to_string());
+        r
+    }
+
+    fn add_outcome(reconcile: &str, resolution: Option<&str>, ok: bool, at: i64) -> EventRow {
+        let mut r = row("memory.add", "hook", "agent", at);
+        r.reconcile = Some(reconcile.to_string());
+        r.resolution = resolution.map(str::to_string);
+        r.ok = ok;
         r
     }
 
@@ -311,6 +376,52 @@ mod tests {
         assert_eq!(m.by_actor["agent"], 0);
         assert_eq!(m.by_actor["harvest"], 0);
         assert_eq!(m.by_actor["unknown"], 0);
+    }
+
+    #[test]
+    fn reconcile_outcomes_count_blocks_and_each_resolution_kind() {
+        let rows = vec![
+            add_outcome("block", Some("abandoned"), false, 1),
+            add_outcome("block", Some("abandoned"), false, 2),
+            add_outcome("block", Some("supersedes"), true, 3),
+            add_outcome("block", Some("distinct"), true, 4),
+            add_outcome("off", Some("relates_to"), true, 5),
+            add_outcome("block", None, true, 6),
+            add_outcome("off", None, true, 7),
+            row("memory.add", "hook", "agent", 8),
+        ];
+        let o = compute_events_metrics(&rows, 7).use_reconcile_outcomes;
+        assert_eq!(o.blocked, 2);
+        assert_eq!(
+            o.by_resolution.into_iter().collect::<Vec<_>>(),
+            vec![
+                ("abandoned".to_string(), 2),
+                ("contradicts".to_string(), 0),
+                ("distinct".to_string(), 1),
+                ("relates_to".to_string(), 1),
+                ("supersedes".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn reconcile_outcomes_ignore_other_commands_and_unknown_kinds() {
+        let mut other = row("memory.supersede", "explicit", "human", 1);
+        other.resolution = Some("supersedes".to_string());
+        let rows = vec![
+            other,
+            add_outcome("block", Some("from-a-newer-build"), true, 2),
+        ];
+        let o = compute_events_metrics(&rows, 7).use_reconcile_outcomes;
+        assert!(o.is_empty());
+        assert_eq!(o.by_resolution.len(), 5);
+    }
+
+    #[test]
+    fn no_events_report_zero_reconcile_outcomes_with_every_bucket_present() {
+        let o = compute_events_metrics(&[], 7).use_reconcile_outcomes;
+        assert!(o.is_empty());
+        assert_eq!(o.by_resolution.len(), 5);
     }
 
     #[test]

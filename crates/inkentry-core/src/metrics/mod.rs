@@ -20,7 +20,7 @@ mod events;
 mod git;
 mod state;
 
-pub use events::{CallCounts, EventsMetrics, compute_events_metrics};
+pub use events::{CallCounts, EventsMetrics, ReconcileOutcomes, compute_events_metrics};
 pub use state::{
     EntryCounts, GitWindowFacts, MedianSeconds, NearDuplicateRate, Rate, StateMetrics,
     StatusMetricsSummary, compute_state_metrics, compute_status_metrics_summary,

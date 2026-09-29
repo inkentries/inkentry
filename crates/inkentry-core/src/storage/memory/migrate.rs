@@ -12,6 +12,7 @@ pub(super) const MEMORY_MIGRATIONS: &[(i32, MigrationStep)] = &[
     (12, add_note_tags_and_files),
     (13, add_events_and_origin),
     (14, add_pending_anchors),
+    (15, add_events_reconcile_outcome),
 ];
 
 // The copy is Rust rather than SQL because tag normalisation is Unicode NFC.
@@ -79,6 +80,14 @@ fn add_events_and_origin(conn: &Connection) -> Result<()> {
 fn add_pending_anchors(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../../../migrations/memory_014.sql"))
         .context("applying memory_014.sql")
+}
+
+// Step 15 has no data pass: an event recorded before it never knew what
+// `memory add` did about its neighbours, so the new columns stay NULL rather
+// than being guessed.
+fn add_events_reconcile_outcome(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../../migrations/memory_015.sql"))
+        .context("applying memory_015.sql")
 }
 
 fn migration_clean_path(raw: &str) -> String {

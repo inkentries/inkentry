@@ -771,6 +771,114 @@ fn a_store_migrated_to_14_matches_a_fresh_store() {
     );
 }
 
+// ── step 15: events.reconcile + events.resolution ──────────────────────────────
+
+fn events_columns(conn: &rusqlite::Connection) -> Vec<String> {
+    conn.prepare("SELECT name FROM pragma_table_info('events') ORDER BY cid")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+fn store_at_version_14(path: &std::path::Path) {
+    use crate::storage::migration_ladder::apply_ladder;
+
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(&format!(
+        "BEGIN;\n{}\nPRAGMA user_version = 11;\nCOMMIT;",
+        include_str!("../../../migrations/memory_001_initial.sql")
+    ))
+    .unwrap();
+    apply_ladder(&conn, 11, 14, super::migrate::MEMORY_MIGRATIONS, "test.db").unwrap();
+}
+
+#[test]
+fn step_15_on_a_fresh_store_adds_the_two_columns_and_records_them() {
+    let (dir, store) = store();
+    let columns = events_columns(&store.conn);
+    assert_eq!(
+        &columns[columns.len() - 2..],
+        ["reconcile".to_string(), "resolution".to_string()]
+    );
+
+    super::events::record_event_at(
+        &dir.path().join("memory.db"),
+        super::events::EventFields {
+            command: "memory.add",
+            surface: "cli",
+            trigger: "hook",
+            actor_kind: "agent",
+            session_ref: None,
+            code_results: None,
+            memory_results: Some(1),
+            returned_ids: None,
+            tokens_out: None,
+            latency_ms: None,
+            ok: false,
+            reconcile: Some(super::events::ReconcileMode::Block),
+            resolution: Some(super::events::ResolutionKind::Abandoned),
+        },
+    );
+    let rows = store.events_in_window(0, i64::MAX).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].reconcile.as_deref(), Some("block"));
+    assert_eq!(rows[0].resolution.as_deref(), Some("abandoned"));
+}
+
+#[test]
+fn step_15_on_a_14_stamped_store_with_events_leaves_them_null_and_keeps_every_column() {
+    register_sqlite_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.db");
+    store_at_version_14(&path);
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO events (at, command, surface, trigger, actor_kind, session_ref, \
+             memory_results, ok) VALUES (1700000000, 'memory.add', 'cli', 'hook', 'agent', \
+             'sess', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = MemoryStore::open(&path).expect("opening a 14-stamped store must migrate it");
+    let version: i32 = store
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, super::MEMORY_SCHEMA_VERSION);
+
+    let rows = store.events_in_window(0, i64::MAX).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-existing event survives the step");
+    assert_eq!(rows[0].command, "memory.add");
+    assert_eq!(rows[0].session_ref.as_deref(), Some("sess"));
+    assert_eq!(rows[0].memory_results, Some(1));
+    assert_eq!(
+        (rows[0].reconcile.clone(), rows[0].resolution.clone()),
+        (None, None)
+    );
+}
+
+#[test]
+fn a_14_stamped_store_migrates_to_the_same_shape_as_a_fresh_store() {
+    register_sqlite_vec();
+    let legacy_dir = tempfile::tempdir().unwrap();
+    let legacy_path = legacy_dir.path().join("memory.db");
+    store_at_version_14(&legacy_path);
+
+    let migrated = MemoryStore::open(&legacy_path).expect("open must migrate, not refuse");
+    let (_fresh_dir, fresh) = store();
+
+    assert_eq!(
+        sqlite_master_signature(&migrated.conn),
+        sqlite_master_signature(&fresh.conn),
+        "climbing from 14 must reach the identical shape a fresh store is created with"
+    );
+}
+
 #[test]
 fn a_store_from_a_future_build_is_refused() {
     register_sqlite_vec();

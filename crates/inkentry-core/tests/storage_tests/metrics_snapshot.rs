@@ -227,6 +227,8 @@ async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_w
         tokens_out: Some(42),
         latency_ms: Some(10),
         ok: true,
+        reconcile: None,
+        resolution: None,
     };
     store
         .add_note("decision", "Use X", "because Y", &[], &[], None, None)
@@ -252,6 +254,72 @@ async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_w
 }
 
 #[tokio::test]
+async fn snapshot_reports_reconcile_outcomes_from_seeded_memory_add_rows_deterministically() {
+    use inkentry_core::storage::memory::{
+        EventFields, ReconcileMode, ResolutionKind, record_event_at,
+    };
+
+    register_sqlite_vec();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let store = MemoryStore::open(tmp.path()).expect("open memory store");
+    let dir = non_git_dir();
+    let add = |reconcile, resolution, ok| EventFields {
+        command: "memory.add",
+        surface: "cli",
+        trigger: "hook",
+        actor_kind: "agent",
+        session_ref: None,
+        code_results: None,
+        memory_results: Some(1),
+        returned_ids: None,
+        tokens_out: None,
+        latency_ms: None,
+        ok,
+        reconcile,
+        resolution,
+    };
+    let block = Some(ReconcileMode::Block);
+    record_event_at(
+        tmp.path(),
+        add(block, Some(ResolutionKind::Abandoned), false),
+    );
+    record_event_at(
+        tmp.path(),
+        add(block, Some(ResolutionKind::Abandoned), false),
+    );
+    record_event_at(
+        tmp.path(),
+        add(block, Some(ResolutionKind::Supersedes), true),
+    );
+    record_event_at(tmp.path(), add(block, Some(ResolutionKind::Distinct), true));
+    record_event_at(tmp.path(), add(block, None, true));
+    record_event_at(tmp.path(), add(Some(ReconcileMode::Off), None, true));
+
+    let snapshot = || async {
+        let snap = build_snapshot(&store, dir.path(), "proj".into(), "0.0.0-test".into(), 30)
+            .await
+            .unwrap();
+        serde_json::to_string(&snap).unwrap()
+    };
+    let first = snapshot().await;
+    assert_eq!(first, snapshot().await, "same rows, same bytes");
+
+    let json: serde_json::Value = serde_json::from_str(&first).unwrap();
+    let outcomes = &json["events"]["use.reconcile_outcomes"];
+    assert_eq!(outcomes["blocked"], 2);
+    assert_eq!(
+        outcomes["by_resolution"],
+        serde_json::json!({
+            "abandoned": 2,
+            "contradicts": 0,
+            "distinct": 1,
+            "relates_to": 0,
+            "supersedes": 1,
+        })
+    );
+}
+
+#[tokio::test]
 async fn an_event_recorded_since_the_last_commit_is_inside_the_events_window() {
     use inkentry_core::storage::memory::{EventFields, record_event_at};
 
@@ -273,6 +341,8 @@ async fn an_event_recorded_since_the_last_commit_is_inside_the_events_window() {
             tokens_out: None,
             latency_ms: None,
             ok: true,
+            reconcile: None,
+            resolution: None,
         },
     );
 
