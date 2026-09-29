@@ -4,14 +4,9 @@ use libfuzzer_sys::fuzz_target;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// Fuzz deserialization of `ClaudeHistoryEntry` from `~/.claude/history.jsonl`.
-///
-/// Run with:
-///   cargo +nightly fuzz run fuzz_cli_history_entry -- -max_total_time=600
-///
-/// `ClaudeHistoryEntry` and `PastedContent` in
-/// `src/cli/cmd/memory/harvest_claude.rs` are private, so they are replicated
-/// here.  Goal: confirm serde deserialization doesn't panic on arbitrary JSON.
+// ClaudeHistoryEntry and PastedContent are private in
+// src/cli/cmd/memory/harvest_claude.rs, so they're replicated here to fuzz
+// serde deserialization.
 #[derive(Deserialize)]
 struct PastedContent {
     #[serde(default)]

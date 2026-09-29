@@ -1,6 +1,5 @@
-// Consolidated server e2e test binary: groups the previously separate
-// CLI-sync, health-under-load, HTTP-handler, and TLS-serve test files into
-// one integration test crate to cut per-binary link overhead.
+// One integration-test binary for CLI-sync, health-under-load,
+// HTTP-handler, and TLS-serve coverage, to cut per-binary link overhead.
 
 mod common;
 

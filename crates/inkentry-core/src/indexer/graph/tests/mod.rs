@@ -1,5 +1,3 @@
-// Edge extraction and in-file resolution, one file per concern.
-
 mod bindings;
 mod coverage;
 mod receivers;

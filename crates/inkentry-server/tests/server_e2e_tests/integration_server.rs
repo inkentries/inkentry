@@ -1,8 +1,6 @@
-//! Integration tests for inkentry-server HTTP handlers using axum's oneshot testing.
-//!
-//! No real TCP socket is opened — requests go directly through the router.
-//! sqlite-vec must be registered before any `ServerDb` is opened, so all
-//! tests in this file use `#[serial]`.
+// Router-level oneshot tests: no real TCP socket, requests go directly
+// through the router. sqlite-vec must be registered before any ServerDb is
+// opened, so every test here uses #[serial].
 
 use crate::common;
 
@@ -16,8 +14,6 @@ use inkentry_server::{AppState, router};
 use serial_test::serial;
 use std::sync::Arc;
 use tower::ServiceExt; // for `.oneshot()`
-
-// ── helpers ──────────────────────────────────────────────────────────────────
 
 fn make_state() -> AppState {
     common::make_test_state(4, None)
@@ -42,16 +38,12 @@ async fn send(
     router(state).oneshot(req).await.unwrap()
 }
 
-// ── health ───────────────────────────────────────────────────────────────────
-
 #[tokio::test]
 #[serial]
 async fn health_returns_ok() {
     let resp = send(make_state(), "GET", "/v1/health", Body::empty(), false).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
-
-// ── list_projects ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -64,8 +56,6 @@ async fn list_projects_empty_initially() {
     let projects: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(projects, serde_json::json!([]));
 }
-
-// ── add_note + list_notes ─────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -90,7 +80,6 @@ async fn add_note_creates_project_automatically() {
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Project should now exist.
     let resp2 = send(state, "GET", "/v1/projects", Body::empty(), false).await;
     let bytes = axum::body::to_bytes(resp2.into_body(), usize::MAX)
         .await
@@ -140,13 +129,10 @@ async fn list_notes_returns_added_note() {
     assert_eq!(entries[0]["status"], "active");
 }
 
-// ── get_note ──────────────────────────────────────────────────────────────────
-
 #[tokio::test]
 #[serial]
 async fn get_note_returns_404_for_unknown_id() {
     let state = make_state();
-    // Create project first.
     send(
         state.clone(),
         "POST",
@@ -166,8 +152,6 @@ async fn get_note_returns_404_for_unknown_id() {
     .await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
-
-// ── archive + supersede ───────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -206,8 +190,6 @@ async fn archive_note_hides_it_from_list() {
     let notes: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(notes["entries"].as_array().unwrap().is_empty());
 }
-
-// ── delete ────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -249,8 +231,6 @@ async fn delete_note_removes_it() {
     assert_eq!(get.status(), StatusCode::NOT_FOUND);
 }
 
-// ── auth middleware ───────────────────────────────────────────────────────────
-
 #[tokio::test]
 #[serial]
 async fn protected_endpoint_rejects_missing_token() {
@@ -273,16 +253,12 @@ async fn protected_endpoint_accepts_correct_token() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ── search ────────────────────────────────────────────────────────────────────
-
-/// memory/search now accepts `{"query": String}` and requires an embedder.
-/// Without an embedder, the endpoint must return 400.
+// memory/search accepts `{"query": String}` but requires an embedder.
 #[tokio::test]
 #[serial]
 async fn search_without_embedder_returns_400() {
     let state = make_state(); // no embedder configured
 
-    // Create the project first.
     send(
         state.clone(),
         "POST",
@@ -294,7 +270,6 @@ async fn search_without_embedder_returns_400() {
     )
     .await;
 
-    // Query with text query — must return 400 (no embedder).
     let search_payload = serde_json::json!({
         "query": "how does authentication work",
         "limit": 2,
@@ -319,8 +294,6 @@ async fn search_without_embedder_returns_400() {
     assert_eq!(body["error"]["code"], "bad_request");
 }
 
-// ── /memory/since ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
 #[serial]
 async fn since_endpoint_returns_entries_after_timestamp() {
@@ -328,11 +301,10 @@ async fn since_endpoint_returns_entries_after_timestamp() {
 
     common::register_sqlite_vec();
 
-    // Build a DB and insert two notes with known timestamps.
     let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
         .expect("open in-memory server db");
 
-    // Insert a project manually so we control created_at timing.
+    // Manual insert so created_at is controllable in the notes below.
     db.conn
         .execute(
             "INSERT INTO projects (slug, embedding_dim) VALUES ('ts-proj', 4)",
@@ -341,8 +313,8 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         .unwrap();
     let project_id = db.conn.last_insert_rowid();
 
-    // Seeded directly rather than through `add_note` so `created_at` is
-    // controlled; the identity has to be minted here for the same reason.
+    // Direct insert, not add_note, so created_at stays controlled; sync_id
+    // is minted here for the same reason.
     for (title, created_at) in [("old note", 1000_i64), ("new note", 2000)] {
         db.conn
             .execute(
@@ -380,7 +352,6 @@ async fn since_endpoint_returns_entries_after_timestamp() {
         repair_signal: inkentry_server::repair::RepairSignal::new(),
     };
 
-    // Query with t=1500 — should return only the note at t=2000.
     let resp = send(
         state,
         "GET",
@@ -403,8 +374,6 @@ async fn since_endpoint_returns_entries_after_timestamp() {
     assert_eq!(arr[0]["title"], "new note");
     assert_eq!(arr[0]["created_at"], 2000);
 }
-
-// ── stats ─────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -430,19 +399,15 @@ async fn project_stats_returns_correct_counts() {
     assert_eq!(stats["embedding_dim"], 4);
 }
 
-// ── auth precedes route matching ──────────────────────────────────────────────
+// Auth runs ahead of route matching, so an unauthenticated caller cannot
+// tell a registered route from a missing one by status code alone. Not a
+// secrecy control: `GET /api-docs/openapi.json` serves the whole route
+// table with no token.
 //
-// `docs/architecture/server-api.md` documents that authentication runs ahead of
-// route matching and covers paths matching no route. The claim pinned here is
-// narrow and deliberately not stronger: status codes alone do not let an
-// unauthenticated caller tell a registered route from a missing one. It is not
-// a secrecy control, and nothing below asserts one: `GET /api-docs/openapi.json`
-// serves the whole route table with no token.
-//
-// The property holds only because `router_with_limits` attaches
-// `auth_middleware` with `.layer` rather than `.route_layer`, which would leave
-// the catch-all fallback unwrapped and answer an unknown path `404` before auth
-// ever ran. That swap is what these tests exist to catch.
+// This only holds because `router_with_limits` attaches `auth_middleware`
+// via `.layer`, not `.route_layer` — the latter would leave the catch-all
+// fallback unwrapped and answer an unknown path 404 before auth runs. These
+// tests exist to catch that regression.
 
 fn keyed_state() -> AppState {
     common::make_test_state(4, Some("test-key".into()))

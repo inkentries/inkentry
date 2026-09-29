@@ -39,9 +39,8 @@ export function App() { helper(); return <div />; }
 
 #[test]
 fn one_caller_keeps_an_unresolved_and_a_resolved_row_for_the_same_callee() {
-    // The bare call binds to the import; the receiver call reaches the
-    // method this file defines. Deduplicating on the name alone would drop
-    // one of the two.
+    // The bare call binds to the import, `this.helper()` to the method this
+    // file defines; deduplicating by name alone would drop one of the two.
     let src = "\
 import { helper } from './x';
 class A {

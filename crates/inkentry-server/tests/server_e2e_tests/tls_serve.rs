@@ -1,14 +1,11 @@
-//! Integration test for the ADR-066 in-process HTTPS serve path.
-//!
-//! Unlike `integration_server.rs` (router-level oneshot, no socket), this test
-//! exercises the *real* TLS transport: it binds a std `TcpListener`, adopts it
-//! with `axum_server::from_tcp_rustls` exactly as `main::run` does, and drives a
-//! full HTTPS request to `/v1/health` over the loopback socket.
-//!
-//! The self-signed cert/key are generated at test time into a tempdir via
-//! `openssl` and never committed. If `openssl` is not on PATH the TLS body is
-//! skipped (the machine can't mint a cert), so CI images without openssl don't
-//! hard-fail.
+// Unlike integration_server.rs (router-level oneshot, no socket), this test
+// exercises the real TLS transport: binds a std TcpListener, adopts it with
+// axum_server::from_tcp_rustls exactly as main::run does, and drives a real
+// HTTPS request to /v1/health over the loopback socket.
+//
+// Self-signed cert/key are generated at test time via openssl and never
+// committed; if openssl isn't on PATH, the TLS body is skipped rather than
+// failing CI images without it.
 
 use crate::common;
 
@@ -21,9 +18,8 @@ use inkentry_core::config::apply_server_ca;
 use inkentry_server::router;
 use serial_test::serial;
 
-/// Mint a throwaway self-signed leaf (CN=localhost, SAN IP 127.0.0.1) into
-/// `dir`, returning `(cert_pem, key_pem)` paths. Returns `None` when `openssl`
-/// is absent so the caller can skip rather than fail.
+// Mint a throwaway self-signed leaf (CN=localhost, SAN IP 127.0.0.1) into
+// `dir`; returns None when openssl is absent so the caller can skip.
 fn make_self_signed(dir: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let cert = dir.join("cert.pem");
     let key = dir.join("key.pem");
@@ -52,20 +48,14 @@ fn make_self_signed(dir: &Path) -> Option<(std::path::PathBuf, std::path::PathBu
             "openssl failed to generate a self-signed cert: {}",
             String::from_utf8_lossy(&o.stderr)
         ),
-        // openssl not installed → skip.
         Err(_) => None,
     }
 }
 
-/// The full remote path end to end: bind a std listener, adopt it for TLS via
-/// the same `from_tcp_rustls` call `main::run` uses, and confirm a client gets a
-/// 200 from `/v1/health` over real HTTPS.
-///
-/// This is also the bind-before-warm guarantee for the TLS branch: the socket is
-/// bound (and made non-blocking) *before* `from_tcp_rustls` adopts it, so health
-/// is served off the pre-bound fd — the same single bind point the plaintext
-/// path uses, and the point at which `main::run` would have already returned
-/// from `TcpListener::bind` before warming the embedder.
+// Also proves the bind-before-warm guarantee for the TLS branch: the socket
+// is bound and made non-blocking before from_tcp_rustls adopts it, so health
+// is served off the pre-bound fd — the same single bind point the plaintext
+// path uses, before main::run would warm the embedder.
 #[tokio::test]
 #[serial]
 async fn health_over_real_https() {
@@ -75,9 +65,8 @@ async fn health_over_real_https() {
         return;
     };
 
-    // Install `ring` as the process crypto provider (mirrors `main::run`); the
-    // reqwest client below also resolves against this process default. Ignore
-    // the error if another test already installed one.
+    // Install `ring` as the process crypto provider (mirrors main::run);
+    // ignore the error if another test already installed one.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let state = common::make_test_state(4, None);
@@ -93,7 +82,6 @@ async fn health_over_real_https() {
         .await
         .expect("load self-signed TLS material");
 
-    // Serve on the pre-bound listener via the production TLS branch.
     let server = tokio::spawn(async move {
         axum_server::from_tcp_rustls(listener, config)
             .expect("adopt std listener for TLS")
@@ -137,14 +125,10 @@ async fn health_over_real_https() {
     );
 }
 
-/// Mint an internal CA plus a leaf server cert signed by it into `dir`, the
-/// faithful "internal-CA team server" shape: the CA is `CA:TRUE`, the leaf is
-/// `CA:FALSE` with `serverAuth` and SAN `IP:127.0.0.1,DNS:localhost`. Returns
-/// `(ca_cert_pem, leaf_cert_pem, leaf_key_pem)` paths, or `None` if `openssl` is
-/// absent so the caller can skip. (A bare self-signed `req -x509` cert is
-/// `CA:TRUE` and webpki rejects it as an end-entity — `CaUsedAsEndEntity` — so a
-/// real internal-CA chain, not a single self-signed cert, is what verification
-/// exercises.)
+// Mints an internal CA plus a leaf server cert it signs (CA:TRUE / CA:FALSE
+// with serverAuth + SAN IP:127.0.0.1,DNS:localhost), or None if openssl is
+// absent. A bare self-signed cert is itself CA:TRUE and webpki rejects it as
+// an end-entity, so a real CA chain is what this test's verification needs.
 fn make_ca_and_leaf(
     dir: &Path,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
@@ -187,7 +171,7 @@ fn make_ca_and_leaf(
             "openssl CA gen failed: {}",
             String::from_utf8_lossy(&o.stderr)
         ),
-        Err(_) => return None, // openssl absent → skip.
+        Err(_) => return None,
     }
     // Leaf key + CSR.
     let csr = Command::new("openssl")
@@ -232,18 +216,14 @@ fn make_ca_and_leaf(
     Some((ca_cert, leaf_cert, leaf_key))
 }
 
-/// End-to-end proof of the custom-CA trust path (`config::apply_server_ca` /
-/// `INKENTRY_SERVER_CA`). Stands up the real TLS transport with a leaf cert
-/// signed by an internal CA, then contrasts three reqwest clients against the
-/// *same* server:
-///   - default roots only                 → TLS verification FAILS (untrusted),
-///   - built via `apply_server_ca(ca)`     → handshake succeeds, `/v1/health` 200s,
-///   - the `INKENTRY_SERVER_CA`-provided path → same success.
-///
-/// Verification stays ON throughout — `apply_server_ca` only adds the CA as a
-/// trust anchor; the untrusted-client control confirms this isn't
-/// `danger_accept_invalid_certs`. (env→config precedence itself is covered by
-/// the config unit tests.)
+// End-to-end proof of the custom-CA trust path (apply_server_ca /
+// INKENTRY_SERVER_CA). Stands up real TLS with a leaf cert signed by an
+// internal CA, then contrasts three reqwest clients against the same server:
+// default roots only fails verification, a client built via
+// apply_server_ca(ca) succeeds, and the INKENTRY_SERVER_CA env path succeeds
+// the same way. Verification stays on throughout — apply_server_ca only adds
+// a trust anchor, and the untrusted-client control confirms this isn't
+// danger_accept_invalid_certs.
 #[tokio::test]
 #[serial]
 async fn server_ca_establishes_trust_over_real_https() {
@@ -253,7 +233,7 @@ async fn server_ca_establishes_trust_over_real_https() {
         return;
     };
 
-    // Install `ring` as the process crypto provider (mirrors `main::run`).
+    // Install `ring` as the process crypto provider (mirrors main::run).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let state = common::make_test_state(4, None);
@@ -278,8 +258,7 @@ async fn server_ca_establishes_trust_over_real_https() {
     let url = format!("https://{addr}/v1/health");
     let timeout = std::time::Duration::from_secs(10);
 
-    // Trusting client via `apply_server_ca(config `server_ca`)`. Retry until the
-    // spawned server is accepting; a 200 here is the success half of the proof.
+    // Retry until the spawned server is accepting.
     let trusting = apply_server_ca(reqwest::Client::builder().timeout(timeout), Some(&cert))
         .expect("cert PEM is a valid CA bundle")
         .build()
@@ -307,9 +286,8 @@ async fn server_ca_establishes_trust_over_real_https() {
         "client trusting the internal CA must reach {url}"
     );
 
-    // Control: only the built-in roots. The server is already accepting, so a
-    // failure here is a genuine trust rejection, not a connect race — this is
-    // what proves verification stayed on.
+    // Control: default roots only. The server is already accepting, so a
+    // failure here is a genuine trust rejection, not a connect race.
     let untrusting = reqwest::Client::builder()
         .timeout(timeout)
         .build()
@@ -346,9 +324,8 @@ async fn server_ca_establishes_trust_over_real_https() {
     server.abort();
 }
 
-/// Fail-fast on bad TLS material: `main::run` loads the cert/key *before* binding
-/// so a bad cert is a startup error, never a half-up server. A non-existent cert
-/// path must therefore make `RustlsConfig::from_pem_file` err.
+// main::run loads the cert/key before binding, so a bad cert is a startup
+// error, never a half-up server.
 #[tokio::test]
 async fn tls_config_missing_cert_fails_fast() {
     let dir = tempfile::tempdir().expect("tempdir");
