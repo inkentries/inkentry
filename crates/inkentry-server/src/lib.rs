@@ -32,37 +32,29 @@ use auth::{AuthError, AuthProvider};
 use db::ServerDb;
 use rate_limiter::RateLimiter;
 
-/// The admission lane a request declares. Re-exported at the crate root so
-/// handlers and the admission gate name one lane type.
+/// The admission lane a request declares.
 pub use inkentry_core::embeddings::EmbedLane;
 
-/// Wall-clock budget for a single request before the server aborts it with
-/// `408`. `/memory/stream` (SSE) and `/index/embed` (see
-/// [`EMBED_REQUEST_TIMEOUT`]) are exempt.
-///
-/// Does NOT bound `/llm/complete`: it returns its SSE `Response` immediately
-/// and runs generation in a detached `tokio::spawn`, which this layer can't
-/// see. That handler bounds the spawned generation directly with this same
-/// constant (see `handlers::llm_generate_with_timeout`).
+// Wall-clock budget for a single request before the server aborts it with
+// 408. `/memory/stream` and `/index/embed` are exempt (see
+// EMBED_REQUEST_TIMEOUT). Does NOT bound `/llm/complete`: that handler
+// returns its SSE response immediately and bounds its detached generation
+// task with this same constant directly (handlers::llm_generate_with_timeout).
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Wall-clock budget for a single `/index/embed` request before `408`. Much
-/// larger than [`REQUEST_TIMEOUT`] and matched to the CLI's `MAX_REQUEST_TIMEOUT`:
-/// a legitimate embed batch can run for minutes on slow/CPU-only hardware, which
-/// a 30s budget would kill.
-///
-/// Not a DoS gap: `/index/embed` is still auth-gated and behind
-/// `ConcurrencyLimitLayer` + `RequestBodyLimitLayer`, so the count and size of
-/// concurrent embed requests stay bounded.
+// Wall-clock budget for a single `/index/embed` request: much larger than
+// REQUEST_TIMEOUT because a legitimate embed batch can run for minutes on
+// slow/CPU-only hardware. Still auth-gated and behind ConcurrencyLimitLayer +
+// RequestBodyLimitLayer, so concurrent embed load stays bounded.
 pub(crate) const EMBED_REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// Cap on the JSON request body size. Generous enough for the largest legitimate
-/// payload (a 256-chunk `index/embed` batch); per-field caps (title/body) are
-/// enforced in the handlers on top of this.
+// Cap on the JSON request body size, generous enough for the largest
+// legitimate payload (a 256-chunk index/embed batch); per-field caps
+// (title/body) are enforced separately in the handlers.
 const DEFAULT_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024; // 2 MiB
 
-/// Global cap on requests processed concurrently across the whole server,
-/// including the `/memory/stream` SSE poll loop.
+// Global cap on requests processed concurrently across the whole server,
+// including the `/memory/stream` SSE poll loop.
 const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 
 /// Bulk-lane admission bound: how many bulk embed requests (an index pass, a
@@ -70,9 +62,8 @@ const GLOBAL_CONCURRENCY_LIMIT: usize = 256;
 /// server sheds load with `429` instead of joining an unbounded wait.
 ///
 /// The interactive lane ([`EMBED_INTERACTIVE_CAPACITY_LOW`] /
-/// [`EMBED_INTERACTIVE_CAPACITY_HIGH`]) is *additional* depth, not a division of
-/// this, so no caller admitted before the reserved lane existed is shed after it
-/// (ADR-096). The two capacities together size the llama engine's warm-context
+/// [`EMBED_INTERACTIVE_CAPACITY_HIGH`]) is *additional* depth, not a division
+/// of this. The two capacities together size the llama engine's warm-context
 /// pool, so every admitted caller finds its own context on its own lane.
 pub const EMBED_QUEUE_CAPACITY: usize = 4;
 
@@ -80,7 +71,7 @@ pub const EMBED_QUEUE_CAPACITY: usize = 4;
 /// [`EMBED_INTERACTIVE_MEMORY_THRESHOLD_BYTES`] of available memory. One warm
 /// interactive context stays permanently resident; each context reserves ~5.5 GiB
 /// of address space, so a small machine holds the high-water to
-/// `EMBED_QUEUE_CAPACITY + 1` (ADR-096 §4).
+/// `EMBED_QUEUE_CAPACITY + 1`.
 pub const EMBED_INTERACTIVE_CAPACITY_LOW: usize = 1;
 
 /// Interactive-lane capacity at or above [`EMBED_INTERACTIVE_MEMORY_THRESHOLD_BYTES`].
@@ -92,8 +83,8 @@ pub const EMBED_INTERACTIVE_CAPACITY_HIGH: usize = 3;
 
 /// Available-memory boundary that selects the interactive-lane capacity: below
 /// it [`EMBED_INTERACTIVE_CAPACITY_LOW`], at or above it
-/// [`EMBED_INTERACTIVE_CAPACITY_HIGH`] (ADR-096 §4). 8 GiB, the point past which
-/// the pool's reserved address space stops driving a small host into swap.
+/// [`EMBED_INTERACTIVE_CAPACITY_HIGH`]. 8 GiB, the point past which the pool's
+/// reserved address space stops driving a small host into swap.
 pub const EMBED_INTERACTIVE_MEMORY_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// Resolve the interactive-lane capacity from the host's available memory. Pure
@@ -121,8 +112,8 @@ pub struct EmbedPermit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
 /// Bounded admission control in front of the warm-context embedder pool, split
 /// into two lanes: a bulk lane of [`EMBED_QUEUE_CAPACITY`] slots and a reserved
 /// interactive lane. A request tries only its own lane's slots, so a saturated
-/// index pass can never shed or delay an interactive `search`/`memory add`
-/// (ADR-096). See [`EmbedLane`].
+/// index pass can never shed or delay an interactive `search`/`memory add`.
+/// See [`EmbedLane`].
 #[derive(Clone)]
 pub struct EmbedAdmission {
     bulk: Arc<tokio::sync::Semaphore>,
@@ -164,8 +155,6 @@ mod embed_admission_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// A request within the configured bound must be admitted normally: no
-    /// 429, and the permit can be held and dropped like any resource guard.
     #[test]
     fn admits_requests_within_capacity() {
         let admission = EmbedAdmission::new(2, 2, 5);
@@ -175,10 +164,6 @@ mod embed_admission_tests {
         assert!(p2.is_ok(), "second of 2 must be admitted");
     }
 
-    /// Once every slot in a lane is held, the next acquire on that lane is shed
-    /// immediately with `429` + the configured `Retry-After` — never blocks
-    /// waiting for a slot to free up: an unbounded wait is exactly the failure
-    /// mode being fixed.
     #[test]
     fn sheds_with_busy_error_once_capacity_is_exhausted() {
         let admission = EmbedAdmission::new(1, 1, 9);
@@ -198,10 +183,9 @@ mod embed_admission_tests {
         );
     }
 
-    /// The reserved interactive lane is additional depth, not a division of the
-    /// bulk lane: a fully saturated bulk lane must not shed or delay an
-    /// interactive acquire, and vice versa. This is the core admission
-    /// invariant of ADR-096.
+    // The interactive lane is additional depth, not a division of the bulk
+    // lane: a saturated bulk lane must not shed or delay an interactive
+    // acquire, and vice versa.
     #[test]
     fn a_saturated_bulk_lane_does_not_shed_an_interactive_request() {
         let admission = EmbedAdmission::new(1, 1, 5);
@@ -218,8 +202,6 @@ mod embed_admission_tests {
         );
     }
 
-    /// Dropping a held permit returns its slot to its lane immediately — the
-    /// mechanism that lets a drained embed lane recover without a restart.
     #[test]
     fn dropping_a_permit_frees_its_slot() {
         let admission = EmbedAdmission::new(1, 1, 5);
@@ -233,13 +215,10 @@ mod embed_admission_tests {
         );
     }
 
-    /// A panic while a permit is held (e.g. the embed handler's task panics
-    /// mid-embed) must still free the slot: `OwnedSemaphorePermit`'s `Drop`
-    /// runs during unwind like any other destructor, and a panicking tokio
-    /// task is caught at the task boundary (converted to a `JoinError`) not
-    /// escalated to the process, so this is the realistic failure shape.
-    /// Without this, one panic would permanently shrink the effective lane
-    /// capacity by one slot until a server restart.
+    // OwnedSemaphorePermit's Drop runs during unwind like any other
+    // destructor, and a panicking tokio task is caught at the task boundary
+    // (converted to a JoinError) rather than escalated, so a panic while
+    // holding a permit must still free its slot.
     #[tokio::test]
     async fn a_panic_while_holding_a_permit_still_frees_its_slot() {
         let admission = EmbedAdmission::new(1, 1, 5);
@@ -265,12 +244,9 @@ mod embed_admission_tests {
         );
     }
 
-    /// Boundary case under real concurrent load: fire exactly
-    /// `EMBED_QUEUE_CAPACITY` (production value) simultaneous bulk holders plus
-    /// one more, all racing to acquire at once via a barrier (not
-    /// sequenced start-then-fire like the HTTP-level saturation test), and
-    /// prove exactly the capacity's worth are admitted and exactly one is
-    /// shed, regardless of scheduling order.
+    // Fires all attempts at once via a barrier rather than sequencing them,
+    // so capacity enforcement is proven under true concurrency rather than
+    // start-then-fire ordering.
     #[tokio::test]
     async fn exactly_capacity_admitted_and_the_next_one_shed_under_true_concurrency() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -292,25 +268,19 @@ mod embed_admission_tests {
             let admitted = Arc::clone(&admitted);
             let shed = Arc::clone(&shed);
             handles.push(tokio::spawn(async move {
-                // Every task blocks here until all `attempts` tasks are ready,
-                // so the `try_acquire()` calls below race as concurrently as
-                // the runtime can make them, instead of one reliably winning
-                // by virtue of being spawned/polled first.
                 barrier.wait().await;
                 match admission.try_acquire(EmbedLane::Bulk) {
                     Ok(permit) => {
                         admitted.fetch_add(1, Ordering::SeqCst);
-                        // Hold the permit past the point every task has had a
-                        // chance to attempt its own acquire, so a slot freed
-                        // early can't accidentally admit the "one over" task
-                        // too, which would mask a capacity-enforcement bug.
+                        // Hold past the point every task has attempted its own
+                        // acquire, so an early-freed slot can't also admit the
+                        // "one over" task and mask an enforcement bug.
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         drop(permit);
                     }
                     Err(_) => {
-                        // try_acquire's only error variant is EmbedderBusy;
-                        // AppError has no Debug impl, so match by absence of
-                        // Ok rather than destructuring the variant.
+                        // The only error variant is EmbedderBusy; AppError has
+                        // no Debug impl, so match by absence of Ok.
                         shed.fetch_add(1, Ordering::SeqCst);
                     }
                 }
@@ -358,19 +328,17 @@ pub enum EmbedderState {
     Disabled,
 }
 
-/// Inner, lock-guarded contents of the embedder slot.
+// Lock-guarded contents of the embedder slot.
 struct EmbedderSlotInner {
     state: EmbedderState,
-    /// The concrete backend once it is ready. `None` while `loading`,
-    /// `unavailable`, or `disabled`.
+    // The concrete backend once ready; `None` while loading, unavailable, or
+    // disabled.
     backend: Option<Arc<dyn inkentry_core::embeddings::EmbeddingBackend>>,
-    /// Optional human-readable detail surfaced in the health body and warm-up
-    /// responses: the load error while `unavailable`, or a non-fatal readiness
-    /// note while `ready` (e.g. a GPU-fell-back-to-CPU hint).
+    // Human-readable detail surfaced in the health body: the load error while
+    // unavailable, or a non-fatal readiness note while ready.
     detail: Option<String>,
-    /// Inference engine identity (`"llama"`) and resolved device
-    /// (`"cpu"`/`"metal"`/`"vulkan"`/`"gpu"`) surfaced in the health body.
-    /// `None` for slots readied without them (test backends).
+    // Inference engine identity and resolved device surfaced in the health
+    // body; `None` for slots readied without them (test backends).
     engine: Option<&'static str>,
     device: Option<&'static str>,
 }
@@ -499,16 +467,11 @@ impl EmbedderSlot {
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<tokio::sync::Mutex<ServerDb>>,
-    /// Auth strategy — replaces the old `api_key: Option<String>` field.
     pub auth: Arc<dyn AuthProvider>,
     /// Cosine similarity threshold above which a new entry is flagged as conflicting (0.0–1.0).
     /// Default: 0.92. Set to 1.0 to disable conflict detection.
     pub conflict_threshold: f32,
-    /// Server-side embedder readiness cell. The embedder loads on a
-    /// background task after the listener binds, flipping this slot
-    /// `loading → ready | unavailable`; a server built without the
-    /// `embed-llama` feature starts `disabled`. Handlers read the current
-    /// state without blocking. See [`EmbedderSlot`].
+    /// Server-side embedder readiness cell. See [`EmbedderSlot`].
     pub embedder: EmbedderSlot,
     /// Bounded admission gate in front of the embedder, shared by every
     /// embed-consuming handler (`/index/embed`, `/search`,
@@ -526,9 +489,9 @@ pub struct AppState {
     /// Per-principal rate limiter for `/llm/complete`.
     pub rate_limiter: Arc<RateLimiter>,
     /// Peers whose `X-Forwarded-For` header is believed when attributing a
-    /// request to a client address. Empty in the ADR-066 deployment (the
-    /// server terminates TLS itself, with nothing in front of it), and empty
-    /// is what makes the rate limit hold: see [`client_ip`].
+    /// request to a client address. Empty by default (the server terminates
+    /// TLS itself, with nothing in front of it), which is what makes the rate
+    /// limit hold: see [`client_ip`].
     pub trusted_proxies: client_ip::TrustedProxies,
     /// Persistent UUID v7 identifying this server instance across restarts.
     /// CLI warns on instance_id change mid-session.
@@ -536,10 +499,10 @@ pub struct AppState {
     /// Effective UID of the process that started the server (Unix); `None` on Windows.
     /// CLI warns when this differs from the connecting user's UID (multi-user host).
     pub started_by: Option<u32>,
-    /// ADR-037 P2: this instance's local-relay sessions (outbound-client role
-    /// against a team `server_url`, one per registered project). See
-    /// [`relay`] module docs for why this is a distinct role from the
-    /// `/memory*` team-hosting routes above.
+    /// This instance's local-relay sessions (outbound-client role against a
+    /// team `server_url`, one per registered project). See [`relay`] module
+    /// docs for why this is a distinct role from the `/memory*` team-hosting
+    /// routes above.
     pub relay: relay::RelayRegistry,
     /// Wakeup handle for the background pass that fills in vectors for rows
     /// stored without one. Raised by the embedder becoming ready and by every
@@ -550,8 +513,6 @@ pub struct AppState {
 pub fn default_conflict_threshold() -> f32 {
     0.92
 }
-
-// ── OpenAPI spec ──────────────────────────────────────────────────────────────
 
 #[derive(OpenApi)]
 #[openapi(
@@ -657,14 +618,12 @@ impl utoipa::Modify for SecurityAddon {
     }
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
-
 /// Build the axum router with all routes.
 ///
 /// - `RequestBodyLimitLayer` + `ConcurrencyLimitLayer` apply to every route.
 /// - `TimeoutLayer` (30s) applies to everything except `/memory/stream` (SSE)
 ///   and `/index/embed` (its own [`EMBED_REQUEST_TIMEOUT`]).
-/// - Per-handler input caps are enforced in `handlers.rs`.
+/// - Per-handler input caps are enforced in the [`handlers`] module.
 pub fn router(state: AppState) -> Router {
     router_with_timeouts(state, REQUEST_TIMEOUT, EMBED_REQUEST_TIMEOUT)
 }
@@ -713,9 +672,9 @@ pub fn router_with_limits(
         .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
         .layer(ConcurrencyLimitLayer::new(concurrency_limit));
 
-    // `/index/embed` gets its own long-budget timeout instead of the general
-    // `REQUEST_TIMEOUT` — see [`EMBED_REQUEST_TIMEOUT`]. Auth/concurrency/body
-    // limits match `protected` below.
+    // `/index/embed` gets its own long-budget timeout (EMBED_REQUEST_TIMEOUT)
+    // instead of the general REQUEST_TIMEOUT. Auth/concurrency/body limits
+    // match `protected` below.
     let embed_route = Router::new()
         .route(
             "/v1/projects/{project_id}/index/embed",
@@ -743,8 +702,7 @@ pub fn router_with_limits(
         // `harvested-shas`) must stay registered here, in the same router as
         // `/memory/{note_id}` below: matchit resolves a static segment over a
         // param capture regardless of registration order, so `batch` never
-        // falls into `{note_id}` (which has no POST handler and would 405, not
-        // 404: that was this route's original bug, not a 404).
+        // falls into `{note_id}` (which has no POST handler and would 405).
         .route(
             "/v1/projects/{project_id}/memory/batch",
             post(handlers::push_memory_batch),
@@ -804,14 +762,12 @@ pub fn router_with_limits(
         .layer(RequestBodyLimitLayer::new(DEFAULT_BODY_LIMIT_BYTES))
         .layer(ConcurrencyLimitLayer::new(concurrency_limit));
 
-    // ── ADR-037 P2 local relay (see the `relay` module docs) ────────────────
-    // Mounted only when the registry is enabled, i.e. on a loopback bind. The
-    // routes carry the same auth/timeout/limits as `protected`, but route
-    // parity is not the argument for their safety: unlike its neighbours, this
-    // surface makes the daemon open *outbound* connections, a capability no
-    // other route grants. That is why the destination comes from local config
-    // (see `relay::RelayPolicy`) and why a non-loopback daemon does not serve
-    // these routes at all rather than serving them behind the same check.
+    // Local relay routes, mounted only when the registry is enabled (a
+    // loopback bind). They carry the same auth/timeout/limits as `protected`,
+    // but route parity isn't what makes them safe: unlike its neighbours, this
+    // surface makes the daemon open outbound connections, so the destination
+    // comes from local config (`relay::RelayPolicy`) and a non-loopback daemon
+    // does not serve these routes at all.
     let local_relay = state.relay.is_enabled().then(|| {
         Router::new()
             .route("/local/relay/push", post(relay_handlers::relay_push))
@@ -857,8 +813,6 @@ pub fn host_is_loopback(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ── AppError response mapping tests ────────────────────────────────────────────
-
 #[cfg(test)]
 mod app_error_tests {
     use axum::response::IntoResponse;
@@ -866,7 +820,6 @@ mod app_error_tests {
     use super::AppError;
     use crate::db::DimensionMismatch;
 
-    /// Extract the response status + JSON body as a string for assertions.
     async fn body_string(resp: axum::response::Response) -> (axum::http::StatusCode, String) {
         let status = resp.status();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -875,10 +828,8 @@ mod app_error_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// `AppError::EmbedderBusy` must map to `429` carrying the configured
-    /// `Retry-After` value verbatim, not the `503`/`Retry-After: 5` used by
-    /// `EmbedderWarmingUp` — a client must be able to tell "shed, come back
-    /// shortly" (429) apart from "not ready yet" (503).
+    // EmbedderBusy maps to 429 with the configured Retry-After, distinct from
+    // EmbedderWarmingUp's 503/Retry-After:5 — "shed" vs "not ready yet".
     #[tokio::test]
     async fn embedder_busy_maps_to_429_with_configured_retry_after() {
         let resp = AppError::EmbedderBusy {
@@ -897,8 +848,8 @@ mod app_error_tests {
         assert!(body.contains("busy"));
     }
 
-    /// A `DimensionMismatch` wrapped in `AppError::Internal` must map to a 400
-    /// with the typed, safe message — not fall through to the generic 500.
+    // A DimensionMismatch wrapped in AppError::Internal maps to 400 with the
+    // typed message, not the generic 500.
     #[tokio::test]
     async fn dimension_mismatch_maps_to_typed_bad_request() {
         let err = anyhow::Error::new(DimensionMismatch {
@@ -912,10 +863,8 @@ mod app_error_tests {
         assert!(body.contains("proj"));
     }
 
-    /// Any other error — even one whose text contains "mismatch"/"required" —
-    /// must NEVER have its raw text reach the client body; only the generic
-    /// "Internal server error" message is allowed through. Regression guard
-    /// against substring-sniffing the error message.
+    // Raw error text must never reach the client body, even when it contains
+    // "mismatch"/"required" — only the generic message is allowed through.
     #[tokio::test]
     async fn generic_internal_error_never_leaks_raw_text_even_with_trigger_words() {
         let secret_path = "/Users/johan/.ssh/id_ed25519";
@@ -934,8 +883,6 @@ mod app_error_tests {
         );
     }
 
-    /// A plain anyhow error with no special substrings still gets the generic
-    /// message (baseline, no leak).
     #[tokio::test]
     async fn plain_internal_error_returns_generic_message() {
         let err = anyhow::anyhow!("disk I/O error at /var/lib/inkentry/server.db");
@@ -945,17 +892,12 @@ mod app_error_tests {
     }
 }
 
-// ── OpenAPI spec endpoint ─────────────────────────────────────────────────────
-
-/// Serve the OpenAPI spec as JSON. Import into Postman via
-/// `File → Import → Link` using the server URL + `/api-docs/openapi.json`.
+// Serve the OpenAPI spec as JSON. Import into Postman via
+// File → Import → Link using the server URL + /api-docs/openapi.json.
 async fn openapi_spec() -> impl IntoResponse {
     Json(ApiDoc::openapi())
 }
 
-// ── Auth middleware ───────────────────────────────────────────────────────────
-
-/// Trait-driven auth middleware. Delegates to `AppState.auth`.
 async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
@@ -973,8 +915,6 @@ async fn auth_middleware(
             .into_response(),
     }
 }
-
-// ── Shared error body ─────────────────────────────────────────────────────────
 
 /// Consistent JSON error body: `{"error": {"code": "...", "message": "..."}}`.
 #[derive(Serialize, ToSchema)]
@@ -999,27 +939,22 @@ impl ErrorBody {
     }
 }
 
-// ── Error type ────────────────────────────────────────────────────────────────
-
-/// Stable error `code` the CLI keys on to tell an upstream embedder device loss
-/// apart from a genuine request-budget/batch-size rejection, so it can print a
-/// server-restart hint instead of a batch-size one. The CLI carries the same
-/// literal in `response_signals_device_lost` (it cannot depend on this crate).
+// Stable error code the CLI keys on to tell an embedder device loss apart
+// from a batch-size rejection, so it prints a restart hint instead. The CLI
+// carries the same literal in `response_signals_device_lost` (it can't depend
+// on this crate).
 #[cfg(feature = "embed-llama")]
 pub(crate) const EMBEDDER_DEVICE_LOST_CODE: &str = "embedder_device_lost";
 
-/// Fixed, path-free client message for the Metal-device-lost case. The raw
-/// llama.cpp/Metal error is logged server-side (see `embedder_device_lost_response`)
-/// but never returned in the body, matching the no-raw-text rule the generic
-/// internal path follows.
+// Fixed, path-free client message for the Metal-device-lost case; the raw
+// llama.cpp/Metal error is logged server-side but never returned in the body.
 #[cfg(feature = "embed-llama")]
 pub(crate) const EMBEDDER_DEVICE_LOST_MESSAGE: &str = "the server's embedder lost its GPU device and could not re-establish it; \
      restart the server to recover";
 
-/// Map an embedder device-loss error to a distinct, actionable `503` rather
-/// than a generic `500` that reads as a server bug (and that the CLI misreads as
-/// a batch-size problem). Recognised via the typed `EmbedError::DeviceLost` the
-/// embedder returns once its one in-place device rebuild has failed.
+// Map an embedder device-loss error to a distinct 503 instead of a generic
+// 500, recognised via the typed EmbedError::DeviceLost the embedder returns
+// once its in-place device rebuild has failed.
 #[cfg(feature = "embed-llama")]
 fn embedder_device_lost_response(e: &anyhow::Error) -> Option<Response> {
     match e.downcast_ref::<inkentry_embed::EmbedError>() {
@@ -1044,8 +979,7 @@ fn embedder_device_lost_response(e: &anyhow::Error) -> Option<Response> {
     }
 }
 
-/// Without the embedder there is no in-process device to lose, so no
-/// error can be a device loss.
+// Without the embedder there is no in-process device to lose.
 #[cfg(not(feature = "embed-llama"))]
 fn embedder_device_lost_response(_e: &anyhow::Error) -> Option<Response> {
     None
@@ -1165,15 +1099,13 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
     }
 }
 
-// ── OpenAPI snapshot test ─────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod openapi_tests {
     use utoipa::OpenApi;
 
-    /// Write the generated OpenAPI spec to `docs/openapi.json` so it can be
-    /// committed as the reference snapshot.  Run with:
-    ///   cargo test -p inkentry-server write_openapi_snapshot -- --nocapture
+    // Writes the generated OpenAPI spec to docs/openapi.json as the reference
+    // snapshot. Run with:
+    //   cargo test -p inkentry-server write_openapi_snapshot -- --nocapture
     #[test]
     fn write_openapi_snapshot() {
         let spec = super::ApiDoc::openapi()
