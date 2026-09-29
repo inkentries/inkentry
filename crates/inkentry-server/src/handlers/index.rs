@@ -13,8 +13,6 @@ use crate::{AppError, AppState, ErrorBody};
 
 use super::{MAX_EMBED_BATCH, require_embedder, validate_project_slug};
 
-// ── Index / embed ─────────────────────────────────────────────────────────────
-
 /// A single chunk to embed.
 #[derive(Deserialize, ToSchema)]
 pub struct EmbedChunkIn {
@@ -46,16 +44,13 @@ pub struct EmbedResponse {
     pub chunks: Vec<EmbedChunkOut>,
 }
 
-/// Observability guard for an in-flight `/index/embed` call (GH#631 /
-/// GH#631). Created armed right before the `embed_lane` await and
-/// disarmed right after it returns. If the surrounding handler future is
-/// dropped while still armed  -  client disconnect or the router's
-/// `TimeoutLayer` firing a 408, both of which drop the handler future rather
-/// than running it to completion  -  `Drop` fires instead: it flips the shared
-/// cancellation flag (which the pool worker running `embed_lane`'s forward
-/// passes checks between chunks, the only way to reach into that running work)
-/// and logs the abandonment, since today the server otherwise cannot
-/// distinguish a slow client from a gone one.
+// Observability guard for an in-flight `/index/embed` call. Created armed
+// right before the `embed_lane` await and disarmed right after it returns.
+// If the surrounding handler future is dropped while still armed (client
+// disconnect, or the router's `TimeoutLayer` firing a 408), `Drop` fires
+// instead: it flips the shared cancellation flag — the only way to reach
+// into the pool worker's running forward passes — and logs the abandonment,
+// since the server otherwise cannot distinguish a slow client from a gone one.
 pub(crate) struct EmbedAbandonGuard {
     pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) armed: bool,
@@ -141,8 +136,8 @@ pub async fn index_embed(
     // The wire carries no intent, so a one-chunk request is the interactive
     // lane: a single chunk cannot hold a context long enough to matter, so a
     // bulk client whose calibration batch is one chunk lands there at no cost,
-    // while a query embed (posted as one chunk) gets the reserved lane it needs
-    // (ADR-096). Anything larger is bulk.
+    // while a query embed (posted as one chunk) gets the reserved lane it
+    // needs. Anything larger is bulk.
     let lane = if body.chunks.len() == 1 {
         crate::EmbedLane::Interactive
     } else {
@@ -156,16 +151,14 @@ pub async fn index_embed(
     // turn is done.
     let _admission = state.embed_admission.try_acquire(lane)?;
 
-    // Collect texts, preserving order for reassembly.
     let texts: Vec<&str> = body.chunks.iter().map(|c| c.content.as_str()).collect();
 
-    // Cancellation seam (GH#631): if this handler's future is
-    // dropped mid-embed  -  client disconnect or the router's `TimeoutLayer`
-    // firing a 408  -  `cancel_guard` drops while still armed and flips
-    // `cancel_flag`, which the pool worker running `embed_lane`'s forward passes
-    // checks between chunks (a plain `.await` drop does not otherwise reach into
-    // that running work). Disarmed once the embed call returns on its own, so
-    // an ordinary completed request (success or a real embed error) never logs
+    // If this handler's future is dropped mid-embed (client disconnect, or
+    // the router's `TimeoutLayer` firing a 408), `cancel_guard` drops while
+    // still armed and flips `cancel_flag`, which the pool worker running
+    // `embed_lane`'s forward passes checks between chunks — otherwise a
+    // dropped future can't reach into that running work. Disarmed once the
+    // embed call returns on its own, so a normal completion never logs
     // abandonment.
     let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut cancel_guard = EmbedAbandonGuard {
@@ -198,11 +191,9 @@ pub async fn index_embed(
             body_bytes.extend_from_slice(&f.to_le_bytes());
         }
     }
-    // Data promise: vectors are NOT stored on the server. We return them directly.
     Ok(octet_stream(body_bytes))
 }
 
-/// Build a `200 OK` response carrying raw bytes as `application/octet-stream`.
 fn octet_stream(bytes: Vec<u8>) -> Response {
     (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],

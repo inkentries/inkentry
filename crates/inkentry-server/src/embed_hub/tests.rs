@@ -1,7 +1,5 @@
 use super::*;
 
-// ── GPU-fallback render-node diagnostic ────────────────────────────────────
-
 #[cfg(feature = "embed-llama")]
 #[test]
 fn classify_render_nodes_no_node_for_empty_or_missing_dir() {
@@ -87,7 +85,6 @@ fn prequantized_gguf_repo_defaults_to_bundled_repo() {
         "blank/whitespace env var must fall back to the default repo, not fetch \"\""
     );
 
-    // Override: an explicit repo id is used verbatim, with whitespace trimmed.
     unsafe { std::env::set_var(GGUF_REPO_ENV, "  org/repo  ") };
     assert_eq!(prequantized_gguf_repo(), "org/repo");
 
@@ -97,9 +94,8 @@ fn prequantized_gguf_repo_defaults_to_bundled_repo() {
     }
 }
 
-// A typo'd device must fail loudly (surfaced through /v1/health as
-// `unavailable`) rather than silently running somewhere unintended. Uses
-// `serial` because it mutates a process-global env var.
+// A typo'd device must fail loudly rather than silently running on the
+// wrong one. `serial` because it mutates a process-global env var.
 #[test]
 #[serial_test::serial(embed_device_env)]
 fn embed_device_request_rejects_an_unparseable_value() {
@@ -145,8 +141,7 @@ fn embed_device_request_accepts_documented_values() {
     }
 }
 
-// The air-gapped loader rejects a non-directory --model-dir before any load,
-// naming the offline provisioning docs. Offline: errors before the GGUF.
+// The air-gapped loader rejects a non-directory --model-dir before any load.
 #[test]
 fn load_llama_from_model_dir_rejects_non_directory() {
     let file = tempfile::NamedTempFile::new().unwrap();
@@ -158,8 +153,8 @@ fn load_llama_from_model_dir_rejects_non_directory() {
     assert!(msg.contains("docs/server-setup.md"), "{msg}");
 }
 
-// A model dir missing the canonical GGUF errors before any load, naming both
-// the missing file and the offline provisioning docs. Offline.
+// A model dir missing the canonical GGUF errors before any load, naming the
+// missing file.
 #[test]
 fn load_llama_from_model_dir_missing_gguf_names_the_file_and_docs() {
     let dir = tempfile::tempdir().unwrap();
@@ -174,9 +169,6 @@ fn load_llama_from_model_dir_missing_gguf_names_the_file_and_docs() {
     assert!(msg.contains("docs/server-setup.md"), "{msg}");
 }
 
-// The Docker image points `XDG_DATA_HOME` at the persistent `/data` volume so
-// the ~345 MB model survives `docker rm`/recreate, instead of landing in the
-// container layer or a home directory the `-r` service user does not have.
 // Linux-only: `dirs::data_local_dir()` follows the XDG spec on Linux/BSD, but
 // macOS ignores `XDG_DATA_HOME` in favour of `~/Library/Application Support`.
 // `serial` because it mutates a process-global env var.
@@ -202,9 +194,8 @@ fn model_cache_dir_honours_xdg_data_home() {
     }
 }
 
-// Fixture bytes standing in for the GGUF. The materialisation policy is
-// about directory entries and link counts, so the content is irrelevant
-// beyond being identifiable.
+// Materialisation is about directory entries and link counts, so the
+// content is irrelevant beyond being identifiable.
 const GGUF_BYTES: &[u8] = b"GGUF fixture bytes, not a real model";
 
 fn blobs_dir_with(cache: &std::path::Path, etag: &str, bytes: &[u8]) -> PathBuf {
@@ -249,10 +240,9 @@ fn materialise_model_links_rather_than_copying() {
     }
 }
 
-// hf-hub hands back the snapshots/<rev>/<file> pointer, a symlink whose
-// target is relative to the snapshot directory. Linking the symlink itself
-// would leave a flat path resolving against the cache root, where that
-// relative target does not exist.
+// hf-hub hands back the snapshots/<rev>/<file> pointer, a symlink relative
+// to the snapshot directory; linking the symlink itself would leave a flat
+// path resolving against the wrong root.
 #[test]
 #[cfg(unix)]
 fn materialise_model_resolves_the_snapshot_pointer_to_its_blob() {
@@ -328,7 +318,6 @@ fn materialise_model_leaves_a_model_already_linked_into_place_intact() {
     let pointer = snapshot.join(LLAMA_GGUF);
     std::os::unix::fs::symlink("../../blobs/deadbeef", &pointer).unwrap();
 
-    // The first server has already linked the model into place.
     std::fs::hard_link(&blob, &flat).unwrap();
 
     materialise_model(&pointer, &flat).expect("a second start must not fail");
@@ -480,9 +469,7 @@ fn repo_cache_directory_matches_the_documented_hub_layout() {
     );
 }
 
-// The reported defect: an interrupted download left a partial behind and
-// the next start still announced a first run while fetching the whole
-// model again. The wording has to follow the cache, not the model file.
+// The wording must follow the cache, not the model file.
 #[test]
 fn fetch_note_follows_cache_state_not_the_model_file() {
     let cache = tempfile::tempdir().unwrap();
@@ -519,13 +506,10 @@ fn reclaim_removes_candle_artifacts_but_keeps_the_llama_gguf() {
     let cache = tempfile::tempdir().unwrap();
     let root = cache.path();
 
-    // Flat files: candle wrote the first two; the third is the llama GGUF.
     std::fs::write(root.join("f2llm-v2-330m-q8_0.gguf"), b"old candle gguf").unwrap();
     std::fs::write(root.join("config.json"), b"{}").unwrap();
     std::fs::write(root.join(LLAMA_GGUF), b"llama gguf").unwrap();
 
-    // hf-hub snapshot dir carrying the candle GGUF, the candle tokenizer,
-    // and the llama GGUF side by side.
     let repo = Repo::new(DEFAULT_GGUF_REPO.to_string(), RepoType::Model);
     let snap = root.join(repo.folder_name()).join("snapshots").join("rev0");
     std::fs::create_dir_all(&snap).unwrap();
@@ -535,7 +519,6 @@ fn reclaim_removes_candle_artifacts_but_keeps_the_llama_gguf() {
 
     reclaim_candle_artifacts(root, &repo);
 
-    // Every candle artifact is gone, flat and in the snapshot.
     assert!(!root.join("f2llm-v2-330m-q8_0.gguf").exists());
     assert!(!root.join("config.json").exists());
     assert!(!snap.join("f2llm-v2-330m-q8_0.gguf").exists());
@@ -551,12 +534,9 @@ fn reclaim_removes_candle_artifacts_but_keeps_the_llama_gguf() {
 }
 
 // The pooled worker reuses one warm context across calls, clearing the KV
-// cache between chunks. That reuse must not change the vectors: many chunks
-// run through one reused context (a multi-chunk call, then repeated calls on
-// the now-warm context) must match each chunk decoded on its own. A leaked
-// KV state between chunks — the failure mode context reuse could introduce —
-// would surface here as drift on the later chunks. Ignored by default: needs
-// the canonical GGUF on disk and runs inference.
+// cache between chunks; a leak there would show up as drift between a
+// multi-chunk batched embed and each chunk embedded in isolation. Ignored
+// by default: needs the canonical GGUF on disk and runs inference.
 #[cfg(feature = "embed-llama")]
 #[test]
 #[ignore = "requires the canonical F2LLM GGUF and runs inference"]
@@ -602,14 +582,12 @@ fn llama_reused_context_matches_isolated_chunks() {
     }
 }
 
-// The interactive and bulk lanes keep separate warm contexts, so the same text
-// embeds on a different context depending on the lane it was admitted to. That
-// routing must not perturb the vector: an interactive `search` embed and a bulk
-// index embed of the same chunk have to land in one vector space, or ranking
-// drifts by lane (ADR-096). Both lanes run the same deterministic forward pass
-// on identically shaped calls, so the vectors are expected byte-identical, not
-// merely close. Ignored by default: needs the canonical GGUF on disk and runs
-// inference.
+// The interactive and bulk lanes keep separate warm contexts, so the same
+// text embeds on a different context depending on the lane it's admitted
+// to. That routing must not perturb the vector: both lanes run the same
+// deterministic forward pass on identically shaped calls, so the vectors
+// must be byte-identical, not merely close. Ignored by default: needs the
+// canonical GGUF on disk and runs inference.
 #[cfg(feature = "embed-llama")]
 #[test]
 #[ignore = "requires the canonical F2LLM GGUF and runs inference"]

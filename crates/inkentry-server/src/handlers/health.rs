@@ -6,8 +6,6 @@ use crate::{AppState, EmbedderState};
 
 use super::MAX_EMBED_BATCH;
 
-// ── Health ────────────────────────────────────────────────────────────────────
-
 /// Embedder readiness reported inside the health body.
 ///
 /// Liveness (`status: "ok"`) is independent of this: `/v1/health` returns `200`
@@ -118,9 +116,9 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     // embeddings, so advertise the semantic caps and a non-zero dim only then.
     let ready_backend = state.embedder.backend();
 
-    // ADR-100 D4: candidates-before-store and `reconcile`/`resolutions` are
-    // supported regardless of embedder readiness (an unready embedder just
-    // means an empty candidate pool, the same degraded case D1 accepts).
+    // candidates-before-store and reconcile/resolutions are supported
+    // regardless of embedder readiness: an unready embedder just means an
+    // empty candidate pool.
     let mut capabilities = vec!["memory".to_string(), "memory.reconcile".to_string()];
     if let Some(backend) = &ready_backend {
         capabilities.push("index.embed".to_string());

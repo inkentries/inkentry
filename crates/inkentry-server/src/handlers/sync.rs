@@ -19,8 +19,7 @@ use super::require_project;
 
 /// Object envelope for the harvested-SHAs read endpoint.
 ///
-/// A JSON response root must be an object, never a bare array of primitives
-/// (ADR-076: the memory wire contract).
+/// A JSON response root must be an object, never a bare array of primitives.
 #[derive(Serialize, ToSchema)]
 pub struct HarvestedShasResponse {
     pub shas: Vec<String>,
@@ -53,8 +52,6 @@ pub async fn harvested_shas(
     let shas = db.harvested_shas(project.id)?;
     Ok(Json(HarvestedShasResponse { shas }))
 }
-
-// ── Poll / SSE endpoints ──────────────────────────────────────────────────────
 
 #[derive(Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct SinceQuery {
@@ -108,9 +105,8 @@ pub struct StreamQuery {
 
 /// Return notes newer than a cursor, in one of two modes:
 ///
-/// - `?since_id=<uuid>`: delta-pull mode (wire parity with cloud-api;
-///   `CloudSyncClient::pull_since`/`inkentry sync` targets this). Returns
-///   `{entries, count}`, entries ordered by arrival at this server.
+/// - `?since_id=<uuid>`: delta-pull mode, what `inkentry sync` targets.
+///   Returns `{entries, count}`, entries ordered by arrival at this server.
 /// - `?t=<unix_secs>`: legacy timestamp mode, retained for wire parity with
 ///   older clients that predate the `since_id` cursor. Returns a bare array,
 ///   ordered `created_at ASC`.
@@ -145,7 +141,7 @@ pub async fn memory_since(
         let rows = db.notes_since_id(project.id, cursor, params.limit)?;
         // Counted before the page is consumed, over the same active set the
         // client materialises locally, so the two totals are directly
-        // comparable (ADR-092).
+        // comparable.
         let total = db.active_note_count(project.id)?;
         let entries: Vec<SinceIdEntry> = rows
             .into_iter()
@@ -202,7 +198,8 @@ pub async fn memory_stream(
     Path(project_id): Path<String>,
     Query(params): Query<StreamQuery>,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, AppError> {
-    // Validate the project exists before opening the stream.
+    // Scoped so the lock is released before the stream (which re-locks every
+    // poll) is opened.
     {
         let db = state.db.lock().await;
         require_project(&db, &project_id)?;

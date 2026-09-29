@@ -1,24 +1,17 @@
 //! Hugging Face Hub acquisition path for the bundled F2LLM-v2-330M embedder.
 //!
-//! `inkentry-embed` only knows how to load the embedder from a GGUF already on
-//! disk ([`inkentry_embed::LlamaEmbedder::load_from_path`]) — it carries no
-//! network-fetch dependency. This module owns the `hf-hub` download step: it
-//! fetches the canonical llama.cpp GGUF from our own first-party Hugging Face
-//! repo into the local hf-hub cache, then hands the resulting path to
-//! `load_from_path`. This is the only place in `inkentry-server` — or the
-//! workspace — that depends on `hf-hub`.
+//! `inkentry-embed` only loads the embedder from a GGUF already on disk
+//! ([`inkentry_embed::LlamaEmbedder::load_from_path`]) and carries no
+//! network-fetch dependency; this module owns the `hf-hub` download step,
+//! fetching the canonical llama.cpp GGUF into the local cache and handing the
+//! resulting path to `load_from_path`. It is the only place in the workspace
+//! that depends on `hf-hub`.
 //!
-//! [`load_llama_from_model_dir`] is the air-gapped counterpart: it resolves the
-//! same GGUF from an operator-provisioned directory instead of the Hub, with no
-//! `hf_hub` involvement at all (see "Air-gapped / no-egress install" in
-//! `docs/server-setup.md`).
+//! An air-gapped counterpart reads the same GGUF from an operator-provisioned
+//! directory with no `hf_hub` involvement.
 //!
-//! Everything here comes from `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`, a repo
-//! we own under the predecessor product's org name (see [`DEFAULT_GGUF_REPO`]).
-//! There is no runtime dependency on the third-party upstream
-//! `codefuse-ai/F2LLM-v2-330M` repo. See `docs/third-party-models.md` for the
-//! Apache-2.0 attribution and the pinned upstream revision these artifacts
-//! were derived from.
+//! The GGUF is fetched from a repo we own; there is no runtime dependency on
+//! the third-party upstream `codefuse-ai/F2LLM-v2-330M` repo.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,53 +20,24 @@ use anyhow::{Context, Result};
 use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
 use inkentry_embed::{DeviceRequest, LlamaEmbedder};
 
-/// Override env var naming the Hugging Face repo id that holds the canonical
-/// llama.cpp GGUF for the embedder. Read from `INKENTRY_EMBEDDER_GGUF_REPO` at
-/// load time; see [`prequantized_gguf_repo`] for the accepted values.
-///
-/// By default (unset) the loader fetches [`LLAMA_GGUF`] from
-/// [`DEFAULT_GGUF_REPO`] via the existing hf-hub cache — first-run download is
-/// ~345 MB. Set this to a different `org/repo` to fetch from there instead (it
-/// must host the same file, e.g. a mirror of our repo).
+// Override env var naming the Hugging Face repo id for the canonical GGUF.
 const GGUF_REPO_ENV: &str = "INKENTRY_EMBEDDER_GGUF_REPO";
 
-/// Default Hugging Face repo id holding our own canonical llama.cpp GGUF
-/// ([`LLAMA_GGUF`]). Used when `INKENTRY_EMBEDDER_GGUF_REPO` is unset, so a
-/// stock install fetches the ~345 MB GGUF from here — no third-party repo
-/// involved. Override with the env var (see [`GGUF_REPO_ENV`]).
-///
-/// The `spelunk-cloud` org is the predecessor product's name, kept
-/// deliberately. Renaming it buys a tidier URL and nothing else, and it is not
-/// free: the org is part of the hf-hub cache key, so existing installs would
-/// refetch, and the air-gapped provisioning procedure in `docs/server-setup.md`
-/// hard-codes the current cache directory name in a copy-paste command. A
-/// rename sweep leaves this alone; see `docs/model-attribution.md` for the same
-/// reasoning in prose.
+// Predecessor product's org name, kept deliberately: it's part of the hf-hub
+// cache key, so renaming it would force existing installs to refetch.
 const DEFAULT_GGUF_REPO: &str = "spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF";
 
-/// Filename of the canonical llama.cpp GGUF: llama.cpp tensor names
-/// (`blk.N.*`), arch metadata, and the baked tokenizer + last-token pooling
-/// config that `LlamaEmbedder` needs, Q8_0-quantized from the pinned upstream
-/// revision (see `docs/third-party-models.md`). Hosted in [`DEFAULT_GGUF_REPO`].
+// llama.cpp GGUF: baked tokenizer + last-token pooling config, Q8_0-quantized.
 const LLAMA_GGUF: &str = "f2llm-v2-330m-llama-q8_0.gguf";
 
-/// Env var selecting where the embedder runs: `auto` (default), `gpu`, or
-/// `cpu`. Deliberately API-agnostic values — no `vulkan`/`metal` — so the same
-/// setting means the same thing on every platform. `cpu` forces the CPU engine
-/// and skips GPU device selection.
+// Values are API-agnostic (`auto`/`gpu`/`cpu`, no `vulkan`/`metal`) so the
+// same setting means the same thing on every platform.
 const EMBED_DEVICE_ENV: &str = "INKENTRY_EMBED_DEVICE";
 
-/// Reclaim `<etag>.part` staging files that nothing will ever finish.
-///
-/// hf-hub stages a download in `blobs/<etag>.part`, then reopens that file in
-/// append mode and continues over an HTTP `Range` request. A partial belonging
-/// to a file the current run is about to fetch is therefore progress worth
-/// keeping, which is what `can_resume` guards. Every other partial is dead
-/// weight no code path reads back: one sitting beside its own completed blob,
-/// and all of them on a run that fetches nothing at all.
-///
-/// Returns how many were removed. Cleanup never fails a model load, so the
-/// caller logs and carries on.
+// hf-hub stages a download in `blobs/<etag>.part` and resumes it over an
+// HTTP Range request. A partial is progress worth keeping only when
+// `can_resume`; every other partial is dead weight. Cleanup never fails a
+// model load — the caller logs and carries on.
 fn prune_partial_downloads(blobs_dir: &Path, can_resume: bool) -> Result<usize> {
     let entries = match std::fs::read_dir(blobs_dir) {
         Ok(entries) => entries,
@@ -103,12 +67,9 @@ fn prune_partial_downloads(blobs_dir: &Path, can_resume: bool) -> Result<usize> 
     Ok(reclaimed)
 }
 
-/// How to describe a model fetch in the log, given the cache it inherited.
-///
-/// Anything already in the repo's blob directory, a partial included, means
-/// this machine has downloaded from here before. Calling that a first run
-/// because the model file itself is absent sends the reader hunting for a
-/// cache that does exist.
+// Anything already in the blob directory (a partial included) means this
+// machine has fetched from here before, even with the model file itself
+// still absent.
 fn fetch_note(blobs_dir: &Path) -> &'static str {
     let inhabited = std::fs::read_dir(blobs_dir).is_ok_and(|mut e| e.next().is_some());
     if inhabited {
@@ -118,37 +79,17 @@ fn fetch_note(blobs_dir: &Path) -> &'static str {
     }
 }
 
-/// Put the downloaded GGUF at the stable flat path the loader reads from,
-/// storing the ~345 MB of bytes once.
-///
-/// hf-hub materialises a download as `blobs/<etag>` plus a pointer under
-/// `snapshots/<rev>/`, and hands back the pointer. A hard link from that one
-/// file to the flat path is what keeps the cache at a single copy: NTFS grants
-/// hard links without the elevation or Developer Mode a symlink needs, and
-/// macOS and Linux link freely within a filesystem.
-///
-/// The pointer is resolved to its target first. On Unix it is a symlink whose
-/// target is written relative to the snapshot directory, so linking the link
-/// itself would leave a flat path resolving against the cache root, where that
-/// target does not exist.
-///
-/// Two servers reach this concurrently on a cold cache: the flat path is
-/// absent for the whole of the first download, and hf-hub answers the second
-/// one from its cached pointer without taking a lock, handing back the very
-/// file the first one just linked. Identity is therefore decided by inode
-/// rather than by path, and the model is linked under a temporary name and
-/// renamed into place. A second start finds the file already linked and does
-/// nothing, or else replaces it atomically. Copying onto the destination in
-/// place is what must never happen: when the two names turn out to be one
-/// file, that truncates the model to nothing and the loader, seeing a file
-/// present, never fetches it again.
-///
-/// hf-hub's own cache is left exactly as it found it. When a hard link cannot
-/// be made the model is copied and the hub keeps its copy, so that case costs
-/// a second copy on disk. Deleting the blob to reclaim it is not an option:
-/// that leaves the snapshot pointer dangling, and hf-hub cannot recover from
-/// it, since a later fetch re-downloads the model and then fails to recreate
-/// a pointer that already exists.
+// Hard-links (not copies) the download to the flat path the loader reads,
+// keeping the cache at a single copy; falls back to a copy when hard-linking
+// isn't possible. The pointer is resolved to its target first — on Unix it's
+// a symlink relative to the snapshot directory, so linking the pointer
+// itself would leave a flat path resolving against the wrong root. Two
+// servers can race here on a cold cache, so the link lands under a
+// temporary name and is renamed into place atomically: an in-place copy
+// must never happen, because if the two names turn out to be the same file
+// it truncates the model to nothing while the loader still sees a file
+// present. hf-hub's own cache is left untouched — deleting its blob would
+// strand the snapshot pointer with no way to recover.
 fn materialise_model(downloaded: &Path, gguf_path: &Path) -> Result<()> {
     let source = std::fs::canonicalize(downloaded)
         .with_context(|| format!("resolving downloaded model at {}", downloaded.display()))?;
@@ -175,9 +116,7 @@ fn materialise_model(downloaded: &Path, gguf_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A staging name beside the target, distinct per process so two servers
-/// materialising at once cannot collide, and so the real path only ever sees a
-/// rename.
+// Distinct per process so two servers materialising at once cannot collide.
 fn staging_path(gguf_path: &Path) -> PathBuf {
     let mut name = gguf_path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{}.tmp", std::process::id()));
@@ -185,8 +124,7 @@ fn staging_path(gguf_path: &Path) -> PathBuf {
 }
 
 /// A ready embedding backend plus the identity facts `/v1/health` surfaces
-/// about it. `engine`/`device` exist so a field report can say *which* engine
-/// on *which* device produced a problem without reading server logs.
+/// about it.
 pub struct LoadedEmbedder {
     pub backend: Arc<dyn inkentry_core::embeddings::EmbeddingBackend>,
     /// Always `"llama"` — the sole embedding engine.
@@ -194,11 +132,9 @@ pub struct LoadedEmbedder {
     /// `"cpu"`, `"metal"`, `"vulkan"`, or `"gpu"` — the device the engine
     /// resolved at load.
     pub device: &'static str,
-    /// A non-fatal, actionable note about how the device resolved, surfaced in
-    /// the health body and `inkentry server status`. Set when a GPU was wanted
-    /// but embedding fell back to CPU for a fixable reason (currently: a Linux
-    /// DRM render node present but unopenable for lack of `render`-group
-    /// membership). `None` when the device resolved as expected.
+    /// A non-fatal, actionable note about how the device resolved. Set when a
+    /// GPU was wanted but embedding fell back to CPU for a fixable reason;
+    /// `None` when the device resolved as expected.
     pub note: Option<String>,
 }
 
@@ -206,8 +142,8 @@ pub struct LoadedEmbedder {
 ///
 /// The device is resolved from `INKENTRY_EMBED_DEVICE`: `auto`/`gpu` try a GPU
 /// and fall back to CPU when none is usable; `cpu` forces the CPU engine. A
-/// malformed value is a deliberate hard error (see [`embed_device_request`]),
-/// surfaced through `/v1/health` as `unavailable`.
+/// malformed value is a hard error, surfaced through `/v1/health` as
+/// `unavailable`.
 pub fn load_backend(
     model_dir: Option<&Path>,
     embed_threads: usize,
@@ -219,10 +155,8 @@ pub fn load_backend(
         None => load_llama_from_hub(requested, embed_threads, interactive_capacity),
     }?;
     let device = embedder.device();
-    // A GPU was requested (not `cpu`) yet the engine resolved to CPU: no usable
-    // GPU backend was selected. On Linux this is often a fixable permission
-    // problem (missing `render`-group membership), worth an actionable log and a
-    // health/status note. A `cpu` request running on CPU is expected — no note.
+    // A GPU was requested (not `cpu`) but resolved to CPU: worth a status
+    // note. A `cpu` request running on CPU is expected, so no note there.
     let note = if device == "cpu" && !matches!(requested, DeviceRequest::Cpu) {
         gpu_fallback_note()
     } else {
@@ -236,36 +170,26 @@ pub fn load_backend(
     })
 }
 
-/// A DRM render node's openability, as it bears on a GPU-to-CPU embed fallback.
-///
-/// The distinction the caller acts on is permission (fixable by joining the
-/// `render` group) versus everything else (a genuinely GPU-less host, or a GPU
-/// the driver rejects for missing features — neither of which the render-group
-/// advice would help).
+// Distinguishes a fixable permission problem (join the `render` group) from
+// everything else (no GPU, or a driver rejecting the device) that the
+// render-group advice can't help.
 #[cfg(feature = "embed-llama")]
 #[derive(Debug, PartialEq, Eq)]
 enum RenderNodeAccess {
-    /// No `renderD*` node in the directory: no GPU render device present.
+    // No `renderD*` node: no GPU render device present.
     NoNode,
-    /// A render node exists but this process cannot open it (`EACCES`) — the
-    /// `render`-group case. Carries the node path.
+    // A render node exists but this process can't open it (`EACCES`).
     PermissionDenied(String),
-    /// A render node exists and opens: the GPU is present and reachable, so a
-    /// CPU fallback is not a permission problem (the driver rejected it, or no
-    /// Vulkan module/loader is present). Carries the node path.
+    // A render node exists and opens: not a permission problem.
     Reachable(String),
-    /// A render node exists but the open failed for some non-permission reason
-    /// (e.g. the device is busy or vanished mid-probe): nothing actionable.
+    // A render node exists but open failed for some other reason.
     Unknown,
 }
 
-/// Classify the first `renderD*` node under `dri_dir` by whether this process
-/// can open it read+write — what a Vulkan driver needs to use the GPU.
-///
-/// Directory-injected rather than hard-wired to `/dev/dri` so the classification
-/// is unit-testable without a real GPU. The probe is one `open(O_RDWR)` and the
-/// fd is dropped immediately; opening a render node is exactly what a GPU client
-/// does and has no side effect on the device.
+// `dri_dir` is injected (rather than hard-wired to `/dev/dri`) so this is
+// unit-testable without a real GPU. Opens read+write and drops the fd
+// immediately — what a Vulkan driver needs, with no side effect on the
+// device.
 #[cfg(feature = "embed-llama")]
 fn classify_render_nodes(dri_dir: &Path) -> RenderNodeAccess {
     let node = std::fs::read_dir(dri_dir).ok().and_then(|entries| {
@@ -292,19 +216,12 @@ fn classify_render_nodes(dri_dir: &Path) -> RenderNodeAccess {
     }
 }
 
-/// A GPU was requested but the llama engine resolved to CPU. Diagnose why on
-/// Linux and, when it is actionable, log it and return a note for the health
-/// body / `inkentry server status`. Returns `None` (and logs nothing) on a
-/// genuinely GPU-less host, so it never nags a machine that simply has no GPU.
-///
-/// Cheap by construction: one directory read plus a single `open()` probe, no
-/// subprocess and no Vulkan enumeration (the engine already computed the
-/// device; this only explains a CPU outcome).
+// Diagnoses why a requested GPU resolved to CPU, on Linux only, and returns
+// an actionable note when the cause is fixable. Returns `None` silently on a
+// genuinely GPU-less host so it never nags a machine that has no GPU.
 #[cfg(feature = "embed-llama")]
 fn gpu_fallback_note() -> Option<String> {
-    // DRM render nodes and the `render` group are a Linux concept; there is
-    // nothing to advise on macOS/Windows. `/dev/dri` is absent there anyway,
-    // but guard explicitly so the intent is clear.
+    // DRM render nodes and the `render` group are a Linux-only concept.
     if !cfg!(target_os = "linux") {
         return None;
     }
@@ -323,10 +240,8 @@ fn gpu_fallback_note() -> Option<String> {
             ))
         }
         RenderNodeAccess::Reachable(node) => {
-            // The GPU is reachable but was not selected: a hardware/driver
-            // limit (e.g. ggml rejecting a device that lacks 16-bit storage),
-            // or no Vulkan module/loader. Not fixable by the render group, so
-            // it earns an explanatory log but no actionable status note.
+            // Reachable but not selected: a driver/hardware limit, not
+            // fixable by the render group, so no actionable status note.
             tracing::info!(
                 "A GPU render node ({node}) is accessible but no usable Vulkan GPU backend \
                  was selected — the device likely lacks a required Vulkan feature (e.g. \
@@ -338,22 +253,13 @@ fn gpu_fallback_note() -> Option<String> {
     }
 }
 
-/// Reclaim the previous candle engine's cached artifacts, which the llama
-/// engine never reads: the flat candle GGUF and `config.json` at the cache
-/// root, and the candle GGUF + `tokenizer.json` entries in the hf-hub repo
-/// cache (each snapshot pointer and the blob it resolves to). Keyed on the
-/// exact old filenames, so it can never touch the llama GGUF ([`LLAMA_GGUF`]),
-/// whose name differs and whose blob sits under its own pointer. Idempotent (a
-/// second run finds nothing) and best-effort: a leftover file is wasted disk,
-/// not a fault, so failures are ignored rather than failing the load.
+// Reclaims the previous candle engine's cached artifacts (flat GGUF +
+// config.json at the cache root; GGUF + tokenizer.json in the hf-hub repo
+// cache), keyed on the old filenames so it can never touch the llama GGUF.
+// Idempotent and best-effort: a leftover file is wasted disk, not a fault.
 #[cfg(feature = "embed-llama")]
 fn reclaim_candle_artifacts(cache_dir: &Path, repo: &Repo) {
-    // Candle wrote these two flat at the cache root; the llama engine writes
-    // neither (its GGUF is `LLAMA_GGUF`, and it needs no separate config).
     const STALE_FLAT: [&str; 2] = ["f2llm-v2-330m-q8_0.gguf", "config.json"];
-    // Candle fetched these into the shared hf-hub repo cache. `tokenizer.json`
-    // is candle-only (the llama GGUF embeds its tokenizer), and the old GGUF
-    // name differs from `LLAMA_GGUF`, so neither can name the llama artifact.
     const STALE_HUB: [&str; 2] = ["f2llm-v2-330m-q8_0.gguf", "tokenizer.json"];
 
     let mut removed = 0usize;
@@ -368,9 +274,8 @@ fn reclaim_candle_artifacts(cache_dir: &Path, repo: &Repo) {
         for rev in revs.flatten() {
             for name in STALE_HUB {
                 let pointer = rev.path().join(name);
-                // Resolve the pointer to its blob before removing it, so the
-                // blob (the actual bytes) is reclaimed too. hf-hub materialises
-                // a snapshot entry as a symlink into `blobs/`.
+                // Resolve to the blob before removing the pointer, so the
+                // actual bytes are reclaimed too.
                 if let Ok(blob) = std::fs::canonicalize(&pointer)
                     && std::fs::remove_file(&blob).is_ok()
                 {
@@ -391,14 +296,10 @@ fn reclaim_candle_artifacts(cache_dir: &Path, repo: &Repo) {
     }
 }
 
-/// Load the llama.cpp engine's canonical GGUF via the Hugging Face Hub.
-///
-/// Single file — the canonical GGUF embeds its own tokenizer and config — but
-/// otherwise the same cache handling as any large-model fetch: the download is
-/// hard-linked (not copied) to the flat path the loader reads from (see
-/// [`materialise_model`]), and staging files nothing can resume are reclaimed
-/// (see [`prune_partial_downloads`]). Subsequent calls read from the local
-/// cache with no network access.
+// Fetches the canonical GGUF (single file — it embeds its own tokenizer and
+// config) via the Hub, hard-linking it to the flat path the loader reads
+// from and reclaiming any unresumable partials. Subsequent calls read from
+// the local cache with no network access.
 #[cfg(feature = "embed-llama")]
 fn load_llama_from_hub(
     device: DeviceRequest,
@@ -413,20 +314,16 @@ fn load_llama_from_hub(
     let gguf_repo = prequantized_gguf_repo();
     let repo_id = Repo::new(gguf_repo.clone(), RepoType::Model);
 
-    // A machine upgrading from a candle build carries that engine's cached
-    // files, which this engine never reads. Reclaim them once, here on the load
-    // path (idempotent, best-effort).
     reclaim_candle_artifacts(&cache_dir, &repo_id);
 
     let blobs_dir = cache_dir.join(repo_id.folder_name()).join("blobs");
 
-    // Read before anything is fetched, so it describes the cache this run
-    // inherited rather than the one it just populated.
+    // Must run before any fetch, so it reflects the inherited cache, not
+    // what this run populates.
     let note = fetch_note(&blobs_dir);
 
-    // A partial is only worth keeping while this run may still fetch the file it
-    // belongs to; with the GGUF already on disk nothing downloads, so nothing
-    // can resume.
+    // Nothing can resume once the GGUF is already on disk, since nothing
+    // downloads in that case.
     let will_fetch = !gguf_path.exists();
     match prune_partial_downloads(&blobs_dir, will_fetch) {
         Ok(0) => {}
@@ -451,11 +348,9 @@ fn load_llama_from_hub(
         );
     }
 
-    // Size the context pool to the server's two admission-lane capacities so
-    // every admitted concurrent embed gets its own warm context on its own lane
-    // — an interactive embed never queues behind a bulk index batch (ADR-096).
-    // Single-sourced here rather than separate constants in inkentry-embed that
-    // could drift.
+    // Sized to the server's two admission-lane capacities so every embed
+    // gets its own warm context on its own lane, single-sourced here so it
+    // can't drift from a separate constant in inkentry-embed.
     LlamaEmbedder::load_from_path(
         &gguf_path,
         device,
@@ -465,9 +360,9 @@ fn load_llama_from_hub(
     )
 }
 
-/// Air-gapped counterpart of [`load_llama_from_hub`]: reads the canonical
-/// llama.cpp GGUF from the operator-provisioned `--model-dir`. Zero network
-/// access, no `hf_hub` involvement.
+// Air-gapped counterpart of load_llama_from_hub: reads the GGUF from the
+// operator-provisioned --model-dir. Zero network access, no hf_hub
+// involvement.
 #[cfg(feature = "embed-llama")]
 fn load_llama_from_model_dir(
     dir: &Path,
@@ -495,11 +390,9 @@ fn load_llama_from_model_dir(
          (zero network access)",
         dir.display()
     );
-    // Size the context pool to the server's two admission-lane capacities so
-    // every admitted concurrent embed gets its own warm context on its own lane
-    // — an interactive embed never queues behind a bulk index batch (ADR-096).
-    // Single-sourced here rather than separate constants in inkentry-embed that
-    // could drift.
+    // Sized to the server's two admission-lane capacities so every embed
+    // gets its own warm context on its own lane, single-sourced here so it
+    // can't drift from a separate constant in inkentry-embed.
     LlamaEmbedder::load_from_path(
         &gguf_path,
         device,
@@ -509,10 +402,9 @@ fn load_llama_from_model_dir(
     )
 }
 
-/// Parse [`EMBED_DEVICE_ENV`]; unset or blank means `auto`. An unparseable
-/// value is a load error (surfaced through `/v1/health` as `unavailable`)
-/// rather than a silent default: a typo'd `INKENTRY_EMBED_DEVICE=vulkan`
-/// quietly running on some other device would be worse than failing loudly.
+// Unset or blank means `auto`. An unparseable value is a hard error rather
+// than a silent default — a typo'd INKENTRY_EMBED_DEVICE=vulkan quietly
+// running on some other device would be worse than failing loudly.
 #[cfg(feature = "embed-llama")]
 fn embed_device_request() -> Result<DeviceRequest> {
     match std::env::var(EMBED_DEVICE_ENV) {
@@ -529,17 +421,7 @@ fn model_cache_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))
 }
 
-/// Resolve the HF repo id of the pre-quantized Q8_0 GGUF (and tokenizer) to
-/// fetch, from `INKENTRY_EMBEDDER_GGUF_REPO`.
-///
-/// The env var (after trimming surrounding whitespace) is interpreted as:
-///
-/// * **unset** → `DEFAULT_GGUF_REPO` — the default; a stock install fetches the
-///   ~339 MB pre-quant GGUF plus tokenizer from
-///   `spelunk-cloud/F2LLM-v2-330M-Q8_0-GGUF`.
-/// * **any other value** → that `org/repo` id (trimmed) — override: fetch the
-///   pre-quant GGUF and tokenizer from there instead (it must host both
-///   files).
+// Trims surrounding whitespace; unset or blank falls back to DEFAULT_GGUF_REPO.
 fn prequantized_gguf_repo() -> String {
     match std::env::var(GGUF_REPO_ENV) {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),

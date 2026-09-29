@@ -20,8 +20,6 @@ use crate::{AppError, AppState, ErrorBody};
 
 use super::{llm_generate_with_timeout, rate_limit_key, validate_project_slug};
 
-// ── LLM complete (generic primitive) ─────────────────────────────────────────
-
 /// A single chat message for `/llm/complete`.
 #[derive(Deserialize, ToSchema)]
 pub struct LlmCompleteMessage {
@@ -82,7 +80,6 @@ pub async fn llm_complete(
 ) -> Result<Response, AppError> {
     validate_project_slug(&project_id)?;
 
-    // ── Validate request ──────────────────────────────────────────────────────
     if body.messages.is_empty() {
         return Ok((
             StatusCode::BAD_REQUEST,
@@ -98,7 +95,6 @@ pub async fn llm_complete(
             .into_response());
     }
 
-    // ── Rate limit ────────────────────────────────────────────────────────────
     // Keyed on principal + client IP (not principal alone) so a shared team
     // key doesn't collapse every distinct caller onto one bucket.
     let rate_key = rate_limit_key(
@@ -118,10 +114,9 @@ pub async fn llm_complete(
             .into_response());
     }
 
-    // ── Clamp max_tokens server-side (never trust client upward) ─────────────
+    // Never trust the client upward.
     let max_tokens = body.max_tokens.min(state.max_tokens_ceiling);
 
-    // ── LLM availability ──────────────────────────────────────────────────────
     let llm = state.llm.clone().ok_or_else(|| {
         AppError::ServiceUnavailable(
             "llm.complete requires an LLM backend. \
@@ -130,7 +125,6 @@ pub async fn llm_complete(
         )
     })?;
 
-    // ── Convert messages ──────────────────────────────────────────────────────
     let messages: Vec<inkentry_core::llm::Message> = body
         .messages
         .iter()
@@ -142,10 +136,6 @@ pub async fn llm_complete(
 
     let json_schema = body.json_schema;
 
-    // ── Spawn LLM generation ──────────────────────────────────────────────────
-    // Bounded by the same budget as `REQUEST_TIMEOUT`: see
-    // `llm_generate_with_timeout` for why the router's `TimeoutLayer` alone
-    // doesn't cover this endpoint.
     let (tx, mut rx) = mpsc::channel::<String>(64);
     tokio::spawn(llm_generate_with_timeout(
         llm,
@@ -156,7 +146,6 @@ pub async fn llm_complete(
         "llm_complete",
     ));
 
-    // ── Stream tokens as SSE ─────────────────────────────────────────────────
     let s = stream! {
         while let Some(token) = rx.recv().await {
             let data = serde_json::json!({"kind": "token", "content": token}).to_string();

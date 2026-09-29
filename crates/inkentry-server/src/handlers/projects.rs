@@ -8,13 +8,11 @@ use crate::{AppError, AppState, ErrorBody};
 
 use super::require_project;
 
-// ── Projects ──────────────────────────────────────────────────────────────────
-
 /// List all projects registered on this server.
 ///
 /// Enumerates every project on the instance, by design: this server is a
-/// single trust domain (ADR-056) and any valid key is a full administrator of
-/// every project on it, so there is no per-caller filtering to apply here.
+/// single trust domain, and any valid key is a full administrator of every
+/// project on it, so there is no per-caller filtering to apply here.
 #[utoipa::path(
     get,
     path = "/v1/projects",
