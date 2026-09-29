@@ -59,7 +59,7 @@ impl Database {
         }
     }
 
-    /// Return all registered specs with their linked paths.
+    /// Return all registered specs.
     pub fn all_specs(&self) -> Result<Vec<SpecRecord>> {
         let mut stmt = self
             .conn

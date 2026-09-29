@@ -1,8 +1,3 @@
-//! Integration tests for `inkentry_core::metrics::build_snapshot` (ADR-098,
-//! state source only): a temp `MemoryStore` paired with a temp git repo,
-//! covering the empty store, no-git-repo, window-boundary, and
-//! vector-less-entry cases the ADR calls out by name.
-
 use crate::common;
 use inkentry_core::metrics::build_snapshot;
 use inkentry_core::storage::MemoryStore;
@@ -26,13 +21,11 @@ fn open_store() -> MemoryStore {
     MemoryStore::open(Path::new(":memory:")).expect("open in-memory memory store")
 }
 
-/// A temp directory that is deliberately NOT a git repository.
 fn non_git_dir() -> tempfile::TempDir {
     tempfile::TempDir::new().expect("tempdir")
 }
 
-/// A temp git repo with one commit dated `commit_time` (unix seconds),
-/// returning the dir and the commit's own sha.
+// `commit_time` is unix seconds; returns (repo dir, commit sha).
 fn git_repo_with_commit_at(
     commit_time: i64,
     file: &str,
@@ -78,7 +71,6 @@ fn git_repo_with_commit_at(
     (dir, sha)
 }
 
-/// Add another commit at `commit_time` touching `file`, returning its sha.
 fn commit_at(root: &Path, commit_time: i64, file: &str, contents: &str) -> String {
     let date = format!("@{commit_time} +0000");
     let run = |args: &[&str], date_env: bool| {
@@ -100,8 +92,6 @@ fn commit_at(root: &Path, commit_time: i64, file: &str, contents: &str) -> Strin
 }
 
 const DAY: i64 = 86_400;
-
-// ── no git repo ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn empty_store_outside_a_git_repo_has_no_commit_based_metrics() {
@@ -136,8 +126,6 @@ async fn empty_store_outside_a_git_repo_has_no_commit_based_metrics() {
     assert_eq!(json["state"]["rec.unresolved_conflicts"], 0);
 }
 
-// ── determinism ──────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn two_runs_over_the_same_state_are_byte_identical() {
     let store = open_store();
@@ -160,8 +148,6 @@ async fn two_runs_over_the_same_state_are_byte_identical() {
         "same repository state must produce byte-identical output"
     );
 }
-
-// ── events block present, no eval, no identifying content ──────────────────
 
 #[tokio::test]
 async fn snapshot_carries_a_top_level_events_block_no_eval_and_no_entry_identifiers() {
@@ -204,8 +190,6 @@ async fn snapshot_carries_a_top_level_events_block_no_eval_and_no_entry_identifi
         "snapshot must not carry entry bodies: {rendered}"
     );
 }
-
-// ── events block: seeded rows drive the formulas ────────────────────────────
 
 #[tokio::test]
 async fn snapshot_events_block_reflects_recorded_rows_within_its_own_seven_day_window() {
@@ -354,8 +338,6 @@ async fn an_event_recorded_since_the_last_commit_is_inside_the_events_window() {
     assert_eq!(json["events"]["calls"]["search"]["total"], 1);
 }
 
-// ── window boundaries ────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn entries_outside_the_window_are_excluded_from_in_window_counts() {
     let store = open_store();
@@ -363,7 +345,6 @@ async fn entries_outside_the_window_are_excluded_from_in_window_counts() {
     let window_days = 10u32;
     let window_start = 1_000_000 - i64::from(window_days) * DAY;
 
-    // Inside the window.
     store
         .add_note_with_created_at(
             "decision",
@@ -376,7 +357,7 @@ async fn entries_outside_the_window_are_excluded_from_in_window_counts() {
             window_start + 10,
         )
         .unwrap();
-    // Exactly on the earlier boundary — should still count (inclusive).
+    // The boundary itself is inclusive.
     store
         .add_note_with_created_at(
             "decision",
@@ -389,7 +370,6 @@ async fn entries_outside_the_window_are_excluded_from_in_window_counts() {
             window_start,
         )
         .unwrap();
-    // Outside the window (before it starts).
     store
         .add_note_with_created_at(
             "decision",
@@ -424,7 +404,6 @@ async fn entries_outside_the_window_are_excluded_from_in_window_counts() {
         snap.state.rec_entries.total["decision"], 3,
         "total must still count every decision regardless of window"
     );
-    // Sanity: HEAD is reachable and its own commit is inside the window.
     assert_eq!(snap.header.commit.unwrap().sha, head_sha);
 }
 
@@ -450,8 +429,6 @@ async fn an_entry_recorded_since_the_last_commit_is_inside_the_window() {
         "the window closes at the newest entry when that is later than HEAD"
     );
 }
-
-// ── commit coverage: source_ref column match ────────────────────────────────
 
 #[tokio::test]
 async fn a_commit_with_a_matching_source_ref_column_counts_as_covered() {
@@ -506,8 +483,6 @@ async fn a_commit_with_no_matching_entry_is_uncovered() {
     assert_eq!(coverage.numerator, 0);
     assert_eq!(coverage.value, Some(0.0));
 }
-
-// ── near-duplicate rate: entries without a vector are excluded ─────────────
 
 #[tokio::test]
 async fn active_entries_without_a_vector_are_excluded_from_near_duplicate_rate() {
@@ -578,8 +553,6 @@ async fn two_active_entries_with_near_identical_vectors_are_flagged_as_near_dupl
     );
 }
 
-// ── supersede rate + time-to-supersede ──────────────────────────────────────
-
 #[tokio::test]
 async fn a_supersede_inside_the_window_counts_toward_supersede_rate_and_time_to_supersede() {
     let store = open_store();
@@ -611,14 +584,13 @@ async fn a_supersede_inside_the_window_counts_toward_supersede_rate_and_time_to_
             &old_id,
         )
         .unwrap();
-    // Force created_at on the superseding row so the delta is exact and
-    // known, rather than "whenever the test ran".
+    // Pin created_at on the new row and its supersede edge so the delta is
+    // exact, not "whenever the test ran".
     store
         .execute_batch(&format!(
             "UPDATE notes SET created_at = {new_created_at} WHERE title = 'New'"
         ))
         .unwrap();
-    // And pin the supersede edge's own created_at inside the window too.
     store
         .execute_batch(&format!(
             "UPDATE memory_edges SET created_at = {new_created_at} WHERE kind = 'supersedes'"
@@ -630,9 +602,8 @@ async fn a_supersede_inside_the_window_counts_toward_supersede_rate_and_time_to_
         .await
         .unwrap();
 
-    // window_end defaults to the newest entry's created_at since there is no
-    // git repo; the supersede lands exactly at window_end, well inside the
-    // window, and the old decision was active at window_start.
+    // Without a git repo, window_end defaults to the newest entry's created_at,
+    // so the supersede at new_created_at falls inside it.
     assert_eq!(snap.state.rec_supersede_rate.numerator, 1);
     assert_eq!(snap.state.rec_supersede_rate.denominator, 1);
     assert_eq!(snap.state.rec_time_to_supersede_p50.sample_size, 1);
@@ -641,8 +612,6 @@ async fn a_supersede_inside_the_window_counts_toward_supersede_rate_and_time_to_
         Some(new_created_at - old_created_at)
     );
 }
-
-// ── open question age, closest honest definition ────────────────────────────
 
 #[tokio::test]
 async fn a_question_with_no_related_answer_is_open_and_ages_from_window_end() {
@@ -665,8 +634,8 @@ async fn a_question_with_no_related_answer_is_open_and_ages_from_window_end() {
         .await
         .unwrap();
 
-    // window_end anchors to the newest entry's created_at (1_000_000, the
-    // only entry) since there is no git repo, so the question's age is 0.
+    // Without a git repo, window_end anchors to the newest (only) entry, so
+    // the question's age is 0.
     assert_eq!(snap.state.rec_open_question_age_p50.sample_size, 1);
     assert_eq!(snap.state.rec_open_question_age_p50.median_seconds, Some(0));
 }
@@ -710,8 +679,6 @@ async fn a_question_related_to_an_answer_is_not_counted_as_open() {
         "a question related to an answer entry must not be counted as open"
     );
 }
-
-// ── unresolved conflicts ─────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn a_contradicts_edge_between_two_active_entries_is_an_unresolved_conflict() {
@@ -757,13 +724,10 @@ async fn a_contradicts_edge_where_one_side_was_superseded_is_resolved() {
     );
 }
 
-// ── cmp.lines_per_decision via git log --numstat ────────────────────────────
-
 #[tokio::test]
 async fn lines_per_decision_sums_numstat_across_commits_in_the_window() {
     let store = open_store();
     let (dir, _head_sha) = git_repo_with_commit_at(3_000_000, "a.txt", "one\ntwo\nthree\n");
-    // A second commit adding two more lines to the same file.
     commit_at(
         dir.path(),
         3_000_100,
@@ -788,8 +752,6 @@ async fn lines_per_decision_sums_numstat_across_commits_in_the_window() {
     assert_eq!(lpd.numerator, 5, "lines added+removed across both commits");
 }
 
-// ── cmp.review_items_per_day ─────────────────────────────────────────────────
-
 #[tokio::test]
 async fn review_items_per_day_counts_the_four_review_kinds_in_the_window() {
     let store = open_store();
@@ -808,8 +770,6 @@ async fn review_items_per_day_counts_the_four_review_kinds_in_the_window() {
     assert_eq!(snap.state.cmp_review_items_per_day.numerator, 4);
     assert_eq!(snap.state.cmp_review_items_per_day.denominator, 10);
 }
-
-// ── cmp.tokens_context_estimate ──────────────────────────────────────────────
 
 #[tokio::test]
 async fn tokens_context_estimate_reflects_the_default_sections_only() {
@@ -851,8 +811,6 @@ async fn tokens_context_estimate_reflects_the_default_sections_only() {
         "the seeded decision must contribute tokens"
     );
 }
-
-// ── header shape ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn header_carries_schema_window_and_embedder_facts() {

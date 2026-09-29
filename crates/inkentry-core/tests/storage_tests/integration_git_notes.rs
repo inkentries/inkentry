@@ -1,19 +1,11 @@
-//! Integration tests for `GitNotesBackend` — concurrency and round-trip.
-//!
-//! These tests require `git` to be on PATH and are skipped if the current
-//! working directory is not inside a git repository (CI environments without
-//! git are unaffected).
-//!
-//! ## Concurrent-write safety (#185)
-//!
-//! Writes are a read-modify-write that rewrites the HEAD note with
-//! `git notes add -f` (replace semantics). Two agents writing to the *same
-//! HEAD* concurrently would race, and the loser's entry would vanish silently
-//! with both exiting 0. ADR-069 (D6) serializes every read-modify-write with a
-//! lock in the git common dir; D8 makes a writer that cannot take it fail
-//! visibly. The invariant is therefore "every entry lands or its writer fails
-//! loudly", never "all must land": heavy legitimate contention may exceed the
-//! wait budget, and that surfaces as an error, not a loss.
+// Requires `git` on PATH; skipped outside a git repository (CI environments
+// without git are unaffected).
+//
+// Writes are a read-modify-write that rewrites the HEAD note with `git notes
+// add -f` (replace semantics), so two writers to the same HEAD would race and
+// the loser's entry could vanish silently. A lock in the git common dir
+// serializes every read-modify-write, and a writer that cannot take it fails
+// visibly: every entry lands or its writer fails loudly, never a silent loss.
 
 use crate::common;
 use inkentry_core::storage::GitNotesBackend;
@@ -22,14 +14,6 @@ use inkentry_core::storage::NoteInput;
 use inkentry_core::storage::{NoteId, carrier_token};
 use serial_test::serial;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-//
-// Git-config isolation (`isolate_git_config` / `git_command`) now lives in
-// `tests/common/mod.rs`, shared across every inkentry-core integration test
-// that spawns git rather than copy-pasted per file.
-
-/// Create a temporary git repo with one initial commit.
-/// Returns the path; the repo is cleaned up when the returned `TempDir` drops.
 fn make_temp_git_repo() -> tempfile::TempDir {
     common::isolate_git_config();
     let dir = tempfile::TempDir::new().expect("tempdir");
@@ -74,8 +58,6 @@ fn note_input(kind: &str, title: &str) -> NoteInput {
         origin: None,
     }
 }
-
-// ── basic round-trip ─────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
@@ -149,7 +131,7 @@ async fn git_notes_list_without_kind_returns_all() {
         .await
         .expect("add 1");
 
-    // Make a second commit so the two notes don't overwrite each other.
+    // A second commit, so the two notes don't overwrite each other.
     std::fs::write(dir.path().join("a.txt"), "a").expect("write");
     std::process::Command::new("git")
         .args(["-C", dir.path().to_str().unwrap(), "add", "."])
@@ -177,8 +159,6 @@ async fn git_notes_list_without_kind_returns_all() {
     assert_eq!(all.len(), 2, "expected two notes across two commits");
 }
 
-// ── list_by_source_ref: anchor-commit filtering ──────────────────────────────
-
 // The HEAD sha of the repo at `root`, isolated from the developer's git config.
 fn head_sha(root: &std::path::Path) -> String {
     let out = common::git_command(root)
@@ -200,14 +180,12 @@ async fn git_notes_list_by_source_ref_filters_by_anchor_commit() {
     let root = dir.path();
     let backend = GitNotesBackend::with_root(root.to_path_buf());
 
-    // Entry one anchors to commit A (the initial commit / current HEAD).
     backend
         .add(note_input("decision", "on-A"))
         .await
         .expect("add A");
     let sha_a = head_sha(root);
 
-    // Move HEAD to commit B, then entry two anchors to B.
     common::git_command(root)
         .args(["commit", "--no-gpg-sign", "--allow-empty", "-m", "second"])
         .output()
@@ -236,7 +214,6 @@ async fn git_notes_list_by_source_ref_filters_by_anchor_commit() {
     let titles_b: Vec<&str> = on_b.iter().map(|n| n.title.as_str()).collect();
     assert_eq!(titles_b, vec!["on-B"], "B must return only B's entry");
 
-    // A short prefix of A's sha matches too.
     let on_a_prefix = backend
         .list_by_source_ref(&sha_a[..8], 50, false, None)
         .await
@@ -247,7 +224,6 @@ async fn git_notes_list_by_source_ref_filters_by_anchor_commit() {
         "the 8-char prefix must match A's entry"
     );
 
-    // A commit that carries no note returns nothing (no false positives).
     let none = backend
         .list_by_source_ref("0000000000000000000000000000000000000000", 50, false, None)
         .await
@@ -255,11 +231,9 @@ async fn git_notes_list_by_source_ref_filters_by_anchor_commit() {
     assert!(none.is_empty(), "a commit with no note must return nothing");
 }
 
-// ── concurrent write safety (#185) ───────────────────────────────────────────
-
-/// Two tasks writing a note to the same HEAD concurrently must both survive, as
-/// well-formed records of the two distinct writers. Serialized by the notes
-/// lock, so the count is exact rather than timing-dependent.
+// Two tasks writing a note to the same HEAD concurrently must both survive,
+// serialized by the notes lock so the count is exact rather than
+// timing-dependent.
 #[tokio::test]
 #[serial]
 async fn git_notes_concurrent_same_head_stays_consistent() {
@@ -269,7 +243,6 @@ async fn git_notes_concurrent_same_head_stays_consistent() {
     let b1 = GitNotesBackend::with_root(root.clone());
     let b2 = GitNotesBackend::with_root(root.clone());
 
-    // Two concurrent adds to the same HEAD; both must return Ok (no panic).
     let (r1, r2) = tokio::join!(
         b1.add(note_input("note", "agent A")),
         b2.add(note_input("note", "agent B")),
@@ -306,11 +279,9 @@ async fn git_notes_concurrent_same_head_stays_consistent() {
     );
 }
 
-/// Deterministic sibling of the concurrent test: two *sequential* adds to the
-/// same HEAD both survive as distinct records. The concurrent test only reaches
-/// the 2-note path on a rare scheduling race (~1% of runs), so its distinct /
-/// well-formed checks are seldom exercised; this locks the same-HEAD append
-/// contract down on every run without any timing dependence.
+// Deterministic sibling of the concurrent test above: the concurrent test only
+// reaches the 2-note path on a rare scheduling race, so this locks the
+// same-HEAD append contract down on every run.
 #[tokio::test]
 #[serial]
 async fn git_notes_sequential_same_head_both_survive_distinct() {
@@ -333,7 +304,6 @@ async fn git_notes_sequential_same_head_both_survive_distinct() {
     );
 }
 
-/// Archive marks an entry with status=archived and hides it from default list.
 #[tokio::test]
 #[serial]
 async fn git_notes_archive_hides_entry() {
@@ -365,7 +335,6 @@ async fn git_notes_archive_hides_entry() {
     assert_eq!(all[0].status, "archived");
 }
 
-/// Unsupported methods return clear errors rather than panicking.
 #[tokio::test]
 #[serial]
 async fn git_notes_unsupported_methods_return_errors() {
@@ -398,8 +367,6 @@ async fn git_notes_unsupported_methods_return_errors() {
     );
 }
 
-// ── append_to_git_notes write-through helper ─────────────────────────────────
-
 use inkentry_core::storage::{NoteRecord, append_to_git_notes, entity_id};
 
 fn make_note_record(id: i64, title: &str) -> NoteRecord {
@@ -429,7 +396,6 @@ fn make_note_record(id: i64, title: &str) -> NoteRecord {
     }
 }
 
-/// (a) A single `append_to_git_notes` call writes a parseable note to HEAD.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_writes_note_when_enabled() {
@@ -441,7 +407,6 @@ async fn append_to_git_notes_writes_note_when_enabled() {
         .await
         .expect("append should succeed");
 
-    // Read back the raw note text.
     let out = std::process::Command::new("git")
         .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(root)
@@ -453,7 +418,7 @@ async fn append_to_git_notes_writes_note_when_enabled() {
     let trimmed = text.trim();
     assert!(!trimmed.is_empty(), "note should not be empty");
 
-    // Should be valid JSON on a single line.
+    // Stored as a single line of JSON.
     let parsed: serde_json::Value =
         serde_json::from_str(trimmed).expect("note should be valid JSON");
     assert_eq!(
@@ -464,7 +429,6 @@ async fn append_to_git_notes_writes_note_when_enabled() {
     assert_eq!(parsed["id"].as_i64().unwrap(), 1);
 }
 
-/// (b) A second `append_to_git_notes` call appends rather than overwrites.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_appends_not_overwrites() {
@@ -481,7 +445,6 @@ async fn append_to_git_notes_appends_not_overwrites() {
         .await
         .expect("second append");
 
-    // Both entries should be present as separate JSON lines.
     let out = std::process::Command::new("git")
         .args(["notes", "--ref=inkentry", "show", "HEAD"])
         .current_dir(root)
@@ -510,18 +473,14 @@ async fn append_to_git_notes_appends_not_overwrites() {
     assert!(ids.contains(&20), "second record (id=20) should be present");
 }
 
-/// (c) `store_in_git_notes = false` must skip the git note write entirely.
-///
-/// We verify this by calling `append_to_git_notes` only when the flag is true
-/// and confirming no note exists when it is false.  The actual config-flag
-/// gating happens in `memory_add`; here we test the conditional call pattern.
+// The actual config-flag gating happens in `memory_add`; this only tests the
+// conditional call pattern (skip the append when the flag is false).
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_skipped_when_flag_is_false() {
     let dir = make_temp_git_repo();
     let root = dir.path();
 
-    // Simulate store_in_git_notes = false: do NOT call append_to_git_notes.
     let store_in_git_notes = false;
     let record = make_note_record(99, "should not appear");
     if store_in_git_notes {
@@ -536,16 +495,14 @@ async fn append_to_git_notes_skipped_when_flag_is_false() {
         .output()
         .expect("git notes show command");
 
-    // When the flag is false no note is written, so git notes show should fail.
     assert!(
         !out.status.success(),
         "no note should exist when store_in_git_notes=false"
     );
 }
 
-/// (d) `append_to_git_notes` returns `Err` when HEAD does not exist (not a git repo).
-///     The CLI path wraps this in a `tracing::warn!` + `return Ok(())` — this test
-///     verifies the error surface so callers can rely on it.
+// The CLI path wraps this in a warning and `Ok(())`; this verifies the raw
+// error surface underneath.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_returns_err_outside_git_repo() {
@@ -555,21 +512,12 @@ async fn append_to_git_notes_returns_err_outside_git_repo() {
     assert!(result.is_err(), "should return Err when not in a git repo");
 }
 
-// ── security regression: note bodies must go via stdin, never argv ──────────
-//
-// `git notes add` used to receive the note body as a `-m <arg>` argv
-// value. A body that itself looked like a git option (e.g. starting with `-`)
-// could previously be misparsed as an option to `git notes add` rather than
-// literal note content. These tests prove (a) option-like / metacharacter-
-// laden bodies round-trip as *literal* note text rather than being
-// interpreted or truncated, which is only possible if they're delivered via
-// stdin (`-F -`) rather than argv (`-m`), and (b) the same holds for
-// `GitNotesBackend::add`/`archive`, which route through `add_note_stdin`.
+// Note bodies are delivered via stdin (`-F -`), never argv, so an option-like
+// or metacharacter-laden body must round-trip as literal text rather than
+// being interpreted or truncated by `git notes add` — for both the raw
+// `append_to_git_notes` helper and `GitNotesBackend::add`/`archive`, which
+// route through `add_note_stdin`.
 
-/// A note body that is itself option-shaped (starts with `-`) must be stored
-/// and read back byte-for-byte, not interpreted as a `git notes add` option
-/// or truncated. This would fail (or `git notes add` would error/misbehave)
-/// if the body were still passed via `-m <body>` on argv.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_body_starting_with_dash_is_literal() {
@@ -599,10 +547,8 @@ async fn append_to_git_notes_body_starting_with_dash_is_literal() {
         "option-like body must round-trip literally, proving it was never argv-parsed"
     );
 
-    // The exploit this guards against: if the body had leaked onto argv as an
-    // option value or been split by the shell/argv parser, it could reach
-    // paths outside the repo. Confirm no such file was created as a side
-    // effect of writing this note.
+    // If the body had leaked onto argv as an option value, it could reach
+    // paths outside the repo; confirm no such side effect occurred.
     assert!(
         !std::path::Path::new("/tmp/pwned").exists(),
         "option-like note body must never be interpreted as a git option"
@@ -610,9 +556,8 @@ async fn append_to_git_notes_body_starting_with_dash_is_literal() {
     let _ = std::fs::remove_file("/tmp/pwned");
 }
 
-/// A note body containing shell metacharacters must round-trip untouched.
-/// All git spawns in this codebase use argv vectors (no shell), so this is
-/// defense-in-depth / regression coverage rather than a shell-injection PoC.
+// All git spawns in this codebase use argv vectors (no shell), so this is
+// defense-in-depth rather than a shell-injection PoC.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_body_with_shell_metacharacters_is_literal() {
@@ -647,10 +592,9 @@ async fn append_to_git_notes_body_with_shell_metacharacters_is_literal() {
     );
 }
 
-/// `GitNotesBackend::add` (used by the `MemoryBackend` trait impl, i.e. the
-/// `inkentry memory add` path) also writes via `add_note_stdin`. Confirm an
-/// option-like note title/body round-trips literally through that path too —
-/// not just through the lower-level `append_to_git_notes` free function.
+// `GitNotesBackend::add` also writes via `add_note_stdin`; confirm an
+// option-like title/body round-trips literally through that path too, not
+// just through the lower-level `append_to_git_notes` free function.
 #[tokio::test]
 #[serial]
 async fn git_notes_backend_add_with_option_like_body_round_trips() {
@@ -677,14 +621,12 @@ async fn git_notes_backend_add_with_option_like_body_round_trips() {
     assert!(!std::path::Path::new("/tmp/should-not-exist-oss61").exists());
 }
 
-// ── JSONL canonical: permissive read / preserving write (ADR-059) ────────────
-//
 // A note blob is JSON Lines interleaved with foreign content (prose, other
 // tools' lines). Reads skip foreign lines without erroring; writes preserve
 // every foreign line and every untargeted inkentry record byte-for-byte.
 
-/// Write a raw note blob verbatim to HEAD's `refs/notes/inkentry` note, via
-/// stdin (`-F -`) so arbitrary content is delivered literally.
+// Writes a raw note blob verbatim, via stdin so arbitrary content is
+// delivered literally.
 fn write_raw_note(root: &std::path::Path, blob: &str) {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -722,7 +664,6 @@ fn write_raw_note(root: &std::path::Path, blob: &str) {
     assert!(child.wait().expect("wait").success(), "git notes add");
 }
 
-/// Read HEAD's raw `refs/notes/inkentry` note blob.
 fn read_raw_note(root: &std::path::Path) -> String {
     let out = std::process::Command::new("git")
         .args([
@@ -739,8 +680,8 @@ fn read_raw_note(root: &std::path::Path) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The ADR-059 conformance fixture: three real `decision` records interleaved
-/// with markdown prose and blank lines.
+// Three real `decision` records interleaved with markdown prose and blank
+// lines.
 fn adr_conformance_blob() -> String {
     let rec = |id: i64, memory: &str| {
         serde_json::to_string(&make_note_record(id, memory)).expect("serialize record")
@@ -764,9 +705,6 @@ fn adr_conformance_blob() -> String {
     )
 }
 
-/// (a) The ADR worked example round-trips: reading yields exactly the three
-/// `decision` records in order, ignoring the four prose blocks and blank lines,
-/// with no error.
 #[tokio::test]
 #[serial]
 async fn git_notes_adr_conformance_read_skips_prose() {
@@ -788,8 +726,6 @@ async fn git_notes_adr_conformance_read_skips_prose() {
     );
 }
 
-/// (b) A blob with a foreign line and no inkentry records reads as an empty list
-/// with no error; a permissive read never fails on unparseable lines.
 #[tokio::test]
 #[serial]
 async fn git_notes_read_foreign_only_is_empty_no_error() {
@@ -806,8 +742,6 @@ async fn git_notes_read_foreign_only_is_empty_no_error() {
     assert!(notes.is_empty(), "no inkentry records, no error");
 }
 
-/// (c) `add` (append) preserves all prior content: the four prose blocks and the
-/// three original records are retained, and the blob now holds four records.
 #[tokio::test]
 #[serial]
 async fn git_notes_add_preserves_prose_and_siblings() {
@@ -821,7 +755,6 @@ async fn git_notes_add_preserves_prose_and_siblings() {
         .await
         .expect("add fourth");
 
-    // Prose retained verbatim.
     let blob = read_raw_note(root);
     assert!(
         blob.contains("# Implement payment by Stripe"),
@@ -832,7 +765,6 @@ async fn git_notes_add_preserves_prose_and_siblings() {
         "prose kept"
     );
 
-    // Four records now readable, originals intact and in order.
     let notes = backend.list(None, 100, false, None).await.expect("list");
     assert_eq!(notes.len(), 4, "three original + one appended");
     assert_eq!(notes[0].id, carrier_token(1));
@@ -841,8 +773,6 @@ async fn git_notes_add_preserves_prose_and_siblings() {
     assert_eq!(notes[3].title, "a fourth decision");
 }
 
-/// (c) `archive` of the middle record sets only that record's status; the other
-/// two records and all prose lines are unchanged in content and position.
 #[tokio::test]
 #[serial]
 async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
@@ -857,7 +787,6 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
         .expect("archive middle");
     assert!(archived, "middle record archived");
 
-    // Prose retained.
     let blob = read_raw_note(root);
     assert!(
         blob.contains("# Implement payment by Stripe"),
@@ -865,7 +794,6 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     );
     assert!(blob.contains("## Technical details"), "second heading kept");
 
-    // Records 1 and 3 still active; only record 2 archived.
     let active = backend.list(None, 100, false, None).await.expect("active");
     let active_ids: Vec<NoteId> = active.iter().map(|n| n.id.clone()).collect();
     assert_eq!(
@@ -883,16 +811,12 @@ async fn git_notes_archive_does_not_clobber_siblings_or_prose() {
     assert_eq!(rec2.status, "archived", "only record 2 is archived");
 }
 
-/// `archive` must append a new state-update record for the entity rather than
-/// rewrite the matched line in place, mirroring
-/// `append_state_update_appends_never_rewrites` but for `GitNotesBackend`'s
-/// own primary-store `archive` (`--backend git-notes`, not the SQLite-primary
-/// carrier that free function serves). Checked directly on the raw ref,
-/// single-repo: a two-clone merge cannot distinguish the two here, because
-/// `cat_sort_uniq` reconstructs a rewrite's discarded original line from any
-/// clone that never touched it, making a rewrite and an append converge to
-/// the same union either way. Only the raw line count on the writing repo
-/// itself, before any merge, tells them apart.
+// `archive` must append a state-update record rather than rewrite the
+// matched line in place. Checked on the raw ref in a single repo, because a
+// two-clone merge would make a rewrite and an append converge to the same
+// union (`cat_sort_uniq` reconstructs a rewrite's discarded line from any
+// clone that never touched it) — only the writer's own line count, before
+// any merge, tells them apart.
 #[tokio::test]
 #[serial]
 async fn git_notes_backend_archive_appends_never_rewrites() {
@@ -948,9 +872,9 @@ async fn git_notes_backend_archive_appends_never_rewrites() {
     assert_eq!(all[0].status, "archived");
 }
 
-/// Archiving the same entity twice (sequentially, one machine) must converge
-/// to one folded, archived entry, not a duplicate or a conflict, even though
-/// each call appends its own state-update record with its own minted id.
+// Archiving the same entity twice must converge to one folded, archived
+// entry, even though each call appends its own state-update record with its
+// own minted id.
 #[tokio::test]
 #[serial]
 async fn git_notes_backend_archive_twice_is_idempotent() {
@@ -975,23 +899,17 @@ async fn git_notes_backend_archive_twice_is_idempotent() {
     assert_eq!(all[0].status, "archived");
 }
 
-// ── concurrent append safety (#185 / ADR-069 D8) ─────────────────────────────
-
-/// The D8 invariant for N concurrent writers: every writer's entry **lands or
-/// its writer fails visibly**, and the two sets are disjoint and complete.
-///
-/// Regression guard for #185, where an unserialized read-modify-write dropped
-/// entries with every writer exiting 0. "All must land" is deliberately NOT
-/// the invariant: on a slow runner, N queued writers legitimately exceed the
-/// lock's wait budget and the back of the queue fails with the D8 error. That
-/// is the designed outcome; silence is the bug.
-///
-/// Asserts, given landed = ids read back and failed = ids whose append
-/// returned `Err`:
-/// - silent loss is zero: every id is in landed or in failed,
-/// - no false failure: no id is in both (an `Err` writer must not have written),
-/// - landed is non-empty: the first holder takes a free lock, so a wedged
-///   lock cannot vacuously pass as eight visible failures.
+// Every writer's entry must land or its writer must fail visibly, and the
+// two sets are disjoint and complete. "All must land" is deliberately not the
+// invariant: on a slow runner, queued writers can legitimately exceed the
+// lock's wait budget, and that surfaces as a visible failure — silence would
+// be the bug.
+//
+// Given landed = ids read back and failed = ids whose append returned `Err`:
+// - no id is missing from both (no silent loss),
+// - no id is in both (an `Err` writer must not have written),
+// - landed is non-empty (the first holder takes a free lock, so a wedged
+//   lock can't vacuously pass as all failures).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
 async fn append_to_git_notes_concurrent_writers_land_or_fail_visibly() {
@@ -1056,14 +974,11 @@ async fn append_to_git_notes_concurrent_writers_land_or_fail_visibly() {
     );
 }
 
-/// The same D8 invariant across **separate worktrees**: land or fail visibly,
-/// disjoint and complete, at least one landing.
-///
-/// Worktrees share one `refs/notes/inkentry` (it resolves through the git
-/// common dir to the main repo's copy), so they are real contenders on one
-/// note body. This pins the lock to the common dir: a lock keyed on the
-/// per-worktree git dir would still pass the single-repo test above while
-/// serializing nothing here.
+// The same invariant across separate worktrees, which share one
+// `refs/notes/inkentry` (it resolves through the git common dir to the main
+// repo's copy) and so are real contenders on one note body. This pins the
+// lock to the common dir: a lock keyed on the per-worktree git dir would
+// still pass the single-repo test above while serializing nothing here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
 async fn append_to_git_notes_concurrent_worktrees_land_or_fail_visibly() {
@@ -1162,13 +1077,11 @@ async fn append_to_git_notes_concurrent_worktrees_land_or_fail_visibly() {
     );
 }
 
-// ── the lock itself: contract and degraded paths (ADR-069 D6) ────────────────
-
 use inkentry_core::storage::{LOCK_WAIT_BUDGET, LockAttempt, lock_notes};
 
-/// The path production locks: `<git-common-dir>/inkentry-notes.lock`. Mirrors
-/// `notes_lock_path`, including resolving git's relative answer (a plain repo
-/// answers `.git`) against the repo root and canonicalizing the result.
+// The path production locks: `<git-common-dir>/inkentry-notes.lock`. Mirrors
+// production's own resolution, including git's relative answer (a plain repo
+// answers `.git`) joined against the repo root and canonicalized.
 fn notes_lock_path(root: &std::path::Path) -> std::path::PathBuf {
     let out = std::process::Command::new("git")
         .args([
@@ -1192,10 +1105,9 @@ fn notes_lock_path(root: &std::path::Path) -> std::path::PathBuf {
     common_dir.join("inkentry-notes.lock")
 }
 
-/// Open the lock file the way production does. A lock taken through this handle
-/// really contends with `lock_notes`: std leaves same-handle (or cloned-handle)
-/// re-locking unspecified, but a distinct `open` is a distinct handle on every
-/// platform, so the conflict is well-defined.
+// A lock taken through this handle really contends with `lock_notes`: std
+// leaves same-handle re-locking unspecified, but a distinct `open` is a
+// distinct handle on every platform, so the conflict is well-defined.
 fn open_lock_file(path: &std::path::Path) -> std::fs::File {
     std::fs::OpenOptions::new()
         .read(true)
@@ -1206,11 +1118,8 @@ fn open_lock_file(path: &std::path::Path) -> std::fs::File {
         .expect("open notes lock file")
 }
 
-/// The `lock_notes` contract D5 and D8 build on: `Acquired` when free,
-/// `Contended` when held past the budget, and the guard releases on drop.
-///
-/// `Contended` must be reachable (never an indefinite block) and a dropped
-/// guard must not keep the lock held.
+// `lock_notes`: `Acquired` when free, `Contended` when held past the budget
+// (never an indefinite block), and the guard releases the lock on drop.
 #[tokio::test]
 #[serial]
 async fn lock_notes_grants_when_free_reports_contention_and_frees_on_drop() {
@@ -1231,8 +1140,8 @@ async fn lock_notes_grants_when_free_reports_contention_and_frees_on_drop() {
         "a lock held elsewhere must report Contended, not block indefinitely \
          or degrade; got {contended:?}"
     );
-    // Negative control: a `Contended` returned immediately would mean the lock
-    // was never taken and the contention above was never actually exercised.
+    // A `Contended` returned immediately would mean the contention above was
+    // never actually exercised.
     assert!(
         waited >= LOCK_WAIT_BUDGET,
         "the contended caller must wait out the {LOCK_WAIT_BUDGET:?} budget before giving up; \
@@ -1250,11 +1159,10 @@ async fn lock_notes_grants_when_free_reports_contention_and_frees_on_drop() {
     );
 }
 
-/// Contenders in **separate worktrees** must converge on one lock file.
-///
-/// A linked worktree's `--git-common-dir` answer and the main worktree's
-/// relative answer must resolve to the same identity; if each computed its
-/// own, the cross-worktree writers the lock exists for would exclude nothing.
+// Contenders in separate worktrees must converge on one lock file: a linked
+// worktree's `--git-common-dir` answer and the main worktree's relative
+// answer must resolve to the same identity, or the cross-worktree writers
+// the lock exists for would exclude nothing.
 #[tokio::test]
 #[serial]
 async fn lock_notes_contends_across_worktrees() {
@@ -1297,14 +1205,11 @@ async fn lock_notes_contends_across_worktrees() {
     );
 }
 
-/// The lock path itself is one identity: absolute, inside an existing git
-/// common dir, and byte-identical whether resolved from the main worktree or a
-/// linked one.
-///
-/// The contention test above proves the two exclude each other while both
-/// locks are live; this pins the path property directly, so a resolution
-/// change that happens to keep same-process exclusion (say, one spelling
-/// absolute and one relative to a shared cwd) still fails.
+// The contention test above proves the two exclude each other while both
+// locks are live; this pins the path property directly (absolute, inside an
+// existing git common dir, byte-identical from either worktree), so a
+// resolution change that happens to keep same-process exclusion (say, one
+// spelling absolute and one relative to a shared cwd) still fails.
 #[tokio::test]
 #[serial]
 async fn lock_path_is_one_identity_from_main_and_linked_worktrees() {
@@ -1361,14 +1266,12 @@ async fn lock_path_is_one_identity_from_main_and_linked_worktrees() {
     );
 }
 
-/// An unusable lock file degrades to an unlocked write, never an `Err`.
-///
-/// ADR-069 D8's one kept degradation: where the lock cannot exist at all,
-/// failing every write would make inkentry unusable on that filesystem to
-/// prevent a race that needs a second concurrent writer to matter.
-///
-/// A directory at the lock path makes the open fail deterministically on every
-/// platform (EISDIR on unix, access-denied on Windows).
+// An unusable lock file degrades to an unlocked write, never an `Err`: where
+// the lock cannot exist at all, failing every write would make inkentry
+// unusable on that filesystem to prevent a race that needs a second
+// concurrent writer to matter. A directory at the lock path makes the open
+// fail deterministically on every platform (EISDIR on unix, access-denied on
+// Windows).
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_proceeds_when_lock_file_is_unusable() {
@@ -1377,9 +1280,8 @@ async fn append_to_git_notes_proceeds_when_lock_file_is_unusable() {
 
     std::fs::create_dir_all(notes_lock_path(root)).expect("place a directory at the lock path");
 
-    // Negative control: prove the lock really is unusable at the path production
-    // resolves, so the write below exercises the degraded path rather than
-    // quietly locking a file this test never blocked.
+    // Prove the lock really is unusable at the path production resolves, so
+    // the write below exercises the degraded path.
     assert!(
         matches!(
             lock_notes(Some(root)).await.expect("resolve lock path"),
@@ -1399,12 +1301,11 @@ async fn append_to_git_notes_proceeds_when_lock_file_is_unusable() {
     );
 }
 
-/// A writer that cannot take a **contended** lock fails and writes nothing
-/// (ADR-069 D8). Proceeding unlocked here is the #185 read-modify-write this
-/// lock exists to prevent: the holder's entry would be silently erased.
-///
-/// Deterministic: the lock is held here for the whole call, so the writer is
-/// guaranteed to exhaust its budget rather than race for it.
+// A writer that cannot take a contended lock fails and writes nothing;
+// proceeding unlocked is exactly the read-modify-write this lock exists to
+// prevent, silently erasing the holder's entry. The lock is held here for the
+// whole call, so the writer is guaranteed to exhaust its budget rather than
+// race for it.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_fails_when_the_lock_is_contended() {
@@ -1428,14 +1329,12 @@ async fn append_to_git_notes_fails_when_the_lock_is_contended() {
     let err = result.expect_err(
         "a writer that cannot take a contended lock must fail, never proceed unlocked (D8)",
     );
-    // Negative control: too fast means the writer took the lock uncontended, so
-    // the contended path was never exercised.
+    // Too fast means the writer took the lock uncontended.
     assert!(
         waited >= LOCK_WAIT_BUDGET,
         "the writer must have waited out the {LOCK_WAIT_BUDGET:?} budget; \
          returned after {waited:?}, so it never contended"
     );
-    // The error must be actionable: name the lock and tell the user what to do.
     let msg = format!("{err:#}");
     assert!(
         msg.contains("notes lock") && msg.contains("Retry"),
@@ -1448,11 +1347,10 @@ async fn append_to_git_notes_fails_when_the_lock_is_contended() {
     );
 }
 
-/// The `--backend git-notes` writers carry the same D8 contract as the
-/// write-through helper: a contended lock fails `add` and `archive`, and
-/// nothing is written. Each call site matches on the lock outcome on its own,
-/// so one swallowed arm reopens the #185 unlocked write at that site only;
-/// this pins both sites, not just the shared helper.
+// The `--backend git-notes` writers carry the same lock contract as the
+// write-through helper: a contended lock fails `add` and `archive`, and
+// nothing is written. Each call site matches on the lock outcome on its own,
+// so this pins both sites, not just the shared helper.
 #[tokio::test]
 #[serial]
 async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
@@ -1475,8 +1373,7 @@ async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
         .await
         .expect_err("a contended lock must fail the backend add, never write unlocked (D8)");
     let waited = started.elapsed();
-    // Negative control: too fast means the add failed for some unrelated
-    // reason instead of waiting out a held lock.
+    // Too fast means the add failed for some unrelated reason.
     assert!(
         waited >= LOCK_WAIT_BUDGET,
         "the add must have waited out the {LOCK_WAIT_BUDGET:?} budget; \
@@ -1505,17 +1402,13 @@ async fn git_notes_backend_add_and_archive_fail_when_the_lock_is_contended() {
     );
 }
 
-// ── a failed note read must never be mistaken for "no note yet" ───────────────
-//
-// The windows-latest losses on main (#185's worst case): a writer whose
-// `git notes show` failed transiently treated the note as empty and rewrote it
-// as just its own line, erasing every sibling entry while holding the lock.
-// Survivor patterns in the CI logs (a contiguous tail of the serialization
-// order) are the fingerprint of exactly one such wipe per run.
+// A failed note read must never be treated as "no note yet": rewriting a
+// note whose read failed as just the writer's own line erases every sibling
+// entry while holding the lock.
 
-/// Delete the note's blob object so reads of it fail while writes still work:
-/// `git notes show` dies (exit 128), but `git notes add -f` never opens the
-/// old blob, so an unguarded read-modify-write would "succeed" and wipe it.
+// Deletes the note's blob object so reads of it fail while writes still work:
+// `git notes show` dies (exit 128), but `git notes add -f` never opens the
+// old blob, so an unguarded read-modify-write would "succeed" and wipe it.
 fn corrupt_note_blob(root: &std::path::Path) {
     let listing = git_stdout_ok(root, &["notes", "--ref=inkentry", "list"]);
     let blob_sha = listing
@@ -1537,8 +1430,8 @@ fn corrupt_note_blob(root: &std::path::Path) {
     std::fs::set_permissions(&object, perms).expect("make object writable");
     std::fs::remove_file(&object).expect("remove note blob object");
 
-    // Negative controls: the read must now fail, and the ref must still point
-    // at the blob, so a write-back would replace a body that still "exists".
+    // The read must now fail, while the ref still points at the (now
+    // missing) blob, so a write-back would replace a body that still "exists".
     let show = std::process::Command::new("git")
         .args([
             "-C",
@@ -1556,9 +1449,9 @@ fn corrupt_note_blob(root: &std::path::Path) {
     );
 }
 
-/// A writer whose read of the existing note fails must fail too, leaving the
-/// note alone. Treating the failure as "no note yet" is how one transient git
-/// error erased 6 of 8 entries on Windows CI.
+// A writer whose read of the existing note fails must fail too, leaving the
+// note alone, rather than treat the failure as "no note yet" and silently
+// erase existing entries.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_fails_when_the_existing_note_cannot_be_read() {
@@ -1589,8 +1482,8 @@ async fn append_to_git_notes_fails_when_the_existing_note_cannot_be_read() {
     );
 }
 
-/// The `--backend git-notes` write paths carry the same read-modify-write and
-/// need the same guarantee, for both `add` and `archive`.
+// The `--backend git-notes` write paths carry the same read-modify-write and
+// need the same guarantee, for both `add` and `archive`.
 #[tokio::test]
 #[serial]
 async fn git_notes_backend_add_and_archive_fail_when_the_note_cannot_be_read() {
@@ -1621,16 +1514,10 @@ async fn git_notes_backend_add_and_archive_fail_when_the_note_cannot_be_read() {
     );
 }
 
-/// The in-lock read retry paces its attempts: a persistently failing read
-/// waits out the inter-attempt backoff before surfacing, never burns its
-/// attempts in one instant.
-///
-/// Four attempts with a linearly growing 50ms base backoff sleep 300ms in
-/// total, so the 250ms floor holds deterministically on the unmutated code,
-/// while a backoff zeroed out (or a loop that no longer retries) returns in
-/// the time of a few git spawns. Pins the retry pacing that keeps the
-/// windows-latest flake absorbable; a deliberate retuning of the constants
-/// updates this floor with it.
+// Four attempts with a linearly growing 50ms base backoff sleep ~300ms in
+// total, so a 250ms floor holds deterministically on the unmutated code,
+// while a zeroed-out backoff (or a non-retrying loop) returns much faster. A
+// deliberate retuning of the constants updates this floor with it.
 #[tokio::test]
 #[serial]
 async fn append_read_retry_paces_its_attempts_before_surfacing_the_failure() {
@@ -1659,17 +1546,15 @@ async fn append_read_retry_paces_its_attempts_before_surfacing_the_failure() {
     );
 }
 
-// ── fault injection: a scripted `git` on PATH ─────────────────────────────────
-//
-// The corruption tests above can only make a read fail *persistently*; the
-// windows-latest loss was a *transient* failure, gone by the next attempt.
-// Only unix, because the shim is a shell script: the same retry code runs on
-// Windows, where the persistent-failure tests above still pin classification
-// and pacing.
+// The corruption tests above can only make a read fail persistently; this
+// group simulates a transient failure, gone by the next attempt. Only unix,
+// because the shim is a shell script — the same retry code runs on Windows,
+// where the persistent-failure tests above still pin classification and
+// pacing.
 
-/// A `git` shim prepended to PATH. Pass-through except for one scripted
-/// behaviour scoped to a single repo (matched on the child's physical cwd),
-/// so concurrent git use elsewhere is untouched. Restores PATH on drop.
+// A `git` shim prepended to PATH. Pass-through except for one scripted
+// behaviour scoped to a single repo (matched on the child's physical cwd),
+// so concurrent git use elsewhere is untouched. Restores PATH on drop.
 #[cfg(unix)]
 mod git_shim {
     use std::path::{Path, PathBuf};
@@ -1690,7 +1575,6 @@ mod git_shim {
     }
 
     impl ShimGuard {
-        /// How many inkentry note reads the shim has intercepted so far.
         pub fn note_reads(&self) -> u32 {
             std::fs::read_to_string(&self.counter)
                 .ok()
@@ -1699,7 +1583,7 @@ mod git_shim {
         }
     }
 
-    /// The real git, resolved before the shim shadows the name.
+    // The real git, resolved before the shim shadows the name.
     fn real_git() -> String {
         let out = std::process::Command::new("sh")
             .args(["-c", "command -v git"])
@@ -1733,9 +1617,9 @@ mod git_shim {
         }
     }
 
-    /// Count every `notes --ref=inkentry show` in `repo`, failing the first
-    /// `fail_n` of them with exit 128 (the transient-infrastructure shape the
-    /// windows-latest losses had). Everything else passes through.
+    // Counts every `notes --ref=inkentry show` in `repo`, failing the first
+    // `fail_n` of them with exit 128 (a transient-infrastructure shape).
+    // Everything else passes through.
     pub fn failing_note_reads(repo: &Path, fail_n: u32) -> ShimGuard {
         let repo = std::fs::canonicalize(repo).expect("canonical repo path");
         let real = real_git();
@@ -1763,9 +1647,9 @@ mod git_shim {
         install(dir, script, counter)
     }
 
-    /// Emulate git < 2.31 for `repo`: `rev-parse --path-format=absolute
-    /// --git-common-dir` echoes the unknown flag back and exits 0, exactly the
-    /// output shape old git produces. Everything else passes through.
+    // Emulates git < 2.31 for `repo`: `rev-parse --path-format=absolute
+    // --git-common-dir` echoes the unknown flag back and exits 0, exactly the
+    // output shape old git produces. Everything else passes through.
     pub fn old_git_echoing_path_format(repo: &Path) -> ShimGuard {
         let repo = std::fs::canonicalize(repo).expect("canonical repo path");
         let real = real_git();
@@ -1785,10 +1669,8 @@ mod git_shim {
     }
 }
 
-/// A transiently failing note read is absorbed by the in-lock retry: the
-/// append succeeds on a later attempt and every sibling entry survives. This
-/// is the windows-latest #185 shape itself: the same read succeeded for every
-/// sibling writer moments apart.
+// A transiently failing note read is absorbed by the in-lock retry: the
+// append succeeds on a later attempt and every sibling entry survives.
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
@@ -1828,9 +1710,9 @@ async fn append_read_retry_absorbs_a_transient_note_read_failure() {
     );
 }
 
-/// "No note yet" is a definitive answer and is not retried: the append's one
-/// read exits 1 and the write proceeds immediately. Retrying it would bill
-/// every first write on a commit the full retry backoff for nothing.
+// "No note yet" is a definitive answer and is not retried: the append's one
+// read exits 1 and the write proceeds immediately. Retrying it would bill
+// every first write on a commit the full retry backoff for nothing.
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
@@ -1862,11 +1744,10 @@ async fn a_missing_note_is_answered_in_one_read_without_retrying() {
     );
 }
 
-/// Under git < 2.31 (the flag echoed back, exit 0) the lock still lands in
-/// the real common dir, canonicalized, and no path spelled after the echoed
-/// flag is ever used. The unit tests pin `parse_absolute_dir` itself; this
-/// pins that `notes_lock_path` actually routes through that validation and
-/// that its fallback converges on the same canonical identity.
+// Under git < 2.31 (the flag echoed back, exit 0) the lock still lands in
+// the real common dir, canonicalized, and no path spelled after the echoed
+// flag is ever used. The unit tests pin `parse_absolute_dir` itself; this
+// pins that `notes_lock_path` actually routes through that validation.
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
@@ -1896,18 +1777,12 @@ async fn old_git_echoing_the_flag_still_locks_the_real_common_dir() {
     );
 }
 
-// ── the `--backend git-notes` path (append_record / archive_record) ───────────
-
-/// `GitNotesBackend::add` → `append_record` carries the same read-modify-write
-/// as the write-through helper, so it gets the same D8 invariant as the
-/// free-function guards: every add lands or fails visibly, disjoint and
-/// complete, and at least one lands. "All succeed" is deliberately not
-/// asserted: on a slow runner N queued writers legitimately exceed the lock's
-/// wait budget and the back of the queue fails with the D8 error.
-///
-/// Asserted on titles, not ids: `add` mints its id from `now_millis()` *before*
-/// taking the lock, so adds landing in one millisecond can share an id. Entry
-/// survival is what the lock guarantees.
+// `GitNotesBackend::add` carries the same read-modify-write as the
+// free-function guards: every add lands or fails visibly, disjoint and
+// complete, with at least one landing. Asserted on titles, not ids: `add`
+// mints its id from `now_millis()` before taking the lock, so adds landing in
+// one millisecond can share an id — entry survival is what the lock
+// guarantees.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
 async fn git_notes_backend_concurrent_adds_land_or_fail_visibly() {
@@ -1973,12 +1848,11 @@ async fn git_notes_backend_concurrent_adds_land_or_fail_visibly() {
     );
 }
 
-/// `GitNotesBackend::archive` → `archive_record` is the same read-modify-write
-/// in reverse, with the same D8 invariant: each archive of a distinct seeded
-/// entry either lands (the entry ends archived) or fails visibly (the entry
-/// stays active), the two sets are exactly complementary, and at least one
-/// lands. Unserialized, each writer's write-back would revive the entries its
-/// peers had just archived, silently.
+// `GitNotesBackend::archive` is the same read-modify-write in reverse: each
+// archive of a distinct seeded entry either lands (entry ends archived) or
+// fails visibly (entry stays active), the two sets are exactly
+// complementary, and at least one lands. Unserialized, each writer's
+// write-back would silently revive the entries its peers had just archived.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
 async fn git_notes_backend_concurrent_archives_land_or_fail_visibly() {
@@ -2064,11 +1938,11 @@ async fn git_notes_backend_concurrent_archives_land_or_fail_visibly() {
     );
 }
 
-/// `add` and `archive` take the notes lock exactly once; nothing beneath them
-/// takes it again. A nested acquisition would not hang (the wait is bounded),
-/// it would silently burn a full budget and then degrade to an unlocked write.
-/// An *uncontended* op is a handful of git subprocesses (~30ms), so reaching the
-/// budget at all means it waited on a lock it already holds.
+// `add` and `archive` take the notes lock exactly once; nothing beneath them
+// takes it again. A nested acquisition would not hang (the wait is bounded),
+// it would silently burn a full budget and then degrade to an unlocked write.
+// An uncontended op is a handful of git subprocesses (~30ms), so reaching the
+// budget at all means it waited on a lock it already holds.
 #[tokio::test]
 #[serial]
 async fn git_notes_backend_uncontended_add_and_archive_never_reach_the_wait_budget() {
@@ -2098,17 +1972,14 @@ async fn git_notes_backend_uncontended_add_and_archive_never_reach_the_wait_budg
     }
 }
 
-// ── survival across git history rewrites ─────────────────────────────────────
-//
 // git copies a note onto a rewritten commit only when `notes.rewriteRef` names
-// the ref, and it has no built-in default. Pre-`init` git notes is the sole
-// store, so an unconfigured repo lost the only copy on every amend/rebase.
+// the ref, and it has no built-in default: an unconfigured repo loses the
+// only copy on every amend/rebase.
 //
 // Known gap: `merge --squash` and cherry-pick onto a divergent base do not
 // carry notes even with `notes.rewriteRef` set. git honours it for `amend` and
 // `rebase` only.
 
-/// Run `git args` in `root`, asserting success.
 fn git_ok(root: &std::path::Path, args: &[&str]) {
     let out = std::process::Command::new("git")
         .current_dir(root)
@@ -2122,7 +1993,6 @@ fn git_ok(root: &std::path::Path, args: &[&str]) {
     );
 }
 
-/// Trimmed stdout of `git args` in `root`, asserting success.
 fn git_stdout_ok(root: &std::path::Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .current_dir(root)
@@ -2137,10 +2007,10 @@ fn git_stdout_ok(root: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Run a rebase with scripted editors. git runs an editor through a shell when
-/// the command holds shell metacharacters, so a value ending in `>` redirects
-/// into the file git appends as the trailing argument. Portable across the CI
-/// matrix, unlike `sed -i` (BSD and GNU disagree on its argument).
+// git runs an editor through a shell when the command holds shell
+// metacharacters, so a value ending in `>` redirects into the file git
+// appends as the trailing argument. Portable across the CI matrix, unlike
+// `sed -i` (BSD and GNU disagree on its argument).
 fn git_rebase_scripted(root: &std::path::Path, args: &[&str], seq_editor: &str, editor: &str) {
     let out = std::process::Command::new("git")
         .current_dir(root)
@@ -2156,7 +2026,7 @@ fn git_rebase_scripted(root: &std::path::Path, args: &[&str], seq_editor: &str, 
     );
 }
 
-/// The inkentry note body on HEAD, or `None` when HEAD carries no note.
+// `None` on any failed read, not only a missing note.
 fn note_on_head(root: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .current_dir(root)
@@ -2168,14 +2038,13 @@ fn note_on_head(root: &std::path::Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Commit a new `file` in `root` with subject `msg`.
 fn commit_file(root: &std::path::Path, file: &str, msg: &str) {
     std::fs::write(root.join(file), "x").expect("write");
     git_ok(root, &["add", "."]);
     git_ok(root, &["commit", "--no-gpg-sign", "-m", msg]);
 }
 
-/// A repo whose rewrites are deterministic regardless of ambient git config.
+// Rewrites here must be deterministic regardless of ambient git config.
 fn rewrite_test_repo() -> tempfile::TempDir {
     let dir = make_temp_git_repo();
     git_ok(dir.path(), &["config", "commit.gpgsign", "false"]);
@@ -2184,7 +2053,6 @@ fn rewrite_test_repo() -> tempfile::TempDir {
 
 const PRECIOUS: &str = "precious decision";
 
-/// `git commit --amend` must carry the entry onto the rewritten commit.
 #[tokio::test]
 #[serial]
 async fn note_survives_git_commit_amend() {
@@ -2222,7 +2090,6 @@ async fn note_survives_git_commit_amend() {
     );
 }
 
-/// A plain `git rebase` must carry the entry onto the replayed commit.
 #[tokio::test]
 #[serial]
 async fn note_survives_git_rebase() {
@@ -2248,7 +2115,6 @@ async fn note_survives_git_rebase() {
     );
 }
 
-/// `git rebase -i` reword must carry the entry.
 #[tokio::test]
 #[serial]
 async fn note_survives_rebase_interactive_reword() {
@@ -2280,7 +2146,6 @@ async fn note_survives_rebase_interactive_reword() {
     );
 }
 
-/// `git rebase --autosquash` (fixup) must carry the entry onto the squashed commit.
 #[tokio::test]
 #[serial]
 async fn note_survives_rebase_autosquash_fixup() {
@@ -2318,11 +2183,8 @@ async fn note_survives_rebase_autosquash_fixup() {
     );
 }
 
-// ── notes.rewriteRef carry config ────────────────────────────────────────────
-
 use inkentry_core::storage::{RewriteRefStatus, ensure_notes_rewrite_ref};
 
-/// Every configured `notes.rewriteRef` value, in config order.
 fn rewrite_ref_values(root: &std::path::Path) -> Vec<String> {
     let out = std::process::Command::new("git")
         .current_dir(root)
@@ -2335,7 +2197,6 @@ fn rewrite_ref_values(root: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Re-running must not stack duplicate config lines.
 #[tokio::test]
 #[serial]
 async fn ensure_notes_rewrite_ref_is_idempotent() {
@@ -2359,8 +2220,8 @@ async fn ensure_notes_rewrite_ref_is_idempotent() {
     );
 }
 
-/// A user's own rewriteRef must survive: the value is multi-valued, so `--add`
-/// composes instead of clobbering, and both refs keep carrying.
+// `notes.rewriteRef` is multi-valued, so `--add` composes instead of
+// clobbering: the user's own value must survive alongside ours.
 #[tokio::test]
 #[serial]
 async fn ensure_notes_rewrite_ref_composes_with_a_users_existing_value() {
@@ -2423,9 +2284,9 @@ impl Drop for RestoreGitConfigGlobal {
     }
 }
 
-/// The read is deliberately unscoped: a value the user set in *global* scope is
-/// theirs and must be honoured, so we add nothing on top of it. Pins the intent
-/// that `isolate_git_config` would otherwise hide from every test here.
+// The read is deliberately unscoped here: a value the user set in *global*
+// scope is theirs and must be honoured, so nothing is added on top of it —
+// unlike every other test here, which isolates ambient git config away.
 #[tokio::test]
 #[serial]
 async fn ensure_notes_rewrite_ref_honours_a_users_global_value() {
@@ -2456,11 +2317,8 @@ async fn ensure_notes_rewrite_ref_honours_a_users_global_value() {
     );
 }
 
-// Proves `RestoreGitConfigGlobal`'s `Drop` runs on unwind, not just on the
-// happy path: forces a panic between the guard's construction and where the
-// old set/restore code used to sit, then confirms the value is back
-// afterward. Backs the panic-safety fix for
-// `ensure_notes_rewrite_ref_honours_a_users_global_value` above.
+// Confirms `RestoreGitConfigGlobal`'s `Drop` runs on unwind, not just the
+// happy path.
 #[test]
 #[serial]
 fn restore_git_config_global_guard_restores_after_a_panic() {
@@ -2480,12 +2338,10 @@ fn restore_git_config_global_guard_restores_after_a_panic() {
     );
 }
 
-/// A user glob that already covers our ref is left alone.
-///
-/// Deferring is only safe if the glob genuinely carries, so this asserts git's
-/// behaviour end to end rather than trusting our reading of it: silently
-/// skipping the fix against a glob that did not really cover us would orphan
-/// the entry, which is the whole bug.
+// A user glob that already covers our ref is left alone. Deferring is only
+// safe if the glob genuinely carries, so this asserts git's behaviour end to
+// end rather than trusting our reading of it: skipping the fix against a
+// glob that does not really cover us would silently orphan the entry.
 #[tokio::test]
 #[serial]
 async fn ensure_notes_rewrite_ref_defers_to_a_covering_glob() {
@@ -2519,9 +2375,9 @@ async fn ensure_notes_rewrite_ref_defers_to_a_covering_glob() {
     );
 }
 
-/// A glob reaching outside `refs/notes/` does NOT cover us: git refuses to
-/// rewrite notes there ("Refusing to rewrite notes in refs/*"), so treating it
-/// as coverage would silently skip the fix and lose the entry.
+// A glob reaching outside `refs/notes/` does not cover us: git refuses to
+// rewrite notes there, so treating it as coverage would silently skip the
+// fix and lose the entry.
 #[tokio::test]
 #[serial]
 async fn ensure_notes_rewrite_ref_ignores_a_glob_outside_the_notes_namespace() {
@@ -2548,10 +2404,10 @@ async fn ensure_notes_rewrite_ref_ignores_a_glob_outside_the_notes_namespace() {
     );
 }
 
-/// `--backend git-notes` makes notes the primary store, so an unconfigured carry
-/// ref there orphans the only copy. Asserted through `list`, not just the raw
-/// note: `list` intersects against `git log`, which is what actually made the
-/// orphaned entry unreachable.
+// `--backend git-notes` makes notes the primary store, so an unconfigured
+// carry ref there orphans the only copy. Asserted through `list`, not just
+// the raw note: `list` intersects against `git log`, which is what actually
+// makes an orphaned entry unreachable.
 #[tokio::test]
 #[serial]
 async fn git_notes_backend_add_configures_carry_and_entry_survives_amend() {
@@ -2599,10 +2455,10 @@ async fn git_notes_backend_add_configures_carry_and_entry_survives_amend() {
     );
 }
 
-/// The carry config is ensured even when the notes lock is unavailable. It runs
-/// before `lock_notes` and guards a write that proceeds either way, so moving it
-/// inside the lock-acquired branch would silently stop configuring it under
-/// contention, which is exactly when an entry is most at risk.
+// The carry config is ensured even when the notes lock is unavailable: it
+// runs before `lock_notes` and guards a write that proceeds either way, so
+// moving it inside the lock-acquired branch would silently stop configuring
+// it under contention, exactly when an entry is most at risk.
 #[tokio::test]
 #[serial]
 async fn append_to_git_notes_ensures_carry_config_even_when_the_lock_is_unusable() {
@@ -2629,13 +2485,11 @@ async fn append_to_git_notes_ensures_carry_config_even_when_the_lock_is_unusable
     );
 }
 
-/// A carry config that cannot be written reports `Failed` and the write still
-/// proceeds: pre-`init` the entry has no other copy, so a config failure must
-/// never sink it.
-///
-/// A read-only `.git` blocks the config lock file while leaving object and ref
-/// writes working (they land in subdirectories), isolating a config failure from
-/// the note write. Unix-only: it turns on the directory mode.
+// A carry config that cannot be written reports `Failed` and the write still
+// proceeds: the entry has no other copy, so a config failure must never sink
+// it. A read-only `.git` blocks the config lock file while leaving object and
+// ref writes working (they land in subdirectories), isolating a config
+// failure from the note write. Unix-only: it turns on the directory mode.
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
@@ -2697,14 +2551,10 @@ async fn append_to_git_notes_proceeds_when_the_carry_config_cannot_be_written() 
     );
 }
 
-// ── ADR-069 D2/D5: merging fetched notes ─────────────────────────────────────
-
 use inkentry_core::storage::{NotesMergeOutcome, merge_tracking_notes};
 
-/// Raw stored bytes of HEAD's `refs/notes/inkentry` blob.
-///
-/// Reads the blob object rather than `git notes show`, so the assertion is
-/// about what git actually stored and not about what the porcelain prints.
+// Reads the blob object rather than `git notes show`, so the assertion is
+// about what git actually stored, not about what the porcelain prints.
 fn raw_note_blob_bytes(root: &std::path::Path) -> Vec<u8> {
     let list = std::process::Command::new("git")
         .args([
@@ -2733,9 +2583,9 @@ fn raw_note_blob_bytes(root: &std::path::Path) -> Vec<u8> {
     out.stdout
 }
 
-/// Point `refs/notes/origin/inkentry` at the current working ref, then reset the
-/// working ref to `state` — simulating "a teammate's notes arrived on the
-/// tracking ref via `git fetch`" without any network.
+// Points `refs/notes/origin/inkentry` at the current working ref, then
+// deletes the working ref, simulating a teammate's notes having arrived on
+// the tracking ref via `git fetch`, without any network.
 fn park_working_ref_as_tracking(root: &std::path::Path) {
     let run = |args: &[&str]| {
         let out = std::process::Command::new("git")
@@ -2757,14 +2607,12 @@ fn park_working_ref_as_tracking(root: &std::path::Path) {
     run(&["update-ref", "-d", "refs/notes/inkentry"]);
 }
 
-/// (D2) The newline invariant that `cat_sort_uniq` rests on.
-///
-/// `append_to_git_notes` builds its body with `format!("{}\n{}", …)` and **no**
-/// trailing newline; git's `notes add -F -` normalization is the only thing
-/// that appends one. Without it a union welds the last line of one side onto
-/// the first line of the other and both records stop parsing. That behaviour is
-/// owned by git, not by inkentry, so it is pinned here rather than assumed: this
-/// fails if git ever stops normalizing.
+// The newline invariant that `cat_sort_uniq` rests on: `append_to_git_notes`
+// builds its body with no trailing newline, and git's `notes add -F -`
+// normalization is the only thing that appends one. Without it a union welds
+// the last line of one side onto the first line of the other and both
+// records stop parsing. That behaviour is owned by git, not by inkentry, so
+// it is pinned here rather than assumed.
 #[tokio::test]
 #[serial]
 async fn git_notes_add_normalizes_a_body_with_no_trailing_newline() {
@@ -2787,9 +2635,9 @@ async fn git_notes_add_normalizes_a_body_with_no_trailing_newline() {
     );
 }
 
-/// (D2) The invariant's payoff: a `cat_sort_uniq` union of two notes that were
-/// each written without a trailing newline leaves every record parseable, with
-/// no welded line.
+// The invariant's payoff: a `cat_sort_uniq` union of two notes that were each
+// written without a trailing newline leaves every record parseable, with no
+// welded line.
 #[tokio::test]
 #[serial]
 async fn cat_sort_uniq_union_never_welds_records() {
@@ -2824,8 +2672,8 @@ async fn cat_sort_uniq_union_never_welds_records() {
     );
 }
 
-/// (D5) A fetched teammate note is invisible until the merge, and visible
-/// after it. This is the whole point of the read-path merge.
+// A fetched teammate note is invisible until the merge, and visible after
+// it. This is the whole point of the read-path merge.
 #[tokio::test]
 #[serial]
 async fn merge_makes_fetched_notes_visible() {
@@ -2856,8 +2704,8 @@ async fn merge_makes_fetched_notes_visible() {
     );
 }
 
-/// (D5) No tracking ref (the solo / no-remote user) is a silent no-op that
-/// never disturbs local notes and never fails the read.
+// No tracking ref (the solo / no-remote user) is a silent no-op that never
+// disturbs local notes and never fails the read.
 #[tokio::test]
 #[serial]
 async fn merge_without_a_tracking_ref_is_a_silent_no_op() {
@@ -2889,8 +2737,8 @@ async fn merge_without_a_tracking_ref_is_a_silent_no_op() {
     );
 }
 
-/// (D5/D6) A held lock skips the merge instead of waiting the reader out or
-/// failing it. The union is idempotent, so the next read catches up.
+// A held lock skips the merge instead of waiting the reader out or failing
+// it. The union is idempotent, so the next read catches up.
 #[tokio::test]
 #[serial]
 async fn merge_skips_when_the_lock_is_held() {
@@ -2929,11 +2777,10 @@ async fn merge_skips_when_the_lock_is_held() {
     assert!(after.iter().any(|n| n.title == "their decision"));
 }
 
-/// (D2) `cat_sort_uniq` sorts lines lexicographically, so blob order stops
-/// being chronological after a merge. Reads must sort by `created_at`.
-///
-/// The fixture is written so blob/lexicographic order and chronological order
-/// disagree: ids ascend while `created_at` descends.
+// `cat_sort_uniq` sorts lines lexicographically, so blob order stops being
+// chronological after a merge; reads must sort by `created_at`. The fixture
+// is written so blob/lexicographic order and chronological order disagree:
+// ids ascend while `created_at` descends.
 #[tokio::test]
 #[serial]
 async fn read_orders_records_by_created_at_not_blob_order() {
@@ -2966,9 +2813,8 @@ async fn read_orders_records_by_created_at_not_blob_order() {
     );
 }
 
-// ── ADR-069 D5: what the merge must never do ─────────────────────────────────
-
-/// Run `git args` in `root`, returning the raw `Output` (no success assertion).
+// Unlike the other git helpers here, this returns the raw `Output` with no
+// success assertion.
 fn git_at(root: &std::path::Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new("git")
         .args(["-C", root.to_str().unwrap()])
@@ -2977,7 +2823,6 @@ fn git_at(root: &std::path::Path, args: &[&str]) -> std::process::Output {
         .expect("git")
 }
 
-/// Trimmed stdout of `git args` in `root`, asserting success.
 fn git_stdout_at(root: &std::path::Path, args: &[&str]) -> String {
     let out = git_at(root, args);
     assert!(
@@ -2988,10 +2833,10 @@ fn git_stdout_at(root: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-/// Put a genuinely diverged pair in place: a different note for HEAD on the
-/// tracking ref and on the working ref, so a merge has a real conflict to
-/// resolve. A fast-forward (empty working ref) would not exercise the strategy
-/// at all, which is what most of these assertions are about.
+// Puts a genuinely diverged pair in place: a different note for HEAD on the
+// tracking ref and on the working ref, so a merge has a real conflict to
+// resolve. A fast-forward (empty working ref) would not exercise the
+// strategy at all.
 fn seed_diverged_notes(root: &std::path::Path) {
     write_raw_note(
         root,
@@ -3004,13 +2849,11 @@ fn seed_diverged_notes(root: &std::path::Path) {
     );
 }
 
-/// (D5) The merge leaves no merge state behind in the git dir.
-///
-/// The `notes.mergeStrategy` default is `manual`: on a real conflict it exits 1
-/// and strands `NOTES_MERGE_WORKTREE`, `NOTES_MERGE_PARTIAL` and
-/// `NOTES_MERGE_REF`, wedging the user's own `git notes merge` until they run
-/// `--abort`. Passing `-s cat_sort_uniq` per invocation is the only thing that
-/// avoids it, so the absence of the debris is asserted, not assumed.
+// The `notes.mergeStrategy` default is `manual`: on a real conflict it exits
+// 1 and strands `NOTES_MERGE_WORKTREE`, `NOTES_MERGE_PARTIAL` and
+// `NOTES_MERGE_REF`, wedging the user's own `git notes merge` until they run
+// `--abort`. Passing `-s cat_sort_uniq` per invocation is the only thing that
+// avoids it, so the absence of the debris is asserted, not assumed.
 #[tokio::test]
 #[serial]
 async fn merge_leaves_no_notes_merge_state_in_the_git_dir() {
@@ -3037,14 +2880,11 @@ async fn merge_leaves_no_notes_merge_state_in_the_git_dir() {
     }
 }
 
-/// (D5) A user's own `notes.mergeStrategy` can neither drop a teammate's note
-/// nor be rewritten by inkentry.
-///
-/// `ours` is the dangerous setting: it resolves a conflict by discarding the
-/// other side, so a merge that honoured it would silently drop exactly what the
-/// merge exists to surface. `-s` on the command line outranks both the general
-/// and the per-ref (`notes.inkentry.mergeStrategy`) scopes, which is why the
-/// strategy is passed per invocation instead of configured.
+// `ours` is the dangerous setting: it resolves a conflict by discarding the
+// other side, so a merge that honoured it would silently drop exactly what
+// the merge exists to surface. `-s` on the command line outranks both the
+// general and the per-ref (`notes.inkentry.mergeStrategy`) scopes, which is
+// why the strategy is passed per invocation instead of configured.
 #[tokio::test]
 #[serial]
 async fn merge_overrides_a_user_merge_strategy_that_would_drop_the_other_side() {
@@ -3080,13 +2920,12 @@ async fn merge_overrides_a_user_merge_strategy_that_would_drop_the_other_side() 
     );
 }
 
-/// (D5, security) The read path does no network.
-///
-/// The merge folds in only what the user's own `git fetch` already wrote. That
-/// is what lets a read work with the remote unreachable, and it keeps egress off
-/// a path the user never pointed at a remote. Pinned by making any network
-/// attempt fail loudly: `origin` is configured, with the refspec `inkentry init`
-/// writes, but points at a path that does not exist.
+// The read path does no network: the merge folds in only what the user's own
+// `git fetch` already wrote. That is what lets a read work with the remote
+// unreachable, and it keeps egress off a path the user never pointed at a
+// remote. Pinned by making any network attempt fail loudly: `origin` is
+// configured, with the refspec `inkentry init` writes, but points at a path
+// that does not exist.
 #[tokio::test]
 #[serial]
 async fn merge_does_no_network_and_reads_with_an_unreachable_origin() {
@@ -3147,20 +2986,16 @@ async fn merge_does_no_network_and_reads_with_an_unreachable_origin() {
     );
 }
 
-/// (D5, security) The merge never fetches: an entry the user has not fetched
-/// stays invisible.
-///
-/// The sibling test proves a read survives an unreachable remote, but an
-/// unreachable remote cannot tell a merge that skipped the network from one that
-/// tried and failed — both look identical. Here `origin` is real, reachable, and
-/// holds a note this repo has never fetched, so an implicit fetch would visibly
-/// succeed: the tracking ref would appear and the entry would surface on the
-/// read. Both are asserted absent, which is what makes the property testable at
-/// all.
-///
-/// Travel is deliberately fetch **then** merge: the user's own `git fetch` is
-/// the only thing that moves data, so inkentry reading memory never reaches the
-/// network on its own.
+// The sibling test above proves a read survives an unreachable remote, but
+// that alone cannot tell a merge that skipped the network from one that
+// tried and failed — both look identical there. Here `origin` is real,
+// reachable, and holds a note this repo has never fetched, so an implicit
+// fetch would visibly succeed: the tracking ref would appear and the entry
+// would surface on the read. Both are asserted absent.
+//
+// Order is deliberately fetch-then-merge: the user's own `git fetch` is the
+// only thing that moves data, so inkentry reading memory never reaches the
+// network on its own.
 #[tokio::test]
 #[serial]
 async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
@@ -3253,23 +3088,20 @@ async fn merge_never_fetches_so_an_unfetched_entry_stays_invisible() {
     );
 }
 
-// ── D5/D6: the lock contract, across real processes ──────────────────────────
-
-/// Repo root the [`lock_holder_child`] helper process locks. Set only by
-/// [`merge_skips_without_touching_the_ref_when_another_process_holds_the_lock`].
+// Repo root the `lock_holder_child` helper process locks; set only by
+// `merge_skips_without_touching_the_ref_when_another_process_holds_the_lock`.
 const LOCK_HOLDER_REPO_ENV: &str = "INKENTRY_TEST_LOCK_HOLDER_REPO";
 
-/// Marker the helper writes once it holds the lock.
+// Marker the helper writes once it holds the lock.
 fn held_marker(root: &std::path::Path) -> std::path::PathBuf {
     root.join("lock-held.marker")
 }
 
-/// Marker the parent writes to tell the helper to release and exit.
+// Marker the parent writes to tell the helper to release and exit.
 fn release_marker(root: &std::path::Path) -> std::path::PathBuf {
     root.join("lock-release.marker")
 }
 
-/// Poll for `path` to appear, up to `budget`. Returns whether it showed up.
 fn wait_for_marker(path: &std::path::Path, budget: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + budget;
     while std::time::Instant::now() < deadline {
@@ -3281,12 +3113,11 @@ fn wait_for_marker(path: &std::path::Path, budget: std::time::Duration) -> bool 
     false
 }
 
-/// Not a test: the lock-holding half of the cross-process test below, which
-/// re-executes this binary to run it. Inert (and instantly green) unless
-/// [`LOCK_HOLDER_REPO_ENV`] is set, so a plain `--ignored` run cannot hang.
-///
-/// Takes the lock through the real `lock_notes`, so the contention it creates is
-/// the production one rather than a re-implementation of it.
+// Not a test: the lock-holding half of the cross-process test below, which
+// re-executes this binary to run it. Inert (and instantly green) unless
+// `LOCK_HOLDER_REPO_ENV` is set, so a plain `--ignored` run cannot hang. Takes
+// the lock through the real `lock_notes`, so the contention it creates is the
+// production one rather than a re-implementation of it.
 #[tokio::test]
 #[ignore = "helper process: driven by the cross-process lock test"]
 async fn lock_holder_child() {
@@ -3310,17 +3141,15 @@ async fn lock_holder_child() {
     drop(guard);
 }
 
-/// (D5/D6) A lock held by a **separate process** makes the merge skip: it does
-/// not block, does not fail the read, and does not touch the ref.
-///
-/// The sibling test above contends two handles inside one process, which is the
-/// same OS primitive but not the same situation. This is the real one: two
-/// inkentry processes (agents, worktrees, a hook racing a shell) on one repo,
-/// which is the case the lock exists for. The helper takes the lock via
-/// `lock_notes` itself, so nothing here re-implements the locking under test.
-///
-/// Costs one `LOCK_WAIT_BUDGET` of wall clock: the merge must genuinely wait the
-/// budget out before giving up.
+// A lock held by a separate process makes the merge skip: it does not
+// block, does not fail the read, and does not touch the ref.
+//
+// The sibling test above contends two handles inside one process — same OS
+// primitive, different situation. This is the real one: two inkentry
+// processes (agents, worktrees, a hook racing a shell) on one repo, which is
+// the case the lock exists for. The helper takes the lock via `lock_notes`
+// itself, so nothing here re-implements the locking under test. Costs one
+// `LOCK_WAIT_BUDGET` of wall clock.
 #[tokio::test]
 #[serial]
 async fn merge_skips_without_touching_the_ref_when_another_process_holds_the_lock() {
@@ -3363,8 +3192,6 @@ async fn merge_skips_without_touching_the_ref_when_another_process_holds_the_loc
         NotesMergeOutcome::LockUnavailable,
         "a lock held by another process must skip the merge, not block or fail the read"
     );
-    // Negative control: an immediate `None` would mean the lock was never
-    // contended (a bad path, an unopenable file) and this test proved nothing.
     assert!(
         waited >= LOCK_WAIT_BUDGET,
         "the merge must wait the {LOCK_WAIT_BUDGET:?} budget out before skipping; \
@@ -3406,15 +3233,11 @@ async fn merge_skips_without_touching_the_ref_when_another_process_holds_the_loc
     );
 }
 
-// ── D2: the merge invariants with `entity_id` present ────────────────────────
-
-/// (D2/D5) A union of records carrying `entity_id` keeps every record parseable
-/// and every identity intact.
-///
-/// `cat_sort_uniq` unions raw lines knowing nothing of the schema, so a record
-/// growing a field is exactly when welding or identity loss would show up. Both
-/// sides go through `append_to_git_notes`, so the bodies are what production
-/// writes, including the missing trailing newline git has to normalize.
+// `cat_sort_uniq` unions raw lines knowing nothing of the schema, so a
+// record growing a field is exactly when welding or identity loss would show
+// up. Both sides go through `append_to_git_notes`, so the bodies are what
+// production writes, including the missing trailing newline git has to
+// normalize.
 #[tokio::test]
 #[serial]
 async fn union_merge_preserves_entity_id_on_both_sides() {
@@ -3474,12 +3297,9 @@ async fn union_merge_preserves_entity_id_on_both_sides() {
     );
 }
 
-/// (D2) The `created_at` ordering holds for records carrying `entity_id`,
-/// serialized the way production writes them.
-///
-/// The sibling ordering test hand-writes a minimal line, which cannot notice a
-/// record-shape change. This one serializes a real `NoteRecord`, so the fixture
-/// tracks whatever the struct currently is.
+// The sibling ordering test hand-writes a minimal line, which cannot notice
+// a record-shape change. This one serializes a real `NoteRecord`, so the
+// fixture tracks whatever the struct currently is.
 #[tokio::test]
 #[serial]
 async fn read_orders_records_by_created_at_with_entity_id_present() {
@@ -3511,11 +3331,9 @@ async fn read_orders_records_by_created_at_with_entity_id_present() {
     );
 }
 
-// ── The entity fold: one decision recorded twice is one entry ────────────────
-
-/// One entity, as a second machine would have recorded it: same
-/// `{kind, title, body}` (so the same `entity_id`), its own `id`/`created_at`/
-/// tags.
+// One entity, as a second machine would have recorded it: same
+// `{kind, title, body}` (so the same `entity_id`), its own `id`/`created_at`/
+// tags.
 fn entity_copy(title: &str, id: i64, created_at: i64, tags: &[&str]) -> NoteRecord {
     let mut r = make_note_record(id, title);
     r.created_at = created_at;
@@ -3531,8 +3349,8 @@ fn write_lines(root: &std::path::Path, records: &[&NoteRecord]) {
     write_raw_note(root, &lines.join("\n"));
 }
 
-/// Two machines at the same HEAD: `cat_sort_uniq` leaves both copies as two
-/// lines of one blob, and the read folds them into one entry.
+// `cat_sort_uniq` leaves both copies as two lines of one blob, and the read
+// folds them into one entry.
 #[tokio::test]
 #[serial]
 async fn same_head_duplicate_folds_to_one_entry() {
@@ -3558,11 +3376,10 @@ async fn same_head_duplicate_folds_to_one_entry() {
     assert_eq!(notes[0].tags, vec!["a", "b"], "tags merge by union");
 }
 
-/// Two machines at **different** HEADs: the copies land on two separate notes,
-/// so only a fold that sees every commit can collapse them.
-///
-/// This is the test that pins the fold's placement: it fails if the fold moves
-/// into a per-commit blob read, which sees one commit's blob at a time.
+// Two machines at different HEADs land the copies on two separate notes, so
+// only a fold that sees every commit can collapse them. This pins the
+// fold's placement: it fails if the fold moves into a per-commit blob read,
+// which sees one commit's blob at a time.
 #[tokio::test]
 #[serial]
 async fn different_head_duplicate_folds_to_one_entry() {
@@ -3609,9 +3426,9 @@ async fn different_head_duplicate_folds_to_one_entry() {
     );
 }
 
-/// Archival is monotonic, and the fold runs before the status filter: filtering
-/// first would drop the archived copy and let the active one resurrect the
-/// entity as live.
+// Archival is monotonic, and the fold runs before the status filter:
+// filtering first would drop the archived copy and let the active one
+// resurrect the entity as live.
 #[tokio::test]
 #[serial]
 async fn an_archived_copy_wins_and_the_entity_stays_hidden() {
@@ -3637,8 +3454,8 @@ async fn an_archived_copy_wins_and_the_entity_stays_hidden() {
     assert_eq!(all[0].status, "archived");
 }
 
-/// A line written before `entity_id` existed folds with a fresh copy of the
-/// same entry: `resolve_entity_id()` recomputes the key it never stored.
+// A line written before `entity_id` existed folds with a fresh copy of the
+// same entry: `resolve_entity_id()` recomputes the key it never stored.
 #[tokio::test]
 #[serial]
 async fn a_legacy_line_folds_with_a_fresh_copy_of_the_same_entry() {
@@ -3672,11 +3489,10 @@ async fn a_legacy_line_folds_with_a_fresh_copy_of_the_same_entry() {
     assert_eq!(notes[0].tags, vec!["new", "old"], "tags merge by union");
 }
 
-/// `limit` keeps the **newest** entries, as the sqlite backend's
-/// `ORDER BY created_at DESC LIMIT` does, and still emits them ascending.
-///
-/// The failure this pins: a repo past the cap returning its oldest entries and
-/// hiding every recent decision.
+// `limit` keeps the newest entries, as the sqlite backend's
+// `ORDER BY created_at DESC LIMIT` does, and still emits them ascending —
+// not a repo past the cap returning its oldest entries and hiding every
+// recent decision.
 #[tokio::test]
 #[serial]
 async fn limit_keeps_the_newest_entries_and_emits_them_ascending() {
@@ -3699,9 +3515,9 @@ async fn limit_keeps_the_newest_entries_and_emits_them_ascending() {
     );
 }
 
-/// Folding before `limit` is what makes the count exact: were `limit` applied
-/// to raw records, an entity's copies would each spend a slot and the read
-/// would return fewer entries than asked for.
+// Folding before `limit` is what makes the count exact: were `limit` applied
+// to raw records, an entity's copies would each spend a slot and the read
+// would return fewer entries than asked for.
 #[tokio::test]
 #[serial]
 async fn duplicate_copies_do_not_spend_the_limit_budget() {
@@ -3727,7 +3543,7 @@ async fn duplicate_copies_do_not_spend_the_limit_budget() {
     );
 }
 
-/// The fold collapses copies, never distinct entries.
+// The fold collapses copies, never distinct entries.
 #[tokio::test]
 #[serial]
 async fn three_distinct_entities_stay_three_entries() {
@@ -3750,21 +3566,19 @@ async fn three_distinct_entities_stay_three_entries() {
     );
 }
 
-// ── ADR-068 A6 retrofit: supersede edges travel via the carrier ─────────────
-//
 // `memory supersede` and `memory add --supersedes` append a state-update
-// record for the OLD entity rather than rewriting it in place — a live-git
-// experiment showed an in-place rewrite does not converge under a genuine
-// merge (a second clone holding the original line plus a divergent note of
-// its own keeps both the stale original and the rewrite after
-// `cat_sort_uniq`). These tests exercise `append_state_update`'s write shape
-// together with the fold above, the way a receiving clone actually sees it.
+// record for the OLD entity rather than rewriting it in place: an in-place
+// rewrite does not converge under a genuine merge (a second clone holding
+// the original line plus a divergent note of its own keeps both the stale
+// original and the rewrite after `cat_sort_uniq`). These tests exercise
+// `append_state_update`'s write shape together with the fold above, the way
+// a receiving clone actually sees it.
 
 use inkentry_core::storage::append_state_update;
 use inkentry_core::storage::memory::Note;
 
-/// A `Note` as `backend.get()` would hand back right after an entry is
-/// created — the shape `append_state_update`'s `base` parameter expects.
+// A `Note` as `backend.get()` would hand back right after an entry is
+// created — the shape `append_state_update`'s `base` parameter expects.
 fn note_for(title: &str, id: i64, created_at: i64) -> Note {
     let body = format!("body for {title}");
     Note {
@@ -3790,10 +3604,9 @@ fn note_for(title: &str, id: i64, created_at: i64) -> Note {
     }
 }
 
-/// `append_state_update` appends a new line; it never touches the entity's
-/// existing one. Pinning "the original line survives byte-for-byte" is what
-/// rules out the in-place rewrite the spec's live-git experiment showed does
-/// not converge.
+// `append_state_update` appends a new line; it never touches the entity's
+// existing one. Pinning "the original line survives byte-for-byte" is what
+// rules out an in-place rewrite.
 #[tokio::test]
 #[serial]
 async fn append_state_update_appends_never_rewrites() {
@@ -3842,9 +3655,9 @@ async fn append_state_update_appends_never_rewrites() {
     );
 }
 
-/// The edge direction is the easy mistake to get backwards: it must land on
-/// OLD's appended record, pointing at NEW's `entity_id` — never on NEW's own
-/// record.
+// The edge direction is the easy mistake to get backwards: it must land on
+// OLD's appended record, pointing at NEW's `entity_id` — never on NEW's own
+// record.
 #[tokio::test]
 #[serial]
 async fn supersede_edge_lands_on_old_record_not_new() {
@@ -3899,11 +3712,11 @@ async fn supersede_edge_lands_on_old_record_not_new() {
     );
 }
 
-/// A clone that received X's supersede state-update but never received Y's
-/// own record must still show X archived, never live: `status` travels on
-/// X's own record rather than being inferred from whether the edge resolves
-/// (ADR-068 A3/A6). X is still counted — not silently dropped just because
-/// its successor is unresolvable.
+// A clone that received X's supersede state-update but never received Y's
+// own record must still show X archived, never live: `status` travels on
+// X's own record rather than being inferred from whether the edge resolves.
+// X is still counted — not silently dropped just because its successor is
+// unresolvable.
 #[tokio::test]
 #[serial]
 async fn unresolved_successor_never_renders_as_live_and_is_counted() {
@@ -3950,22 +3763,21 @@ async fn unresolved_successor_never_renders_as_live_and_is_counted() {
     assert_eq!(all[0].title, "decision X");
 }
 
-/// The headline test: clone A records X, then supersedes it with Y; clone B —
-/// holding a divergent local note of its own so the merge genuinely unions
-/// rather than fast-forwards — fetches and merges. B's `list` must show X
-/// archived (superseded by Y) exactly once, and Y live exactly once.
-///
-/// A test that fast-forwards here "passes while proving nothing": with no
-/// divergent content on B's side, `git notes merge` never has to invoke
-/// `cat_sort_uniq`'s union at all, so it would never exercise the fold this
-/// task's writes depend on.
+// Clone A records X, then supersedes it with Y; clone B — holding a
+// divergent local note of its own so the merge genuinely unions rather than
+// fast-forwards — fetches and merges. B's `list` must show X archived
+// (superseded by Y) exactly once, and Y live exactly once.
+//
+// A test that fast-forwards here passes while proving nothing: with no
+// divergent content on B's side, `git notes merge` never has to invoke
+// `cat_sort_uniq`'s union at all, so it would never exercise the fold these
+// writes depend on.
 #[tokio::test]
 #[serial]
 async fn supersede_edge_travels_across_a_genuinely_diverging_merge() {
     let dir = make_temp_git_repo();
     let root = dir.path();
 
-    // ── Clone A's history, about to be "fetched" onto B's tracking ref ───────
     append_to_git_notes(Some(root), &make_note_record(1, "decision X"))
         .await
         .expect("A: record X");
@@ -4026,9 +3838,9 @@ async fn supersede_edge_travels_across_a_genuinely_diverging_merge() {
     assert_eq!(x_entries[0].status, "archived");
 }
 
-/// Idempotence: the same supersede recorded twice (e.g. a retried carrier
-/// write, or two machines independently linking the same pair) still
-/// converges to one folded entry, never two.
+// Idempotence: the same supersede recorded twice (e.g. a retried carrier
+// write, or two machines independently linking the same pair) still
+// converges to one folded entry, never two.
 #[tokio::test]
 #[serial]
 async fn supersede_is_idempotent_across_repeated_state_updates() {
@@ -4068,40 +3880,28 @@ async fn supersede_is_idempotent_across_repeated_state_updates() {
     assert_eq!(x_entries[0].status, "archived");
 }
 
-// ── ADR-068 E4/E5: the pre-flight check does not close every race ──────────
-//
-// E4's pre-flight ("is OLD still active?") runs once, as a plain read, before
-// either write in `memory add --supersedes`'s pre-init (git-notes-only) path;
-// nothing holds `writer_lock` across the read and the eventual write, and
-// there is no SQL-style atomic "UPDATE ... WHERE status = 'active'" available
-// on a git-notes carrier to re-validate at write time (unlike the post-init
-// SQLite path, where `add_note_superseding`'s own guarded UPDATE is what
-// actually enforces correctness under a race — the CLI's pre-flight read is
-// there only to fail fast, not to carry the guarantee).
-//
-// So two `memory add --supersedes OLD` processes racing pre-init, each reading
-// OLD as active before either commits, can both proceed to append their own
-// "OLD archived, superseded by ME" state update — reproducing, via a genuine
-// race, the exact conflicting-carrier state E4 was written to stop from a
-// single sequential caller. This is not fixable without real cross-process
-// locking around the read (out of scope here — ADR-068 D3 already documents
-// the carrier has no cross-machine locking); what following documents and
-// pins is the shape of the residual gap, plus the one guarantee that *does*
-// still hold: `status` still folds to a coherent, monotonic "archived",
-// because `merge_into`'s archival rule is whole-group-safe regardless of how
-// many conflicting copies exist. (Which successor `superseded_by_entity_id`
-// resolves to is the E5 fold rule, pinned separately and exhaustively in
-// `storage::git_notes::fold`'s own unit tests — `Note`, the type every public
-// `MemoryBackend` method returns, does not carry that field, so it cannot be
-// asserted on from an external integration test like this one.)
+// The pre-flight check ("is OLD still active?") in `memory add
+// --supersedes`'s git-notes-only path runs once, as a plain read, before the
+// write: nothing holds the lock across read and write, and a git-notes
+// carrier has no atomic conditional update to re-validate at write time
+// (unlike the SQLite path's own guarded UPDATE, which is what actually
+// enforces correctness there). So two racing `memory add --supersedes OLD`
+// processes, each reading OLD as active before either commits, can both
+// append their own "OLD archived, superseded by ME" update — not fixable
+// without real cross-process locking around the read (out of scope here).
+// What still holds: `status` still folds to a coherent, monotonic
+// "archived", because the fold's archival rule is whole-group-safe
+// regardless of how many conflicting copies exist. Which successor
+// `superseded_by_entity_id` resolves to is the fold's own concern, pinned
+// separately in `storage::git_notes::fold`'s unit tests — `Note` does not
+// carry that field, so it cannot be asserted here.
 
-/// Simulates exactly what two `memory add --supersedes OLD` CLI invocations
-/// racing on the same OLD (both reading it as active before either writes)
-/// leave behind: two independent, both-successful `append_state_update` calls
-/// against the same OLD, naming two different successors. Pins that this is
-/// still possible today (the write-side race window E4 cannot fully close
-/// pre-init) and that it does not corrupt the fold beyond the successor
-/// pointer: `status` still converges to exactly one archived entry.
+// Simulates exactly what two `memory add --supersedes OLD` CLI invocations
+// racing on the same OLD (both reading it as active before either writes)
+// leave behind: two independent, both-successful `append_state_update`
+// calls against the same OLD, naming two different successors. It does not
+// corrupt the fold beyond the successor pointer: `status` still converges to
+// exactly one archived entry.
 #[tokio::test]
 #[serial]
 async fn racing_supersedes_of_the_same_old_both_land_conflicting_state_updates() {
@@ -4155,9 +3955,8 @@ async fn racing_supersedes_of_the_same_old_both_land_conflicting_state_updates()
          test documents); got blob: {blob:?}"
     );
 
-    // What still holds despite the race: the fold's monotonic archival rule
-    // means every reader sees OLD as archived, coherently, exactly once —
-    // never a resurrected active copy, never two entries.
+    // The fold's monotonic archival rule still holds: every reader sees OLD
+    // as archived, coherently, exactly once.
     let backend = GitNotesBackend::with_root(root.to_path_buf());
     let all = backend.list(None, 50, true, None).await.expect("list all");
     let old_entries: Vec<_> = all.iter().filter(|n| n.title == "decision OLD").collect();
@@ -4172,13 +3971,11 @@ async fn racing_supersedes_of_the_same_old_both_land_conflicting_state_updates()
     );
 }
 
-// ── the batch carrier write `inkentry import` rides (#51) ────────────────────
-//
 // `append_new_to_git_notes` is the write-through for a whole back catalogue
-// arriving at once. Two properties beyond the single-record helper's are load
-// bearing: it must not write an entity the ref already carries, and it must
-// hold the same D8 lock contract while doing the whole batch in one guarded
-// section.
+// arriving at once. Two properties beyond the single-record helper's are
+// load bearing: it must not write an entity the ref already carries, and it
+// must hold the same lock contract while doing the whole batch in one
+// guarded section.
 
 use inkentry_core::storage::append_new_to_git_notes;
 
@@ -4190,9 +3987,9 @@ fn carrier_records(titles: &[&str]) -> Vec<NoteRecord> {
         .collect()
 }
 
-/// The records on `refs/notes/inkentry` across every reachable commit, as
-/// (title, entity_id) pairs — one per raw line, deliberately unfolded, so a
-/// duplicate append shows up instead of being collapsed by the reader.
+// The records on `refs/notes/inkentry` across every reachable commit, as
+// (title, entity_id) pairs — one per raw line, deliberately unfolded, so a
+// duplicate append shows up instead of being collapsed by the reader.
 fn raw_carrier_lines(root: &std::path::Path) -> Vec<(String, String)> {
     let listing = git_stdout_ok(root, &["notes", "--ref=inkentry", "list"]);
     let mut out = Vec::new();
@@ -4229,10 +4026,10 @@ async fn a_batch_append_carries_every_record() {
     assert_eq!(titles, vec!["first", "second", "third"]);
 }
 
-/// The gate the issue asks for: a dump whose entries came off this carrier is
-/// not written back to it. Re-appending would still converge (the fold
-/// collapses by `entity_id`), so the assertion is on the raw lines — the ref
-/// must not grow a second copy of the log.
+// A dump whose entries came off this carrier is not written back to it.
+// Re-appending would still converge (the fold collapses by `entity_id`), so
+// the assertion is on the raw lines — the ref must not grow a second copy of
+// the log.
 #[tokio::test]
 #[serial]
 async fn a_record_already_on_the_ref_is_not_appended_again() {
@@ -4256,9 +4053,9 @@ async fn a_record_already_on_the_ref_is_not_appended_again() {
     );
 }
 
-/// The partial case: some of the dump is already here, some is not. Only the
-/// part that is missing may be written, and the entries that were already
-/// carried must not be duplicated to get it there.
+// The partial case: some of the dump is already here, some is not. Only the
+// part that is missing may be written, and the entries that were already
+// carried must not be duplicated to get it there.
 #[tokio::test]
 #[serial]
 async fn only_the_records_the_ref_lacks_are_appended() {
@@ -4283,9 +4080,9 @@ async fn only_the_records_the_ref_lacks_are_appended() {
     assert_eq!(titles, vec!["first", "second"]);
 }
 
-/// An entity carried on an *earlier* commit still counts as carried: the gate
-/// reads every reachable note, not just HEAD's. A HEAD-only gate would
-/// re-append the whole log on the next commit.
+// An entity carried on an earlier commit still counts as carried: the gate
+// reads every reachable note, not just HEAD's. A HEAD-only gate would
+// re-append the whole log on the next commit.
 #[tokio::test]
 #[serial]
 async fn an_entity_carried_on_an_earlier_commit_is_recognised() {
@@ -4306,8 +4103,8 @@ async fn an_entity_carried_on_an_earlier_commit_is_recognised() {
     assert_eq!(raw_carrier_lines(root).len(), 1);
 }
 
-/// Sibling records and foreign content on HEAD's note survive the batch, as
-/// ADR-059 D1 requires of every writer.
+// Sibling records and foreign content on HEAD's note survive the batch, as
+// every writer here must preserve them.
 #[tokio::test]
 #[serial]
 async fn a_batch_append_preserves_foreign_lines_and_siblings() {
@@ -4354,9 +4151,9 @@ async fn a_batch_append_preserves_foreign_lines_and_siblings() {
     );
 }
 
-/// The batch carries the same D8 contract as every other writer: a contended
-/// lock fails it and nothing is written. Doing the batch in one guarded
-/// section must not become an excuse to skip the lock.
+// The batch carries the same lock contract as every other writer: a
+// contended lock fails it and nothing is written. Doing the batch in one
+// guarded section must not become an excuse to skip the lock.
 #[tokio::test]
 #[serial]
 async fn a_batch_append_fails_when_the_lock_is_contended() {
@@ -4390,12 +4187,10 @@ async fn a_batch_append_fails_when_the_lock_is_contended() {
     );
 }
 
-// ── carried graph edges (ADR-086) ────────────────────────────────────────────
-//
 // The carrier is append-only, so an edge recorded for an entity that already
-// has a record must arrive as a NEW line. A rewrite would look identical in
-// this one repo and lose the other machine's copy on the next merge, which is
-// exactly the failure the append-only shape exists to prevent.
+// has a record must arrive as a new line. A rewrite would look identical in
+// this one repo and lose the other machine's copy on the next merge, which
+// is exactly the failure the append-only shape exists to prevent.
 
 // Every inkentry record on HEAD's note, raw and unfolded.
 fn raw_records_on_head(root: &std::path::Path) -> Vec<serde_json::Value> {
