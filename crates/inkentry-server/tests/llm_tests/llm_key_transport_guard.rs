@@ -114,14 +114,11 @@ fn the_refusal_never_echoes_an_inline_key() {
     );
 }
 
-// KNOWN GAP, reproducer only, tracked separately. `inkentry_core`'s loopback
-// predicate matches the `127.` prefix on the raw authority and does not split
-// off userinfo, so both hosts below read as loopback and the guard lets a
-// configured credential leave in cleartext to a host the operator does not
-// control. The flaw is in the shared predicate (it governs `server_url` the
-// same way), not in anything this LLM work introduced, so it is filed rather
-// than patched here. Ignored so the suite stays honest about being green:
-// un-ignore it with the fix.
+// KNOWN GAP: `inkentry_core`'s loopback predicate matches the `127.` prefix
+// without splitting off userinfo, so both hosts below read as loopback and
+// the guard lets a credential leave in cleartext. The flaw is in the shared
+// predicate, not this LLM code, so it's filed rather than patched here;
+// ignored until fixed so the suite stays green.
 #[test]
 #[ignore = "reproduces a known fail-open in the shared loopback predicate"]
 fn a_key_over_a_host_that_merely_looks_like_loopback_is_refused() {

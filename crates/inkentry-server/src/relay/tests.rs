@@ -1,6 +1,3 @@
-// Tests for the ADR-037 P2 local relay (see `mod.rs`'s module docs for the
-// full push/pull/SSE contract these exercise).
-
 use super::*;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -38,8 +35,6 @@ fn entry(ext: &str) -> RelayPushEntry {
     }
 }
 
-// ── item 18: zero registered projects means zero outbound traffic ──────
-
 #[tokio::test]
 async fn empty_registry_makes_no_outbound_calls_and_starts_no_sessions() {
     let registry = registry_for(vec![]);
@@ -51,8 +46,6 @@ async fn empty_registry_makes_no_outbound_calls_and_starts_no_sessions() {
     assert!(resp.pulled.is_empty());
     assert_eq!(registry.session_count().await, 0);
 }
-
-// ── item 12: push reuses CloudSyncClient/BatchPushItem ─────────────────
 
 #[tokio::test]
 async fn push_lands_on_the_team_server_and_is_pollable_and_reoffered_until_acked() {
@@ -107,11 +100,6 @@ async fn push_lands_on_the_team_server_and_is_pollable_and_reoffered_until_acked
     assert_eq!(got.push_results[0].status, "created");
     assert!(got.last_synced_at.is_some());
 
-    // A second poll before any ack must return the SAME result again —
-    // this is the fix for the destructive-drain data-loss bug: a poll
-    // used to clear the buffer in the same call, so a CLI-side apply
-    // failure after this first poll would have permanently stranded the
-    // row pending forever (nothing left to retry against).
     let second = registry.poll(&server.uri(), "proj").await;
     assert_eq!(
         second.push_results.len(),
@@ -163,8 +151,6 @@ async fn push_with_empty_entries_is_a_noop_no_request() {
     );
 }
 
-// ── item 12/16: pull catch-up via /memory/since, cursor round-trips ────
-
 #[tokio::test]
 async fn registration_seeds_cursor_and_catch_up_advances_it_and_buffers_pulled_rows() {
     let server = MockServer::start().await;
@@ -213,21 +199,6 @@ async fn registration_seeds_cursor_and_catch_up_advances_it_and_buffers_pulled_r
     );
     assert!(!got.pulled[0].archived);
 }
-
-// ── founder review (PR #728): pull-side data loss without a restart ────
-//
-// The bug: `GET /local/relay/poll` used to destructively drain buffered
-// pulled rows (`std::mem::take`) while the CLI's `apply_remote_note` call
-// can fail (SQLITE_BUSY, a killed process) without re-buffering — and the
-// session's pull cursor had already advanced past the row when it was
-// first buffered, so a restart-free retry would never re-offer it. This
-// pins the fix directly at the relay level, independent of any CLI-side
-// failure injection: a poll never clears the buffer by itself, so a CLI
-// that never acks (modelling "poll succeeded, the local apply after it
-// failed") must see the exact same row again, indefinitely, across many
-// polls and additional catch-up cycles — never silently dropped. Fails
-// against the pre-fix `drain`-on-poll code (the second poll below would
-// return empty), passes after.
 
 #[tokio::test]
 async fn a_pulled_row_survives_repeated_polls_when_the_cli_never_acks_it() {
@@ -356,8 +327,6 @@ async fn a_later_stale_since_cursor_never_regresses_a_session_that_moved_past_it
     );
 }
 
-// ── item 17: one project's relay failure never affects another's ───────
-
 #[tokio::test]
 async fn one_sessions_push_failure_does_not_affect_another_sessions_push() {
     let bad_server = MockServer::start().await;
@@ -436,13 +405,8 @@ async fn one_sessions_push_failure_does_not_affect_another_sessions_push() {
     assert_eq!(registry.session_count().await, 2);
 }
 
-// ── item 22: no cross-project SSE/pull leakage ──────────────────────────
-// Two projects on the SAME team server: a note pushed to one must never
-// appear in the other's pulled buffer. `RelayKey` is `(server_url,
-// project_id)`, so distinct project ids always get distinct sessions with
-// independent cursors/buffers; this pins that at the observable
-// push+pull level rather than trusting the key type alone.
-
+// Two projects on the same team server: a note pushed to one must never
+// appear in the other's pulled buffer.
 #[tokio::test]
 async fn pulled_rows_never_leak_across_projects_on_the_same_team_server() {
     let server = MockServer::start().await;
@@ -525,19 +489,9 @@ async fn pulled_rows_never_leak_across_projects_on_the_same_team_server() {
     );
 }
 
-// ── founder review (PR #728): SSE frames decode across chunk boundaries ─
-//
-// `stream_once` used to decode each raw HTTP chunk in isolation
-// (`String::from_utf8_lossy(&chunk)` per iteration, before frame
-// boundaries were known), which could corrupt a multi-byte UTF-8
-// character or a `Last-Event-ID` value split across two chunks. The fix
-// accumulates raw bytes and only decodes once a complete `\n\n`-
-// terminated frame has been assembled. This pins the byte-safety
-// primitive the fix relies on: `find_double_newline` must locate the
-// terminator by raw bytes, never by decoding (which would panic or
-// silently corrupt data on a not-yet-complete multi-byte sequence sitting
-// at the search boundary).
-
+// `find_double_newline` must locate the terminator by raw bytes, never by
+// decoding, or a not-yet-complete multi-byte sequence at the search boundary
+// could panic or silently corrupt data.
 #[test]
 fn find_double_newline_locates_the_terminator_around_a_multibyte_char() {
     // "café" — 'é' is the two-byte UTF-8 sequence 0xC3 0xA9. Split the
@@ -559,16 +513,6 @@ fn find_double_newline_locates_the_terminator_around_a_multibyte_char() {
     let mid_char = &buf[..buf.len() - 1]; // split inside 'é''s 2-byte sequence
     assert_eq!(find_double_newline(mid_char), None);
 }
-
-// ── oversized/malformed SSE frame errors instead of growing forever ────
-//
-// A team `server_url` is whatever a project happens to be configured
-// with (cloud-api, another inkentry-server, or, if misconfigured, anything
-// else); this pins that a peer sending an unterminated line larger than
-// `MAX_SSE_BUFFER_BYTES` makes `stream_once` return an error (which
-// `run_pull_loop` already turns into `record_error` + backoff + retry,
-// never a panic) instead of buffering without bound for as long as the
-// connection stays open.
 
 #[tokio::test]
 async fn oversized_sse_frame_without_terminator_errors_instead_of_growing_forever() {
@@ -593,27 +537,15 @@ async fn oversized_sse_frame_without_terminator_errors_instead_of_growing_foreve
     );
 }
 
-// ── item 13: the reconciler never opens a project's memory.db ──────────
-//
 // Every public entry point on `RelayRegistry` (`push`, `poll`) takes only
-// `server_url` / `project_id` / entry data — never a filesystem path —
-// and every type in this module is one of those or wraps `CloudSyncClient`
-// (an HTTP client). There is no `MemoryStore`/SQLite-path parameter
-// anywhere in this module's public surface for a caller to even supply,
-// so a full push+pull round trip (`push_drains_entries_...` and
-// `registration_seeds_cursor_and_catch_up_advances_it_...` above)
-// completing correctly already proves sync works without this process
-// ever being handed — or needing — a `memory.db` path.
+// `server_url` / `project_id` / entry data — never a filesystem path — and
+// every type in this module is one of those or wraps `CloudSyncClient` (an
+// HTTP client). There is no `MemoryStore`/SQLite-path parameter anywhere in
+// this module's public surface for a caller to even supply.
 
-// ── the request selects a destination, it never supplies one ────────────
-//
-// `POST /local/relay/push` used to take `server_url` and `bearer` straight
-// from the request body and open connections to them: an unauthenticated
-// local caller could make the daemon reach an arbitrary host, from the
-// daemon's network position, carrying a bearer of the caller's choosing,
-// retried forever. These pin that only a target declared by local
-// configuration is ever reachable.
-
+// An undeclared `server_url`/`project_id` pair must refuse rather than
+// connect, since the request otherwise picks its own outbound destination
+// (see the module docs).
 #[tokio::test]
 async fn a_server_url_no_local_config_declares_is_refused() {
     let attacker = MockServer::start().await;
@@ -737,13 +669,9 @@ fn the_relay_is_disabled_on_a_non_loopback_bind() {
     }
 }
 
-// ── the remote error is the operator's, not the caller's ────────────────
-//
-// `last_error` carried the raw `reqwest` error, which distinguishes
-// connection-refused from timed-out from TLS-failed per host and port — a
-// blind-SSRF oracle good enough to port-scan with, readable by any local
-// process. It now reports one fixed string.
-
+// `last_error` must never carry the raw `reqwest` error: distinguishing
+// connection-refused from timed-out from TLS-failed per host and port,
+// readable by any local process, is a port-scan oracle.
 #[tokio::test]
 async fn last_error_never_carries_the_remote_error() {
     // A declared target with nothing listening: the underlying failure is a
@@ -783,8 +711,6 @@ async fn last_error_never_carries_the_remote_error() {
         "the remote failure must not be described to the caller: {err}"
     );
 }
-
-// ── sessions are bounded and mortal ─────────────────────────────────────
 
 #[tokio::test]
 async fn a_sessions_pull_loop_terminates_once_no_cli_is_using_it() {
@@ -897,14 +823,8 @@ async fn the_registry_is_bounded_even_when_local_config_declares_more() {
     assert_eq!(refusals, 8, "everything past the cap must be refused");
 }
 
-// ── the configured custom CA reaches the client ─────────────────────────
-//
-// The relay hardcoded `None` for the CA, so against an internal-CA team
-// server every background hop failed and only manual `inkentry sync` (which
-// does pass it) worked. A CA path that cannot be read makes both client
-// builds fail, which is what proves the path is threaded rather than
-// dropped: with the old `None` these would both succeed.
-
+// An unreadable configured CA path must fail both client builds, proving the
+// path is actually threaded through rather than silently dropped.
 #[tokio::test]
 async fn the_pull_client_is_built_with_the_configured_ca() {
     let session = session_for_target(&TeamTarget {
@@ -955,17 +875,10 @@ async fn a_valid_ca_bundle_builds_both_clients() {
     assert!(!err.contains("INKENTRY_SERVER_CA"), "{err}");
 }
 
-// ── retirement's recheck and a live call must agree on one observation ──
-//
-// `session_for`/`lookup` used to release the sessions-map lock, then call
-// `touch()` as a separate step. `retire_if_idle` also locks that map before
-// rechecking `idle_for()`, so if it won that gap it would remove the session
-// on a stale `last_seen` while the caller that just found/created it still
-// held the (now orphaned) `Arc`. These force the gap open by staling
-// `last_seen` past the idle timeout right before the call under test, then
-// firing the retirement recheck immediately after — proving the recheck
-// never wins against a call that just observed the session live.
-
+// These force the race window open by staling `last_seen` past the idle
+// timeout right before the call under test, then firing the retirement
+// recheck immediately after — proving the recheck never wins against a call
+// that just observed the session live.
 async fn stale(session: &Arc<RelaySession>, past: Duration) {
     session.inner.lock().await.last_seen = Instant::now() - past;
 }
@@ -1051,8 +964,6 @@ d9qQF0w9nfELOC5M+ZxwP4vE/QkXLG57ZrOvKl2V4pthKSBv3LBAnh/C7X7/KC+f\n\
 iwNpumIaYRGylEbxW2WVv9YsWDmTBFqEkgrmx1QPJr3FtA6eeWmZ+EJIr3ImOv/d\n\
 CPBfHwWj/FUeFj+csF5QpOj+u/D1F1Kh5w==\n\
 -----END CERTIFICATE-----\n";
-
-// ── The relay's wire and the accept side's wire are one shape ──────────
 
 // The relay converts its own entry into the push item, and a different crate
 // deserialises that item back on the accept side. Nothing but this forces the

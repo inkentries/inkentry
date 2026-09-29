@@ -190,17 +190,17 @@ pub async fn repair_missing_embeddings(
 }
 
 enum PageOutcome {
-    /// One slot per input row: `None` where the embedder refused that row's
-    /// text even on its own.
+    // One slot per input row: `None` where the embedder refused that row's
+    // text even on its own.
     Vectors(Vec<Option<Vec<f32>>>),
-    /// The embedder is not ready. Stopping here schedules nothing on purpose:
-    /// the ready transition is a real future edge and raises the signal
-    /// itself, so re-raising would only spin against a model still loading.
+    // The embedder is not ready. Stopping here schedules nothing on purpose:
+    // the ready transition is a real future edge and raises the signal
+    // itself, so re-raising would only spin against a model still loading.
     StopNotReady,
-    /// The request path holds every admission permit. Unlike the case above
-    /// this has **no** future edge: permits are released silently and nothing
-    /// raises when they are, so a sweep that ends here must ask again or the
-    /// rest of the backlog waits for an unrelated write or a restart.
+    // The request path holds every admission permit. Unlike the case above
+    // this has no future edge: permits are released silently and nothing
+    // raises when they are, so a sweep that ends here must ask again or the
+    // rest of the backlog waits for an unrelated write or a restart.
     StopSaturated,
 }
 
@@ -214,7 +214,7 @@ async fn embed_page(state: &AppState, page: &[crate::db::VectorlessNote]) -> Pag
     // Repair is a background sweep, so every embed here is bulk — the per-row
     // fallback below included, even though each of those calls carries a single
     // text. That single-text-yet-bulk case is why lane is the caller's declared
-    // intent, not the request's size (ADR-096).
+    // intent, not the request's size.
     match crate::handlers::embed_for_storage(state, &refs, crate::EmbedLane::Bulk).await {
         Ok(crate::handlers::StorageEmbedding::Vectors(vectors)) => {
             PageOutcome::Vectors(vectors.into_iter().map(Some).collect())

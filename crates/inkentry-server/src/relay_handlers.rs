@@ -1,4 +1,4 @@
-//! Axum handlers for the ADR-037 P2 local relay surface (`crate::relay`).
+//! Axum handlers for the local relay surface ([`crate::relay`]).
 //!
 //! These routes are **local-only**: the CLI on the same machine is the only
 //! intended caller, and [`crate::relay::RelayRegistry::for_bind`] means a

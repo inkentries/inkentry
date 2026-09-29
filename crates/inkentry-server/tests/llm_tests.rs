@@ -1,6 +1,5 @@
-// Consolidated LLM-routing test binary: groups the previously separate
-// credential, daemon-e2e, key-precedence, and transport-guard test files
-// into one integration test crate to cut per-binary link overhead.
+// One integration test binary for all LLM-routing test modules, to cut
+// per-binary link overhead.
 
 #[path = "llm_tests/llm_credential_invariants.rs"]
 mod llm_credential_invariants;

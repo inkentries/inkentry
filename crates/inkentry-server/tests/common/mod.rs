@@ -1,19 +1,18 @@
-//! Shared test helpers.
+// Shared test helpers. Import with `mod common;` or `use crate::common::*;`
+// inside integration tests.
 #![allow(dead_code)]
-//!
-//! Import with `mod common;` or `use crate::common::*;` inside integration tests.
 
 use std::sync::OnceLock;
 
-/// Register the sqlite-vec extension exactly once for the test process.
-///
-/// sqlite3_auto_extension is process-global; calling it more than once per
-/// address is a no-op but calling it from multiple threads without
-/// synchronisation is UB.  `OnceLock` guarantees single initialisation.
-///
-/// Tests that open a `Database` or `ServerDb` **must** call this first.
-/// Annotate those tests with `#[serial_test::serial]` so the global
-/// registration happens before any connection is opened.
+// Register the sqlite-vec extension exactly once for the test process.
+//
+// sqlite3_auto_extension is process-global; calling it more than once per
+// address is a no-op but calling it from multiple threads without
+// synchronisation is UB. `OnceLock` guarantees single initialisation.
+//
+// Tests that open a `Database` or `ServerDb` must call this first, and
+// annotate those tests with `#[serial_test::serial]` so the global
+// registration happens before any connection is opened.
 pub fn register_sqlite_vec() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
@@ -26,25 +25,23 @@ pub fn register_sqlite_vec() {
     });
 }
 
-/// Open an in-memory `inkentry_core::storage::Database` for tests.
-///
-/// Calls `register_sqlite_vec()` automatically.
+// Open an in-memory `inkentry_core::storage::Database` for tests. Calls
+// `register_sqlite_vec()` automatically.
 pub fn open_test_db() -> inkentry_core::storage::Database {
     register_sqlite_vec();
     inkentry_core::storage::Database::open(std::path::Path::new(":memory:"))
         .expect("failed to open in-memory database")
 }
 
-/// Open an in-memory `inkentry_server::db::ServerDb` for tests.
-///
-/// Calls `register_sqlite_vec()` automatically.
+// Open an in-memory `inkentry_server::db::ServerDb` for tests. Calls
+// `register_sqlite_vec()` automatically.
 pub fn open_test_server_db(dim: usize) -> inkentry_server::db::ServerDb {
     register_sqlite_vec();
     inkentry_server::db::ServerDb::open(std::path::Path::new(":memory:"), dim, "test-model")
         .expect("failed to open in-memory server database")
 }
 
-/// Build a minimal `AppState` backed by an in-memory DB for integration tests.
+// Build a minimal `AppState` backed by an in-memory DB for integration tests.
 pub fn make_test_state(dim: usize, auth_key: Option<String>) -> inkentry_server::AppState {
     let db = open_test_server_db(dim);
     let instance_id = db.get_or_create_instance_id().expect("instance_id in test");

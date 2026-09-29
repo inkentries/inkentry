@@ -5,11 +5,11 @@ use uuid::{Builder, Uuid};
 /// Mint a UUIDv7 whose embedded timestamp is `created_at` (unix seconds),
 /// rather than the wall clock.
 ///
-/// Used only by the migration-007 backfill, which replays a server's whole
-/// back catalogue in one pass. Minting from the clock there would stamp every
-/// historical row with the same instant and destroy the ordering v7 exists to
-/// carry. Rows minted at insert time need no seeding: the server writes
-/// `created_at` and the id in the same statement, so arrival is creation.
+/// A backfill that replays a server's whole back catalogue in one pass must
+/// mint from each row's own `created_at`: minting from the clock would stamp
+/// every historical row with the same instant and destroy the ordering v7
+/// exists to carry. Rows minted at insert time need no seeding, since the
+/// server writes `created_at` and the id in the same statement.
 ///
 /// The low bits are random, so rows sharing a `created_at` still receive
 /// distinct identifiers.

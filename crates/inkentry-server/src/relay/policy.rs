@@ -1,18 +1,17 @@
-//! Where the local relay is allowed to connect, and where that answer comes
-//! from.
-//!
-//! The relay is the one part of this daemon that opens *outbound* connections
-//! on the caller's behalf. Its destination therefore may not come from the
-//! request: a `server_url` taken out of a request body turns the daemon into an
-//! egress proxy for any process that can reach loopback — an attacker-chosen
-//! host, reached from the daemon's network position, carrying an
-//! attacker-chosen bearer, retried for as long as the daemon lives.
-//!
-//! So the destination is resolved instead from local configuration
-//! ([`inkentry_core::config::declared_team_targets`]): the request may only
-//! *select* among the (team server, project) pairs this machine already
-//! declares, and anything else is refused. Choosing the destination stops being
-//! a request-level capability.
+// Where the local relay is allowed to connect, and where that answer comes
+// from.
+//
+// The relay is the one part of this daemon that opens outbound connections on
+// the caller's behalf. Its destination therefore may not come from the
+// request: a `server_url` taken out of a request body turns the daemon into
+// an egress proxy for any process that can reach loopback — an
+// attacker-chosen host, reached from the daemon's network position, carrying
+// an attacker-chosen bearer, retried for as long as the daemon lives.
+//
+// So the destination is resolved instead from local configuration
+// (`declared_team_targets`): the request may only select among the (team
+// server, project) pairs this machine already declares, and anything else is
+// refused.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,10 +64,10 @@ impl RelayPolicy {
     }
 }
 
-/// Roots to look for a declaring `.inkentry/config.toml` under: the daemon's
-/// own working directory (it is spawned from the project the CLI ran in) plus
-/// every project in the local registry, so a machine-wide daemon still relays
-/// for the other projects on the machine and not only the one that started it.
+// Roots to look for a declaring `.inkentry/config.toml` under: the daemon's
+// own working directory (it is spawned from the project the CLI ran in) plus
+// every project in the local registry, so a machine-wide daemon still relays
+// for the other projects on the machine and not only the one that started it.
 fn local_config_targets() -> Vec<TeamTarget> {
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
