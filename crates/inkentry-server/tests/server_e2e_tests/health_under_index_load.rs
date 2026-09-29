@@ -1,26 +1,20 @@
-// Real-hardware confirmation that the local server stays usable while it is
-// embedding, run against the actual llama embedder rather than a mock.
+// Real-hardware confirmation that the server stays usable while embedding,
+// against the actual llama embedder. Not a CI gate — it's #[ignore]d: it
+// needs the F2LLM model on disk, real GPU/CPU inference, and measures
+// wall-clock latency. The deterministic gate for the same property is
+// handlers::tests::liveness_under_embed (mock embedder, no model, no timing
+// race).
 //
-// **Not a CI gate.** It is `#[ignore]`d: it needs the F2LLM model artifacts on
-// disk (downloading them on first run), real GPU/CPU inference, and it
-// measures wall-clock latency, none of which belong on a shared runner. The
-// deterministic gate for the same property is
-// `handlers::tests::liveness_under_embed` (mock embedder parked on a
-// test-controlled signal, no model, no timing race).
-//
-// Run it with:
+// Run with:
 //   INKENTRY_SECRET_STORE=file cargo test -p inkentry-server \
 //     --test health_under_index_load -- --ignored --nocapture
 //
-// Tunable via env:
-//   INKENTRY_HEALTH_LOAD_REPO    repo to draw real text from (default: this workspace)
-//   INKENTRY_HEALTH_LOAD_CHUNKS  how many chunks to embed (default: 2048)
+// Env: INKENTRY_HEALTH_LOAD_REPO (repo to draw text from, default this
+// workspace), INKENTRY_HEALTH_LOAD_CHUNKS (chunks to embed, default 2048).
 //
-// This drives the HTTP surface directly rather than shelling out to the CLI.
-// `/v1/health` is the sole endpoint `inkentry server status` reads (it renders
-// "reachable" from `instance_id` + `version`), and `POST
-// /v1/projects/{id}/memory/search` is the request `inkentry memory search`
-// issues, so the assertions below are the same contract those commands see.
+// Drives the HTTP surface directly: /v1/health is what `inkentry server
+// status` reads, and POST /memory/search is what `inkentry memory search`
+// issues, so these assertions match the contract those commands see.
 
 #![cfg(feature = "embed-llama")]
 
@@ -67,7 +61,6 @@ fn chunk_budget() -> usize {
         .unwrap_or(2048)
 }
 
-// Collect real source text from `root`, windowed into chunk-sized pieces.
 fn collect_chunks(root: &Path, budget: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -280,11 +273,6 @@ async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
                         .expect("a shed 429 must carry a parseable Retry-After");
                     tokio::time::sleep(Duration::from_secs(retry_after)).await;
                 }
-                // The server answered, but only after its own request timeout
-                // expired while the query waited its turn on the shared model.
-                // That is admission-control fairness under a saturated index,
-                // a separate concern from the liveness property under test:
-                // report it as such rather than as an unreachable server.
                 408 => panic!(
                     "memory search was still queued on the embedder when the server's own \
                      request timeout expired. Liveness is not the problem here (the server \
@@ -297,7 +285,6 @@ async fn health_and_memory_search_stay_usable_throughout_a_real_index() {
         succeeded
     });
 
-    // Sample liveness for the whole embed phase.
     let mut samples = 0usize;
     let mut max_latency = Duration::ZERO;
     let mut first: Option<(String, String)> = None;
