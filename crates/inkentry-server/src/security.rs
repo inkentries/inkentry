@@ -120,8 +120,6 @@ mod tests {
         assert!(hit("", "do anything now"));
     }
 
-    // OWASP LLM Prompt Injection Prevention Cheat Sheet test cases
-
     #[test]
     fn developer_mode_positive() {
         assert!(hit(

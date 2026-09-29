@@ -28,8 +28,8 @@ pub struct RateLimiter {
 
 struct Buckets {
     entries: HashMap<String, WindowEntry>,
-    /// When the last full expiry sweep ran, so the sweep costs O(n) once per
-    /// window instead of once per request.
+    // When the last full expiry sweep ran, so the sweep costs O(n) once per
+    // window instead of once per request.
     last_sweep: Instant,
 }
 
@@ -116,9 +116,9 @@ impl RateLimiter {
         Ok(())
     }
 
-    /// Drop every bucket whose window has already elapsed. Such a bucket is
-    /// indistinguishable from a bucket that was never created: the next request
-    /// on that key would reset it anyway.
+    // Drop every bucket whose window has already elapsed. Such a bucket is
+    // indistinguishable from a bucket that was never created: the next request
+    // on that key would reset it anyway.
     fn sweep_expired(&self, buckets: &mut Buckets, now: Instant) {
         buckets
             .entries

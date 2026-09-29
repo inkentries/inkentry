@@ -1,28 +1,28 @@
-//! The server's OpenAI-compatible LLM backend, plus resolution and validation
-//! of the credential it authenticates with.
-//!
-//! The credential never comes from a keychain: this process is commonly a
-//! detached daemon with no user session, so the spawning CLI resolves the
-//! value and passes it in via `INKENTRY_LLM_KEY` (or, for an operator running
-//! the binary directly, `--llm-key-file`).
+// The server's OpenAI-compatible LLM backend, plus resolution and validation
+// of the credential it authenticates with.
+//
+// The credential never comes from a keychain: this process is commonly a
+// detached daemon with no user session, so the spawning CLI resolves the
+// value and passes it in via `INKENTRY_LLM_KEY` (or, for an operator running
+// the binary directly, `--llm-key-file`).
 
 use anyhow::{Context, Result};
 
-/// Trim `raw` and treat a blank result as "no key", so a set-but-empty
-/// `INKENTRY_LLM_KEY` reads as unauthenticated rather than as an empty-string
-/// credential that every upstream request would then send.
+// Trim `raw` and treat a blank result as "no key", so a set-but-empty
+// `INKENTRY_LLM_KEY` reads as unauthenticated rather than as an empty-string
+// credential that every upstream request would then send.
 fn normalize(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string)
 }
 
-/// Resolve the LLM credential: `--llm-key`, then `--llm-key-file`, then
-/// `INKENTRY_LLM_KEY`.
-///
-/// An unreadable `--llm-key-file` is fatal rather than a fall-through: an
-/// operator who named a file meant that file, and silently authenticating
-/// with a different credential (or none) is worse than failing to start.
+// Resolve the LLM credential: `--llm-key`, then `--llm-key-file`, then
+// `INKENTRY_LLM_KEY`.
+//
+// An unreadable `--llm-key-file` is fatal rather than a fall-through: an
+// operator who named a file meant that file, and silently authenticating
+// with a different credential (or none) is worse than failing to start.
 pub fn resolve_llm_key(
     key: Option<&str>,
     key_file: Option<&std::path::Path>,
@@ -41,11 +41,11 @@ pub fn resolve_llm_key(
     Ok(normalize(env_key))
 }
 
-/// Refuse to send an LLM credential over plaintext HTTP to a non-loopback host.
-///
-/// Scoped to the credential's presence: a keyless LAN endpoint (LM Studio or
-/// Ollama on `http://192.168.x.x:1234`) is an established, supported setup and
-/// keeps working untouched.
+// Refuse to send an LLM credential over plaintext HTTP to a non-loopback host.
+//
+// Scoped to the credential's presence: a keyless LAN endpoint (LM Studio or
+// Ollama on `http://192.168.x.x:1234`) is an established, supported setup and
+// keeps working untouched.
 pub fn check_llm_transport(llm_url: &str, has_key: bool) -> Result<()> {
     if !has_key {
         return Ok(());
@@ -58,17 +58,17 @@ pub fn check_llm_transport(llm_url: &str, has_key: bool) -> Result<()> {
     })
 }
 
-/// OpenAI-compatible chat-completions backend.
-///
-/// `api_key` is `Some` only when a credential resolved; when it is `None` the
-/// request carries no `Authorization` header, so keyless local endpoints that
-/// reject unexpected headers keep working.
-///
-/// `reasoning_effort` is sent on every request when `Some` (default `"none"`)
-/// to suppress chain-of-thought on reasoning models: our use (harvest)
-/// wants the JSON answer, not the model's thinking, and an unbounded
-/// reasoning pass burns the whole `max_tokens` budget before any `content`
-/// arrives. `None` omits the field for endpoints that reject it.
+// OpenAI-compatible chat-completions backend.
+//
+// `api_key` is `Some` only when a credential resolved; when it is `None` the
+// request carries no `Authorization` header, so keyless local endpoints that
+// reject unexpected headers keep working.
+//
+// `reasoning_effort` is sent on every request when `Some` (default `"none"`)
+// to suppress chain-of-thought on reasoning models: our use (harvest) wants
+// the JSON answer, not the model's thinking, and an unbounded reasoning pass
+// burns the whole `max_tokens` budget before any `content` arrives. `None`
+// omits the field for endpoints that reject it.
 pub struct ServerLlm {
     pub client: reqwest::Client,
     pub base_url: String,
@@ -236,8 +236,6 @@ mod tests {
         path
     }
 
-    // ── resolve_llm_key ──────────────────────────────────────────────────────
-
     #[test]
     fn inline_key_alone_resolves() {
         assert_eq!(
@@ -328,8 +326,6 @@ mod tests {
         assert_eq!(resolve_llm_key(None, None, None).unwrap(), None);
     }
 
-    // ── transport guard ──────────────────────────────────────────────────────
-
     #[test]
     fn a_key_over_plaintext_to_a_non_loopback_host_is_refused() {
         let err = check_llm_transport("http://192.168.1.10:1234", true).unwrap_err();
@@ -357,8 +353,6 @@ mod tests {
     fn a_keyless_plaintext_non_loopback_endpoint_is_allowed() {
         assert!(check_llm_transport("http://192.168.1.10:1234", false).is_ok());
     }
-
-    // ── upstream Authorization header ────────────────────────────────────────
 
     async fn mount_chat_completions(server: &wiremock::MockServer) {
         wiremock::Mock::given(wiremock::matchers::method("POST"))
@@ -421,8 +415,6 @@ mod tests {
             "a keyless endpoint must keep receiving the request it gets today"
         );
     }
-
-    // ── reasoning control ────────────────────────────────────────────────────
 
     async fn mount_sse(server: &wiremock::MockServer, body: &str) {
         wiremock::Mock::given(wiremock::matchers::method("POST"))
