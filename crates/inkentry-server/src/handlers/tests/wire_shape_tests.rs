@@ -1,7 +1,5 @@
-// Pin the wire shape of the memory read endpoints: their JSON response root
-// must be an object envelope, never a bare array. Mirrors the self-hosted
-// team server's side of cloud-api's `!body.is_array()` wire-shape test. See
-// ADR-076 (memory wire contract) and docs/version-skew.md.
+// Every response root here must be an object envelope, not a bare array —
+// wire-shape parity with cloud-api.
 
 use axum::body::Body;
 use axum::http::{self, Request};
@@ -39,8 +37,7 @@ async fn list_notes_returns_object_envelope_not_bare_array() {
 #[tokio::test]
 async fn harvested_shas_returns_object_envelope_not_bare_array() {
     let (app, _dim) = make_app(0.92);
-    // Seed the project so the route resolves the handler rather than 404ing
-    // on an unknown project before the shape can be observed.
+    // Seed first: an unseeded project 404s before the shape is observable.
     let (status, body) =
         post_note(app.clone(), "wire-shas-proj", "A", vec![1.0, 0.0, 0.0, 0.0]).await;
     assert_eq!(status, http::StatusCode::CREATED, "seed: {body}");
