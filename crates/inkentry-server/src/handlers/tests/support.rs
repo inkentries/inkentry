@@ -16,7 +16,6 @@ use crate::client_ip::TrustedProxies;
 use crate::db::ServerDb;
 use crate::{AppState, router};
 
-// Register sqlite-vec extension once per test process.
 pub(super) fn register_sqlite_vec() {
     use std::sync::OnceLock;
     static INIT: OnceLock<()> = OnceLock::new();
@@ -59,8 +58,6 @@ pub(super) fn make_app(conflict_threshold: f32) -> (axum::Router, i32) {
     (router(state), dim as i32)
 }
 
-// POST /v1/projects/{slug}/memory with the given client-pushed vector, tagged
-// as the accept side requires. Returns the response.
 pub(super) async fn post_note(
     app: axum::Router,
     slug: &str,
@@ -82,8 +79,8 @@ pub(super) async fn post_note(
     .await
 }
 
-// Like `post_note`, but with `reconcile`/`resolutions` (ADR-100 D2/D4) set on
-// the request alongside the vector.
+// Like `post_note`, but with `reconcile`/`resolutions` set on the request
+// alongside the vector.
 pub(super) async fn post_note_reconciling(
     app: axum::Router,
     slug: &str,
@@ -129,8 +126,6 @@ pub(super) async fn post_note_json(
     (status, json)
 }
 
-// A minimal mock embedder that always returns a single zero vector of `dim` dimensions.
-// Used to verify that `embedding_dim` is surfaced correctly in the health response.
 pub(super) struct MockEmbedder {
     pub(super) dim: usize,
 }
@@ -146,7 +141,6 @@ impl inkentry_core::embeddings::EmbeddingBackend for MockEmbedder {
     }
 }
 
-// Build an app with the given embedder slot (dim used only to size the DB).
 pub(super) fn make_app_with_slot(dim: usize, embedder: crate::EmbedderSlot) -> axum::Router {
     crate::router(make_state_with_slot(dim, embedder))
 }
@@ -222,7 +216,6 @@ pub(super) fn app_with_recording_embedder(
     (make_app_with_slot(dim, slot), embedded)
 }
 
-// Build an app with a ready mock embedder of the given dimension.
 pub(super) fn make_app_with_embedder(dim: usize) -> axum::Router {
     make_app_with_slot(
         dim,
@@ -272,8 +265,6 @@ impl inkentry_core::llm::LlmBackend for NoopLlm {
     }
 }
 
-// Build an app with a configured LLM backend and a tight rate limit, for
-// exercising `/llm/complete` rate limiting.
 pub(super) fn make_app_with_llm_and_limit(max_requests: u32) -> axum::Router {
     make_app_with_llm_limit_and_proxies(max_requests, TrustedProxies::default())
 }
@@ -355,7 +346,6 @@ pub(super) async fn post_llm_complete(app: &axum::Router, content: &str) -> http
     app.clone().oneshot(req).await.unwrap().status()
 }
 
-// Build an app with an explicit auth key configured (for 401 tests).
 pub(super) fn make_app_with_auth_key(key: Option<&str>) -> axum::Router {
     register_sqlite_vec();
     let db = ServerDb::open(std::path::Path::new(":memory:"), 4, "test-model")
@@ -497,13 +487,10 @@ pub(super) async fn spawn_test_server(
     (format!("http://{addr}"), db)
 }
 
-// Same as [`spawn_test_server`], but with an embedder slot and the
-// general/`/index/embed` timeouts injected independently: exists so
-// tests can prove `/index/embed` survives past the *general*
-// `request_timeout` budget using its own, separately-injected
-// `embed_request_timeout` (mirroring the production
-// `REQUEST_TIMEOUT`/`EMBED_REQUEST_TIMEOUT` split), without waiting out
-// real multi-second budgets.
+// Same as `spawn_test_server`, but with an embedder slot and the
+// general/`/index/embed` timeouts injected independently, so a test can prove
+// `/index/embed` survives past the general `request_timeout` using its own
+// `embed_request_timeout` without waiting out real multi-second budgets.
 pub(super) async fn spawn_test_server_with_embed(
     embedder: crate::EmbedderSlot,
     request_timeout: std::time::Duration,
@@ -522,10 +509,9 @@ pub(super) async fn spawn_test_server_with_embed(
     .await
 }
 
-// Same as [`spawn_test_server_with_embed`], but with the embed admission
-// gate injected too: exists so tests can prove the `429` shedding
-// behaviour with a small, deterministic queue capacity instead of the
-// production default.
+// Same as `spawn_test_server_with_embed`, but with the embed admission gate
+// injected too, so a test can prove `429` shedding with a small, deterministic
+// queue capacity instead of the production default.
 pub(super) async fn spawn_test_server_with_embed_and_admission(
     embedder: crate::EmbedderSlot,
     request_timeout: std::time::Duration,

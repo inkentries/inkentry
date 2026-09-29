@@ -7,9 +7,9 @@ use crate::db::ServerDb;
 
 use super::support::{make_app, post_note, post_note_reconciling, register_sqlite_vec};
 
-// ADR-100 D4: similarity alone no longer 409s or writes a `contradicts` edge.
-// A near-identical second write is just stored, and reports the first entry
-// in its duplicate-band `candidates`.
+// Similarity alone does not 409 or write a `contradicts` edge: a near-identical
+// second write is just stored, reporting the first entry in its duplicate-band
+// `candidates`.
 #[tokio::test]
 async fn a_near_identical_second_write_is_stored_and_reports_the_first_as_a_candidate() {
     let (app, _dim) = make_app(0.92);
@@ -64,8 +64,8 @@ async fn dissimilar_entries_report_no_candidates() {
     );
 }
 
-// ADR-100 D2: `reconcile: "block"` with a non-empty duplicate band and no
-// resolutions refuses the write; the entry is never stored.
+// `reconcile: "block"` with a non-empty duplicate band and no resolutions
+// refuses the write; the entry is never stored.
 #[tokio::test]
 async fn reconcile_block_refuses_a_duplicate_with_no_resolution() {
     let (app, _dim) = make_app(0.92);
@@ -142,7 +142,7 @@ async fn reconcile_block_with_a_supersedes_resolution_writes_and_archives() {
 }
 
 // A resolution naming an id outside the reported candidate set is still
-// accepted, as long as it resolves to a real entry (ADR-100 D2).
+// accepted, as long as it resolves to a real entry.
 #[tokio::test]
 async fn a_resolution_naming_an_id_outside_the_candidate_set_is_accepted() {
     let (app, _dim) = make_app(0.92);
@@ -167,10 +167,6 @@ async fn a_resolution_naming_an_id_outside_the_candidate_set_is_accepted() {
     assert_eq!(body2["stored"], json!(true));
 }
 
-// ── Input-length caps ────────────────────────────────────────────────────
-
-// POST /v1/projects/{slug}/memory with a title over `MAX_TITLE_LEN` chars
-// must be rejected with 400, not silently truncated or stored.
 #[tokio::test]
 async fn add_note_oversized_title_returns_400() {
     let (app, _dim) = make_app(0.92);
@@ -184,8 +180,6 @@ async fn add_note_oversized_title_returns_400() {
     );
 }
 
-// POST /v1/projects/{slug}/memory with a body over `MAX_BODY_LEN` chars
-// must be rejected with 400.
 #[tokio::test]
 async fn add_note_oversized_body_returns_400() {
     let (app, _dim) = make_app(0.92);
@@ -211,9 +205,6 @@ async fn add_note_oversized_body_returns_400() {
     );
 }
 
-// POST /v1/projects/{slug}/memory with an embedding vector whose length
-// doesn't match the server's configured dimension must be rejected (400),
-// not stored with a mismatched dimension.
 #[tokio::test]
 async fn add_note_mismatched_embedding_dim_returns_400() {
     // Test DB is opened with dim=4 (see `make_app`); send a 7-dim vector.
@@ -292,13 +283,9 @@ async fn add_note_magnitude_refusal_carries_the_standard_error_body() {
     );
 }
 
-// `ServerDb::upsert_project`'s own per-project dimension check (distinct
-// from the server-wide `validate_embedding_dim` guard exercised above)
-// must return the typed `DimensionMismatch` error rather than a plain
-// `anyhow` string. The regression coverage for how that error then
-// renders over HTTP (safe 400, no substring sniffing, no raw text) lives
-// in `app_error_tests` in `lib.rs`, which exercises
-// `AppError::into_response` directly.
+// `ServerDb::upsert_project`'s own per-project dimension check (distinct from
+// the server-wide `validate_embedding_dim` guard exercised above) must return
+// the typed `DimensionMismatch` error rather than a plain `anyhow` string.
 #[test]
 fn upsert_project_dimension_mismatch_is_typed_error() {
     register_sqlite_vec();
@@ -316,9 +303,8 @@ fn upsert_project_dimension_mismatch_is_typed_error() {
     assert_eq!(mismatch.got, 7);
 }
 
-// A note whose title matches an injection pattern must be rejected with
-// 422 (the code path the audit `tracing::warn!` sits on), and the response
-// must carry `field`/`category` without echoing the raw pattern.
+// A rejected injection pattern's response carries `field`/`category` without
+// echoing the raw pattern.
 #[tokio::test]
 async fn add_note_injection_pattern_returns_422() {
     let (app, _dim) = make_app(0.92);
@@ -353,14 +339,6 @@ async fn add_note_within_caps_returns_201() {
     );
 }
 
-// ── Exact-boundary input-cap tests ───────────────────────────────────────
-//
-// `add_note_within_caps_returns_201` already checks a title at exactly
-// MAX_TITLE_LEN. These fill the remaining boundary combinations: body at the
-// cap, and title/body one char under, for off-by-one coverage on both sides.
-
-// A body at exactly `MAX_BODY_LEN` chars must be accepted (boundary,
-// mirrors the existing exact-title-cap test).
 #[tokio::test]
 async fn add_note_body_at_exact_cap_returns_201() {
     let (app, _dim) = make_app(0.92);
@@ -401,11 +379,6 @@ async fn add_note_title_one_under_cap_returns_201() {
     );
 }
 
-// Body one char *over* the cap must already be covered by
-// `add_note_oversized_body_returns_400` (MAX+1). This adds the tight
-// boundary: MAX+1 exactly, asserted via the same off-by-one style as the
-// title's `MAX_TITLE_LEN + 1` case, so both fields have symmetric
-// exactly-over-by-one coverage rather than an arbitrarily large overage.
 #[tokio::test]
 async fn add_note_body_one_over_cap_returns_400() {
     let (app, _dim) = make_app(0.92);
@@ -431,8 +404,6 @@ async fn add_note_body_one_over_cap_returns_400() {
     );
 }
 
-// ADR-099 D5: POST /memory/{id}/anchor sets source_ref on an already-synced
-// entry.
 async fn post_anchor(app: axum::Router, slug: &str, note_id: &str, source_ref: &str) -> Value {
     let req = Request::builder()
         .method("POST")

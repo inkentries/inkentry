@@ -7,33 +7,23 @@ use super::support::{
     spawn_test_server_with_embed_and_admission,
 };
 
-// ── Embed cancellation on client disconnect / server timeout ─────────────
-// (GH#631)
-//
-// These bind the real router to a real TCP listener and drive it with a
-// real HTTP client (same style as the TimeoutLayer tests above), so they
-// prove actual wire behaviour: hyper genuinely drops the in-flight
-// handler future on disconnect, and that drop must reach into the
-// embedder's `embed_with_cancel`  -  modeled here via a fake backend since a
-// real `LlamaEmbedder` needs model weights this crate doesn't ship.
+// These bind the real router to a real TCP listener and drive it with a real
+// HTTP client, so they prove actual wire behaviour: hyper genuinely drops the
+// in-flight handler future on disconnect, and that drop must reach into the
+// embedder's `embed_with_cancel`, modeled here via a fake backend since a real
+// `LlamaEmbedder` needs model weights this crate doesn't ship.
 
-// An embedder that loops `iterations` times, checking `cancel` before each
-// `step`-long sleep and bumping `progress` after it  -  models
-// `LlamaEmbedder::embed_with_cancel`, whose work runs on pool worker threads.
-// Flags `observed_cancel` the moment it sees `cancel` set, so a test can assert
-// cancellation was actually observed rather than the counter merely
-// stopping for an unrelated reason.
+// Loops `iterations` times, checking `cancel` before each `step`-long sleep and
+// bumping `progress` after it, modeling `LlamaEmbedder::embed_with_cancel`'s
+// work on pool worker threads. Flags `observed_cancel` the moment it sees
+// `cancel` set, so a test can assert cancellation was actually observed rather
+// than the counter merely stopping for an unrelated reason.
 //
-// Runs the loop in a **detached `tokio::spawn`**, not directly in the
-// returned future: this is the load-bearing detail that makes the fake
-// reproduce the actual fault rather than paper over it. A plain async
-// loop would already stop the instant the handler's future is dropped
-// (ordinary Rust cancellation-on-drop  -  the behavior any embedder
-// gets for free as long as it doesn't detach its work onto a separate
-// task, so there'd be nothing here to test). Dropping a `JoinHandle`
-// does **not** abort the task it points to  -  the same "detached" property
-// `LlamaEmbedder`'s worker threads have  -  so this loop only stops if it
-// observes `cancel` itself, which is exactly what's under test.
+// Runs the loop in a detached `tokio::spawn`, not directly in the returned
+// future: dropping a `JoinHandle` does not abort the task it points to, the
+// same "detached" property `LlamaEmbedder`'s worker threads have, so this
+// loop only stops if it observes `cancel` itself — a plain async loop would
+// already stop on ordinary drop, leaving nothing here to test.
 struct CancelAwareEmbedder {
     iterations: usize,
     step: std::time::Duration,
@@ -90,14 +80,9 @@ impl inkentry_core::embeddings::EmbeddingBackend for CancelAwareEmbedder {
     }
 }
 
-// **T1 (load-bearing):** a client that disconnects mid-embed (here, via its
-// own short request timeout) must stop the embedder's progress  -  not let
-// it compute to completion for a result nobody reads. This is also the
-// empirical proof that hyper drops the in-flight handler future on
-// disconnect: on current main (no cancellation wiring), the fake's
-// progress counter keeps advancing to 100 regardless of the client giving
-// up, because `index_embed` calls a plain `embed()` with no way to signal
-// abandonment into the detached work.
+// A client that disconnects mid-embed (here, via its own short request
+// timeout) must stop the embedder's progress, not let it compute to
+// completion for a result nobody reads.
 #[tokio::test]
 async fn client_disconnect_stops_embedder_progress() {
     let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -159,18 +144,15 @@ async fn client_disconnect_stops_embedder_progress() {
     );
 }
 
-// An embedder that serializes on an internal async mutex (modeling a caller
-// queued behind the server's embed-admission capacity) and checks `cancel`
-// immediately after acquiring it, before doing any work  -  the "cascade
-// killer" check. `iterations_done` is shared across every call through
-// this embedder, so if a queued call is cancelled before it starts, it
-// contributes nothing to the total.
+// Serializes on an internal async mutex (modeling a caller queued behind the
+// server's embed-admission capacity) and checks `cancel` immediately after
+// acquiring it, before doing any work. `iterations_done` is shared across
+// every call through this embedder, so if a queued call is cancelled before
+// it starts, it contributes nothing to the total.
 //
-// As with `CancelAwareEmbedder`, the lock-and-loop runs in a **detached
-// `tokio::spawn`** so dropping the caller's future (client disconnect)
-// doesn't auto-cancel it via ordinary Rust drop semantics  -  only the
-// explicit `cancel` check does, matching how `LlamaEmbedder`'s worker threads
-// run detached from the request future.
+// As with `CancelAwareEmbedder`, the lock-and-loop runs in a detached
+// `tokio::spawn` so dropping the caller's future doesn't auto-cancel it via
+// ordinary Rust drop semantics; only the explicit `cancel` check does.
 struct QueuedCancelEmbedder {
     lock: Arc<tokio::sync::Mutex<()>>,
     iterations: usize,
@@ -224,14 +206,12 @@ impl inkentry_core::embeddings::EmbeddingBackend for QueuedCancelEmbedder {
     }
 }
 
-// **T2 (queue ghost):** two overlapping requests share the same
-// mutex-serialized embedder. The first holds the lock and runs to
-// completion; the second is abandoned (client-side timeout) while still
-// queued waiting for the lock. Once the lock is handed to it, it must do
-// zero forward passes  -  proving the "check immediately after acquiring
-// the lock" seam kills a ghost before it does any work, which is what
-// stops a live retry from queuing behind a ghost batch (the compounding
-// cascade this guards against).
+// Two overlapping requests share the same mutex-serialized embedder. The
+// first holds the lock and runs to completion; the second is abandoned
+// (client-side timeout) while still queued waiting for the lock. Once the
+// lock is handed to it, it must do zero forward passes: the "check
+// immediately after acquiring the lock" seam must kill a ghost before it
+// does any work, so a live retry never queues behind a ghost batch.
 #[tokio::test]
 async fn queued_request_abandoned_while_waiting_does_zero_forward_passes() {
     let lock = Arc::new(tokio::sync::Mutex::new(()));
@@ -309,10 +289,9 @@ async fn queued_request_abandoned_while_waiting_does_zero_forward_passes() {
     );
 }
 
-// **T3 (server 408):** a server-side timeout (the embed sub-router's own
-// `TimeoutLayer`, mirroring `EMBED_REQUEST_TIMEOUT`) must cancel the
-// in-flight batch the same way a client disconnect does  -  one fix covers
-// both, since both drop the handler future the same way.
+// A server-side timeout (the embed sub-router's own `TimeoutLayer`, mirroring
+// `EMBED_REQUEST_TIMEOUT`) must cancel the in-flight batch the same way a
+// client disconnect does, since both drop the handler future the same way.
 #[tokio::test]
 async fn server_side_embed_timeout_cancels_in_flight_batch() {
     let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -365,24 +344,15 @@ async fn server_side_embed_timeout_cancels_in_flight_batch() {
     );
 }
 
-// Edge case: cancellation observed on exactly the **last** iteration of a
-// batch  -  the boundary the sub-batch/per-chunk checks are meant to catch
-// early elsewhere, but here there is no "next" chunk left to abandon into.
-// Deterministic (no HTTP, no timing race): a watcher task flips `cancel`
-// as soon as `progress` reaches `ITERATIONS - 2`, i.e. once every chunk
-// but the last *two* has completed. That leaves a full iteration's sleep
-// (`step`) as slack for the watcher to actually act before the check that
-// matters: the loop's own check-then-sleep-then-increment body has no
-// `.await` between one iteration's increment and the next iteration's
-// check, so a watcher targeting `ITERATIONS - 1` directly can never win
-// that race under a single-threaded runtime  -  it would only ever be
-// woken up (and act) *after* the following check had already run.
-// Targeting one iteration earlier gives the watcher the preceding
-// iteration's whole `step` duration to act, so the final iteration is the
-// one deterministically guaranteed to observe cancellation. Proves the
-// loop bails out cleanly (an `Err`, no panic, no double-counted progress)
-// rather than e.g. running one past the check or leaving the
-// `JoinHandle` unresolved.
+// Cancellation observed on exactly the last iteration of a batch, where there
+// is no "next" chunk left to abandon into. The watcher flips `cancel` at
+// `ITERATIONS - 2` rather than `- 1`: the loop's check-then-sleep-then-increment
+// body has no `.await` between one iteration's increment and the next
+// iteration's check, so a watcher targeting `ITERATIONS - 1` could only ever
+// wake up after that check had already run. Targeting one iteration earlier
+// gives the watcher a full `step` of slack to act before the check that
+// matters, making the final iteration deterministically the one that
+// observes cancellation.
 #[tokio::test]
 async fn cancellation_on_last_chunk_completes_cleanly_no_panic() {
     use inkentry_core::embeddings::EmbeddingBackend;
@@ -437,33 +407,18 @@ async fn cancellation_on_last_chunk_completes_cleanly_no_panic() {
     );
 }
 
-// Edge case explicitly called out alongside T2: a solo request  -  no
-// other batch ever holds the embedder, so there is no queue delay for
-// the client's disconnect to race against  -  that is abandoned as early
-// as physically possible. This is deliberately **not** asserting zero
-// forward passes: `queued_request_abandoned_while_waiting_does_zero_forward_passes`
-// (T2, above) proves zero waste specifically for a ghost that loses a
-// race for the mutex to a live occupier, because the wait for the lock
-// gives the disconnect time to land before the ghost's own check runs.
-// A solo request has no such delay to exploit: the mutex-acquire check
-// fires essentially instantly, almost certainly before the disconnect
-// (which has to round-trip a real TCP close) can possibly have
-// propagated, so it inevitably starts its first chunk. What's
-// guaranteed here is acceptance criterion #1  -  at most one forward pass
-// completes after the request is abandoned, then it stops for good  -  not
-// criterion #2's "zero," which is scoped to the queued-behind-another-batch
-// case. This test pins that distinction down so it isn't mistaken for a
-// regression later.
+// A solo request (no other batch holds the embedder) has no queue delay for
+// the disconnect to race against: the mutex-acquire check fires essentially
+// instantly, almost certainly before the disconnect's TCP close can have
+// propagated, so it inevitably starts its first chunk. This deliberately
+// asserts only "at most one forward pass completes after abandonment," not
+// the zero waste that `queued_request_abandoned_while_waiting_does_zero_forward_passes`
+// proves for a ghost that loses the mutex race to a live occupier.
 //
-// Criterion #1 is deliberately measured from the moment the cancel flag is
-// set, not from the start of the request. How many passes run *before* the
-// flag arrives is a function of how long the disconnect takes to reach the
-// server, which is a property of machine load rather than of cancellation:
-// bounding the total would fail under contention while the cancellation path
-// was working correctly. Bounding total wasted work is left to the siblings
-// that can do it without a wall clock, `client_disconnect_stops_embedder_progress`
-// and `server_side_embed_timeout_cancels_in_flight_batch`, which fail on a
-// propagation regression of a few hundred milliseconds.
+// The one-pass bound is measured from the moment the cancel flag is set, not
+// from the start of the request: how many passes run before the flag arrives
+// is a function of machine load, not of cancellation, so bounding the total
+// would fail under contention while the cancellation path still worked.
 #[tokio::test]
 async fn solo_request_disconnected_stops_within_one_pass_after_cancellation() {
     let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -504,13 +459,6 @@ async fn solo_request_disconnected_stops_within_one_pass_after_cancellation() {
              before the (much longer) embed loop's first sleep completes"
     );
 
-    // The wasted-pass bound is measured from the instant the server sets the
-    // cancel flag, not from a fixed settling sleep. A fixed settle silently
-    // asserts that the disconnect propagates inside one step, which is a claim
-    // about machine load rather than about cancellation: under contention the
-    // propagation can straddle a step boundary, the loop legitimately completes
-    // a second pass, and a total-count bound then fails as if cancellation had
-    // regressed. Sampling progress at the flag makes the bound causal.
     let watch_progress = Arc::clone(&progress);
     let watch_published = Arc::clone(&published_cancel);
     let progress_at_cancel = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
@@ -643,8 +591,6 @@ fn embed_abandon_guard_drop_is_idempotent_when_flag_already_set() {
     );
 }
 
-// ── ConcurrencyLimitLayer under concurrent load ───────────────────────────
-
 // Proves `tower::limit::ConcurrencyLimitLayer` backpressures concurrent
 // requests beyond its cap under real concurrent load, not just that the
 // layer is attached.
@@ -739,10 +685,8 @@ async fn concurrency_limit_layer_queues_requests_beyond_the_cap() {
     );
 }
 
-// ── Embed admission control (429 on lane saturation) ─────────────────────
-//
 // Embeds run on a warm-context pool with no shared lock, split into two
-// admission lanes (ADR-096): a bulk lane and a reserved interactive lane. These
+// admission lanes: a bulk lane and a reserved interactive lane. These
 // tests cover the gate in front of it: `EmbedAdmission`, which bounds each lane
 // independently and sheds a full lane with 429 rather than letting a request
 // queue silently past its own timeout. The interactive lane is additional
@@ -881,11 +825,11 @@ impl inkentry_core::embeddings::EmbeddingBackend for RepairLaneProbeEmbedder {
     }
 }
 
-// **T1:** two one-chunk `/index/embed` calls both take the interactive lane;
-// with its only slot held by an in-flight request, the second must be shed
-// immediately with `429` + the configured `Retry-After`, not queue behind the
-// first and wait. Once the first is released, it must still complete normally:
-// admission control sheds excess load, it does not break the request that WAS
+// Two one-chunk `/index/embed` calls both take the interactive lane; with its
+// only slot held by an in-flight request, the second must be shed immediately
+// with `429` + the configured `Retry-After`, not queue behind the first and
+// wait. Once the first is released, it must still complete normally:
+// admission control sheds excess load, it does not break the request that was
 // within budget.
 #[tokio::test]
 async fn index_embed_returns_429_with_retry_after_once_admission_queue_is_saturated() {
@@ -984,8 +928,6 @@ async fn index_embed_succeeds_normally_when_within_admission_capacity() {
     }
 }
 
-// ── Memory writes are embed-consuming routes too ─────────────────────────
-//
 // `add_note` and `push_memory_batch` embed server-side whenever the client
 // sends no vector (the CLI never does), so they consume the same
 // serialized embedder as `/index/embed`, `/search` and `/memory/search`
@@ -1211,11 +1153,9 @@ async fn add_note_under_saturated_embedder_is_cancelled_not_degraded() {
     release.notify_one();
 }
 
-// ── Reserved interactive lane (ADR-096) ───────────────────────────────────
-
-// The core invariant: an interactive embed runs at once from the reserved lane
-// while the bulk lane is fully saturated, and a multi-chunk embed is still shed
-// exactly as before — never admitted from the interactive lane.
+// An interactive embed runs at once from the reserved lane while the bulk lane
+// is fully saturated, and a multi-chunk embed is still shed exactly as
+// before — never admitted from the interactive lane.
 #[tokio::test]
 async fn an_interactive_embed_is_admitted_while_the_bulk_lane_is_saturated() {
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));

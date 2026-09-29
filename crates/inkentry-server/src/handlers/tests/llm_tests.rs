@@ -10,7 +10,6 @@ use super::support::{
     post_llm_complete_from,
 };
 
-// POST /v1/projects/{slug}/llm/complete with no LLM configured should return 503.
 #[tokio::test]
 async fn llm_complete_without_llm_returns_503() {
     let (app, _) = make_app(0.92);
@@ -29,8 +28,6 @@ async fn llm_complete_without_llm_returns_503() {
     );
 }
 
-// The explore route was removed (ADR-079). A POST to the old path must fall
-// through to the router's 404, not answer.
 #[tokio::test]
 async fn explore_route_removed_returns_404() {
     let app = make_app_with_llm_and_limit(1000);
@@ -49,15 +46,9 @@ async fn explore_route_removed_returns_404() {
     );
 }
 
-// ── /llm/complete rate limiting ─────────────────────────────────────────
-//
-// The generic inference primitive shares one rate-limit seam
-// (`rate_limit_key` + `state.rate_limiter`) with every other inference route.
-// These pin that shared behaviour now that it is the sole SSE generation
-// endpoint.
+// `/llm/complete` shares one rate-limit seam (`rate_limit_key` +
+// `state.rate_limiter`) with every other inference route.
 
-// Once the per-bucket budget is exhausted, further calls get 429, not a normal
-// (SSE 200) response.
 #[tokio::test]
 async fn llm_complete_returns_429_past_rate_limit() {
     let app = make_app_with_llm_and_limit(2);
@@ -75,10 +66,8 @@ async fn llm_complete_returns_429_past_rate_limit() {
     );
 }
 
-// Two different clients must not share one rate-limit bucket: each gets its own
-// budget, so a shared key can't collapse every caller onto one global bucket.
-// "Different client" means a different TCP peer — the one part of a request the
-// caller cannot choose.
+// "Different client" means a different TCP peer — the one part of a request
+// the caller cannot choose.
 #[tokio::test]
 async fn llm_complete_rate_limit_keyed_per_tcp_peer() {
     let app = make_app_with_llm_and_limit(1);
@@ -101,10 +90,8 @@ async fn llm_complete_rate_limit_keyed_per_tcp_peer() {
 }
 
 // `X-Forwarded-For` is a request header, so a caller can set it to anything.
-// With no trusted proxy configured it must not reach the bucket key at all:
-// otherwise varying it per request mints an unlimited budget and the ADR-002
-// rate limit — the control that bounds spend on the operator's LLM — stops
-// existing.
+// With no trusted proxy configured it must not reach the bucket key at all,
+// or varying it per request mints an unlimited budget.
 #[tokio::test]
 async fn llm_complete_forged_forwarded_for_earns_no_fresh_budget() {
     let app = make_app_with_llm_and_limit(2);

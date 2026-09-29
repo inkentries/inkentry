@@ -5,11 +5,9 @@ use tower::ServiceExt;
 
 use super::support::{make_app, post_note};
 
-// POST /v1/projects/{slug}/memory/search with no embedder should return 400.
 #[tokio::test]
 async fn search_without_embedder_returns_400() {
     let (app, _) = make_app(0.92);
-    // First create the project.
     let _ = post_note(
         app.clone(),
         "search-proj",

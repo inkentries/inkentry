@@ -5,7 +5,6 @@ use tower::ServiceExt;
 
 use super::support::{make_app, make_app_with_embedder, make_app_with_slot, post_embed};
 
-// POST /v1/projects/{slug}/index/embed with no embedder should return 400.
 #[tokio::test]
 async fn embed_without_embedder_returns_400() {
     let (app, _) = make_app(0.92);
@@ -24,7 +23,6 @@ async fn embed_without_embedder_returns_400() {
     );
 }
 
-// POST /v1/projects/{slug}/index/embed with >256 chunks should return 413.
 #[tokio::test]
 async fn embed_batch_too_large_returns_413() {
     let (app, _) = make_app(0.92);
@@ -46,8 +44,6 @@ async fn embed_batch_too_large_returns_413() {
     );
 }
 
-// While `loading`, embed endpoints return `503 + Retry-After: 5` and a body
-// with `state: "loading"` (transient: the CLI keeps polling).
 #[tokio::test]
 async fn embed_while_loading_returns_503_retry_after() {
     let app = make_app_with_slot(4, crate::EmbedderSlot::loading());
@@ -71,8 +67,6 @@ async fn embed_while_loading_returns_503_retry_after() {
     assert_eq!(json["state"], json!("loading"));
 }
 
-// While `unavailable` (load failed), embed endpoints return a terminal `503`
-// with `state: "unavailable"` and no `Retry-After` (the CLI stops polling).
 #[tokio::test]
 async fn embed_while_unavailable_returns_terminal_503() {
     let slot = crate::EmbedderSlot::loading();
@@ -91,8 +85,6 @@ async fn embed_while_unavailable_returns_terminal_503() {
     assert_eq!(json["state"], json!("unavailable"));
 }
 
-// While `disabled`, embed endpoints keep the permanent `400` (unchanged
-// behaviour for the genuinely-misconfigured case).
 #[tokio::test]
 async fn embed_while_disabled_returns_400() {
     let app = make_app_with_slot(4, crate::EmbedderSlot::disabled());
@@ -104,7 +96,6 @@ async fn embed_while_disabled_returns_400() {
     );
 }
 
-// When `ready`, embed endpoints serve `200`.
 #[tokio::test]
 async fn embed_while_ready_returns_200() {
     let app = make_app_with_embedder(4);
@@ -116,9 +107,7 @@ async fn embed_while_ready_returns_200() {
     );
 }
 
-// A ready embedder that fails every request with a Metal device-loss error,
-// standing in for the embedder after its one in-place device rebuild has
-// already failed.
+// Stands in for the embedder after its one in-place device rebuild has failed.
 #[cfg(feature = "embed-llama")]
 struct DeviceLostEmbedder {
     dim: usize,
@@ -139,10 +128,8 @@ impl inkentry_core::embeddings::EmbeddingBackend for DeviceLostEmbedder {
     }
 }
 
-// A device-loss inference failure must surface as a distinct 503 carrying the
-// stable `embedder_device_lost` code, not a generic 500 — so the CLI can point
-// the user at a server restart instead of at batch-size tuning. The raw Metal
-// error text must not leak into the client body.
+// A device-loss failure must surface as a stable `embedder_device_lost` code
+// (so the CLI can point the user at a restart) without leaking the raw error text.
 #[cfg(feature = "embed-llama")]
 #[tokio::test]
 async fn embed_device_lost_returns_503_with_actionable_code() {

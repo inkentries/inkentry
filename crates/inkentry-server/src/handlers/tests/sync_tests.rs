@@ -3,10 +3,6 @@ use serde_json::json;
 
 use super::support::{get_status_and_json, make_app, post_note};
 
-// ── GET /memory/since: dual mode (`t` legacy vs `since_id` cursor) ──
-
-// Regression: the pre-existing `?t=` mode must still return a bare
-// array, unchanged by the new `since_id` mode.
 #[tokio::test]
 async fn memory_since_t_mode_still_returns_bare_array() {
     let (app, _dim) = make_app(0.92);
@@ -29,8 +25,6 @@ async fn memory_since_t_mode_still_returns_bare_array() {
     );
 }
 
-// A request with neither `t` nor `since_id` is a 400, matching the
-// pre-existing "missing `t`" contract (now generalized to either param).
 #[tokio::test]
 async fn memory_since_missing_both_params_returns_400() {
     let (app, _dim) = make_app(0.92);
@@ -50,9 +44,8 @@ async fn memory_since_missing_both_params_returns_400() {
     assert_eq!(status, http::StatusCode::BAD_REQUEST, "body: {body}");
 }
 
-// `since_id` mode returns `{entries, count}`, with `id` set to the
-// note's `sync_id` (a UUID), not its integer note id: this is the
-// shape `CloudSyncClient::pull_since`/`RemoteEntry` expects.
+// `id` is the note's `sync_id` (a UUID), not its integer note id: the shape
+// `CloudSyncClient::pull_since`/`RemoteEntry` expects.
 #[tokio::test]
 async fn memory_since_id_mode_returns_entries_envelope() {
     let (app, _dim) = make_app(0.92);
@@ -78,9 +71,6 @@ async fn memory_since_id_mode_returns_entries_envelope() {
     );
 }
 
-// `since_id` takes precedence when both `t` and `since_id` are
-// supplied: a `t` far in the past must not switch the response back to
-// the bare-array shape.
 #[tokio::test]
 async fn memory_since_id_takes_precedence_over_t_when_both_given() {
     let (app, _dim) = make_app(0.92);
@@ -105,8 +95,6 @@ async fn memory_since_id_takes_precedence_over_t_when_both_given() {
     );
 }
 
-// The `since_id` cursor is exclusive and advances correctly: pulling
-// again with the previous response's max id returns nothing further.
 #[tokio::test]
 async fn memory_since_id_cursor_advances_and_is_exclusive() {
     let (app, _dim) = make_app(0.92);
@@ -135,11 +123,6 @@ async fn memory_since_id_cursor_advances_and_is_exclusive() {
     );
 }
 
-// ── `since_id` active-note `total` (ADR-092) ──
-
-// The `since_id` response carries the project's active-note `total` alongside
-// the page `count`. With three active notes seeded and a full pull from the nil
-// cursor, `total` and `count` both read 3.
 #[tokio::test]
 async fn memory_since_id_mode_reports_the_active_note_total() {
     let (app, _dim) = make_app(0.92);
@@ -174,10 +157,9 @@ async fn memory_since_id_mode_reports_the_active_note_total() {
 }
 
 // `total` is project-wide, not cursor-relative: a client already advanced past
-// every row sees `count == 0` but `total` still reflects all active rows. This
-// is the load-bearing case — it is what lets a client whose cursor sits ahead
-// of `--force`-restored rows notice the server holds more and fall back to a
-// full pull.
+// every row sees `count == 0` but `total` still reflects all active rows —
+// letting a client whose cursor sits ahead of `--force`-restored rows notice
+// the server holds more and fall back to a full pull.
 #[tokio::test]
 async fn memory_since_id_total_is_project_wide_not_cursor_relative() {
     let (app, _dim) = make_app(0.92);
