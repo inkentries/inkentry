@@ -400,8 +400,8 @@ fn config_reconcile_block_blocks_without_the_flag() {
     );
 }
 
-// An unreachable embedder falls back to FTS-only candidates (related band
-// only, never duplicate), and the write proceeds regardless of --reconcile.
+// An unreachable embedder falls back to FTS-only candidates: related band
+// only, never duplicate.
 #[test]
 fn no_embedder_reachable_falls_back_to_fts_only_and_the_write_proceeds() {
     let f = fixture();

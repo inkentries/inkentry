@@ -1,5 +1,3 @@
-//! Unit tests for graph EdgeKind parsing and Display.
-
 use inkentry_core::indexer::graph::EdgeKind;
 
 #[test]
