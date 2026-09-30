@@ -105,6 +105,7 @@ pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) 
     push_and_start_pull_task(cfg, mem_path, &target, port).await;
 }
 
+// Runs even with an empty outbox: a push is what starts the session's pull task.
 async fn push_and_start_pull_task(
     cfg: &Config,
     mem_path: &std::path::Path,
