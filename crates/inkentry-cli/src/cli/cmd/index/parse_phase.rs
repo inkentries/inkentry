@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use anyhow::Result;
 use ignore::WalkBuilder;
 use indicatif::{MultiProgress, ProgressBar};
@@ -18,14 +20,15 @@ use crate::{
 // Checked via metadata before any read, so a huge or compression-bomb file can't OOM the indexer.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-// Falls back to 0, which sorts last under the embed queue's `mtime DESC` order.
+const MTIME_UNKNOWN: i64 = 0;
+
 fn stat_mtime(path: &std::path::Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .unwrap_or(MTIME_UNKNOWN)
 }
 
 fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
@@ -44,8 +47,6 @@ fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
 pub(super) struct ParseResult {
     pub indexed: u64,
     pub removed: u64,
-    #[allow(dead_code)]
-    pub filtered: u64,
 }
 
 fn filtered_notice(filtered: u64) -> String {
@@ -83,7 +84,6 @@ pub(super) fn run_parse_phase(
         return Ok(ParseResult {
             indexed: 0,
             removed: 0,
-            filtered,
         });
     }
 
@@ -146,11 +146,7 @@ pub(super) fn run_parse_phase(
         db.stamp_chunker_config(&inkentry_core::indexer::chunker_config_id())?;
     }
 
-    Ok(ParseResult {
-        indexed,
-        removed,
-        filtered,
-    })
+    Ok(ParseResult { indexed, removed })
 }
 
 pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String, usize)>> {
@@ -158,22 +154,15 @@ pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String,
     for (chunk_id, name, metadata, summary, content, token_count) in
         db.chunks_missing_embeddings()?
     {
-        let tokens = effective_token_count(token_count, &content);
+        let tokens = match NonZeroUsize::new(token_count) {
+            Some(stored) => stored.get(),
+            None => estimate_tokens(&content),
+        };
         let text =
             reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
         out.push((chunk_id, text, tokens));
     }
     Ok(out)
-}
-
-// Stored 0 is a pre-backfill row; floor at 1 so token-weighted math never divides by zero.
-fn effective_token_count(stored: usize, content: &str) -> usize {
-    let tc = if stored == 0 {
-        estimate_tokens(content)
-    } else {
-        stored
-    };
-    tc.max(1)
 }
 
 // Must match `Chunk::embedding_text`; the docstring is read back from the metadata JSON.
@@ -200,39 +189,39 @@ pub(super) fn reconstruct_embedding_text(
     }
 }
 
-// Sensitive files are dropped by the walk before `filter` sees them, so `[index]` config can never re-include them.
+const ALWAYS_EXCLUDED_SENSITIVE_PATTERNS: &[&str] = &[
+    "!.env",
+    "!.env.*",
+    "!*.pem",
+    "!*.key",
+    "!*.p12",
+    "!*.pfx",
+    "!*.p8",
+    "!*.cer",
+    "!*.crt",
+    "!*.der",
+    "!id_rsa",
+    "!id_ecdsa",
+    "!id_ed25519",
+    "!id_dsa",
+    "!*.keystore",
+    "!*.jks",
+    "!.netrc",
+    "!.npmrc",
+];
+
 fn collect_files(
     root: &std::path::Path,
     filter: &inkentry_core::indexer::filter::IndexFilter,
 ) -> Result<(Vec<ignore::DirEntry>, u64)> {
     use inkentry_core::indexer::filter::Decision;
 
-    let sensitive_patterns = [
-        "!.env",
-        "!.env.*",
-        "!*.pem",
-        "!*.key",
-        "!*.p12",
-        "!*.pfx",
-        "!*.p8",
-        "!*.cer",
-        "!*.crt",
-        "!*.der",
-        "!id_rsa",
-        "!id_ecdsa",
-        "!id_ed25519",
-        "!id_dsa",
-        "!*.keystore",
-        "!*.jks",
-        "!.netrc",
-        "!.npmrc",
-    ];
     let mut walk = WalkBuilder::new(root);
     walk.standard_filters(true);
     walk.add_custom_ignore_filename(".inkentryignore");
     let mut ob = ignore::overrides::OverrideBuilder::new(root);
     ob.case_insensitive(true).ok();
-    for pat in &sensitive_patterns {
+    for pat in ALWAYS_EXCLUDED_SENSITIVE_PATTERNS {
         ob.add(pat).ok();
     }
     if let Ok(ov) = ob.build() {
@@ -519,8 +508,7 @@ fn cleanup_stale(files: &[ignore::DirEntry], root: &std::path::Path, db: &Databa
             )
         })
         .collect();
-    // "" matches every stored path.
-    let all_indexed = db.file_paths_under("")?;
+    let all_indexed = db.all_file_paths()?;
     let mut removed = 0u64;
     for (id, path) in all_indexed {
         if !visited.contains(&path) {
@@ -1233,10 +1221,9 @@ mod tests {
         let mut cfg_off = crate::config::Config::default();
         cfg_off.index.use_default_excludes = false;
         cfg_off.index.detect_generated = false;
-        let r1 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_off).unwrap();
-        assert_eq!(r1.filtered, 0);
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg_off).unwrap();
         let indexed_off: Vec<String> = db
-            .file_paths_under("")
+            .all_file_paths()
             .unwrap()
             .into_iter()
             .map(|(_, p)| p)
@@ -1247,10 +1234,9 @@ mod tests {
         );
 
         let cfg_on = crate::config::Config::default();
-        let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
-        assert!(r2.filtered >= 1, "app.min.js filtered on re-index");
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
         let indexed_on: Vec<String> = db
-            .file_paths_under("")
+            .all_file_paths()
             .unwrap()
             .into_iter()
             .map(|(_, p)| p)
@@ -1422,11 +1408,10 @@ mod tests {
         );
 
         let cfg_on = crate::config::Config::default();
-        let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
-        assert!(r2.filtered >= 1, "app.min.js is filtered on re-index");
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
 
         let files_now: Vec<String> = db
-            .file_paths_under("")
+            .all_file_paths()
             .unwrap()
             .into_iter()
             .map(|(_, p)| p)
