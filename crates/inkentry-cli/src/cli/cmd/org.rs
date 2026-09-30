@@ -109,7 +109,7 @@ pub async fn switch_org(
         workos_url,
         client_id,
         &auth.refresh_token,
-        Some(&workos_org_id),
+        auth_api::OrgScope::Org(&workos_org_id),
     )
     .await?;
     Ok(
@@ -260,12 +260,24 @@ mod tests {
         };
         let client = auth_api::build_client().unwrap();
         let workos = auth_api::workos_url();
-        let a = auth_api::refresh_token(&client, &workos, &client_id, &rt_a, None)
-            .await
-            .expect("org A refresh should succeed");
-        let b = auth_api::refresh_token(&client, &workos, &client_id, &rt_b, None)
-            .await
-            .expect("org B refresh should succeed on its own lineage");
+        let a = auth_api::refresh_token(
+            &client,
+            &workos,
+            &client_id,
+            &rt_a,
+            auth_api::OrgScope::Default,
+        )
+        .await
+        .expect("org A refresh should succeed");
+        let b = auth_api::refresh_token(
+            &client,
+            &workos,
+            &client_id,
+            &rt_b,
+            auth_api::OrgScope::Default,
+        )
+        .await
+        .expect("org B refresh should succeed on its own lineage");
         assert!(!a.refresh_token.is_empty() && !b.refresh_token.is_empty());
         assert_ne!(
             a.refresh_token, b.refresh_token,

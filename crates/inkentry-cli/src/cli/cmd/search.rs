@@ -553,7 +553,7 @@ fn empty_message(
         parts.push(format!(
             "the index was rebuilt from {} and not reindexed since, so it holds nothing; \
              run `inkentry index .`",
-            super::helpers::replaced_schema(found)
+            super::helpers::SchemaLabel::of(found)
         ));
     }
     if let (true, Some((e, t))) = (code_partial, code_coverage) {

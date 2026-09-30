@@ -688,7 +688,7 @@ fn rebuilt_line(rebuilt_from: Option<i32>) -> Option<String> {
     Some(format!(
         "\x1b[33m[Index: emptied by a rebuild from {}, not yet reindexed; \
          run 'inkentry index .']\x1b[0m",
-        super::helpers::replaced_schema(found)
+        super::helpers::SchemaLabel::of(found)
     ))
 }
 

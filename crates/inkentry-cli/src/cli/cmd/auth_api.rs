@@ -213,7 +213,7 @@ pub enum PollOutcome {
     Expired,
     Denied,
     InvalidGrant(String),
-    Challenge(Option<String>),
+    Challenge,
     Error(anyhow::Error),
 }
 
@@ -261,8 +261,7 @@ pub async fn poll_token(
         "expired_token" => PollOutcome::Expired,
         "access_denied" => PollOutcome::Denied,
         "mfa_required" | "mfa_challenge" | "mfa_enrollment" | "challenge_required" => {
-            // WorkOS step-up is completed browser-side; surface it non-fatally.
-            PollOutcome::Challenge(None)
+            PollOutcome::Challenge
         }
         "invalid_grant" => {
             let msg = err
@@ -276,20 +275,35 @@ pub async fn poll_token(
     }
 }
 
-// Without `organization_id` the grant reverts to the account's default org.
+pub enum OrgScope<'a> {
+    Default,
+    Org(&'a str),
+}
+
+impl<'a> OrgScope<'a> {
+    // An orgless account has an empty id, which must not be sent as `organization_id`.
+    pub(crate) fn of_session(org_id: &'a str) -> Self {
+        if org_id.is_empty() {
+            Self::Default
+        } else {
+            Self::Org(org_id)
+        }
+    }
+}
+
 pub async fn refresh_token(
     client: &reqwest::Client,
     workos_url: &str,
     client_id: &str,
     refresh_token: &str,
-    organization_id: Option<&str>,
+    scope: OrgScope<'_>,
 ) -> Result<TokenSuccess> {
     let mut form: Vec<(&str, &str)> = vec![
         ("client_id", client_id),
         ("grant_type", GRANT_REFRESH_TOKEN),
         ("refresh_token", refresh_token),
     ];
-    if let Some(org) = organization_id {
+    if let OrgScope::Org(org) = scope {
         form.push(("organization_id", org));
     }
 
@@ -332,18 +346,13 @@ pub async fn rotate_token(
         workos_url,
         client_id,
         &auth.refresh_token,
-        org_id_for_refresh(&auth.org_id),
+        OrgScope::of_session(&auth.org_id),
     )
     .await
     .map_err(|e| e.context("session expired and token refresh failed — run `inkentry login`"))?
     .into_auth_tokens(auth.cloud_origin.clone());
     persist(&rotated)?;
     Ok(rotated)
-}
-
-// An empty id (orgless account) must not be sent as an empty `organization_id` field.
-pub(crate) fn org_id_for_refresh(org_id: &str) -> Option<&str> {
-    (!org_id.is_empty()).then_some(org_id)
 }
 
 // Only the WorkOS-login bearer is refreshable; a self-hosted server key or an
@@ -916,7 +925,7 @@ mod tests {
         let client = build_client().unwrap();
         let outcome = poll_token(&client, &server.uri(), "client_test", "dc-xyz").await;
         assert!(
-            matches!(outcome, PollOutcome::Challenge(_)),
+            matches!(outcome, PollOutcome::Challenge),
             "mfa_required must yield PollOutcome::Challenge (non-fatal)"
         );
     }
@@ -940,7 +949,7 @@ mod tests {
             let client = build_client().unwrap();
             let outcome = poll_token(&client, &server.uri(), "client_test", "dc-xyz").await;
             assert!(
-                matches!(outcome, PollOutcome::Challenge(_)),
+                matches!(outcome, PollOutcome::Challenge),
                 "error code '{code}' must yield PollOutcome::Challenge (non-fatal)"
             );
         }
