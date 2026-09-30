@@ -97,6 +97,11 @@ code, while the "stdout empty on `2`" guarantee that scripts rely on is intact.
 Porcelain commands use `0`/`1` with their own documented meanings and do not
 follow the plumbing convention.
 
+`hooks agent <event>` is called from an agent's hooks, where a failure or a stray
+line would reach the agent. It always exits `0`, prints nothing on stderr, and
+prints nothing at all on any error. Its stdout, when present, is the single JSON
+object the agent's hook contract defines.
+
 **`memory add` exit `3`** ([ADR-100](adr/100-memory-add-reconciles-against-existing-entries-before-it-writes.md) D2a):
 new in 1.x, and additive per the rule above, since it exists only on the
 opt-in `--reconcile` path (or `reconcile = "block"` under `[memory]` in
@@ -376,7 +381,7 @@ sidecars, and background logs. Names, formats, and existence may change, and an
 internal file may be removed outright.
 
 `~/.config/inkentry/` (config and registry) and `~/.local/state/inkentry/`
-(runtime state for the local server) follow the same split: the config file is
+(runtime state for the local server and the agent hooks) follow the same split: the config file is
 stable, the state files are internal.
 
 ## Enforcement

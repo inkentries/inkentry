@@ -32,6 +32,21 @@ pub use sync_mode::SyncMode;
 pub use team_target::{TeamTarget, declared_team_targets};
 pub use tls::{apply_server_ca, find_rustls_cause};
 
+static WARNINGS_SILENCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Stops [`Config::load`] and [`Config::validate`] writing warnings to stderr
+/// for the rest of the process. For callers whose contract is to print
+/// nothing, such as an agent hook.
+pub fn silence_warnings() {
+    WARNINGS_SILENCED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn emit_warning(message: &str) {
+    if !WARNINGS_SILENCED.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{message}");
+    }
+}
+
 /// Default TCP port for `inkentry-server`.
 ///
 /// 4655 spells `inkl` on a phone keypad; team deployments conventionally use
@@ -444,7 +459,7 @@ impl Config {
                 .with_context(|| format!("reading config at {}", global_path.display()))?;
             let parsed = parse_global_config(&raw, &global_path)?;
             if let Some(warning) = personal_config_credential_warning(&raw, &global_path) {
-                eprintln!("{warning}");
+                emit_warning(&warning);
             }
             // Migrate a legacy plaintext [auth] session into the org-token
             // cache and strip it from the file. Best-effort: a store that
@@ -453,11 +468,11 @@ impl Config {
             if let Some(legacy) = legacy_auth_tokens(&raw)
                 && let Err(e) = migrate_legacy_auth(store, &global_path, &legacy)
             {
-                eprintln!(
+                emit_warning(&format!(
                     "Warning: could not migrate the stored cloud session out of {} into the \
                      secret store; it will be retried on the next run: {e:#}",
                     global_path.display()
-                );
+                ));
             }
             parsed
         } else {
@@ -481,7 +496,7 @@ impl Config {
                 .with_context(|| format!("reading project config at {}", proj_path.display()))?;
             let proj = parse_project_config(&raw, &proj_path)?;
             for warning in project_config_key_warnings(&raw, &proj_path) {
-                eprintln!("{warning}");
+                emit_warning(&warning);
             }
 
             if let Some(v) = proj.server_url {
@@ -845,7 +860,7 @@ impl Config {
         if let Some(url) = &self.server_url
             && let Some(warning) = portless_loopback_server_url_warning(url)
         {
-            eprintln!("{warning}");
+            emit_warning(&warning);
         }
         Ok(())
     }
