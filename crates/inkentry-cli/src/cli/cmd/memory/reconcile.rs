@@ -204,9 +204,7 @@ pub(super) async fn memory_reconcile(
     if args.all_projects {
         run_all_projects(&server_db_path, mem_path, cfg, &args, json).await
     } else {
-        let result = reconcile_project(&slug, &server_db_path, mem_path, cfg, &args, json).await;
-        // Errors already propagate out of reconcile_project.
-        result
+        reconcile_project(&slug, &server_db_path, mem_path, cfg, &args, json).await
     }
 }
 

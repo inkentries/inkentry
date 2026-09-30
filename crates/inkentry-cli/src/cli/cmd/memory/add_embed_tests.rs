@@ -14,6 +14,7 @@ use crate::config::Config;
 use crate::storage::MemoryStore;
 
 const PROJECT: &str = "proj";
+const STALL_FAR_BEYOND_BUDGET: Duration = super::add::INTERACTIVE_EMBED_BUDGET.saturating_mul(20);
 
 fn embed_route() -> String {
     format!("/v1/projects/{PROJECT}/index/embed")
@@ -202,7 +203,7 @@ async fn a_stalled_embedder_defers_the_vector_within_the_budget() {
     let (tmp, mem_path) = fresh_project();
     let title = "Stored while the embedder is busy";
 
-    let stall = super::add::INTERACTIVE_EMBED_BUDGET * 20;
+    let stall = STALL_FAR_BEYOND_BUDGET;
     let server = MockServer::start().await;
     mount_health(&server).await;
     Mock::given(method("POST"))
@@ -293,7 +294,7 @@ async fn memory_reindex_attaches_the_vector_a_deferred_add_left_missing() {
         .and(path(embed_route()))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_delay(super::add::INTERACTIVE_EMBED_BUDGET * 20)
+                .set_delay(STALL_FAR_BEYOND_BUDGET)
                 .set_body_bytes(inkentry_core::embeddings::vec_to_blob(&stub_vector())),
         )
         .mount(&stalled)
@@ -464,7 +465,7 @@ async fn a_timed_out_embed_is_sent_once_and_not_retried() {
         .and(path(embed_route()))
         .respond_with(CountAndStall {
             requests: Arc::clone(&requests),
-            delay: super::add::INTERACTIVE_EMBED_BUDGET * 20,
+            delay: STALL_FAR_BEYOND_BUDGET,
         })
         .mount(&server)
         .await;
