@@ -143,7 +143,7 @@ fn explicit_offline_reason(cfg: &Config) -> Option<OfflineReason> {
     // `INKENTRY_MODE` overwrites `cfg.mode` at load; only the environment says
     // which source is in force, and that decides which advice is actionable.
     Some(match std::env::var("INKENTRY_MODE") {
-        Ok(_) => OfflineReason::ModeOfflineEnv,
+        Ok(_) => OfflineReason::ModeOfflineEnvOverride,
         Err(_) => OfflineReason::ModeOfflineConfig,
     })
 }
@@ -372,8 +372,9 @@ async fn probe_url_reporting_instance_id(
         Ok(resp) if resp.status().is_success() => {
             let health = parse_health(url, resp).await;
 
-            let server_dim = health.embedding_dim;
-            if health.caps.index_embed && server_dim != 0 {
+            if health.caps.index_embed
+                && let Some(server_dim) = health.embedding_dim
+            {
                 let expected = inkentry_core::embeddings::EMBEDDING_DIM;
                 if server_dim != expected {
                     if auto_discovered {
@@ -520,7 +521,7 @@ lenient_health_field!(
 );
 lenient_health_field!(
     lenient_embedding_dim,
-    usize,
+    Option<usize>,
     "embedding_dim",
     "a non-negative integer"
 );
@@ -600,7 +601,7 @@ impl From<ServerLimitsBody> for ServerLimits {
             embed_request_timeout_secs: body.embed_request_timeout_secs,
             max_batch_chunks: body.max_batch_chunks,
             embedder_token_cap: body.embedder_token_cap,
-            embed_threads: body.embed_threads,
+            embeds_single_threaded: body.embed_threads == Some(1),
         }
     }
 }
@@ -614,7 +615,7 @@ struct HealthBody {
     #[serde(default, deserialize_with = "lenient_started_by")]
     started_by: Option<u32>,
     #[serde(default, deserialize_with = "lenient_embedding_dim")]
-    embedding_dim: usize,
+    embedding_dim: Option<usize>,
     #[serde(default, deserialize_with = "lenient_embedder")]
     embedder: Option<EmbedderBody>,
     #[serde(default, deserialize_with = "lenient_limits")]
@@ -625,8 +626,7 @@ struct HealthBody {
 
 struct HealthFacts {
     caps: Capabilities,
-    // 0 when absent or no embedder is loaded, which skips the dimension check.
-    embedding_dim: usize,
+    embedding_dim: Option<usize>,
     embedder_state: EmbedderState,
     // `None` means a server predating the field, not "unlimited".
     server_limits: Option<ServerLimits>,
@@ -637,7 +637,7 @@ struct HealthFacts {
 fn legacy_plain_text_health() -> HealthFacts {
     HealthFacts {
         caps: Capabilities::legacy_memory_only(),
-        embedding_dim: 0,
+        embedding_dim: None,
         embedder_state: EmbedderState::Unknown,
         server_limits: None,
         instance_id: None,
@@ -721,7 +721,7 @@ async fn parse_health(url: &str, resp: reqwest::Response) -> HealthFacts {
             caps.accepts_pushed_vectors = body.accepts_pushed_vectors;
             HealthFacts {
                 caps,
-                embedding_dim: body.embedding_dim,
+                embedding_dim: body.embedding_dim.filter(|&dim| dim != 0),
                 embedder_state,
                 server_limits: body.limits.map(ServerLimits::from),
                 instance_id: body.instance_id,
@@ -1111,9 +1111,8 @@ mod tests {
         assert_eq!(limits.embed_request_timeout_secs, Some(1800));
         assert_eq!(limits.max_batch_chunks, Some(256));
         assert_eq!(limits.embedder_token_cap, Some(5792));
-        assert_eq!(
-            limits.embed_threads,
-            Some(1),
+        assert!(
+            limits.embeds_single_threaded,
             "a single-threaded budget must reach the CLI, since that is the one \
              value status turns into advice"
         );
