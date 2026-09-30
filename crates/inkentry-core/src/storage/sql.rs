@@ -3,14 +3,14 @@
 // twice.
 pub(crate) const SQLITE_MAX_BIND: usize = 30_000;
 
-// Empty for `n == 0`, so callers must return early rather than emit `IN ()`.
 // Anonymous `?` rather than `?N` lets a query bind the same slice twice.
+// `n == 0` yields `NULL`, so `IN (...)` stays valid SQL and matches no rows.
 pub(crate) fn placeholders(n: usize) -> String {
     if n == 0 {
-        return String::new();
+        return "NULL".to_string();
     }
     let mut s = "?,".repeat(n);
-    s.pop(); // drop trailing comma
+    s.pop();
     s
 }
 
@@ -19,8 +19,8 @@ mod tests {
     use super::placeholders;
 
     #[test]
-    fn zero_is_empty() {
-        assert_eq!(placeholders(0), "");
+    fn zero_matches_nothing() {
+        assert_eq!(placeholders(0), "NULL");
     }
 
     #[test]

@@ -546,11 +546,9 @@ mod tests {
         }
     }
 
-    // `fts5_quote_literal` strips embedded `\0` before quoting: FTS5's own
-    // query-string parser treats `\0` as an early string terminator, which
-    // would otherwise hide the closing `"` this appends.
+    // FTS5 reads `\0` as end of string, which would hide the closing quote.
     #[test]
-    fn search_text_embedded_nul_byte_still_leaks_raw_parse_error() {
+    fn search_text_embedded_nul_byte_does_not_surface_parse_error() {
         let db = open_db();
         seed_chunk(&db, "fn parse_config() { /* handles foo:bar */ }");
 

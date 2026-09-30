@@ -10,15 +10,17 @@ use uuid::{Builder, Uuid};
 /// bits are random, so entries sharing a `created_at` still get distinct ids.
 pub fn uuid_v7_at(created_at: i64) -> String {
     let millis = created_at.max(0).saturating_mul(1_000) as u64;
-    // v4's version and variant nibbles sit in bytes 6 and 8; taking only
-    // fully-random bytes keeps all 80 bits here unbiased.
+    Builder::from_unix_timestamp_millis(millis, &random_tail())
+        .into_uuid()
+        .to_string()
+}
+
+fn random_tail() -> [u8; 10] {
     let entropy = *Uuid::new_v4().as_bytes();
     let mut tail = [0u8; 10];
     tail[..6].copy_from_slice(&entropy[..6]);
     tail[6..].copy_from_slice(&entropy[9..13]);
-    Builder::from_unix_timestamp_millis(millis, &tail)
-        .into_uuid()
-        .to_string()
+    tail
 }
 
 #[cfg(test)]

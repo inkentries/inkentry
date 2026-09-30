@@ -98,9 +98,6 @@ impl Database {
     /// Return chunk IDs of symbols that are called-by or call the given chunk names.
     /// Used by `inkentry ask` to enrich context with graph neighbours.
     pub fn graph_neighbor_chunks(&self, names: &[&str]) -> Result<Vec<i64>> {
-        if names.is_empty() {
-            return Ok(vec![]);
-        }
         // The names slice is bound twice per statement (once per IN clause), so
         // the effective per-chunk budget is half the bind limit.
         let chunk_size = super::sql::SQLITE_MAX_BIND / 2;
