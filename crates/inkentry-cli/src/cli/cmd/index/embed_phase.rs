@@ -800,7 +800,7 @@ mod tests {
             embed_request_timeout_secs: Some(1800),
             max_batch_chunks: Some(256),
             embedder_token_cap: None,
-            embed_threads: None,
+            embeds_single_threaded: false,
         };
         assert_eq!(
             resolve_target_batch_seconds(Some(limits)),
@@ -814,7 +814,7 @@ mod tests {
             embed_request_timeout_secs: Some(60),
             max_batch_chunks: Some(256),
             embedder_token_cap: None,
-            embed_threads: None,
+            embeds_single_threaded: false,
         };
         assert_eq!(resolve_target_batch_seconds(Some(limits)), 40); // 60 * 2/3
     }
@@ -2129,7 +2129,7 @@ mod tests {
             embed_request_timeout_secs: Some(1800),
             max_batch_chunks: Some(8),
             embedder_token_cap: None,
-            embed_threads: None,
+            embeds_single_threaded: false,
         };
         let tier = server_tier_with_limits(mock.uri(), Some(limits));
         let mp = MultiProgress::new();

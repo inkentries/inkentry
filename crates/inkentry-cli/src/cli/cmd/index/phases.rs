@@ -118,7 +118,7 @@ fn embed_skipped_lines(
         Tier::Server {
             embedder_state: EmbedderState::Unavailable,
             ..
-        } => match tier.explicit_remote_url() {
+        } => match tier.named_server_url_for_hints() {
             Some(url) => vec![
                 format!(
                     "Warning: the embedder failed to load on team server {url}; chunks indexed \
@@ -451,7 +451,7 @@ mod tests {
     fn embed_skipped_explicit_offline_opt_out_names_the_switch_not_a_server_to_start() {
         for reason in [
             capability::OfflineReason::KillSwitch,
-            capability::OfflineReason::ModeOfflineEnv,
+            capability::OfflineReason::ModeOfflineEnvOverride,
             capability::OfflineReason::ModeOfflineConfig,
         ] {
             let tier = capability::Tier::Offline(reason);

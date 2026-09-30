@@ -33,9 +33,7 @@ pub struct ServerLimits {
     pub embed_request_timeout_secs: Option<u64>,
     pub max_batch_chunks: Option<usize>,
     pub embedder_token_cap: Option<usize>,
-    // `Some(1)` is the only value acted on: embedding is single-threaded and the
-    // user should be pointed at `INKENTRY_EMBED_THREADS`.
-    pub embed_threads: Option<usize>,
+    pub embeds_single_threaded: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

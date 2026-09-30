@@ -59,9 +59,7 @@ impl Tier {
         )
     }
 
-    // `inkentry server logs` only reads the local daemon's log, so a hint about
-    // a failing server must name an explicit URL rather than point at that command.
-    pub fn explicit_remote_url(&self) -> Option<&str> {
+    pub fn named_server_url_for_hints(&self) -> Option<&str> {
         match self {
             Tier::Server {
                 url,
@@ -173,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn tier_explicit_remote_url_only_for_explicit_server() {
+    fn tier_named_server_url_for_hints_only_for_explicit_server() {
         let auto = Tier::Server {
             url: "http://127.0.0.1:4655".to_string(),
             caps: Capabilities::all(),
@@ -188,19 +186,19 @@ mod tests {
             embedder_state: EmbedderState::Ready,
             server_limits: None,
         };
-        assert_eq!(auto.explicit_remote_url(), None);
+        assert_eq!(auto.named_server_url_for_hints(), None);
         assert_eq!(
-            explicit.explicit_remote_url(),
+            explicit.named_server_url_for_hints(),
             Some("http://server.example.com:4655")
         );
         assert_eq!(
-            Tier::Offline(OfflineReason::NoLocalServer).explicit_remote_url(),
+            Tier::Offline(OfflineReason::NoLocalServer).named_server_url_for_hints(),
             None
         );
     }
 
     #[test]
-    fn tier_explicit_remote_url_is_explicit_even_when_host_is_loopback() {
+    fn tier_named_server_url_for_hints_is_explicit_even_when_host_is_loopback() {
         let explicit_loopback = Tier::Server {
             url: "http://127.0.0.1:9797".to_string(),
             caps: Capabilities::all(),
@@ -209,7 +207,7 @@ mod tests {
             server_limits: None,
         };
         assert_eq!(
-            explicit_loopback.explicit_remote_url(),
+            explicit_loopback.named_server_url_for_hints(),
             Some("http://127.0.0.1:9797"),
             "an explicitly configured server_url must count as explicit even when its host is loopback"
         );

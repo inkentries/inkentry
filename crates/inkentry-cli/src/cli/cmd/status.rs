@@ -355,7 +355,10 @@ pub async fn status(args: StatusArgs, cfg: Config) -> Result<()> {
         ) {
             cprintln!("{line}");
         }
-        if let Some(line) = embed_threads_line(tier.server_limits().and_then(|l| l.embed_threads)) {
+        if let Some(line) = embed_threads_line(
+            tier.server_limits()
+                .is_some_and(|l| l.embeds_single_threaded),
+        ) {
             cprintln!("{line}");
         }
     }
@@ -736,8 +739,8 @@ fn embedding_state_line(
 
 // Only a budget of 1 makes a first index take hours, and the override is otherwise
 // discoverable only in the server log.
-fn embed_threads_line(embed_threads: Option<usize>) -> Option<String> {
-    (embed_threads? == 1).then(|| {
+fn embed_threads_line(embeds_single_threaded: bool) -> Option<String> {
+    embeds_single_threaded.then(|| {
         "  \x1b[2mThe server is embedding single-threaded; set INKENTRY_EMBED_THREADS=<n> \
          and restart it (`inkentry server stop`) if this host can spare the cores.\x1b[0m"
             .to_string()
@@ -1250,7 +1253,7 @@ mod tests {
 
     #[test]
     fn single_threaded_server_names_the_override_variable() {
-        let line = embed_threads_line(Some(1)).expect("a single-threaded budget is worth saying");
+        let line = embed_threads_line(true).expect("a single-threaded budget is worth saying");
         assert!(
             line.contains("INKENTRY_EMBED_THREADS"),
             "the override is the whole point of the line: {line}"
@@ -1259,13 +1262,11 @@ mod tests {
 
     #[test]
     fn a_multi_threaded_or_unreported_budget_says_nothing() {
-        for threads in [Some(2), Some(4), Some(64), None] {
-            assert_eq!(
-                embed_threads_line(threads),
-                None,
-                "only a single-threaded budget earns a line; got one for {threads:?}"
-            );
-        }
+        assert_eq!(
+            embed_threads_line(false),
+            None,
+            "only a single-threaded budget earns a line"
+        );
     }
 
     // Numbers from a field repro: 42% of chunks searchable, 21% of work done.

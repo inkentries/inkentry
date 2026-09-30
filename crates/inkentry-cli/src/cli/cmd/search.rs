@@ -784,7 +784,7 @@ pub(in crate::cli::cmd) fn semantic_unavailable_message(
         Tier::Server {
             embedder_state: EmbedderState::Unavailable,
             ..
-        } => match tier.explicit_remote_url() {
+        } => match tier.named_server_url_for_hints() {
             Some(url) => format!(
                 "[semantic ranking unavailable: embedder failed to load on team server {url}; \
                  check that server's own logs; using full-text search]"
@@ -1105,7 +1105,7 @@ mod tests {
     fn an_explicit_offline_opt_out_names_the_switch_and_never_a_server_to_start() {
         for reason in [
             capability::OfflineReason::KillSwitch,
-            capability::OfflineReason::ModeOfflineEnv,
+            capability::OfflineReason::ModeOfflineEnvOverride,
             capability::OfflineReason::ModeOfflineConfig,
         ] {
             let tier = capability::Tier::Offline(reason);

@@ -49,8 +49,7 @@ pub(crate) fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 pub enum OfflineReason {
     // Outranks mode and server_url: the probe stops before either is read.
     KillSwitch,
-    // Separate from ModeOfflineConfig: the env var overrides config, so a config edit would not help.
-    ModeOfflineEnv,
+    ModeOfflineEnvOverride,
     ModeOfflineConfig,
     NoLocalServer,
     LocalServerUnusable,
@@ -59,11 +58,10 @@ pub enum OfflineReason {
     ExplicitServerUnavailable,
 }
 
-// Adding a variant does not fail here; extend this array too.
 #[cfg(test)]
 pub(crate) const ALL_OFFLINE_REASONS: [OfflineReason; 7] = [
     OfflineReason::KillSwitch,
-    OfflineReason::ModeOfflineEnv,
+    OfflineReason::ModeOfflineEnvOverride,
     OfflineReason::ModeOfflineConfig,
     OfflineReason::NoLocalServer,
     OfflineReason::LocalServerUnusable,
@@ -76,7 +74,7 @@ impl OfflineReason {
     // come from a probe that may answer differently later.
     pub fn is_explicit_opt_out(self) -> bool {
         match self {
-            Self::KillSwitch | Self::ModeOfflineEnv | Self::ModeOfflineConfig => true,
+            Self::KillSwitch | Self::ModeOfflineEnvOverride | Self::ModeOfflineConfig => true,
             Self::NoLocalServer
             | Self::LocalServerUnusable
             | Self::RecordedServerUnreachable
@@ -84,6 +82,10 @@ impl OfflineReason {
         }
     }
 }
+
+// server_url is advised only here: elsewhere it is wrong (solo user) or inert (explicit offline).
+const NO_LOCAL_SERVER_HINT: &str = "  [run `inkentry server start` for semantic search, \
+     or set server_url to share a team server]";
 
 pub fn offline_search_hint(reason: OfflineReason, failure: Option<ConnFailure>) -> String {
     if let Some(advice) = shared_offline_advice(reason) {
@@ -94,11 +96,7 @@ pub fn offline_search_hint(reason: OfflineReason, failure: Option<ConnFailure>) 
             Some(ConnFailure::Tls(cause)) => format!("  [tls: {cause}]"),
             _ => "  [unreachable]".to_string(),
         },
-        // Only NoLocalServer reaches here. server_url is advised only here: elsewhere it is
-        // wrong (solo user) or inert (explicit offline).
-        _ => "  [run `inkentry server start` for semantic search, \
-             or set server_url to share a team server]"
-            .to_string(),
+        _ => NO_LOCAL_SERVER_HINT.to_string(),
     }
 }
 
@@ -109,7 +107,7 @@ pub fn shared_offline_advice(reason: OfflineReason) -> Option<&'static str> {
         OfflineReason::KillSwitch => {
             Some("INKENTRY_NO_SERVER is set: unset it to enable semantic search")
         }
-        OfflineReason::ModeOfflineEnv => {
+        OfflineReason::ModeOfflineEnvOverride => {
             Some("INKENTRY_MODE=offline is set: unset it to enable semantic search")
         }
         OfflineReason::ModeOfflineConfig => {
@@ -142,6 +140,29 @@ mod tests {
 
     use super::ALL_OFFLINE_REASONS as REASONS;
 
+    fn next_reason(reason: OfflineReason) -> Option<OfflineReason> {
+        match reason {
+            OfflineReason::KillSwitch => Some(OfflineReason::ModeOfflineEnvOverride),
+            OfflineReason::ModeOfflineEnvOverride => Some(OfflineReason::ModeOfflineConfig),
+            OfflineReason::ModeOfflineConfig => Some(OfflineReason::NoLocalServer),
+            OfflineReason::NoLocalServer => Some(OfflineReason::LocalServerUnusable),
+            OfflineReason::LocalServerUnusable => Some(OfflineReason::RecordedServerUnreachable),
+            OfflineReason::RecordedServerUnreachable => {
+                Some(OfflineReason::ExplicitServerUnavailable)
+            }
+            OfflineReason::ExplicitServerUnavailable => None,
+        }
+    }
+
+    #[test]
+    fn all_offline_reasons_lists_every_variant() {
+        let mut chain = vec![OfflineReason::KillSwitch];
+        while let Some(next) = next_reason(*chain.last().unwrap()) {
+            chain.push(next);
+        }
+        assert_eq!(chain, REASONS);
+    }
+
     #[test]
     fn every_reason_gets_its_own_suggestion() {
         let mut seen: Vec<String> = Vec::new();
@@ -157,7 +178,7 @@ mod tests {
 
     #[test]
     fn the_two_offline_mode_sources_do_not_share_a_suggestion() {
-        let env = offline_search_hint(OfflineReason::ModeOfflineEnv, None);
+        let env = offline_search_hint(OfflineReason::ModeOfflineEnvOverride, None);
         let cfg = offline_search_hint(OfflineReason::ModeOfflineConfig, None);
         assert!(env.contains("INKENTRY_MODE"), "{env}");
         assert!(env.contains("unset"), "{env}");
@@ -180,7 +201,7 @@ mod tests {
         assert!(cfg.contains("mode = \"offline\""), "{cfg}");
         assert!(!cfg.contains("server_url"), "{cfg}");
 
-        let env = offline_search_hint(OfflineReason::ModeOfflineEnv, None);
+        let env = offline_search_hint(OfflineReason::ModeOfflineEnvOverride, None);
         assert!(env.contains("INKENTRY_MODE"), "{env}");
         assert!(!env.contains("server_url"), "{env}");
     }
@@ -353,7 +374,7 @@ mod tests {
             opt_outs,
             vec![
                 OfflineReason::KillSwitch,
-                OfflineReason::ModeOfflineEnv,
+                OfflineReason::ModeOfflineEnvOverride,
                 OfflineReason::ModeOfflineConfig,
             ],
             "an opt-out is a setting read before any probe; a failed probe is not one"
