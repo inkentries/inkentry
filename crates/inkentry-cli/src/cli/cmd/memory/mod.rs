@@ -1,4 +1,3 @@
-use super::color::cprintln;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use inkentry_core::storage::NoteId;
@@ -536,6 +535,14 @@ pub(super) fn is_duplicate_band(top: &crate::storage::memory::Note) -> bool {
 }
 
 pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
+    super::color::print_ansi(&note_summary_text(n));
+}
+
+// Carries hand-written ANSI codes; callers print it through `print_ansi`, or
+// strip it when the text is not bound for a terminal.
+pub(super) fn note_summary_text(n: &crate::storage::memory::Note) -> String {
+    use std::fmt::Write as _;
+
     let dist = if let Some(s) = n.score {
         format!("  score: {s:.4}")
     } else {
@@ -553,7 +560,9 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         .as_deref()
         .map(|p| format!("  \x1b[36m[from: {p}]\x1b[0m"))
         .unwrap_or_default();
-    cprintln!(
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
         "\x1b[1m#{id}\x1b[0m  \x1b[33m[{kind}]\x1b[0m  {title}{archived}{dist_fmt}{source}",
         id = crate::storage::entity_id_handle(&n.entity_id),
         kind = n.kind,
@@ -566,34 +575,36 @@ pub(super) fn print_note_summary(n: &crate::storage::memory::Note) {
         },
         source = source_badge,
     );
-    cprintln!("     \x1b[2m{}\x1b[0m", format_age(n.created_at));
+    let _ = writeln!(out, "     \x1b[2m{}\x1b[0m", format_age(n.created_at));
     if let Some(valid_at) = n.valid_at {
-        cprintln!("     \x1b[2mvalid_at: {}\x1b[0m", format_age(valid_at));
+        let _ = writeln!(out, "     \x1b[2mvalid_at: {}\x1b[0m", format_age(valid_at));
     }
     if !n.tags.is_empty() {
-        println!("     tags: {}", n.tags.join(", "));
+        let _ = writeln!(out, "     tags: {}", n.tags.join(", "));
     }
     if !n.linked_files.is_empty() {
-        println!("     files: {}", n.linked_files.join(", "));
+        let _ = writeln!(out, "     files: {}", n.linked_files.join(", "));
     }
     if let Some(sup) = &n.superseded_by {
-        cprintln!("     \x1b[2msuperseded by #{sup}\x1b[0m");
+        let _ = writeln!(out, "     \x1b[2msuperseded by #{sup}\x1b[0m");
     }
     if !matches!(n.kind.as_str(), "question" | "answer") {
         let preview: Vec<&str> = n.body.lines().take(2).collect();
         for line in &preview {
-            cprintln!("     \x1b[2m{line}\x1b[0m");
+            let _ = writeln!(out, "     \x1b[2m{line}\x1b[0m");
         }
         if n.body.lines().count() > 2 {
-            cprintln!("     \x1b[2m…\x1b[0m");
+            let _ = writeln!(out, "     \x1b[2m…\x1b[0m");
         }
     } else {
-        cprintln!(
+        let _ = writeln!(
+            out,
             "     \x1b[2m(use `inkentry memory show {}` to read body)\x1b[0m",
             n.id
         );
     }
-    println!();
+    out.push('\n');
+    out
 }
 
 // Separate from `open_editor_for_body` so tests can create a draft without
