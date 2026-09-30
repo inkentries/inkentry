@@ -20,10 +20,9 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn config_argument(line: &str) -> Option<String> {
-    let after = line.split_once(CALL)?.1;
-    let inside = after.split_once(')')?.0;
-    let (_port, cfg) = inside.split_once(',')?;
+fn config_argument(after_call: &str) -> Option<String> {
+    let inside = after_call.split_once(')')?.0;
+    let cfg = inside.split(',').nth(1)?;
     Some(cfg.trim().to_string())
 }
 
@@ -37,18 +36,19 @@ fn every_auto_start_call_site_forwards_the_loaded_config() {
     let mut offenders = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file).expect("reading a CLI source file");
-        for (lineno, line) in text.lines().enumerate() {
-            if !line.contains(CALL) || line.contains("fn ensure_server_running(") {
+        for (start, _) in text.match_indices(CALL) {
+            if text[..start].ends_with("fn ") {
                 continue;
             }
             call_sites += 1;
-            match config_argument(line) {
+            let after_call = &text[start + CALL.len()..];
+            match config_argument(after_call) {
                 Some(arg) if FORWARDED.contains(&arg.as_str()) => {}
                 other => offenders.push(format!(
                     "{}:{}: config argument is {:?}",
                     file.display(),
-                    lineno + 1,
-                    other.unwrap_or_else(|| line.trim().to_string())
+                    text[..start].lines().count(),
+                    other.unwrap_or_else(|| after_call.lines().next().unwrap_or("").to_string())
                 )),
             }
         }

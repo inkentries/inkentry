@@ -13,8 +13,7 @@ use crate::{
 
 const DEFAULT_UNKNOWN_KIND_LIMIT: usize = 20;
 
-// Session-scoped kinds (handoff, question, intent) never cross projects.
-const DEP_PASS_KINDS: &[&str] = &["decision", "requirement"];
+const CROSS_PROJECT_KINDS: &[&str] = &["decision", "requirement"];
 
 /// Agent-facing entry-point command: pull the most relevant memory sections
 /// in one shot (handoffs → questions → decisions → requirements).
@@ -130,9 +129,7 @@ fn cap_sections(sections: &mut [(String, Vec<Note>)], limit_override: Option<usi
     }
 }
 
-// Budget packing order, independent of display order: the ephemeral intent
-// roster of other sessions drops first so it never crowds out durable memory.
-const PACK_PRIORITY: &[&str] = &["decision", "requirement", "handoff", "question", "intent"];
+const KEEP_DURABLE_FIRST: &[&str] = &["decision", "requirement", "handoff", "question", "intent"];
 
 fn apply_budget(
     sections: &mut [(String, Vec<Note>)],
@@ -148,14 +145,14 @@ fn apply_budget(
             false
         }
     };
-    for kind in PACK_PRIORITY {
+    for kind in KEEP_DURABLE_FIRST {
         if let Some((_, notes)) = sections.iter_mut().find(|(k, _)| k == kind) {
             notes.retain(|n| fits(note_tokens(n)));
         }
     }
-    // Kinds outside PACK_PRIORITY pack afterwards, in existing order.
+    // Kinds outside KEEP_DURABLE_FIRST pack afterwards, in existing order.
     for (kind, notes) in sections.iter_mut() {
-        if PACK_PRIORITY.contains(&kind.as_str()) {
+        if KEEP_DURABLE_FIRST.contains(&kind.as_str()) {
             continue;
         }
         notes.retain(|n| fits(note_tokens(n)));
@@ -220,7 +217,7 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
 
         for dep_note in dep_notes {
             let kind = dep_note.kind.clone();
-            if !DEP_PASS_KINDS.contains(&kind.as_str()) {
+            if !CROSS_PROJECT_KINDS.contains(&kind.as_str()) {
                 continue;
             }
             if let Some(ref kf) = args.kind
@@ -589,10 +586,10 @@ mod tests {
                 section.kind
             );
         }
-        for kind in PACK_PRIORITY {
+        for kind in KEEP_DURABLE_FIRST {
             assert!(
                 is_valid_note_kind(kind),
-                "pack-priority kind {kind:?} is not a canonical memory kind"
+                "keep-durable-first kind {kind:?} is not a canonical memory kind"
             );
         }
         // `memory failures` selects on this kind; it must be canonical too.
