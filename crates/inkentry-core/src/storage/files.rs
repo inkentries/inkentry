@@ -124,6 +124,11 @@ impl Database {
             .map_err(Into::into)
     }
 
+    /// List every indexed file path.
+    pub fn all_file_paths(&self) -> Result<Vec<(i64, String)>> {
+        self.file_paths_under("")
+    }
+
     /// List all indexed files under the given root prefix, including hash and indexed_at.
     pub fn file_records_under(&self, root: &str) -> Result<Vec<FileRecord>> {
         let prefix = format!("{}%", super::escape_like(root));

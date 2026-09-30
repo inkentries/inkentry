@@ -21,9 +21,7 @@ fn ensure_sqlite_vec() {
     });
 }
 
-// Creates `<dir>/.inkentry/`: `memory reconcile` fails closed without a project, and memory
-// resolves there regardless of `db_path`, which is ignored.
-fn write_config(dir: &Path, _db_path: &Path) -> (PathBuf, PathBuf) {
+fn init_project_config(dir: &Path) -> (PathBuf, PathBuf) {
     let inkentry_dir = dir.join(".inkentry");
     std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry");
     let index_db = inkentry_dir.join("index.db");
@@ -186,8 +184,7 @@ fn reconcile_cmd(config_path: &Path, server_db: &Path) -> Command {
 #[test]
 fn noop_when_server_db_absent() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
     let missing_server_db = tmp.path().join("nonexistent_server.db");
 
     reconcile_cmd(&config_path, &missing_server_db)
@@ -198,8 +195,7 @@ fn noop_when_server_db_absent() {
 #[test]
 fn noop_when_server_db_absent_json_output_is_valid() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
     let missing_server_db = tmp.path().join("nonexistent_server.db");
 
     let output = reconcile_cmd(&config_path, &missing_server_db)
@@ -229,8 +225,7 @@ fn noop_when_server_db_absent_json_output_is_valid() {
 #[test]
 fn inkentry_no_server_exits_cleanly_with_import() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "test-project";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -275,8 +270,7 @@ fn start_mock() -> (tokio::runtime::Runtime, MockServer) {
 #[test]
 fn local_first_with_server_url_still_embeds_via_loopback() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "loopback-embed-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -342,8 +336,7 @@ fn local_first_with_server_url_still_embeds_via_loopback() {
 #[test]
 fn dedup_by_content_hash_not_rowid() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "dedup-project";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -399,8 +392,7 @@ fn dedup_by_content_hash_not_rowid() {
 #[test]
 fn dedup_ignores_rowid_changes() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "rowid-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -483,8 +475,7 @@ fn supersede_edge_resolves_across_differing_ids() {
     // 101/102 while memory.db mints its own, and the already-imported earlier note shifts
     // the pair's position between candidates and import set. entity_id resolution must survive both.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "supersede-renumber";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -573,8 +564,7 @@ fn supersede_edge_resolves_across_differing_ids() {
 fn dedup_key_excludes_created_at() {
     // A second machine recording the same decision cannot reproduce the timestamp.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "hash-ts-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -627,8 +617,7 @@ fn dedup_key_excludes_created_at() {
 #[test]
 fn dedup_key_excludes_tags_which_union_on_collapse() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "tag-union-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -681,8 +670,7 @@ fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
     // Tags/files are outside the key, so without the merge the losing copy's metadata
     // would be skipped silently as "already present".
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "stored-union-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -755,8 +743,7 @@ fn collapse_onto_stored_row_unions_tags_rather_than_dropping_them() {
 #[test]
 fn dry_run_does_not_union_tags_into_a_stored_row() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "dryrun-union-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -816,8 +803,7 @@ fn dry_run_does_not_union_tags_into_a_stored_row() {
 #[test]
 fn json_counts_partition_the_source_rows() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "partition-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -905,8 +891,7 @@ fn json_counts_partition_the_source_rows() {
 #[test]
 fn tag_reorder_does_not_reimport() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "normalize-tags";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -954,8 +939,7 @@ fn tag_reorder_does_not_reimport() {
 #[test]
 fn server_db_not_modified_after_reconcile() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let slug = "readonly-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1001,8 +985,7 @@ fn server_db_not_modified_after_reconcile() {
 #[test]
 fn server_db_opened_read_only_flag() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "readonly-flag-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1053,8 +1036,7 @@ fn server_db_opened_read_only_flag() {
 #[test]
 fn archived_rows_import_as_archived() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "archived-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1117,8 +1099,7 @@ fn archived_rows_import_as_archived() {
 #[test]
 fn dry_run_does_not_write_to_memory_db() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "dryrun-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1158,8 +1139,7 @@ fn dry_run_does_not_write_to_memory_db() {
 #[test]
 fn dry_run_json_reports_would_import() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let slug = "dryrun-json-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1208,8 +1188,7 @@ fn dry_run_json_reports_would_import() {
 #[test]
 fn dry_run_on_empty_server_db_exits_zero() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let (server_db, _project_id) = create_server_db(tmp.path(), "empty-slug");
 
@@ -1225,8 +1204,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
     // A BEFORE INSERT trigger aborts the 3rd note, so the batch fails mid-transaction
     // and must roll back.
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "rollback-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1337,8 +1315,7 @@ fn rollback_on_mid_transaction_failure_leaves_no_partial_import() {
 #[test]
 fn exit_0_on_success_import() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let slug = "exit-0-import";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1366,8 +1343,7 @@ fn exit_0_on_success_import() {
 #[test]
 fn exit_0_on_noop_already_imported() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let slug = "exit-0-noop";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1400,8 +1376,7 @@ fn exit_0_on_noop_already_imported() {
 #[test]
 fn exit_0_on_no_rows_to_import() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let (server_db, _project_id) = create_server_db(tmp.path(), "empty-project");
 
@@ -1414,8 +1389,7 @@ fn exit_0_on_no_rows_to_import() {
 #[test]
 fn exit_nonzero_on_corrupt_server_db() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let corrupt_db = tmp.path().join("corrupt_server.db");
     std::fs::write(&corrupt_db, b"this is not a valid sqlite database file!!!")
@@ -1430,8 +1404,7 @@ fn exit_nonzero_on_corrupt_server_db() {
 #[test]
 fn json_summary_contains_expected_fields() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let slug = "json-fields-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1485,8 +1458,7 @@ fn json_summary_contains_expected_fields() {
 #[test]
 fn import_increments_count_correctly() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, _mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, _mem_path) = init_project_config(tmp.path());
 
     let slug = "count-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1543,8 +1515,7 @@ fn import_increments_count_correctly() {
 #[test]
 fn sql_injection_payload_in_body_does_not_break_import() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(tmp.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(tmp.path());
 
     let slug = "sqli-test";
     let (server_db, project_id) = create_server_db(tmp.path(), slug);
@@ -1595,8 +1566,7 @@ fn default_source_db_honors_state_dir_override() {
     let home = TempDir::new().unwrap();
     let state_override = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    let db_path = project.path().join("inkentry.db");
-    let (config_path, mem_path) = write_config(project.path(), &db_path);
+    let (config_path, mem_path) = init_project_config(project.path());
 
     let (server_db, project_id) = create_server_db(state_override.path(), "override-project");
     let conn = Connection::open(&server_db).unwrap();

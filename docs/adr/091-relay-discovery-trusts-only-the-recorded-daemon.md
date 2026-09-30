@@ -130,7 +130,7 @@ and here the drift sits inside the path being hardened.
   squatter test must assert that no request carrying the credential reached it,
   not merely that no port was returned.
 - **Relay tests that fabricate a `server.port`** (`outbox.rs:437`,
-  `status.rs:1097`/`:1211`, `tests/e2e_tests/adr037_p2_auto_start_scope.rs:313`)
+  `status.rs:1097`/`:1211`, `tests/e2e_tests/auto_start_scope.rs:313`)
   must record what a real start records, or move to a documented override.
 - **Documentation.** `docs/security/THREAT-MODEL.md`'s relay section gains the
   responder-identity threat as closed; its "no route returns the bearer"

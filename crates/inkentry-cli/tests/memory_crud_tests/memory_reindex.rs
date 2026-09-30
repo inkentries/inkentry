@@ -190,18 +190,17 @@ fn seed(f: &Fixture, kind: &str, title: &str, body: &str) {
 
 // Uses the fixed-port fallback, not the `server.port` file: that path only trusts
 // a live `inkentry-server` process, which a wiremock stand-in is not.
-fn set_server(f: &Fixture, url: &str) {
-    let port = url
-        .rsplit(':')
-        .next()
-        .expect("uri has a port")
-        .trim_end_matches('/')
-        .to_string();
+fn set_discovery_port(f: &Fixture, mock_uri: Option<&str>) {
+    let port = match mock_uri {
+        Some(uri) => uri
+            .rsplit(':')
+            .next()
+            .expect("uri has a port")
+            .trim_end_matches('/')
+            .to_string(),
+        None => "0".to_string(),
+    };
     *f.discovery_port.borrow_mut() = port;
-}
-
-fn clear_server(f: &Fixture) {
-    *f.discovery_port.borrow_mut() = "0".to_string();
 }
 
 fn reindex_cmd(f: &Fixture) -> Command {
@@ -245,8 +244,7 @@ fn embed_content(body: &str) -> String {
         .to_string()
 }
 
-// Storage rowid, which `note_embeddings` is keyed on; not the id the CLI accepts.
-fn note_id_by_title(mem_path: &Path, title: &str) -> i64 {
+fn note_rowid_by_title(mem_path: &Path, title: &str) -> i64 {
     let conn = Connection::open(mem_path).expect("open memory.db");
     conn.query_row(
         "SELECT id FROM notes WHERE title = ?1",
@@ -301,7 +299,7 @@ fn reindex_embeds_missing_and_is_idempotent() {
     );
 
     let mock = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
 
     reindex_cmd(&f)
         .assert()
@@ -344,7 +342,7 @@ fn reindex_embed_text_matches_add_time_document() {
     seed(&f, "decision", "Title A", "Body B");
 
     let mock = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
 
     reindex_cmd(&f).assert().success();
 
@@ -374,7 +372,7 @@ fn reindex_resumes_after_midrun_failure() {
     // Run 1: the embedder fails after two notes; the failure must report the partial
     // count and point at a re-run.
     let mock_a = start_mock(EmbedResponder::failing_after(0.1, 2));
-    set_server(&f, &mock_a.uri());
+    set_discovery_port(&f, Some(&mock_a.uri()));
     reindex_cmd(&f)
         .assert()
         .failure()
@@ -389,7 +387,7 @@ fn reindex_resumes_after_midrun_failure() {
     );
 
     let mock_b = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock_b.uri());
+    set_discovery_port(&f, Some(&mock_b.uri()));
     reindex_cmd(&f).assert().success();
 
     let ids = embedded_note_ids(&f.mem_path);
@@ -427,15 +425,15 @@ fn reindex_without_embedder_errors_and_writes_nothing() {
 fn reindex_force_replaces_existing_vectors() {
     let f = fixture();
     seed(&f, "decision", "only", "the body");
-    let id = note_id_by_title(&f.mem_path, "only");
+    let id = note_rowid_by_title(&f.mem_path, "only");
 
     let mock1 = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock1.uri());
+    set_discovery_port(&f, Some(&mock1.uri()));
     reindex_cmd(&f).assert().success();
     let blob_before = embedding_blob(&f.mem_path, id);
 
     let mock2 = start_mock(EmbedResponder::new(0.5));
-    set_server(&f, &mock2.uri());
+    set_discovery_port(&f, Some(&mock2.uri()));
     reindex_cmd(&f).arg("--force").assert().success();
 
     let blob_after = embedding_blob(&f.mem_path, id);
@@ -458,13 +456,13 @@ fn reindex_json_summary_partitions_counts() {
     }
 
     let mock = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
     reindex_cmd(&f).assert().success();
 
-    clear_server(&f);
+    set_discovery_port(&f, None);
     seed(&f, "note", "later0", "later b0");
     seed(&f, "note", "later1", "later b1");
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
 
     let output = reindex_cmd(&f)
         .arg("--format")
@@ -511,7 +509,7 @@ fn reindex_dry_run_counts_and_writes_nothing() {
     seed(&f, "note", "two", "body two");
 
     let mock = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
 
     reindex_cmd(&f)
         .arg("--dry-run")
@@ -538,7 +536,7 @@ fn reindex_embeds_every_note_with_its_own_document() {
     seed(&f, "note", "Second Title", "Second Body");
 
     let mock = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
     reindex_cmd(&f).assert().success();
 
     let bodies = mock.embed.recorded_bodies();
@@ -566,12 +564,12 @@ fn reindex_include_archived_covers_archived_only_with_the_flag() {
     let f = fixture();
     seed(&f, "note", "active-note", "active body");
     seed(&f, "note", "archived-note", "archived body");
-    let active_id = note_id_by_title(&f.mem_path, "active-note");
-    let archived_id = note_id_by_title(&f.mem_path, "archived-note");
+    let active_id = note_rowid_by_title(&f.mem_path, "active-note");
+    let archived_id = note_rowid_by_title(&f.mem_path, "archived-note");
     archive_note(&f, &note_uuid_by_title(&f.mem_path, "archived-note"));
 
     let mock = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
 
     reindex_cmd(&f).assert().success();
     assert_eq!(
@@ -633,7 +631,7 @@ fn reindex_in_cloud_first_without_server_url_proceeds() {
     );
 
     let mock = start_mock(EmbedResponder::new(0.1));
-    set_server(&f, &mock.uri());
+    set_discovery_port(&f, Some(&mock.uri()));
 
     reindex_cmd(&f)
         .env("INKENTRY_MODE", "cloud_first")

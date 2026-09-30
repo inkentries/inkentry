@@ -48,16 +48,15 @@ struct Project {
     discovery_port: std::cell::RefCell<String>,
 }
 
-fn project() -> Project {
-    let p = project_that_may_find_an_embedder();
-    // Offline, so a running loopback embedder is never auto-discovered.
+fn offline_project() -> Project {
+    let p = project_with_loopback_discovery();
     let mut cfg = std::fs::read_to_string(&p.config_path).unwrap();
     cfg.push_str("mode = \"offline\"\n");
     std::fs::write(&p.config_path, cfg).unwrap();
     p
 }
 
-fn project_that_may_find_an_embedder() -> Project {
+fn project_with_loopback_discovery() -> Project {
     let tmp = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     let db_path = tmp.path().join("inkentry.db");
@@ -150,7 +149,7 @@ impl Project {
 
 #[test]
 fn entries_and_their_relationship_land_together() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[
             &entry("e1", "old", 1000, r#","status":"archived""#),
@@ -168,7 +167,7 @@ fn entries_and_their_relationship_land_together() {
 
 #[test]
 fn the_report_names_the_entity_id_as_the_portable_one() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[&entry("e1", "carried", 1000, "")],
         r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
@@ -182,7 +181,7 @@ fn the_report_names_the_entity_id_as_the_portable_one() {
 
 #[test]
 fn an_entry_arriving_with_an_identity_keeps_it_verbatim() {
-    let p = project();
+    let p = offline_project();
     let carried = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33";
     let d = dump(
         &[&entry(
@@ -201,7 +200,7 @@ fn an_entry_arriving_with_an_identity_keeps_it_verbatim() {
 
 #[test]
 fn an_entry_arriving_without_one_is_identified_from_its_own_creation_time() {
-    let p = project();
+    let p = offline_project();
     // Dump lists newest-first; identifiers must follow created_at, not import order.
     let d = dump(
         &[
@@ -231,7 +230,7 @@ fn an_entry_arriving_without_one_is_identified_from_its_own_creation_time() {
 
 #[test]
 fn a_relationship_before_its_entities_imports_the_same_way() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[
             r#"{"record":"relationship","type":"relates_to","from":"e2","to":"e1"}"#,
@@ -246,7 +245,7 @@ fn a_relationship_before_its_entities_imports_the_same_way() {
 
 #[test]
 fn the_supersede_column_is_set_from_the_relationship_in_the_right_direction() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[
             &entry("e1", "predecessor", 1000, r#","status":"archived""#),
@@ -269,7 +268,7 @@ fn the_supersede_column_is_set_from_the_relationship_in_the_right_direction() {
 
 #[test]
 fn the_same_supersede_fact_twice_yields_one_edge_and_one_column_value() {
-    let p = project();
+    let p = offline_project();
     let rel = r#"{"record":"relationship","type":"supersedes","from":"e2","to":"e1"}"#;
     let d = dump(
         &[
@@ -308,7 +307,7 @@ fn the_same_supersede_fact_twice_yields_one_edge_and_one_column_value() {
 
 #[test]
 fn an_entry_with_no_supersede_relationship_has_no_supersede_link() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[&entry("e1", "alone", 1000, "")],
         r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
@@ -322,7 +321,7 @@ fn an_entry_with_no_supersede_relationship_has_no_supersede_link() {
 
 #[test]
 fn an_altered_dump_is_refused_and_nothing_is_written() {
-    let p = project();
+    let p = offline_project();
     let good = dump(
         &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
         r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
@@ -343,7 +342,7 @@ fn an_altered_dump_is_refused_and_nothing_is_written() {
 
 #[test]
 fn a_relationship_endpoint_that_does_not_resolve_refuses_the_whole_dump() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[
             &entry("e1", "one", 1000, ""),
@@ -360,7 +359,7 @@ fn a_relationship_endpoint_that_does_not_resolve_refuses_the_whole_dump() {
 
 #[test]
 fn an_unrecognised_record_kind_is_refused_not_skipped() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[
             &entry("e1", "one", 1000, ""),
@@ -377,7 +376,7 @@ fn an_unrecognised_record_kind_is_refused_not_skipped() {
 
 #[test]
 fn the_git_notes_import_cursor_is_not_carried_across() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[&entry("e1", "one", 1000, "")],
         r#"{"entity":{"memory_entry":1},"relationship":{}}"#,
@@ -395,7 +394,7 @@ fn the_git_notes_import_cursor_is_not_carried_across() {
 
 #[test]
 fn an_import_with_no_embedder_still_succeeds_and_says_what_is_left() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
         r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
@@ -409,7 +408,7 @@ fn an_import_with_no_embedder_still_succeeds_and_says_what_is_left() {
 
 #[test]
 fn status_reports_the_entries_still_waiting_to_be_embedded() {
-    let p = project();
+    let p = offline_project();
     p.bin()
         .current_dir(&p.root)
         .arg("--config")
@@ -462,7 +461,7 @@ fn status_reports_the_entries_still_waiting_to_be_embedded() {
 // (`entity_id` is UNIQUE) and collapse to one row; the count must describe what landed.
 #[test]
 fn two_entries_that_collapse_into_one_are_counted_as_one() {
-    let p = project();
+    let p = offline_project();
     let same = |dump_ref: &str, source_ref: &str| {
         format!(
             r#"{{"record":"entity","type":"memory_entry","ref":"{dump_ref}","kind":"decision","title":"Retry with backoff","body":"same text","created_at":1000,"source_ref":"{source_ref}"}}"#
@@ -504,7 +503,7 @@ fn two_entries_that_collapse_into_one_are_counted_as_one() {
 #[test]
 fn the_surviving_entry_is_the_earliest_created_one_whatever_the_dump_order() {
     let survivor_of = |body_order: [(&str, i64, &str); 2]| {
-        let p = project();
+        let p = offline_project();
         let lines: Vec<String> = body_order
             .iter()
             .map(|(dump_ref, created_at, tag)| {
@@ -529,7 +528,7 @@ fn the_surviving_entry_is_the_earliest_created_one_whatever_the_dump_order() {
 
 #[test]
 fn a_collapsed_entrys_tags_are_folded_into_the_survivor() {
-    let p = project();
+    let p = offline_project();
     let tagged = |dump_ref: &str, created_at: i64, tag: &str| {
         format!(
             r#"{{"record":"entity","type":"memory_entry","ref":"{dump_ref}","kind":"decision","title":"One","body":"same text","created_at":{created_at},"tags":["{tag}"]}}"#
@@ -547,7 +546,7 @@ fn a_collapsed_entrys_tags_are_folded_into_the_survivor() {
 
 #[test]
 fn re_importing_the_same_dump_reports_that_nothing_new_landed() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[&entry("e1", "one", 1000, ""), &entry("e2", "two", 2000, "")],
         r#"{"entity":{"memory_entry":2},"relationship":{}}"#,
@@ -581,7 +580,7 @@ fn re_importing_the_same_dump_reports_that_nothing_new_landed() {
 // transaction; a refusal must leave all three stores untouched.
 #[test]
 fn a_refused_dump_leaves_the_registry_untouched_too() {
-    let p = project();
+    let p = offline_project();
     let before = p.registered_projects();
     let d = dump(
         &[
@@ -607,7 +606,7 @@ fn a_refused_dump_leaves_the_registry_untouched_too() {
 
 #[test]
 fn two_entities_sharing_a_uuid_are_refused_with_a_message_about_the_dump() {
-    let p = project();
+    let p = offline_project();
     let uuid = "0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33";
     let d = dump(
         &[
@@ -625,7 +624,7 @@ fn two_entities_sharing_a_uuid_are_refused_with_a_message_about_the_dump() {
 
 #[test]
 fn two_entities_sharing_a_remote_id_are_refused_with_a_message_about_the_dump() {
-    let p = project();
+    let p = offline_project();
     let d = dump(
         &[
             &entry("e1", "one", 1000, r#","remote_id":"rem-9""#),
@@ -644,7 +643,7 @@ fn two_entities_sharing_a_remote_id_are_refused_with_a_message_about_the_dump() 
 // nonexistent command.
 #[test]
 fn the_command_the_legacy_refusal_names_is_one_this_binary_accepts() {
-    let p = project();
+    let p = offline_project();
     let legacy = p.root.join("legacy-memory.db");
     {
         let conn = rusqlite::Connection::open(&legacy).unwrap();
@@ -710,7 +709,7 @@ fn an_entry_carrying_a_blank_identity_is_refused_by_name() {
         ("entity_id", ""),
         ("remote_id", ""),
     ] {
-        let p = project();
+        let p = offline_project();
         let d = dump(
             &[&entry(
                 "e1",
@@ -736,7 +735,7 @@ fn an_entry_carrying_a_blank_identity_is_refused_by_name() {
 
 #[test]
 fn a_project_whose_memory_lives_on_a_server_refuses_the_import() {
-    let p = project();
+    let p = offline_project();
     // `server_url` is honoured only from the project config or env, not `--config`.
     let inkentry_dir = p.root.join(".inkentry");
     std::fs::create_dir_all(&inkentry_dir).unwrap();
@@ -802,7 +801,7 @@ fn embedded_entries(mem_path: &std::path::Path) -> i64 {
 
 #[test]
 fn a_json_import_that_reaches_an_embedder_writes_one_document_to_stdout() {
-    let p = project_that_may_find_an_embedder();
+    let p = project_with_loopback_discovery();
     let (_rt, server) = mock_embedder();
     p.set_embedder(&server.uri());
 

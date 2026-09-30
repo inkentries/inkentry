@@ -174,35 +174,26 @@ async fn resolve_org_after_login(
         && std::io::stderr().is_terminal()
         && !inkentry_core::utils::is_agent_mode();
 
-    match choose_org(&me.orgs, interactive)? {
-        OrgChoice::Switch(org) => {
-            // The WorkOS org id spares `switch_org` a redundant /v1/me.
-            let target = org
-                .workos_org_id
-                .clone()
-                .unwrap_or_else(|| org.slug.clone());
-            let switched =
-                switch_org(client, workos_url, cloud_url, client_id, &tokens, &target).await?;
-            finish_login(cloud_url, switched, Some(&org.slug)).await
-        }
-    }
+    let org = choose_org(&me.orgs, interactive)?;
+    // The WorkOS org id spares `switch_org` a redundant /v1/me.
+    let target = org
+        .workos_org_id
+        .clone()
+        .unwrap_or_else(|| org.slug.clone());
+    let switched = switch_org(client, workos_url, cloud_url, client_id, &tokens, &target).await?;
+    finish_login(cloud_url, switched, Some(&org.slug)).await
 }
 
-#[derive(Debug)]
-enum OrgChoice {
-    Switch(MeOrg),
-}
-
-fn choose_org(orgs: &[MeOrg], interactive: bool) -> Result<OrgChoice> {
+fn choose_org(orgs: &[MeOrg], interactive: bool) -> Result<MeOrg> {
     match orgs.len() {
         0 => anyhow::bail!(
             "Your account is not a member of any organization yet.\n\
              Create one at https://app.inkentry.com/onboarding, then run `inkentry login` again."
         ),
-        1 => Ok(OrgChoice::Switch(orgs[0].clone())),
+        1 => Ok(orgs[0].clone()),
         _ if interactive => {
             let idx = prompt_org_selection(orgs)?;
-            Ok(OrgChoice::Switch(orgs[idx].clone()))
+            Ok(orgs[idx].clone())
         }
         _ => {
             let slugs = orgs
@@ -311,9 +302,9 @@ mod tests {
 
     #[test]
     fn choose_org_single_org_auto_selects() {
-        let OrgChoice::Switch(picked) = choose_org(&one_org(), false).unwrap();
+        let picked = choose_org(&one_org(), false).unwrap();
         assert_eq!(picked.slug, "acme");
-        let OrgChoice::Switch(picked) = choose_org(&one_org(), true).unwrap();
+        let picked = choose_org(&one_org(), true).unwrap();
         assert_eq!(picked.slug, "acme");
     }
 

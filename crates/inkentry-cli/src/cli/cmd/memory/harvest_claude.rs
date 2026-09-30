@@ -30,6 +30,12 @@ struct PastedContent {
     content: String,
 }
 
+#[derive(Clone)]
+struct NewSession {
+    session_id: String,
+    combined_text: String,
+}
+
 pub(super) async fn harvest_claude_code(
     args: MemoryHarvestArgs,
     mem_path: &std::path::Path,
@@ -128,7 +134,7 @@ pub(super) async fn harvest_claude_code(
         return Ok(());
     }
 
-    let mut new_sessions: Vec<(String, String)> = Vec::new(); // (session_id, combined_text)
+    let mut new_sessions: Vec<NewSession> = Vec::new();
 
     for (session_id, entries) in &sessions {
         let source_key = format!("claude-code:{session_id}");
@@ -166,7 +172,10 @@ pub(super) async fn harvest_claude_code(
             combined.push_str("\n\n[...truncated]");
         }
 
-        new_sessions.push((session_id.clone(), combined));
+        new_sessions.push(NewSession {
+            session_id: session_id.clone(),
+            combined_text: combined,
+        });
     }
 
     if new_sessions.is_empty() {
@@ -224,7 +233,7 @@ pub(super) async fn harvest_claude_code(
     let context_length = cfg.llm_context_length;
     let output_budget = |n: usize| (n * 1200).clamp(512, context_length / 2);
 
-    let mut work: std::collections::VecDeque<Vec<(String, String)>> = new_sessions
+    let mut work: std::collections::VecDeque<Vec<NewSession>> = new_sessions
         .chunks(batch_size)
         .map(|c| c.to_vec())
         .collect();
@@ -236,7 +245,7 @@ pub(super) async fn harvest_claude_code(
 
         let session_list = batch
             .iter()
-            .map(|(sid, text)| format!("SESSION {sid}\n{text}"))
+            .map(|s| format!("SESSION {}\n{}", s.session_id, s.combined_text))
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
@@ -540,13 +549,14 @@ mod tests {
     fn cap_truncates_long_text() {
         let long_text: String = "x".repeat(20_000);
         const CAP: usize = 16_000;
+        const TRUNCATION_SUFFIX_ROOM: usize = 20;
         let mut combined = long_text;
         if combined.len() > CAP {
             let boundary = combined.floor_char_boundary(CAP);
             combined.truncate(boundary);
             combined.push_str("\n\n[...truncated]");
         }
-        assert!(combined.len() <= CAP + 20); // a bit of slack for the suffix
+        assert!(combined.len() <= CAP + TRUNCATION_SUFFIX_ROOM);
         assert!(combined.ends_with("[...truncated]"));
     }
 

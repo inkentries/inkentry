@@ -1,9 +1,12 @@
+use std::num::NonZeroUsize;
+
 use anyhow::Result;
 use ignore::WalkBuilder;
 use indicatif::{MultiProgress, ProgressBar};
 
 use super::super::ui::{is_tty, progress_style, short_path};
 use super::IndexArgs;
+use super::embed_phase::PendingEmbedding;
 use super::graph_pass;
 #[cfg(feature = "rich-formats")]
 use crate::indexer::docparser::parse_doc;
@@ -18,14 +21,15 @@ use crate::{
 // Checked via metadata before any read, so a huge or compression-bomb file can't OOM the indexer.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-// Falls back to 0, which sorts last under the embed queue's `mtime DESC` order.
+const MTIME_UNKNOWN: i64 = 0;
+
 fn stat_mtime(path: &std::path::Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .unwrap_or(MTIME_UNKNOWN)
 }
 
 fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
@@ -44,8 +48,6 @@ fn is_file_too_large(path: &std::path::Path, path_str: &str) -> bool {
 pub(super) struct ParseResult {
     pub indexed: u64,
     pub removed: u64,
-    #[allow(dead_code)]
-    pub filtered: u64,
 }
 
 fn filtered_notice(filtered: u64) -> String {
@@ -83,7 +85,6 @@ pub(super) fn run_parse_phase(
         return Ok(ParseResult {
             indexed: 0,
             removed: 0,
-            filtered,
         });
     }
 
@@ -146,34 +147,27 @@ pub(super) fn run_parse_phase(
         db.stamp_chunker_config(&inkentry_core::indexer::chunker_config_id())?;
     }
 
-    Ok(ParseResult {
-        indexed,
-        removed,
-        filtered,
-    })
+    Ok(ParseResult { indexed, removed })
 }
 
-pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String, usize)>> {
+pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<PendingEmbedding>> {
     let mut out = Vec::new();
     for (chunk_id, name, metadata, summary, content, token_count) in
         db.chunks_missing_embeddings()?
     {
-        let tokens = effective_token_count(token_count, &content);
+        let tokens = match NonZeroUsize::new(token_count) {
+            Some(stored) => stored.get(),
+            None => estimate_tokens(&content),
+        };
         let text =
             reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
-        out.push((chunk_id, text, tokens));
+        out.push(PendingEmbedding {
+            chunk_id,
+            embedding_text: text,
+            token_count: tokens,
+        });
     }
     Ok(out)
-}
-
-// Stored 0 is a pre-backfill row; floor at 1 so token-weighted math never divides by zero.
-fn effective_token_count(stored: usize, content: &str) -> usize {
-    let tc = if stored == 0 {
-        estimate_tokens(content)
-    } else {
-        stored
-    };
-    tc.max(1)
 }
 
 // Must match `Chunk::embedding_text`; the docstring is read back from the metadata JSON.
@@ -200,39 +194,39 @@ pub(super) fn reconstruct_embedding_text(
     }
 }
 
-// Sensitive files are dropped by the walk before `filter` sees them, so `[index]` config can never re-include them.
+const ALWAYS_EXCLUDED_SENSITIVE_PATTERNS: &[&str] = &[
+    "!.env",
+    "!.env.*",
+    "!*.pem",
+    "!*.key",
+    "!*.p12",
+    "!*.pfx",
+    "!*.p8",
+    "!*.cer",
+    "!*.crt",
+    "!*.der",
+    "!id_rsa",
+    "!id_ecdsa",
+    "!id_ed25519",
+    "!id_dsa",
+    "!*.keystore",
+    "!*.jks",
+    "!.netrc",
+    "!.npmrc",
+];
+
 fn collect_files(
     root: &std::path::Path,
     filter: &inkentry_core::indexer::filter::IndexFilter,
 ) -> Result<(Vec<ignore::DirEntry>, u64)> {
     use inkentry_core::indexer::filter::Decision;
 
-    let sensitive_patterns = [
-        "!.env",
-        "!.env.*",
-        "!*.pem",
-        "!*.key",
-        "!*.p12",
-        "!*.pfx",
-        "!*.p8",
-        "!*.cer",
-        "!*.crt",
-        "!*.der",
-        "!id_rsa",
-        "!id_ecdsa",
-        "!id_ed25519",
-        "!id_dsa",
-        "!*.keystore",
-        "!*.jks",
-        "!.netrc",
-        "!.npmrc",
-    ];
     let mut walk = WalkBuilder::new(root);
     walk.standard_filters(true);
     walk.add_custom_ignore_filename(".inkentryignore");
     let mut ob = ignore::overrides::OverrideBuilder::new(root);
     ob.case_insensitive(true).ok();
-    for pat in &sensitive_patterns {
+    for pat in ALWAYS_EXCLUDED_SENSITIVE_PATTERNS {
         ob.add(pat).ok();
     }
     if let Ok(ov) = ob.build() {
@@ -519,8 +513,7 @@ fn cleanup_stale(files: &[ignore::DirEntry], root: &std::path::Path, db: &Databa
             )
         })
         .collect();
-    // "" matches every stored path.
-    let all_indexed = db.file_paths_under("")?;
+    let all_indexed = db.all_file_paths()?;
     let mut removed = 0u64;
     for (id, path) in all_indexed {
         if !visited.contains(&path) {
@@ -699,7 +692,7 @@ mod tests {
             !queue_run1.is_empty(),
             "a parse-only run must leave chunks for the embed phase to pick up"
         );
-        let mut queued_run1: Vec<i64> = queue_run1.iter().map(|(id, ..)| *id).collect();
+        let mut queued_run1: Vec<i64> = queue_run1.iter().map(|p| p.chunk_id).collect();
         queued_run1.sort();
 
         let second =
@@ -715,7 +708,7 @@ mod tests {
         );
 
         // Identical ids prove no delete+reinsert, i.e. no reparse.
-        let mut backfilled: Vec<i64> = queue_run2.iter().map(|(id, ..)| *id).collect();
+        let mut backfilled: Vec<i64> = queue_run2.iter().map(|p| p.chunk_id).collect();
         backfilled.sort();
         assert_eq!(
             backfilled, queued_run1,
@@ -723,9 +716,9 @@ mod tests {
         );
 
         let mut texts_run1 = queue_run1.clone();
-        texts_run1.sort_by_key(|(id, ..)| *id);
+        texts_run1.sort_by_key(|p| p.chunk_id);
         let mut texts_run2 = queue_run2.clone();
-        texts_run2.sort_by_key(|(id, ..)| *id);
+        texts_run2.sort_by_key(|p| p.chunk_id);
         assert_eq!(
             texts_run2, texts_run1,
             "reconstructed embedding text must be byte-identical across runs"
@@ -833,7 +826,7 @@ mod tests {
 
         let missing = missing_embedding_texts(&db).expect("missing_embedding_texts");
 
-        let got_ids: Vec<i64> = missing.iter().map(|(id, ..)| *id).collect();
+        let got_ids: Vec<i64> = missing.iter().map(|p| p.chunk_id).collect();
         assert_eq!(
             got_ids,
             vec![ids[0].0, ids[2].0],
@@ -844,10 +837,11 @@ mod tests {
             "the already-embedded chunk must not be re-queued"
         );
 
-        for (queued_id, queued_text, _) in &missing {
+        for queued in &missing {
+            let queued_id = &queued.chunk_id;
             let (_, chunk) = ids.iter().find(|(id, _)| id == queued_id).unwrap();
             assert_eq!(
-                queued_text,
+                &queued.embedding_text,
                 &chunk.embedding_text(),
                 "queued text must match Chunk::embedding_text for chunk {queued_id}"
             );
@@ -959,7 +953,7 @@ mod tests {
         let queued: Vec<String> = missing_embedding_texts(&db)
             .unwrap()
             .into_iter()
-            .map(|(_, text, _)| text)
+            .map(|p| p.embedding_text)
             .collect();
         assert_eq!(queued.len(), 1, "{queued:#?}");
         assert!(queued[0].starts_with("title: parse |"), "{queued:#?}");
@@ -989,7 +983,7 @@ mod tests {
         let queue_ids: Vec<i64> = missing_embedding_texts(&db)
             .expect("queue")
             .iter()
-            .map(|(id, ..)| *id)
+            .map(|p| p.chunk_id)
             .collect();
         let newer_ids: Vec<i64> = db
             .chunks_for_file("newer.rs")
@@ -1233,10 +1227,9 @@ mod tests {
         let mut cfg_off = crate::config::Config::default();
         cfg_off.index.use_default_excludes = false;
         cfg_off.index.detect_generated = false;
-        let r1 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_off).unwrap();
-        assert_eq!(r1.filtered, 0);
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg_off).unwrap();
         let indexed_off: Vec<String> = db
-            .file_paths_under("")
+            .all_file_paths()
             .unwrap()
             .into_iter()
             .map(|(_, p)| p)
@@ -1247,10 +1240,9 @@ mod tests {
         );
 
         let cfg_on = crate::config::Config::default();
-        let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
-        assert!(r2.filtered >= 1, "app.min.js filtered on re-index");
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
         let indexed_on: Vec<String> = db
-            .file_paths_under("")
+            .all_file_paths()
             .unwrap()
             .into_iter()
             .map(|(_, p)| p)
@@ -1422,11 +1414,10 @@ mod tests {
         );
 
         let cfg_on = crate::config::Config::default();
-        let r2 = run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
-        assert!(r2.filtered >= 1, "app.min.js is filtered on re-index");
+        run_parse_phase(dir.path(), &db, &args, &mp, &cfg_on).unwrap();
 
         let files_now: Vec<String> = db
-            .file_paths_under("")
+            .all_file_paths()
             .unwrap()
             .into_iter()
             .map(|(_, p)| p)

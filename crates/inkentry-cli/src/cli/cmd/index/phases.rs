@@ -16,9 +16,8 @@ const EMBED_WAIT_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_se
 const EMBED_WAIT_MAX_OFFLINE_PROBES: u32 = 10;
 
 // `loading` is waited out, never skipped: health goes live at socket bind,
-// before the model loads. Uses the `_fresh` tier so every poll re-resolves
-// local-vs-remote routing instead of reusing `get_tier`'s cached first probe.
-async fn wait_for_embedder(
+// before the model loads.
+async fn wait_for_embedder_fresh(
     cfg: &Config,
     initial_backoff: std::time::Duration,
     max_backoff: std::time::Duration,
@@ -74,7 +73,8 @@ pub(super) async fn run_embed_phases(
     // a resume that would double up a worker still waiting on the embedder.
     let worker_guard = EmbedWorkerGuard::acquire(db, db_path);
 
-    let tier = wait_for_embedder(cfg, EMBED_WAIT_INITIAL_BACKOFF, EMBED_WAIT_MAX_BACKOFF).await;
+    let tier =
+        wait_for_embedder_fresh(cfg, EMBED_WAIT_INITIAL_BACKOFF, EMBED_WAIT_MAX_BACKOFF).await;
     let embed_ready = matches!(tier.caps(), Some(c) if c.index_embed);
     if tier.is_server() && embed_ready {
         let chunk_ids_and_texts = parse_phase::missing_embedding_texts(db)?;
@@ -154,12 +154,10 @@ fn embed_skipped_offline_lines(
 ) -> Vec<String> {
     use capability::OfflineReason;
     if let Some(advice) = capability::shared_offline_advice(reason) {
-        // Explicit opt-outs are not warnings.
-        let prefix = match reason {
-            OfflineReason::KillSwitch
-            | OfflineReason::ModeOfflineEnvOverride
-            | OfflineReason::ModeOfflineConfig => "Note",
-            _ => "Warning",
+        let prefix = if reason.is_explicit_opt_out() {
+            "Note"
+        } else {
+            "Warning"
         };
         return vec![
             format!("{prefix}: {advice}."),
@@ -542,9 +540,7 @@ mod tests {
         })
     }
 
-    // cloud_first so `wait_for_embedder` probes `url`; under local_first it
-    // routes to loopback and never touches `server_url`.
-    fn cfg_for(url: String) -> Config {
+    fn cloud_first_cfg_for(url: String) -> Config {
         Config {
             server_url: Some(url),
             project_id: Some("local/test".to_string()),
@@ -570,7 +566,9 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier =
+            wait_for_embedder_fresh(&cloud_first_cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF)
+                .await;
         assert!(
             matches!(tier.caps(), Some(c) if c.index_embed),
             "the wait must return only once the embedder serves; got {tier:?}"
@@ -591,7 +589,9 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier =
+            wait_for_embedder_fresh(&cloud_first_cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF)
+                .await;
         assert_eq!(
             tier.embedder_state(),
             Some(capability::EmbedderState::Unavailable)
@@ -609,7 +609,9 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier =
+            wait_for_embedder_fresh(&cloud_first_cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF)
+                .await;
         assert_eq!(
             tier.embedder_state(),
             Some(capability::EmbedderState::Disabled)
@@ -631,7 +633,9 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier =
+            wait_for_embedder_fresh(&cloud_first_cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF)
+                .await;
         assert_eq!(
             tier.embedder_state(),
             Some(capability::EmbedderState::Unavailable),
@@ -669,7 +673,9 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let tier = wait_for_embedder(&cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier =
+            wait_for_embedder_fresh(&cloud_first_cfg_for(mock.uri()), TEST_BACKOFF, TEST_BACKOFF)
+                .await;
         assert!(
             matches!(tier.caps(), Some(c) if c.index_embed),
             "14 cumulative but never {EMBED_WAIT_MAX_OFFLINE_PROBES} consecutive offline \
@@ -713,7 +719,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let url = format!("http://127.0.0.1:{port}");
-        let cfg = cfg_for(url.clone());
+        let cfg = cloud_first_cfg_for(url.clone());
 
         let refused = capability::get_inference_tier_fresh(&cfg).await;
         assert!(
@@ -740,7 +746,7 @@ mod tests {
             std::time::Duration::from_secs(5),
         );
 
-        let tier = wait_for_embedder(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier = wait_for_embedder_fresh(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
         assert!(
             matches!(tier.caps(), Some(c) if c.index_embed),
             "the poller must look again once the recorded miss has expired, rather than \
@@ -755,7 +761,9 @@ mod tests {
         drop(listener);
 
         let started = std::time::Instant::now();
-        let tier = wait_for_embedder(&cfg_for(dead_url), TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier =
+            wait_for_embedder_fresh(&cloud_first_cfg_for(dead_url), TEST_BACKOFF, TEST_BACKOFF)
+                .await;
         assert!(matches!(tier, capability::Tier::Offline(_)));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(30),
@@ -776,12 +784,12 @@ mod tests {
             .await;
         let cfg = Config {
             mode: Some(crate::config::SyncMode::Offline),
-            ..cfg_for(mock.uri())
+            ..cloud_first_cfg_for(mock.uri())
         };
 
         let started = std::time::Instant::now();
         let tier =
-            wait_for_embedder(&cfg, EMBED_WAIT_INITIAL_BACKOFF, EMBED_WAIT_MAX_BACKOFF).await;
+            wait_for_embedder_fresh(&cfg, EMBED_WAIT_INITIAL_BACKOFF, EMBED_WAIT_MAX_BACKOFF).await;
         let elapsed = started.elapsed();
 
         assert!(
@@ -869,7 +877,7 @@ mod tests {
         };
         assert_eq!(cfg.resolve_mode(), crate::config::SyncMode::LocalFirst);
 
-        let tier = wait_for_embedder(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
+        let tier = wait_for_embedder_fresh(&cfg, TEST_BACKOFF, TEST_BACKOFF).await;
 
         unsafe {
             match prev_state_dir {

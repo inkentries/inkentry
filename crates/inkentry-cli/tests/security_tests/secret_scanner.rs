@@ -96,7 +96,7 @@ fn case_variant_sensitive_filenames_are_excluded() {
     let tmp = TempDir::new().expect("create temp project dir");
 
     // Case variants of patterns already excluded in lowercase form
-    // (parse_phase.rs `sensitive_patterns`).
+    // (parse_phase.rs `ALWAYS_EXCLUDED_SENSITIVE_PATTERNS`).
     std::fs::write(tmp.path().join("ID_RSA"), "fake private key material\n").unwrap();
     std::fs::write(tmp.path().join(".ENV"), "SECRET=fake\n").unwrap();
     std::fs::write(

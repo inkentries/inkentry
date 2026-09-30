@@ -119,17 +119,15 @@ const CALIBRATION_BATCH_1_WEIGHT: f64 = 0.1;
 // Single rate source for batch sizing, timeouts and the ETA. Per token, not per chunk:
 // chunk cost isn't stationary through the queue. The token estimate's bias cancels only
 // against estimates from the same run, so never cache the rate across runs.
-struct RateEstimate {
-    per_token: Option<Duration>,
-    samples_seen: u32,
+enum RateEstimate {
+    NoSamples,
+    ColdSampleOnly(Duration),
+    Blended(Duration),
 }
 
 impl RateEstimate {
     fn new() -> Self {
-        Self {
-            per_token: None,
-            samples_seen: 0,
-        }
+        Self::NoSamples
     }
 
     fn update(&mut self, elapsed: Duration, tokens: u64) {
@@ -137,24 +135,25 @@ impl RateEstimate {
             return;
         }
         let sample = elapsed.div_f64(tokens as f64);
-        self.per_token = Some(match self.per_token {
-            None => sample,
-            Some(prev) if self.samples_seen == 1 => {
-                // Second sample: de-weight the cold batch-1 sample.
+        *self = match *self {
+            Self::NoSamples => Self::ColdSampleOnly(sample),
+            Self::ColdSampleOnly(cold) => {
                 let w = CALIBRATION_BATCH_1_WEIGHT;
-                let blended = prev.as_secs_f64() * w + sample.as_secs_f64() * (1.0 - w);
-                Duration::from_secs_f64(blended)
+                let blended = cold.as_secs_f64() * w + sample.as_secs_f64() * (1.0 - w);
+                Self::Blended(Duration::from_secs_f64(blended))
             }
-            Some(prev) => {
+            Self::Blended(prev) => {
                 let blended = (prev.as_secs_f64() + sample.as_secs_f64()) / 2.0;
-                Duration::from_secs_f64(blended)
+                Self::Blended(Duration::from_secs_f64(blended))
             }
-        });
-        self.samples_seen += 1;
+        };
     }
 
     fn per_token(&self) -> Option<Duration> {
-        self.per_token
+        match *self {
+            Self::NoSamples => None,
+            Self::ColdSampleOnly(d) | Self::Blended(d) => Some(d),
+        }
     }
 }
 
@@ -204,8 +203,7 @@ fn format_eta(remaining_tokens: u64, per_token: Option<Duration>) -> String {
     }
 }
 
-// Callers must name the denominator; a bare percentage is banned from embedding-state output.
-fn pct(done: u64, total: u64) -> u64 {
+fn token_pct(done: u64, total: u64) -> u64 {
     done.saturating_mul(100).checked_div(total).unwrap_or(0)
 }
 
@@ -262,9 +260,15 @@ fn report_embed_failure(
     eprintln!("{}", persistent_failure_hint(server_url, hint));
 }
 
-// Items are `(chunk_id, embedding_text, token_count)`.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct PendingEmbedding {
+    pub(super) chunk_id: i64,
+    pub(super) embedding_text: String,
+    pub(super) token_count: usize,
+}
+
 pub(super) async fn run_embed_phase(
-    chunk_ids_and_texts: Vec<(i64, String, usize)>,
+    chunk_ids_and_texts: Vec<PendingEmbedding>,
     db: &Database,
     cfg: &Config,
     tier: &Tier,
@@ -288,7 +292,7 @@ pub(super) async fn run_embed_phase(
 // Backoffs are injected so tests can run the exhausted-retries path in milliseconds.
 #[allow(clippy::too_many_arguments)]
 async fn run_embed_phase_with_backoff(
-    chunk_ids_and_texts: Vec<(i64, String, usize)>,
+    chunk_ids_and_texts: Vec<PendingEmbedding>,
     db: &Database,
     cfg: &Config,
     tier: &Tier,
@@ -368,7 +372,7 @@ async fn run_embed_phase_with_backoff(
     // ETA and "of work done" run over token totals; chunk fraction is coverage, a different question.
     let total_tokens: u64 = chunk_ids_and_texts
         .iter()
-        .map(|(_, _, tc)| (*tc).max(1) as u64)
+        .map(|p| p.token_count.max(1) as u64)
         .sum();
     let mut tokens_done = 0u64;
     // Slugs contain `/`, which would split the segment and 404 in routing.
@@ -391,7 +395,7 @@ async fn run_embed_phase_with_backoff(
                     .expect("rate is seeded after the first batch completes");
                 let token_tail: Vec<usize> = chunk_ids_and_texts[cursor..]
                     .iter()
-                    .map(|(_, _, tc)| *tc)
+                    .map(|p| p.token_count)
                     .collect();
                 next_batch_len(
                     per_token,
@@ -412,7 +416,7 @@ async fn run_embed_phase_with_backoff(
         let bytes = 'retry: loop {
             let batch_tokens: u64 = chunk_ids_and_texts[cursor..cursor + this_batch_size]
                 .iter()
-                .map(|(_, _, tc)| (*tc).max(1) as u64)
+                .map(|p| p.token_count.max(1) as u64)
                 .sum();
             let request_timeout = match rate.per_token() {
                 Some(per_token) => batch_timeout(per_token, batch_tokens),
@@ -421,7 +425,7 @@ async fn run_embed_phase_with_backoff(
             };
 
             let eta_str = format_eta(total_tokens.saturating_sub(tokens_done), rate.per_token());
-            let work_pct = pct(tokens_done, total_tokens);
+            let work_pct = token_pct(tokens_done, total_tokens);
             bar.set_message(format!(
                 "{eta_str}  \u{00b7}  sent {this_batch_size} chunk(s) ({embedded}/{total} chunks, \
                  {work_pct}% of work done), awaiting response\u{2026}",
@@ -431,9 +435,9 @@ async fn run_embed_phase_with_backoff(
 
             let req_chunks: Vec<ReqChunk> = batch
                 .iter()
-                .map(|(id, text, _)| ReqChunk {
-                    chunk_id: id.to_string(),
-                    content: text.clone(),
+                .map(|p| ReqChunk {
+                    chunk_id: p.chunk_id.to_string(),
+                    content: p.embedding_text.clone(),
                 })
                 .collect();
 
@@ -580,22 +584,22 @@ async fn run_embed_phase_with_backoff(
         let embeddings: Vec<(i64, Vec<f32>)> = batch
             .iter()
             .enumerate()
-            .map(|(i, (row_id, _text, _token_count))| {
+            .map(|(i, p)| {
                 let vector =
                     inkentry_core::embeddings::blob_to_vec(&bytes[i * stride..(i + 1) * stride]);
-                (*row_id, vector)
+                (p.chunk_id, vector)
             })
             .collect();
         db.insert_embeddings(&embeddings)?;
         super::crash_test_hook::pause_at("after_embed_batch", &batch_num.to_string());
 
         // Repaint per chunk so the ETA counts down through a batch, not once per request.
-        for (_row_id, _text, token_count) in batch.iter() {
+        for pending in batch.iter() {
             embedded += 1;
-            tokens_done += (*token_count).max(1) as u64;
+            tokens_done += pending.token_count.max(1) as u64;
             bar.inc(1);
             let eta_str = format_eta(total_tokens.saturating_sub(tokens_done), rate.per_token());
-            let work_pct = pct(tokens_done, total_tokens);
+            let work_pct = token_pct(tokens_done, total_tokens);
             bar.set_message(format!(
                 "{eta_str}  \u{00b7}  {embedded}/{total} chunks embedded \
                  ({work_pct}% of work done)"
@@ -607,7 +611,7 @@ async fn run_embed_phase_with_backoff(
 
         // The detached worker has no bar; log plain lines instead.
         if progress_log.due(cursor >= remaining) {
-            let work_pct = pct(tokens_done, total_tokens);
+            let work_pct = token_pct(tokens_done, total_tokens);
             super::background_log::emit(format!(
                 "embedding: {embedded}/{total} chunks ({work_pct}% of work done)"
             ));
@@ -1088,25 +1092,28 @@ mod tests {
             "connect-failure retries must not fold a bogus sample into the rate estimate: \
              expected the plain 2-real-sample blend 1.9s/token, got {blended:?}"
         );
-        assert_eq!(
-            r.samples_seen, 2,
+        assert!(
+            matches!(r, RateEstimate::Blended(_)),
             "only the two real batches count as samples, not any connect-failure attempt"
         );
     }
 
     #[test]
     fn work_fraction_diverges_from_chunk_fraction_on_a_token_skewed_queue() {
-        let queue: Vec<(i64, String, usize)> = vec![
-            (1, "a".into(), 10),
-            (2, "b".into(), 10),
-            (3, "c".into(), 400),
-            (4, "d".into(), 400),
-        ];
-        let total_tokens: u64 = queue.iter().map(|(_, _, tc)| *tc as u64).sum();
-        let tokens_done: u64 = queue[..2].iter().map(|(_, _, tc)| *tc as u64).sum();
+        let queue: Vec<PendingEmbedding> =
+            [(1, "a", 10), (2, "b", 10), (3, "c", 400), (4, "d", 400)]
+                .into_iter()
+                .map(|(chunk_id, text, token_count)| PendingEmbedding {
+                    chunk_id,
+                    embedding_text: text.into(),
+                    token_count,
+                })
+                .collect();
+        let total_tokens: u64 = queue.iter().map(|p| p.token_count as u64).sum();
+        let tokens_done: u64 = queue[..2].iter().map(|p| p.token_count as u64).sum();
 
-        let chunk_pct = pct(2, queue.len() as u64);
-        let work_pct = pct(tokens_done, total_tokens);
+        let chunk_pct = 2 * 100 / queue.len() as u64;
+        let work_pct = token_pct(tokens_done, total_tokens);
 
         assert_eq!(chunk_pct, 50);
         assert_eq!(work_pct, 2); // 20 / 820
@@ -1118,9 +1125,9 @@ mod tests {
     }
 
     #[test]
-    fn pct_is_zero_over_an_empty_denominator() {
-        assert_eq!(pct(0, 0), 0);
-        assert_eq!(pct(5, 0), 0);
+    fn token_pct_is_zero_over_an_empty_denominator() {
+        assert_eq!(token_pct(0, 0), 0);
+        assert_eq!(token_pct(5, 0), 0);
     }
 
     #[test]
@@ -1633,9 +1640,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(6);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -1676,9 +1687,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(50);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -1714,9 +1729,13 @@ mod tests {
         db.ensure_chunker_config("max_chunk_tokens=2048")
             .expect("stamp an old chunker config, as an existing index.db would carry");
 
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -1759,9 +1778,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(10);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -1797,9 +1820,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(3);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -1836,9 +1863,13 @@ mod tests {
 
         for n in [1usize, 2, 3] {
             let (db, ids) = seed_chunks(n);
-            let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+            let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
                 .iter()
-                .map(|id| (*id, format!("text {id}"), 3))
+                .map(|id| PendingEmbedding {
+                    chunk_id: *id,
+                    embedding_text: format!("text {id}"),
+                    token_count: 3,
+                })
                 .collect();
 
             let cfg = Config::default();
@@ -1906,9 +1937,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(3);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -1944,9 +1979,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(3);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -2005,9 +2044,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(20);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -2072,9 +2115,13 @@ mod tests {
             .await;
 
         let (db, ids) = seed_chunks(30);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -2140,9 +2187,13 @@ mod tests {
         });
 
         let (db, ids) = seed_chunks(6);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -2176,9 +2227,13 @@ mod tests {
         drop(listener);
 
         let (db, ids) = seed_chunks(3);
-        let chunk_ids_and_texts: Vec<(i64, String, usize)> = ids
+        let chunk_ids_and_texts: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
 
         let cfg = Config::default();
@@ -2226,9 +2281,13 @@ mod tests {
             .mount(&mock1)
             .await;
 
-        let queue1: Vec<(i64, String, usize)> = ids
+        let queue1: Vec<PendingEmbedding> = ids
             .iter()
-            .map(|id| (*id, format!("text {id}"), 3))
+            .map(|id| PendingEmbedding {
+                chunk_id: *id,
+                embedding_text: format!("text {id}"),
+                token_count: 3,
+            })
             .collect();
         let embedded1 = run_embed_phase(
             queue1,
@@ -2253,9 +2312,15 @@ mod tests {
             1,
             "the interrupted batch committed nothing, so exactly the unembedded chunk remains"
         );
-        let queue2: Vec<(i64, String, usize)> = missing
+        let queue2: Vec<PendingEmbedding> = missing
             .iter()
-            .map(|(id, _name, _meta, _summary, content, tc)| (*id, content.clone(), *tc))
+            .map(
+                |(id, _name, _meta, _summary, content, tc)| PendingEmbedding {
+                    chunk_id: *id,
+                    embedding_text: content.clone(),
+                    token_count: *tc,
+                },
+            )
             .collect();
 
         let mock2 = MockServer::start().await;

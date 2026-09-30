@@ -2,6 +2,10 @@ use anyhow::Result;
 
 use crate::storage::Database;
 
+// Empty rather than NULL: the summary queues select only NULL summaries.
+pub(super) const SUPPRESSED_SUMMARY: &str = "";
+pub(super) const UNREFINABLE_SUMMARY: &str = "";
+
 pub(super) fn generate_structural_summaries(db: &Database) -> Result<()> {
     let targets = db.named_chunks_needing_summary()?;
     if targets.is_empty() {
@@ -25,8 +29,7 @@ pub(super) fn generate_structural_summaries(db: &Database) -> Result<()> {
         );
 
         // Salient literals folded into the summary can carry a credential the
-        // chunk's own scan cleared. `""` marks composed-but-suppressed, so a
-        // plain re-index does not recompute it.
+        // chunk's own scan cleared.
         let to_store =
             if composed.is_empty() || inkentry_core::indexer::secrets::contains_secret(&composed) {
                 if !composed.is_empty() {
@@ -34,7 +37,7 @@ pub(super) fn generate_structural_summaries(db: &Database) -> Result<()> {
                         "suppressing structural summary for '{name}' (possible secret detected)"
                     );
                 }
-                ""
+                SUPPRESSED_SUMMARY
             } else {
                 composed.as_str()
             };
