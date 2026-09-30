@@ -2,10 +2,9 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 
-use super::color::cprintln;
 use super::events::{self, EventArgs};
 use super::memory::cross_project::collect_dep_cross_cutting;
-use super::memory::print_note_summary;
+use super::memory::note_summary_text;
 use crate::storage::memory::Note;
 use crate::{
     config::Config,
@@ -167,6 +166,18 @@ fn apply_budget(
     budget - remaining
 }
 
+// What `context` selected, before any rendering: shared by the CLI command and
+// the session-start agent hook so the two cannot drift.
+struct ContextView {
+    sections: Vec<(String, Vec<Note>)>,
+    conventions: Vec<crate::conventions::ConventionRecord>,
+    overlaps: Vec<String>,
+    unresolved_contradictions: std::collections::HashSet<NoteId>,
+    budget_used: Option<usize>,
+    returned_ids: Vec<String>,
+    tokens_out: i64,
+}
+
 pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     // Recorded once here; every exit point below records against this
     // instant (ADR-098 D5).
@@ -192,8 +203,73 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     crate::cli::cmd::memory::outbox::poll_and_apply(&cfg, &mem_path).await;
     let backend = open_memory_backend(&cfg, &mem_path, be).await?;
 
+    let view = build_view(&*backend, &args, &cfg).await?;
+
+    match crate::utils::effective_format(&args.format) {
+        "json" => {
+            // A note gains `contradicts_unresolved: true` only when it has
+            // one; the array-of-`[kind, notes]` shape stays exactly what
+            // `sections`' own `Serialize` impl already produced.
+            let sections_json: Vec<serde_json::Value> = view
+                .sections
+                .iter()
+                .map(|(kind, notes)| {
+                    let notes_json: Vec<serde_json::Value> = notes
+                        .iter()
+                        .map(|n| {
+                            let mut v = serde_json::to_value(n).unwrap_or(serde_json::Value::Null);
+                            if view.unresolved_contradictions.contains(&n.id)
+                                && let Some(obj) = v.as_object_mut()
+                            {
+                                obj.insert("contradicts_unresolved".to_string(), true.into());
+                            }
+                            v
+                        })
+                        .collect();
+                    serde_json::json!([kind, notes_json])
+                })
+                .collect();
+            let mut output = serde_json::json!({
+                "sections": sections_json,
+                "conventions": view.conventions,
+                "overlaps": view.overlaps,
+            });
+            if let (Some(budget), Some(used)) = (args.budget, view.budget_used) {
+                output["token_budget"] = budget.into();
+                output["tokens_used"] = used.into();
+                output["tokens_remaining"] = (budget - used).into();
+            }
+            println!("{output}");
+        }
+        _ => {
+            super::color::print_ansi(&render_text(&view));
+            if let (Some(budget), Some(used)) = (args.budget, view.budget_used) {
+                println!("tokens used: {used}/{budget}");
+            }
+        }
+    }
+    events::record(EventArgs {
+        cfg: &cfg,
+        mem_path: &mem_path,
+        backend_override: None,
+        command: "context",
+        code_results: None,
+        memory_results: Some(view.returned_ids.len() as i64),
+        returned_ids: &view.returned_ids,
+        tokens_out: Some(view.tokens_out),
+        started,
+        ok: true,
+    });
+    Ok(())
+}
+
+async fn build_view(
+    backend: &dyn crate::storage::MemoryBackend,
+    args: &ContextArgs,
+    cfg: &Config,
+) -> Result<ContextView> {
     let mut sections = collect_sections(
-        &*backend,
+        backend,
         args.kind.as_deref(),
         args.limit,
         args.path.as_deref(),
@@ -241,13 +317,13 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
 
     // Entries with an unresolved `contradicts` edge (both endpoints active)
     // get a visible marker.
-    let unresolved_contradictions = unresolved_contradiction_ids(&*backend, &sections)
+    let unresolved_contradictions = unresolved_contradiction_ids(backend, &sections)
         .await
         .unwrap_or_default();
 
     let mut conventions: Vec<crate::conventions::ConventionRecord> =
         if !args.no_conventions && args.kind.is_none() {
-            load_conventions(args.index_db.as_deref(), &cfg)
+            load_conventions(args.index_db.as_deref(), cfg)
         } else {
             vec![]
         };
@@ -260,7 +336,6 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
         .iter()
         .flat_map(|(_, notes)| notes.iter().map(|n| n.entity_id.clone()))
         .collect();
-    let memory_results = returned_ids.len() as i64;
     let tokens_out = budget_used.unwrap_or_else(|| {
         sections
             .iter()
@@ -275,87 +350,54 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
                 .sum::<usize>()
     }) as i64;
 
-    match crate::utils::effective_format(&args.format) {
-        "json" => {
-            // A note gains `contradicts_unresolved: true` only when it has
-            // one; the array-of-`[kind, notes]` shape stays exactly what
-            // `sections`' own `Serialize` impl already produced.
-            let sections_json: Vec<serde_json::Value> = sections
-                .iter()
-                .map(|(kind, notes)| {
-                    let notes_json: Vec<serde_json::Value> = notes
-                        .iter()
-                        .map(|n| {
-                            let mut v = serde_json::to_value(n).unwrap_or(serde_json::Value::Null);
-                            if unresolved_contradictions.contains(&n.id)
-                                && let Some(obj) = v.as_object_mut()
-                            {
-                                obj.insert("contradicts_unresolved".to_string(), true.into());
-                            }
-                            v
-                        })
-                        .collect();
-                    serde_json::json!([kind, notes_json])
-                })
-                .collect();
-            let mut output = serde_json::json!({
-                "sections": sections_json,
-                "conventions": conventions,
-                "overlaps": overlaps,
-            });
-            if let (Some(budget), Some(used)) = (args.budget, budget_used) {
-                output["token_budget"] = budget.into();
-                output["tokens_used"] = used.into();
-                output["tokens_remaining"] = (budget - used).into();
+    Ok(ContextView {
+        sections,
+        conventions,
+        overlaps,
+        unresolved_contradictions,
+        budget_used,
+        returned_ids,
+        tokens_out,
+    })
+}
+
+// Carries hand-written ANSI codes, like `note_summary_text`.
+fn render_text(view: &ContextView) -> String {
+    let mut out = String::new();
+    for (kind, notes) in &view.sections {
+        if kind == "intent" {
+            if view.overlaps.is_empty() && notes.is_empty() {
+                continue;
             }
-            println!("{output}");
+            out.push_str(&section_header_text(kind));
+            for file in &view.overlaps {
+                out.push_str(&overlap_warning_text(file));
+            }
+            for n in notes {
+                out.push_str(&note_summary_text(n));
+                out.push_str(&contradiction_marker_text(
+                    n,
+                    &view.unresolved_contradictions,
+                ));
+            }
+            continue;
         }
-        _ => {
-            for (kind, notes) in &sections {
-                if kind == "intent" {
-                    if overlaps.is_empty() && notes.is_empty() {
-                        continue;
-                    }
-                    print_section_header(kind);
-                    for file in &overlaps {
-                        print_overlap_warning(file);
-                    }
-                    for n in notes {
-                        print_note_summary(n);
-                        print_contradiction_marker(n, &unresolved_contradictions);
-                    }
-                    continue;
-                }
-                if notes.is_empty() {
-                    continue;
-                }
-                print_section_header(kind);
-                for n in notes {
-                    print_note_summary(n);
-                    print_contradiction_marker(n, &unresolved_contradictions);
-                }
-            }
-            if !conventions.is_empty() {
-                print_conventions_section(&conventions);
-            }
-            if let (Some(budget), Some(used)) = (args.budget, budget_used) {
-                println!("tokens used: {used}/{budget}");
-            }
+        if notes.is_empty() {
+            continue;
+        }
+        out.push_str(&section_header_text(kind));
+        for n in notes {
+            out.push_str(&note_summary_text(n));
+            out.push_str(&contradiction_marker_text(
+                n,
+                &view.unresolved_contradictions,
+            ));
         }
     }
-    events::record(EventArgs {
-        cfg: &cfg,
-        mem_path: &mem_path,
-        backend_override: None,
-        command: "context",
-        code_results: None,
-        memory_results: Some(memory_results),
-        returned_ids: &returned_ids,
-        tokens_out: Some(tokens_out),
-        started,
-        ok: true,
-    });
-    Ok(())
+    if !view.conventions.is_empty() {
+        out.push_str(&conventions_section_text(&view.conventions));
+    }
+    out
 }
 
 fn load_conventions(
@@ -420,7 +462,7 @@ async fn collect_sections(
     Ok(result)
 }
 
-fn print_section_header(kind: &str) {
+fn section_header_text(kind: &str) -> String {
     let label = match kind {
         "intent" => "Active agent sessions",
         "handoff" => "Handoffs",
@@ -429,8 +471,7 @@ fn print_section_header(kind: &str) {
         "requirement" => "Requirements",
         other => other,
     };
-    cprintln!("\x1b[1;34m── {label} \x1b[0m");
-    println!();
+    format!("\x1b[1;34m── {label} \x1b[0m\n\n")
 }
 
 // The ids of entries in `sections` that carry a `contradicts` edge whose
@@ -478,11 +519,13 @@ async fn unresolved_contradiction_ids(
     Ok(unresolved)
 }
 
-// Docs and agents match on this wording; printed without ANSI so it holds
-// under any color policy, the same reasoning as `print_overlap_warning`.
-fn print_contradiction_marker(n: &Note, unresolved: &std::collections::HashSet<NoteId>) {
+// Docs and agents match on this wording; carries no ANSI so it holds under
+// any color policy, the same reasoning as `overlap_warning_text`.
+fn contradiction_marker_text(n: &Note, unresolved: &std::collections::HashSet<NoteId>) -> String {
     if unresolved.contains(&n.id) {
-        println!("     ⚠ contradicts an active entry, unresolved");
+        "     ⚠ contradicts an active entry, unresolved\n".to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -510,33 +553,35 @@ fn compute_overlaps(sections: &[(String, Vec<Note>)]) -> Vec<String> {
     overlaps
 }
 
-// Docs and agents match on this wording; printed without ANSI so it holds under
-// any color policy.
-fn print_overlap_warning(file: &str) {
-    println!("⚠  Overlap: {file} is listed in an active intent");
+// Docs and agents match on this wording; carries no ANSI so it holds under any
+// color policy.
+fn overlap_warning_text(file: &str) -> String {
+    format!("⚠  Overlap: {file} is listed in an active intent\n")
 }
 
-fn print_conventions_section(records: &[crate::conventions::ConventionRecord]) {
-    cprintln!("\x1b[1;34m── Conventions \x1b[0m");
-    println!();
+fn conventions_section_text(records: &[crate::conventions::ConventionRecord]) -> String {
+    use std::fmt::Write as _;
 
+    let mut out = String::from("\x1b[1;34m── Conventions \x1b[0m\n\n");
     let mut by_lang: std::collections::BTreeMap<&str, Vec<&crate::conventions::ConventionRecord>> =
         std::collections::BTreeMap::new();
     for r in records {
         by_lang.entry(r.language.as_str()).or_default().push(r);
     }
     for (lang, recs) in &by_lang {
-        cprintln!("\x1b[1m{lang}\x1b[0m");
+        let _ = writeln!(out, "\x1b[1m{lang}\x1b[0m");
         for r in recs {
-            println!(
+            let _ = writeln!(
+                out,
                 "  [{:.0}%] {} — {}",
                 r.confidence * 100.0,
                 r.category,
                 r.description
             );
         }
-        println!();
+        out.push('\n');
     }
+    out
 }
 
 #[cfg(test)]
@@ -917,5 +962,29 @@ mod tests {
         // Huge body: 4000 chars -> 1000 tokens, plus 1 for the 1-char title.
         let huge = note(1, "decision", "t", &"x".repeat(4000));
         assert_eq!(note_tokens(&huge), 1001);
+    }
+
+    #[test]
+    fn rendered_text_lists_selected_sections_and_never_a_budget_footer() {
+        let view = ContextView {
+            sections: vec![
+                ("handoff".to_string(), vec![]),
+                (
+                    "decision".to_string(),
+                    vec![note(0, "decision", "Use WAL", "because")],
+                ),
+            ],
+            conventions: vec![],
+            overlaps: vec![],
+            unresolved_contradictions: Default::default(),
+            budget_used: Some(7),
+            returned_ids: vec![],
+            tokens_out: 7,
+        };
+        let text = crate::utils::strip_ansi(&render_text(&view));
+        assert!(text.starts_with("── Decisions \n\n"), "got: {text:?}");
+        assert!(text.contains("[decision]  Use WAL"), "got: {text:?}");
+        assert!(!text.contains("Handoffs"), "empty sections are skipped");
+        assert!(!text.contains("tokens used"), "got: {text:?}");
     }
 }

@@ -69,6 +69,16 @@ macro_rules! cprintln {
 }
 pub(crate) use cprintln;
 
+// For text assembled off-screen with hand-written ANSI codes, then printed
+// once under the same on/off decision `cprintln!` applies line by line.
+pub(crate) fn print_ansi(text: &str) {
+    if color_enabled() {
+        print!("{text}");
+    } else {
+        print!("{}", inkentry_core::utils::strip_ansi(text));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
