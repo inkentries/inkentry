@@ -63,8 +63,7 @@ fn git(home: &Path, dir: &Path, args: &[&str]) -> Output {
     out
 }
 
-// Ignores exit status: a missing ref is a legitimate empty result.
-fn git_stdout(home: &Path, dir: &Path, args: &[&str]) -> String {
+fn git_stdout_ignoring_status(home: &Path, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&git_out(home, dir, args).stdout)
         .trim()
         .to_string()
@@ -78,10 +77,8 @@ fn bin(home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
-// Repeats `inkentry_bin_in`'s isolation by hand because that always resolves the
-// cargo-built binary; without the `INKENTRY_CONFIG_DIR` pin the runner's ambient value
-// wins over `HOME`.
-fn bin_at(exe: &Path, home: &Path, cwd: &Path) -> Command {
+// Without the `INKENTRY_CONFIG_DIR` pin the runner's ambient value wins over `HOME`.
+fn bin_from_copy(exe: &Path, home: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(exe);
     cmd.current_dir(cwd)
         .env("INKENTRY_SECRET_STORE", "file")
@@ -127,7 +124,7 @@ fn install_pre_push(home: &Path, repo: &Path) -> PathBuf {
 }
 
 fn install_pre_push_from(exe: &Path, home: &Path, repo: &Path) -> PathBuf {
-    bin_at(exe, home, repo)
+    bin_from_copy(exe, home, repo)
         .args(["hooks", "install", "--pre-push"])
         .assert()
         .success();
@@ -142,8 +139,7 @@ fn bare_origin(home: &Path, dir: &Path) {
     git(home, dir, &["init", "-q", "--bare", "-b", "main"]);
 }
 
-// Single quotes reach Git Bash with backslashes intact, so a Windows path must be forward-slashed.
-fn sh_path(path: &Path) -> String {
+fn forward_slash_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
@@ -165,7 +161,7 @@ fn reject_notes_and_count(origin: &Path, counter: &Path) {
         &origin.join("hooks").join("update"),
         &format!(
             "#!/bin/sh\ncase \"$1\" in refs/notes/*) echo try >> '{}' ; exit 1 ;; esac\nexit 0\n",
-            sh_path(counter)
+            forward_slash_path(counter)
         ),
     );
 }
@@ -189,7 +185,7 @@ fn teammate_publishes(home: &Path, origin: &Path, dir: &Path, title: &str) -> St
             "refs/notes/inkentry:refs/notes/inkentry",
         ],
     );
-    git_stdout(home, dir, &["rev-parse", "HEAD"])
+    git_stdout_ignoring_status(home, dir, &["rev-parse", "HEAD"])
 }
 
 fn commit(home: &Path, dir: &Path, name: &str) {
@@ -227,7 +223,7 @@ fn clone_dev(home: &Path, origin: &Path, dir: &Path) {
 }
 
 fn note_lines(home: &Path, dir: &Path, object: &str) -> Vec<String> {
-    git_stdout(home, dir, &["notes", "--ref=inkentry", "show", object])
+    git_stdout_ignoring_status(home, dir, &["notes", "--ref=inkentry", "show", object])
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -243,7 +239,10 @@ fn instrument_hook(hook_path: &Path, counter: &Path) {
     let (shebang, rest) = body.split_once('\n').expect("hook starts with a shebang");
     std::fs::write(
         hook_path,
-        format!("{shebang}\necho fired >> '{}'\n{rest}", sh_path(counter)),
+        format!(
+            "{shebang}\necho fired >> '{}'\n{rest}",
+            forward_slash_path(counter)
+        ),
     )
     .unwrap();
 }
@@ -273,7 +272,7 @@ fn hook_publishes_notes_and_fires_exactly_once() {
     instrument_hook(&hook, &counter);
 
     memory_add(home.path(), &dev, "recursion-guard-decision");
-    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    let annotated = git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]);
     commit(home.path(), &dev, "second");
     git(home.path(), &dev, &["push", "-q", "origin", "main"]);
 
@@ -286,7 +285,8 @@ fn hook_publishes_notes_and_fires_exactly_once() {
 
     // A guard that does nothing would also fire once, so check it published.
     assert!(
-        !git_stdout(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"]).is_empty(),
+        !git_stdout_ignoring_status(home.path(), &origin, &["rev-parse", "refs/notes/inkentry"])
+            .is_empty(),
         "origin should carry refs/notes/inkentry after the push"
     );
     assert!(
@@ -318,8 +318,8 @@ fn failed_notes_push_does_not_block_the_branch_push() {
     );
 
     assert_eq!(
-        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
-        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout_ignoring_status(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "origin must have received the branch commit"
     );
 
@@ -353,7 +353,7 @@ fn an_unloadable_config_does_not_block_the_branch_push() {
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "broken-config-decision");
-    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    let annotated = git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]);
     commit(home.path(), &dev, "payload");
 
     // Broken only now: `memory add` above needs a config that loads.
@@ -370,8 +370,8 @@ fn an_unloadable_config_does_not_block_the_branch_push() {
 
     // Without this the assert above passes even when the hook is never reached.
     assert_eq!(
-        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
-        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout_ignoring_status(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "origin must have received the branch commit"
     );
 
@@ -458,8 +458,8 @@ fn a_removed_binary_stops_the_push() {
         "a removed inkentry must stop the push rather than fail silently"
     );
     assert_ne!(
-        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
-        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout_ignoring_status(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "the push must not have proceeded"
     );
 }
@@ -473,7 +473,7 @@ fn publishes_with_inkentry_absent_from_path() {
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "no-path-decision");
-    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    let annotated = git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]);
     commit(home.path(), &dev, "no-path");
 
     // launchd-launched GUI clients lack `~/.local/bin`: a PATH holding only git.
@@ -538,7 +538,7 @@ fn a_lost_race_is_retried_and_converges_with_no_loss() {
     let shared = teammate_publishes(home2.path(), &origin, &teammate, "teammate-raced-decision");
     assert_eq!(
         shared,
-        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]),
         "setup: both sides must annotate the same commit"
     );
 
@@ -640,8 +640,8 @@ fn a_fetch_failure_must_not_destroy_a_teammates_notes() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]),
-        git_stdout(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
+        git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]),
+        git_stdout_ignoring_status(home.path(), &origin, &["rev-parse", "refs/heads/main"]),
         "origin must have received the branch commit"
     );
 
@@ -799,10 +799,10 @@ fn two_dev_divergence_converges_with_no_loss() {
     let dev2 = tmp.path().join("dev2");
     clone_dev(home2.path(), &origin, &dev2);
 
-    let shared = git_stdout(home1.path(), &dev1, &["rev-parse", "HEAD"]);
+    let shared = git_stdout_ignoring_status(home1.path(), &dev1, &["rev-parse", "HEAD"]);
     assert_eq!(
         shared,
-        git_stdout(home2.path(), &dev2, &["rev-parse", "HEAD"])
+        git_stdout_ignoring_status(home2.path(), &dev2, &["rev-parse", "HEAD"])
     );
 
     install_pre_push(home1.path(), &dev1);
@@ -905,7 +905,7 @@ fn repeated_syncs_are_idempotent() {
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "idempotent-decision");
-    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    let annotated = git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]);
 
     for i in 0..3 {
         commit(home.path(), &dev, &format!("push-{i}"));
@@ -1079,7 +1079,7 @@ fn publishes_to_the_remote_being_pushed_to() {
 
     install_pre_push(home.path(), &dev);
     memory_add(home.path(), &dev, "upstream-decision");
-    let annotated = git_stdout(home.path(), &dev, &["rev-parse", "HEAD"]);
+    let annotated = git_stdout_ignoring_status(home.path(), &dev, &["rev-parse", "HEAD"]);
     commit(home.path(), &dev, "payload");
     let out = git_out(home.path(), &dev, &["push", "upstream", "main"]);
     assert!(
@@ -1177,7 +1177,7 @@ fn install_re_resolves_a_moved_binary() {
     assert!(
         std::fs::read_to_string(&hook)
             .unwrap()
-            .contains(&sh_path(&old)),
+            .contains(&forward_slash_path(&old)),
         "setup: the shim must embed the path it was installed from"
     );
 
@@ -1185,11 +1185,11 @@ fn install_re_resolves_a_moved_binary() {
     install_pre_push(home.path(), &dev);
     let body = std::fs::read_to_string(&hook).unwrap();
     assert!(
-        body.contains(&sh_path(&inkentry_exe())),
+        body.contains(&forward_slash_path(&inkentry_exe())),
         "re-installing must re-resolve the binary path: {body}"
     );
     assert!(
-        !body.contains(&sh_path(&old)),
+        !body.contains(&forward_slash_path(&old)),
         "the stale path must be gone: {body}"
     );
 }

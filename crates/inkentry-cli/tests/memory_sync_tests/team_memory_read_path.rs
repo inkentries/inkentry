@@ -133,8 +133,7 @@ fn publish_note(author: &Path, title: &str, body: &str) {
     git(author, &["push", "-q", "origin", "refs/notes/inkentry"]);
 }
 
-// Deliberately never passes `--backend git-notes`: the point is the SQLite read path.
-fn read_memory(dir: &Path, sub_args: &[&str]) -> Output {
+fn read_memory_default_backend(dir: &Path, sub_args: &[&str]) -> Output {
     let cfg = write_config(dir, false);
     let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
@@ -152,8 +151,7 @@ fn read_memory(dir: &Path, sub_args: &[&str]) -> Output {
     cmd.output().expect("spawn inkentry memory")
 }
 
-// memory.db resolves as index.db's sibling, so no explicit --db.
-fn search_default(dir: &Path, sub_args: &[&str]) -> Output {
+fn search_default_backend(dir: &Path, sub_args: &[&str]) -> Output {
     let cfg = write_config(dir, false);
     let mut cmd = inkentry_bin();
     cmd.current_dir(dir)
@@ -169,7 +167,7 @@ fn search_default(dir: &Path, sub_args: &[&str]) -> Output {
     cmd.output().expect("spawn inkentry search")
 }
 
-fn read_context(dir: &Path) -> Output {
+fn read_context_default_backend(dir: &Path) -> Output {
     let cfg = write_config(dir, false);
     let memdb = mem_db(dir);
     inkentry_bin()
@@ -249,8 +247,8 @@ fn setup_team() -> Team {
 
 const MARKER: &str = "team-memory-read-path-marker";
 
-fn one_note_reaches_reader(team: &Team) {
-    // Order matters: init first, so only the read-path import (not init's) can surface the note.
+fn publish_and_fetch_note(team: &Team) {
+    // Init precedes the publish so only the read-path import can surface the note.
     run_init(&team.reader);
     publish_note(&team.author, MARKER, "the teammate's decision body");
     git(&team.reader, &["fetch", "-q", "origin"]);
@@ -266,9 +264,9 @@ fn one_note_reaches_reader(team: &Team) {
 #[test]
 fn read_path_surfaces_fetched_teammate_note_via_default_sqlite_backend() {
     let team = setup_team();
-    one_note_reaches_reader(&team);
+    publish_and_fetch_note(&team);
 
-    let out = read_memory(&team.reader, &["list", "--local-only"]);
+    let out = read_memory_default_backend(&team.reader, &["list", "--local-only"]);
     assert!(
         stdout_of(&out).contains(MARKER),
         "memory list on the DEFAULT backend must surface the fetched teammate note"
@@ -278,10 +276,10 @@ fn read_path_surfaces_fetched_teammate_note_via_default_sqlite_backend() {
 #[test]
 fn search_surfaces_fetched_teammate_note_on_default_path() {
     let team = setup_team();
-    one_note_reaches_reader(&team);
+    publish_and_fetch_note(&team);
 
     // --only-text needs no embedder; --only-memory restricts to the memory corpus.
-    let out = search_default(
+    let out = search_default_backend(
         &team.reader,
         &[MARKER, "--only-memory", "--only-text", "--local-only"],
     );
@@ -294,10 +292,10 @@ fn search_surfaces_fetched_teammate_note_on_default_path() {
 #[test]
 fn show_surfaces_fetched_teammate_note_on_default_path() {
     let team = setup_team();
-    one_note_reaches_reader(&team);
+    publish_and_fetch_note(&team);
 
     // Ids are minted on import, so read the id back; this first list triggers the import.
-    let listed = stdout_of(&read_memory(
+    let listed = stdout_of(&read_memory_default_backend(
         &team.reader,
         &["list", "--local-only", "--format", "jsonl"],
     ));
@@ -309,7 +307,7 @@ fn show_surfaces_fetched_teammate_note_on_default_path() {
         })
         .unwrap_or_else(|| panic!("no imported entry to show in:\n{listed}"));
 
-    let out = read_memory(&team.reader, &["show", &id]);
+    let out = read_memory_default_backend(&team.reader, &["show", &id]);
     assert!(
         stdout_of(&out).contains(MARKER),
         "memory show on the DEFAULT backend must surface the fetched note by id"
@@ -319,9 +317,9 @@ fn show_surfaces_fetched_teammate_note_on_default_path() {
 #[test]
 fn context_surfaces_fetched_teammate_note_on_default_path() {
     let team = setup_team();
-    one_note_reaches_reader(&team);
+    publish_and_fetch_note(&team);
 
-    let out = read_context(&team.reader);
+    let out = read_context_default_backend(&team.reader);
     assert!(
         stdout_of(&out).contains(MARKER),
         "context on the DEFAULT backend must surface the fetched teammate decision"
@@ -336,7 +334,7 @@ fn single_init_after_clone_imports_without_manual_refetch_reinit() {
 
     run_init(&team.reader);
 
-    let out = read_memory(&team.reader, &["list", "--local-only"]);
+    let out = read_memory_default_backend(&team.reader, &["list", "--local-only"]);
     assert!(
         stdout_of(&out).contains(MARKER),
         "a single init after clone must hydrate teammate memory (no fetch→reinit dance)"
@@ -347,10 +345,14 @@ fn single_init_after_clone_imports_without_manual_refetch_reinit() {
 fn read_skips_import_when_notes_ref_unchanged() {
     register_sqlite_vec();
     let team = setup_team();
-    one_note_reaches_reader(&team);
+    publish_and_fetch_note(&team);
 
     assert!(
-        stdout_of(&read_memory(&team.reader, &["list", "--local-only"])).contains(MARKER),
+        stdout_of(&read_memory_default_backend(
+            &team.reader,
+            &["list", "--local-only"]
+        ))
+        .contains(MARKER),
         "the first read must import the note"
     );
 
@@ -367,7 +369,7 @@ fn read_skips_import_when_notes_ref_unchanged() {
         assert_eq!(deleted, 1, "exactly the imported row must be removed");
     }
 
-    let out = read_memory(&team.reader, &["list", "--local-only"]);
+    let out = read_memory_default_backend(&team.reader, &["list", "--local-only"]);
     let stdout = stdout_of(&out);
     assert!(
         !stdout.contains(MARKER),
@@ -378,15 +380,21 @@ fn read_skips_import_when_notes_ref_unchanged() {
 #[test]
 fn read_imports_after_notes_ref_advances() {
     let team = setup_team();
-    one_note_reaches_reader(&team);
+    publish_and_fetch_note(&team);
 
-    assert!(stdout_of(&read_memory(&team.reader, &["list", "--local-only"])).contains(MARKER));
+    assert!(
+        stdout_of(&read_memory_default_backend(
+            &team.reader,
+            &["list", "--local-only"]
+        ))
+        .contains(MARKER)
+    );
 
     const SECOND: &str = "team-memory-second-entry-marker";
     publish_note(&team.author, SECOND, "a later teammate decision");
     git(&team.reader, &["fetch", "-q", "origin"]);
 
-    let out = read_memory(&team.reader, &["list", "--local-only"]);
+    let out = read_memory_default_backend(&team.reader, &["list", "--local-only"]);
     let stdout = stdout_of(&out);
     assert!(
         stdout.contains(SECOND),
@@ -418,7 +426,7 @@ fn read_path_import_does_no_network() {
     const THEIRS: &str = r#"{"schema_version":1,"id":1,"kind":"decision","title":"team-memory-no-network-marker","body":"b","tags":[],"linked_files":[],"created_at":100,"status":"active"}"#;
     add_note_on_ref(&repo, TRACKING_REF, THEIRS);
 
-    let out = read_memory(&repo, &["list", "--local-only"]);
+    let out = read_memory_default_backend(&repo, &["list", "--local-only"]);
     assert!(
         stdout_of(&out).contains("team-memory-no-network-marker"),
         "the read must surface the locally-fetched tracking-ref entry with no network"
@@ -428,9 +436,15 @@ fn read_path_import_does_no_network() {
 #[test]
 fn import_marker_persisted_in_memory_db_and_survives_reopen() {
     let team = setup_team();
-    one_note_reaches_reader(&team);
+    publish_and_fetch_note(&team);
 
-    assert!(stdout_of(&read_memory(&team.reader, &["list", "--local-only"])).contains(MARKER));
+    assert!(
+        stdout_of(&read_memory_default_backend(
+            &team.reader,
+            &["list", "--local-only"]
+        ))
+        .contains(MARKER)
+    );
 
     let memdb = mem_db(&team.reader);
     let read_marker = || -> Option<String> {
@@ -535,7 +549,7 @@ fn import_dedups_colliding_ids_across_two_authors() {
     );
     add_note_on_ref(&repo, TRACKING_REF, two_authors);
 
-    let out = read_memory(&repo, &["list", "--format", "jsonl", "--local-only"]);
+    let out = read_memory_default_backend(&repo, &["list", "--format", "jsonl", "--local-only"]);
     let stdout = stdout_of(&out);
     let count = stdout
         .lines()
@@ -583,7 +597,7 @@ fn no_git_repo_read_makes_no_import_attempt() {
         })
         .expect("spawn add");
 
-    let out = read_memory(dir, &["list", "--local-only"]);
+    let out = read_memory_default_backend(dir, &["list", "--local-only"]);
     let stdout = stdout_of(&out);
     assert!(
         stdout.contains("local-only-seed"),

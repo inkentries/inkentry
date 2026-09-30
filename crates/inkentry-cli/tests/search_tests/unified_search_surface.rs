@@ -990,7 +990,7 @@ fn graph_flag_appends_call_graph_neighbours_e2e() {
     );
 }
 
-fn memory_project(home: &Path, proj: &Path) {
+fn indexed_x_rs_project(home: &Path, proj: &Path) {
     std::fs::write(proj.join("x.rs"), "pub fn x() {}\n").unwrap();
     inkentry_bin_in(home)
         .env("INKENTRY_NO_SERVER", "1")
@@ -1037,7 +1037,7 @@ fn search_memory_stdout(home: &Path, proj: &Path, extra: &[&str]) -> String {
 fn as_of_filters_the_memory_corpus() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
-    memory_project(home.path(), proj.path());
+    indexed_x_rs_project(home.path(), proj.path());
     memory_add(
         home.path(),
         proj.path(),
@@ -1073,7 +1073,7 @@ fn as_of_filters_the_memory_corpus() {
 fn expand_graph_pulls_in_related_memory_neighbours() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
-    memory_project(home.path(), proj.path());
+    indexed_x_rs_project(home.path(), proj.path());
 
     let a = memory_add(
         home.path(),

@@ -112,7 +112,7 @@ fn second_identical_add_reuses_the_row_and_prints_already_recorded() {
     assert_eq!(
         row_count(&mem_db),
         1,
-        "criterion 26/30: a collision must reuse the existing row, not create a second one"
+        "a collision must reuse the existing row, not create a second one"
     );
 }
 
@@ -150,7 +150,7 @@ fn second_identical_add_merges_tags_into_the_existing_row() {
     assert_eq!(
         note_tags(&mem_db, &uuid),
         "alpha,beta",
-        "criterion 26: tags must union add-wins, neither dropped"
+        "tags must union add-wins, neither dropped"
     );
 }
 
@@ -183,12 +183,12 @@ fn second_identical_add_still_writes_through_to_git_notes_with_the_same_entity_i
     assert_eq!(
         ids.len(),
         2,
-        "criterion 34: the carrier must write on BOTH calls, reuse or not, \
+        "the carrier must write on BOTH calls, reuse or not, \
          got records: {ids:?}"
     );
     assert_eq!(
         ids[0], ids[1],
-        "criterion 34: both records must carry the SAME entity_id, the \
+        "both records must carry the SAME entity_id, the \
          reused row's, so a later reader can't see two different identities \
          for what SQLite considers a single entry"
     );

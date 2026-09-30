@@ -638,9 +638,9 @@ fn update_check_unimplemented_tripwire() {
     }
     assert!(
         hits.is_empty(),
-        "ADR-050 update-check code has landed ({hits:?}); replace this tripwire with real \
-         coverage of D2 (opt-out precedence: env > config > auto-detect), D3 (fires only when \
-         due, silent + non-blocking when offline), per the story acceptance criteria",
+        "update-check code has landed ({hits:?}); replace this tripwire with real coverage of \
+         opt-out precedence (env > config > auto-detect) and of firing only when due, silent \
+         and non-blocking when offline",
     );
 }
 

@@ -57,7 +57,7 @@ CLI wrote:
    that the responder is the daemon this CLI spawned, and on a loopback bind
    there is typically no key to check with (ADR-056). This is not a
    hypothetical weakness. An integration test
-   (`crates/inkentry-cli/tests/e2e_tests/adr037_p2_auto_start_scope.rs`) stands
+   (`crates/inkentry-cli/tests/e2e_tests/auto_start_scope.rs`) stands
    up an in-process `axum` router on an ephemeral port, writes that port into
    `server.port` with no pid file at all, and the CLI accepts it as the local
    relay. The mechanism the tests exploit deliberately is the same mechanism a
