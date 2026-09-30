@@ -1,7 +1,5 @@
-// Exit-code contract for the plumbing commands: 0 = results, 1 = empty set (not an error),
-// 2 = hard error with a stderr diagnostic and empty stdout.
-// hash-file, embed and publish-notes cannot reach 1 by construction; those are asserted as
-// deliberate exceptions.
+// hash-file, embed and publish-notes cannot reach EXIT_EMPTY by construction; those are asserted
+// as deliberate exceptions.
 
 mod plumbing_helpers;
 
@@ -15,8 +13,8 @@ use tempfile::TempDir;
 
 const FIXTURE_EMBEDDING_DIM: usize = 896;
 
-const EMPTY: i32 = 1;
-const HARD_ERROR: i32 = 2;
+const EXIT_EMPTY: i32 = 1;
+const EXIT_HARD_ERROR: i32 = 2;
 
 fn unindexed_project() -> (TempDir, PathBuf, PathBuf) {
     let tmp = TempDir::new().expect("create temp dir");
@@ -38,7 +36,7 @@ fn assert_exit(label: &str, output: &std::process::Output, expected: i32) {
 
 // Exit 2 leaves stdout empty so a JSON-piping consumer never sees a half-written record.
 fn assert_hard_error(label: &str, output: &std::process::Output) {
-    assert_exit(label, output, HARD_ERROR);
+    assert_exit(label, output, EXIT_HARD_ERROR);
     assert!(
         output.stdout.is_empty(),
         "{label}: exit 2 must leave stdout empty, got {:?}",
@@ -51,7 +49,7 @@ fn assert_hard_error(label: &str, output: &std::process::Output) {
 }
 
 fn assert_empty(label: &str, output: &std::process::Output) {
-    assert_exit(label, output, EMPTY);
+    assert_exit(label, output, EXIT_EMPTY);
     assert!(
         output.stdout.is_empty(),
         "{label}: exit 1 means no results, so stdout must be empty, got {:?}",
@@ -85,7 +83,7 @@ fn the_three_exit_codes_are_distinct_for_a_single_command() {
     ];
     assert_eq!(
         codes,
-        vec![Some(0), Some(EMPTY), Some(HARD_ERROR)],
+        vec![Some(0), Some(EXIT_EMPTY), Some(EXIT_HARD_ERROR)],
         "results, empty, and error must land on three different codes"
     );
     assert!(!results.stdout.is_empty(), "exit 0 carries the results");

@@ -368,7 +368,7 @@ fn memory_list_never_auto_starts_the_local_server() {
 
     assert!(
         !state_dir_under(&home).exists(),
-        "`memory list`'s relay poll (items 42-47) must never auto-start the local \
+        "`memory list`'s relay poll must never auto-start the local \
          server — it may only poll one that is already running: {}",
         state_dir_under(&home).display()
     );
