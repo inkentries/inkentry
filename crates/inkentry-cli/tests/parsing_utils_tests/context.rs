@@ -5,6 +5,26 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+fn seed_note(project: &Path, config: &Path, kind: &str, title: &str, body: &str) {
+    inkentry_bin()
+        // The git-notes carrier follows CWD, not `--db`.
+        .current_dir(project)
+        .arg("--config")
+        .arg(config)
+        .arg("memory")
+        .arg("--db")
+        .arg(project.join(".inkentry").join("memory.db"))
+        .arg("add")
+        .arg("--kind")
+        .arg(kind)
+        .arg("--title")
+        .arg(title)
+        .arg("--body")
+        .arg(body)
+        .assert()
+        .success();
+}
+
 fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -33,8 +53,6 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
 
     let mock_url = mock_server.uri();
     let config_path = write_config_for_context(tmp.path(), &db_path, &mock_url);
-
-    let mem_path = db_path.with_file_name("memory.db");
 
     let entries: &[(&str, &str, &str)] = &[
         (
@@ -90,24 +108,7 @@ fn setup_context_project() -> (TempDir, PathBuf, PathBuf) {
     ];
 
     for (kind, title, body) in entries {
-        inkentry_bin()
-            // The git-notes carrier follows the process CWD's repo and `--db` does not redirect it;
-            // seed from the temp project or the entries land in the repo under test.
-            .current_dir(tmp.path())
-            .arg("--config")
-            .arg(&config_path)
-            .arg("memory")
-            .arg("--db")
-            .arg(&mem_path)
-            .arg("add")
-            .arg("--kind")
-            .arg(kind)
-            .arg("--title")
-            .arg(title)
-            .arg("--body")
-            .arg(body)
-            .assert()
-            .success();
+        seed_note(tmp.path(), &config_path, kind, title, body);
     }
 
     (tmp, db_path, config_path)
@@ -143,8 +144,6 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
     let db_path = tmp.path().join(".inkentry").join("index.db");
     // No embed server: memory add stores without a vector, irrelevant to budget packing.
     let config_path = write_config_for_context(tmp.path(), &db_path, "http://127.0.0.1:19999");
-    let mem_path = db_path.with_file_name("memory.db");
-
     let body = "x".repeat(400);
     let entries: &[(&str, &str)] = &[
         ("handoff", "hnd0"),
@@ -157,23 +156,7 @@ fn setup_budget_project() -> (TempDir, PathBuf) {
         ("requirement", "req1"),
     ];
     for (kind, title) in entries {
-        inkentry_bin()
-            // The git-notes carrier follows process CWD, not `--db`.
-            .current_dir(tmp.path())
-            .arg("--config")
-            .arg(&config_path)
-            .arg("memory")
-            .arg("--db")
-            .arg(&mem_path)
-            .arg("add")
-            .arg("--kind")
-            .arg(kind)
-            .arg("--title")
-            .arg(title)
-            .arg("--body")
-            .arg(&body)
-            .assert()
-            .success();
+        seed_note(tmp.path(), &config_path, kind, title, &body);
     }
     (tmp, config_path)
 }

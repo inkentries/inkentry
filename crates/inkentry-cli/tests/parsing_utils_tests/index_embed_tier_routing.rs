@@ -5,7 +5,9 @@
 // surfaces as a connection/DNS failure rather than a silently passing test.
 
 use crate::plumbing_helpers;
-use plumbing_helpers::{FIXTURE_PROJECT_ID, inkentry_bin_in, mount_health, mount_index_embed};
+use plumbing_helpers::{
+    FIXTURE_PROJECT_ID, inkentry_bin_in, loopback_discovery_port, mount_health, mount_index_embed,
+};
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -39,18 +41,6 @@ fn write_server_config(project_dir: &Path, server_url: &str) {
     std::fs::create_dir_all(&inkentry_dir).expect("create .inkentry dir");
     let cfg = format!("server_url = {server_url:?}\nproject_id = {FIXTURE_PROJECT_ID:?}\n");
     std::fs::write(inkentry_dir.join("config.toml"), cfg).expect("write project config");
-}
-
-// Hands the fixed-port fallback (step 3b) the mock's port via INKENTRY_TEST_DISCOVERY_PORT.
-// Step 3a (`server.port`) needs a live inkentry-server pid and matching instance id, which a
-// wiremock stand-in cannot be; the state dir is still created and redirected.
-fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
-    std::fs::create_dir_all(state_dir).expect("create state dir");
-    url.rsplit(':')
-        .next()
-        .expect("uri has a port")
-        .trim_end_matches('/')
-        .to_string()
 }
 
 async fn mount_health_loading(server: &MockServer) {

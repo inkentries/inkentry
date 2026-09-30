@@ -2,6 +2,7 @@
 // Field presence and types only: a removal, rename or retype fails, an added field passes.
 
 mod plumbing_helpers;
+#[allow(dead_code)]
 mod schema_contract;
 
 use plumbing_helpers::{
