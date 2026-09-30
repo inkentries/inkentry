@@ -311,7 +311,7 @@ mod tests {
         let chunk_ids: Vec<i64> = missing_embedding_texts(&db)
             .unwrap()
             .into_iter()
-            .map(|(id, ..)| id)
+            .map(|p| p.chunk_id)
             .collect();
         for &id in &chunk_ids {
             db.insert_embedding(id, &[0.1f32; 896]).unwrap();

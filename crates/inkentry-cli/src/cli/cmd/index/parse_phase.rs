@@ -4,6 +4,7 @@ use indicatif::{MultiProgress, ProgressBar};
 
 use super::super::ui::{is_tty, progress_style, short_path};
 use super::IndexArgs;
+use super::embed_phase::PendingEmbedding;
 use super::graph_pass;
 #[cfg(feature = "rich-formats")]
 use crate::indexer::docparser::parse_doc;
@@ -153,7 +154,7 @@ pub(super) fn run_parse_phase(
     })
 }
 
-pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String, usize)>> {
+pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<PendingEmbedding>> {
     let mut out = Vec::new();
     for (chunk_id, name, metadata, summary, content, token_count) in
         db.chunks_missing_embeddings()?
@@ -161,7 +162,11 @@ pub(super) fn missing_embedding_texts(db: &Database) -> Result<Vec<(i64, String,
         let tokens = effective_token_count(token_count, &content);
         let text =
             reconstruct_embedding_text(name.as_deref(), metadata.as_deref(), summary, content);
-        out.push((chunk_id, text, tokens));
+        out.push(PendingEmbedding {
+            chunk_id,
+            embedding_text: text,
+            token_count: tokens,
+        });
     }
     Ok(out)
 }
@@ -699,7 +704,7 @@ mod tests {
             !queue_run1.is_empty(),
             "a parse-only run must leave chunks for the embed phase to pick up"
         );
-        let mut queued_run1: Vec<i64> = queue_run1.iter().map(|(id, ..)| *id).collect();
+        let mut queued_run1: Vec<i64> = queue_run1.iter().map(|p| p.chunk_id).collect();
         queued_run1.sort();
 
         let second =
@@ -715,7 +720,7 @@ mod tests {
         );
 
         // Identical ids prove no delete+reinsert, i.e. no reparse.
-        let mut backfilled: Vec<i64> = queue_run2.iter().map(|(id, ..)| *id).collect();
+        let mut backfilled: Vec<i64> = queue_run2.iter().map(|p| p.chunk_id).collect();
         backfilled.sort();
         assert_eq!(
             backfilled, queued_run1,
@@ -723,9 +728,9 @@ mod tests {
         );
 
         let mut texts_run1 = queue_run1.clone();
-        texts_run1.sort_by_key(|(id, ..)| *id);
+        texts_run1.sort_by_key(|p| p.chunk_id);
         let mut texts_run2 = queue_run2.clone();
-        texts_run2.sort_by_key(|(id, ..)| *id);
+        texts_run2.sort_by_key(|p| p.chunk_id);
         assert_eq!(
             texts_run2, texts_run1,
             "reconstructed embedding text must be byte-identical across runs"
@@ -833,7 +838,7 @@ mod tests {
 
         let missing = missing_embedding_texts(&db).expect("missing_embedding_texts");
 
-        let got_ids: Vec<i64> = missing.iter().map(|(id, ..)| *id).collect();
+        let got_ids: Vec<i64> = missing.iter().map(|p| p.chunk_id).collect();
         assert_eq!(
             got_ids,
             vec![ids[0].0, ids[2].0],
@@ -844,10 +849,11 @@ mod tests {
             "the already-embedded chunk must not be re-queued"
         );
 
-        for (queued_id, queued_text, _) in &missing {
+        for queued in &missing {
+            let queued_id = &queued.chunk_id;
             let (_, chunk) = ids.iter().find(|(id, _)| id == queued_id).unwrap();
             assert_eq!(
-                queued_text,
+                &queued.embedding_text,
                 &chunk.embedding_text(),
                 "queued text must match Chunk::embedding_text for chunk {queued_id}"
             );
@@ -959,7 +965,7 @@ mod tests {
         let queued: Vec<String> = missing_embedding_texts(&db)
             .unwrap()
             .into_iter()
-            .map(|(_, text, _)| text)
+            .map(|p| p.embedding_text)
             .collect();
         assert_eq!(queued.len(), 1, "{queued:#?}");
         assert!(queued[0].starts_with("title: parse |"), "{queued:#?}");
@@ -989,7 +995,7 @@ mod tests {
         let queue_ids: Vec<i64> = missing_embedding_texts(&db)
             .expect("queue")
             .iter()
-            .map(|(id, ..)| *id)
+            .map(|p| p.chunk_id)
             .collect();
         let newer_ids: Vec<i64> = db
             .chunks_for_file("newer.rs")
