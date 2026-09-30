@@ -17,6 +17,15 @@ pub enum HooksCommand {
     Install(HooksInstallArgs),
     /// Remove every git hook inkentry installed
     Uninstall,
+    /// Handle a coding agent's hook event (JSON on stdin); never fails or prints errors
+    Agent(HooksAgentArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HooksAgentArgs {
+    /// The hook event to handle
+    #[arg(value_enum)]
+    pub event: super::agent_hooks::AgentEvent,
 }
 
 #[derive(Args, Debug)]
@@ -34,6 +43,8 @@ pub async fn hooks(args: HooksArgs, cfg: Config) -> Result<()> {
     match args.command {
         HooksCommand::Install(a) => hooks_install(a, &cfg).await,
         HooksCommand::Uninstall => hooks_uninstall(),
+        // Run from `main` before config loads: a bad config must not make a hook fail.
+        HooksCommand::Agent(_) => Ok(()),
     }
 }
 

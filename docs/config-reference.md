@@ -558,6 +558,11 @@ would silently corrupt the automation metrics they exist to produce.
 | `INKENTRY_TOOL` | Free text naming the calling tool (e.g. `claude-code`), carried onto an entry's `origin.tool`. |
 | `INKENTRY_MODEL` | Free text naming the model in use, carried onto an entry's `origin.model`. |
 
+[`inkentry hooks agent`](commands.md#hooks-agent) ignores these for its own
+work and declares itself `hook`/`agent` under the agent's session id. Its
+`session-start` event writes the `explicit`/`agent` declaration for the agent's
+own commands to the file the agent names in `CLAUDE_ENV_FILE`.
+
 ---
 
 ## What's next

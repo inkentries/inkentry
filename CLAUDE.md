@@ -83,7 +83,8 @@ config/
   mod.rs         — Config struct; load from ~/.config/inkentry/config.toml
   caller.rs      — ADR-098 D5/D6: CallerDeclaration (Trigger, ActorKind), read once
                    from INKENTRY_TRIGGER/ACTOR/SESSION_REF/TOOL/MODEL at Config::load
-                   into Config::caller; session_ref is hashed here, never kept raw
+                   into Config::caller; session_ref is hashed here, never kept raw.
+                   `agent_hook` builds the declaration `hooks agent` forces on itself
   sync_mode.rs   — SyncMode enum: offline / local_first / cloud_first mode selection
   project_id.rs  — project-id derivation from git remote / local fallback
   paths.rs       — config-dir + project/db discovery
@@ -323,7 +324,9 @@ cli/
                    (ADR-071 D3) — that is `inkentry auth remove-key`
     org.rs       — `inkentry org list/switch`: re-scopes the session to another
                    cached organisation without a new device login
-    context.rs   — `inkentry context` handler (agent session entry point)
+    context.rs   — `inkentry context` handler (agent session entry point); selection
+                   (`build_view`) and text rendering are separate so the
+                   session-start agent hook reuses them
     daemon_llm.rs — LlmSpawn: resolves the spawned daemon's LLM url/model/credential and
                    splits them across argv (url, model) and the child environment (all
                    three, pinned so nothing is left to inheritance)
@@ -337,7 +340,21 @@ cli/
                    git history + session logs). Shares its implementation and
                    memory-store resolution with the deprecated `memory harvest`
     helpers.rs   — shared output / progress helpers
-    hooks.rs     — `inkentry hooks` handler
+    hooks.rs     — `inkentry hooks` handler (git hooks; `hooks agent` is
+                   dispatched from main.rs before config loads)
+    agent_hooks/
+      mod.rs         — `inkentry hooks agent <event>`: reads the agent's hook JSON on
+                       stdin, prints at most one JSON object, always exits 0 and never
+                       writes to stderr. Forces the hook caller declaration, finds the
+                       project from the input's cwd, and handles session-start /
+                       pre-edit / post-commit / stop
+      commit_detect.rs — whether a shell command line ran `git commit`
+                       (quote-aware split at control operators, git global options)
+      marker.rs      — per-session working state file under the state dir's
+                       `agent-sessions/`, named by the hashed session ref
+      pathing.rs     — the agent's file path to the repository-relative form
+                       `memory add --files` stores
+      render.rs      — the additionalContext texts, the stop prompt and the JSON shapes
     init.rs      — `inkentry init` handler
     link.rs      — `inkentry link/unlink/autoclean` handlers
     links.rs     — `inkentry links` handler

@@ -263,6 +263,48 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
     Ok(())
 }
 
+// The session-start agent hook's read: `context --format text` at `budget`
+// tokens, without the tokens-used footer, ANSI codes or any of the command's
+// side effects (notes-ref merge, relay poll, stderr notices) and without
+// touching a remote store. `None` when nothing was selected, or on any error.
+pub(crate) async fn session_start_text(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    budget: usize,
+) -> Option<String> {
+    let started = std::time::Instant::now();
+    let args = ContextArgs {
+        db: None,
+        index_db: None,
+        backend: "sqlite".to_string(),
+        kind: None,
+        limit: None,
+        budget: Some(budget),
+        path: None,
+        tag: None,
+        file: None,
+        format: "text".to_string(),
+        no_conventions: false,
+        local_only: false,
+    };
+    let backend = open_memory_backend(cfg, mem_path, None).await.ok()?;
+    let view = build_view(&*backend, &args, cfg).await.ok()?;
+    let text = crate::utils::strip_ansi(&render_text(&view));
+    events::record(EventArgs {
+        cfg,
+        mem_path,
+        backend_override: None,
+        command: "context",
+        code_results: None,
+        memory_results: Some(view.returned_ids.len() as i64),
+        returned_ids: &view.returned_ids,
+        tokens_out: Some(view.tokens_out),
+        started,
+        ok: true,
+    });
+    (!text.trim().is_empty()).then_some(text)
+}
+
 async fn build_view(
     backend: &dyn crate::storage::MemoryBackend,
     args: &ContextArgs,

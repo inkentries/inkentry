@@ -9,6 +9,20 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`inkentry hooks agent <event>` runs a coding agent's hook events.**
+  `session-start` injects the `context` view (2500-token budget) and, through
+  `CLAUDE_ENV_FILE`, declares the agent's own commands as `explicit`/`agent`
+  under the session's ref; `pre-edit` shows the entries linked to a file the
+  first time the session edits it; `post-commit` anchors entries to a commit the
+  agent just made (`memory anchor --commit HEAD`) without a git hook installed;
+  `stop` asks once, after an edit or commit, for anything worth recording. It
+  reads the hook JSON on stdin, always exits `0`, and prints nothing (stdout or
+  stderr) on any error, outside a project or with no memory store. It never
+  starts the server, embeds or uses the network. Its reads are recorded as
+  `trigger = hook`, `actor = agent`.
+
 ## [1.2.0] — 2026-10-05
 
 **Upgrading: optionally run `inkentry index --force` once in each indexed

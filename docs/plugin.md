@@ -18,6 +18,13 @@ supported alongside the standard rather than through it:
 /plugin install inkentry@inkentry
 ```
 
+The plugin also registers Claude Code hooks (session start, before an edit,
+after a Bash command, and on stop). Each is a one-line call to
+[`inkentry hooks agent`](commands.md#hooks-agent), so context is injected and
+commits are anchored without the agent having to remember to run a command.
+They need only the `inkentry` binary, and print nothing when the directory is
+not an inkentry project.
+
 ## Other agents
 
 Agent Plugins 1.0.0 defines the package, not the delivery: distribution and
