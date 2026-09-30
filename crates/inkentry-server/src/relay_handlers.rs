@@ -4,7 +4,7 @@
 //! intended caller, and [`crate::relay::RelayRegistry::for_bind`] means a
 //! daemon on a non-loopback address does not serve them at all.
 //!
-//! They sit behind the same [`crate::auth_middleware`] as every other route,
+//! They sit behind the same `auth_middleware` as every other route,
 //! but that parity is not what makes them safe. On the common auto-spawned,
 //! unauthenticated, loopback-bound daemon the middleware admits everyone, and
 //! unlike its neighbours this surface makes the daemon open outbound
