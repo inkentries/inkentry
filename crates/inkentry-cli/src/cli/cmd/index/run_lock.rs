@@ -8,9 +8,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 const LOCK_FILE_NAME: &str = "index.lock";
-// Never locked: Windows `LockFileEx` denies reads of a locked file from a
-// second handle, so the pid cannot live in the lock file itself.
-const LOCK_PID_FILE_NAME: &str = "index.lock.pid";
+// Windows `LockFileEx` blocks a second handle from reading the locked file, so the pid lives here.
+const UNLOCKED_HOLDER_PID_FILE_NAME: &str = "index.lock.pid";
 
 // Dropping closes the fd and releases the lock, so a killed holder leaves no
 // stale lock to clean up.
@@ -40,12 +39,12 @@ pub fn try_acquire(inkentry_dir: &Path) -> Result<LockOutcome> {
 
     match file.try_lock() {
         Ok(()) => {
-            let pid_path = inkentry_dir.join(LOCK_PID_FILE_NAME);
+            let pid_path = inkentry_dir.join(UNLOCKED_HOLDER_PID_FILE_NAME);
             std::fs::write(&pid_path, std::process::id().to_string()).ok();
             Ok(LockOutcome::Acquired(IndexRunLock { _file: file }))
         }
         Err(TryLockError::WouldBlock) => {
-            let pid_path = inkentry_dir.join(LOCK_PID_FILE_NAME);
+            let pid_path = inkentry_dir.join(UNLOCKED_HOLDER_PID_FILE_NAME);
             let holder_pid = std::fs::read_to_string(&pid_path)
                 .ok()
                 .and_then(|s| s.trim().parse().ok());
@@ -56,7 +55,7 @@ pub fn try_acquire(inkentry_dir: &Path) -> Result<LockOutcome> {
 }
 
 fn read_recorded_pid(inkentry_dir: &Path) -> Option<u32> {
-    std::fs::read_to_string(inkentry_dir.join(LOCK_PID_FILE_NAME))
+    std::fs::read_to_string(inkentry_dir.join(UNLOCKED_HOLDER_PID_FILE_NAME))
         .ok()
         .and_then(|s| s.trim().parse().ok())
 }

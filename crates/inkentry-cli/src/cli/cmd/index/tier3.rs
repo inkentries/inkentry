@@ -5,6 +5,7 @@ use inkentry_core::indexer::mmr::{self, MMR_LAMBDA};
 use inkentry_core::indexer::summariser::SUMMARY_TOKEN_CAP;
 use inkentry_core::search::tokens::estimate_tokens;
 
+use super::summaries::{SUPPRESSED_SUMMARY, UNREFINABLE_SUMMARY};
 use crate::config::Config;
 use crate::server_client::ServerInferenceClient;
 use crate::storage::Database;
@@ -27,8 +28,7 @@ pub(super) async fn run_tier3_selection(cfg: &Config, db: &Database) -> Result<u
         };
         let units = mmr::split_into_units(&content, &kind_from_node_type(&node_type));
         if units.len() < 2 {
-            // `""` so the chunk is not retried.
-            db.update_chunk_summary(id, "")?;
+            db.update_chunk_summary(id, UNREFINABLE_SUMMARY)?;
             continue;
         }
 
@@ -45,7 +45,7 @@ pub(super) async fn run_tier3_selection(cfg: &Config, db: &Database) -> Result<u
                     "suppressing tier-3 summary for chunk {id} (possible secret detected)"
                 );
             }
-            db.update_chunk_summary(id, "")?;
+            db.update_chunk_summary(id, SUPPRESSED_SUMMARY)?;
             continue;
         }
         db.set_summary_and_mark_pending(id, &summary)?;
