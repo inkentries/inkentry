@@ -43,6 +43,8 @@ pub fn note_entity_id(n: &Note) -> String {
 /// A display width only; nothing stored depends on it.
 pub const ENTITY_ID_HANDLE_LEN: usize = 12;
 
+const SHA256_HEX_LEN: usize = 64;
+
 /// The shortest prefix looked up as an `entity_id`.
 ///
 /// A shorter token is never tried as a handle, because an accidental match
@@ -60,7 +62,7 @@ pub fn entity_id_handle(entity_id: &str) -> &str {
 /// `entity_id` is lowercase hex, and a UUIDv7 carries hyphens, so the two id
 /// forms can never claim the same token.
 pub fn is_entity_id_lookup(token: &str) -> bool {
-    (ENTITY_ID_MIN_PREFIX_LEN..=64).contains(&token.len())
+    (ENTITY_ID_MIN_PREFIX_LEN..=SHA256_HEX_LEN).contains(&token.len())
         && token
             .chars()
             .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))

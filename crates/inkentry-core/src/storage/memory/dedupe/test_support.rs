@@ -105,7 +105,6 @@ pub(super) fn full_db_snapshot(
     )
 }
 
-// Expected `Note::superseded_by` for a store-minted id.
-pub(super) fn sup(id: &NoteId) -> Option<NoteId> {
+pub(super) fn expect_superseded_by(id: &NoteId) -> Option<NoteId> {
     Some(id.clone())
 }

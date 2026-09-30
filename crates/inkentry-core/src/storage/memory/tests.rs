@@ -33,8 +33,7 @@ fn count_edges(store: &MemoryStore, from_id: &NoteId, to_id: &NoteId, kind: &str
         .unwrap_or(0)
 }
 
-// Expected `Note::superseded_by` for a store-minted id.
-fn sup(id: &NoteId) -> Option<NoteId> {
+fn expect_superseded_by(id: &NoteId) -> Option<NoteId> {
     Some(id.clone())
 }
 
@@ -102,7 +101,7 @@ fn supersede_happy_path() {
 
     let old_note = store.get(&old_id).unwrap().expect("old note must exist");
     assert_eq!(old_note.status, "archived");
-    assert_eq!(old_note.superseded_by, sup(&new_id));
+    assert_eq!(old_note.superseded_by, expect_superseded_by(&new_id));
 
     assert_eq!(
         count_edges(&store, &new_id, &old_id, "supersedes"),
@@ -164,7 +163,7 @@ fn add_note_superseding_happy_path_archives_old_and_links_new() {
 
     let old_note = store.get(&old_id).unwrap().expect("old note must exist");
     assert_eq!(old_note.status, "archived");
-    assert_eq!(old_note.superseded_by, sup(&new_id));
+    assert_eq!(old_note.superseded_by, expect_superseded_by(&new_id));
 
     assert_eq!(
         count_edges(&store, &new_id, &old_id, "supersedes"),
@@ -205,7 +204,7 @@ fn add_note_superseding_rejects_already_archived_old_and_writes_nothing() {
     let old_note = store.get(&old_id).unwrap().expect("old note must exist");
     assert_eq!(
         old_note.superseded_by,
-        sup(&successor_a),
+        expect_superseded_by(&successor_a),
         "OLD's successor link must still point at the first, not the rejected second, successor"
     );
 

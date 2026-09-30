@@ -2,7 +2,7 @@
 // groups: adoption self-loop/dangling guards, deletion-order safety, and
 // cross-group reference resolution.
 
-use super::test_support::{note_count, open_store, sup};
+use super::test_support::{expect_superseded_by, note_count, open_store};
 use super::*;
 
 // A loser's superseded_by pointing at the survivor itself must not be
@@ -24,11 +24,9 @@ fn adoption_must_not_selfloop_when_a_loser_points_at_the_survivor() {
     let note = store.get(&survivor).unwrap().unwrap();
     assert_ne!(
         note.superseded_by,
-        sup(&survivor),
-        "BUG: the survivor's superseded_by must never be adopted as its \
-         own id, that is a self-loop. The adoption step at dedupe.rs's \
-         `first_non_null` handling has no self-edge guard, unlike the \
-         rewrite loop just below it (AC19)."
+        expect_superseded_by(&survivor),
+        "the survivor's superseded_by must never be adopted as its own id: \
+         `resolve` drops a candidate that resolves to the group's survivor"
     );
 }
 
@@ -105,15 +103,10 @@ fn adoption_survivor_own_in_group_pointer_does_not_clobber_fallthrough_adoption(
     let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(&external),
-        "BUG: the survivor's own pre-existing in-group pointer (at loser_x) \
-         should be filtered out of adoption and fall through to loser_y's \
-         genuinely-external value, same as any other in-group candidate. \
-         Instead the rewrite loop (computed from notes_pointing_at(loser_x), \
-         which still shows the ORIGINAL survivor->loser_x edge) independently \
-         rediscovers survivor as a 'self-edge' dependent of loser_x and clears \
-         it to NULL *after* the adoption write already set the correct \
-         external value, silently discarding a valid adopted candidate."
+        expect_superseded_by(&external),
+        "the survivor's in-group pointer (at loser_x) is dropped by `resolve`, so \
+         loser_y's external value is adopted, and `rewrite_cross_references` \
+         (which skips survivors) must not clear it afterwards"
     );
 }
 
@@ -150,7 +143,7 @@ fn fallthrough_adoption_skips_intragroup_dangling_candidate_and_adopts_later_ext
     let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(&external),
+        expect_superseded_by(&external),
         "the intra-group-dangling candidate from loser_a must be skipped \
          and the later, genuinely-external candidate from loser_c adopted"
     );
@@ -293,7 +286,7 @@ fn four_note_group_with_mixed_intragroup_and_external_pointers_resolves_determin
     let note = store.get(&survivor).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(&external_a),
+        expect_superseded_by(&external_a),
         "the earliest-created external candidate (from loser2) must win, \
          with loser1's in-group chain to loser2 correctly excluded"
     );
@@ -327,7 +320,7 @@ fn four_note_group_with_mixed_intragroup_and_external_pointers_resolves_determin
     let note2 = store2.get(&survivor2).unwrap().unwrap();
     assert_eq!(
         note2.superseded_by,
-        sup(&external_a2),
+        expect_superseded_by(&external_a2),
         "the resolution must be deterministic across independent runs \
          on an equivalent input shape, not HashMap-iteration-order- \
          dependent"
@@ -376,7 +369,7 @@ fn external_row_that_is_itself_a_duplicate_in_a_different_group_is_resolved_corr
         let sb = store.get(&survivor_b).unwrap().unwrap();
         assert_eq!(
             sb.superseded_by,
-            sup(&survivor_a),
+            expect_superseded_by(&survivor_a),
             "survivor_b must end up pointing at survivor_a (the row \
              loser_a was merged into), not the deleted loser_a, and not \
              be left dangling"
@@ -425,14 +418,14 @@ fn chained_cross_group_reference_resolves_one_hop_not_to_intermediate_loser() {
     let a = store.get(&survivor_a).unwrap().unwrap();
     assert_eq!(
         a.superseded_by,
-        sup(&survivor_b),
+        expect_superseded_by(&survivor_b),
         "A's edge to B's loser must resolve to B's survivor id directly, \
          not the raw (now-deleted) loser_b id"
     );
     let b = store.get(&survivor_b).unwrap().unwrap();
     assert_eq!(
         b.superseded_by,
-        sup(&survivor_c),
+        expect_superseded_by(&survivor_c),
         "B's own edge to C's loser must resolve to C's survivor \
          independently of A's edge into B"
     );
@@ -484,7 +477,7 @@ fn ordinary_note_outside_every_group_pointing_at_a_loser_is_rewritten_and_counte
     let note = store.get(&ordinary).unwrap().unwrap();
     assert_eq!(
         note.superseded_by,
-        sup(&survivor_b),
+        expect_superseded_by(&survivor_b),
         "BUG CHECK: an ordinary note with no group membership at all must \
          still be rewritten by rewrite_cross_references; note_group_of.get \
          returning None for this row must not be mistaken for group \
@@ -565,20 +558,20 @@ fn three_group_reference_cycle_resolves_identically_under_two_processing_orders(
     let a1 = store1.get(&survivor_a1).unwrap().unwrap();
     let b1 = store1.get(&survivor_b1).unwrap().unwrap();
     let c1 = store1.get(&survivor_c1).unwrap().unwrap();
-    assert_eq!(a1.superseded_by, sup(&survivor_b1));
-    assert_eq!(b1.superseded_by, sup(&survivor_c1));
-    assert_eq!(c1.superseded_by, sup(&survivor_a1));
+    assert_eq!(a1.superseded_by, expect_superseded_by(&survivor_b1));
+    assert_eq!(b1.superseded_by, expect_superseded_by(&survivor_c1));
+    assert_eq!(c1.superseded_by, expect_superseded_by(&survivor_a1));
 
     let a2 = store2.get(&survivor_a2).unwrap().unwrap();
     let b2 = store2.get(&survivor_b2).unwrap().unwrap();
     let c2 = store2.get(&survivor_c2).unwrap().unwrap();
     assert_eq!(
         a2.superseded_by,
-        sup(&survivor_b2),
+        expect_superseded_by(&survivor_b2),
         "identical relational outcome under the C, A, B physical/vector order"
     );
-    assert_eq!(b2.superseded_by, sup(&survivor_c2));
-    assert_eq!(c2.superseded_by, sup(&survivor_a2));
+    assert_eq!(b2.superseded_by, expect_superseded_by(&survivor_c2));
+    assert_eq!(c2.superseded_by, expect_superseded_by(&survivor_a2));
 }
 
 // A multi-group scenario with a same-group chain (loser_a1 -> loser_a2), a
@@ -638,13 +631,13 @@ fn hand_derived_summary_counts_match_multi_group_scenario_exactly() {
     // Cross-check the actual field values agree with the hand-derived
     // counts, not just the counts in isolation.
     let a = store.get(&survivor_a).unwrap().unwrap();
-    assert_eq!(a.superseded_by, sup(&survivor_c));
+    assert_eq!(a.superseded_by, expect_superseded_by(&survivor_c));
     let b = store.get(&survivor_b).unwrap().unwrap();
     assert_eq!(b.superseded_by, None);
     let c = store.get(&survivor_c).unwrap().unwrap();
     assert_eq!(c.superseded_by, None);
     let o = store.get(&ordinary).unwrap().unwrap();
-    assert_eq!(o.superseded_by, sup(&survivor_b));
+    assert_eq!(o.superseded_by, expect_superseded_by(&survivor_b));
     assert_eq!(note_count(&store), 4, "8 - 4 collapsed = 4 remaining rows");
 }
 
@@ -751,8 +744,14 @@ fn duplicate_group_built_via_add_note_superseding_repoints_old_rows_to_survivor(
 
     // Precondition: each OLD row now points at its own distinct
     // successor - new1 and new2, which are themselves a duplicate group.
-    assert_eq!(store.get(&old1).unwrap().unwrap().superseded_by, sup(&new1));
-    assert_eq!(store.get(&old2).unwrap().unwrap().superseded_by, sup(&new2));
+    assert_eq!(
+        store.get(&old1).unwrap().unwrap().superseded_by,
+        expect_superseded_by(&new1)
+    );
+    assert_eq!(
+        store.get(&old2).unwrap().unwrap().superseded_by,
+        expect_superseded_by(&new2)
+    );
 
     let summary = store.dedupe_entity_ids(false).unwrap();
     assert_eq!(summary.duplicate_groups, 1, "new1/new2 form one group");
@@ -768,13 +767,13 @@ fn duplicate_group_built_via_add_note_superseding_repoints_old_rows_to_survivor(
     // than a plain add_note/set_superseded_by call.
     assert_eq!(
         store.get(&old2).unwrap().unwrap().superseded_by,
-        sup(&new1),
+        expect_superseded_by(&new1),
         "old2's supersede edge, created by add_note_superseding, must be \
          repointed off the deleted duplicate onto the survivor"
     );
     assert_eq!(
         store.get(&old1).unwrap().unwrap().superseded_by,
-        sup(&new1),
+        expect_superseded_by(&new1),
         "old1's own edge already pointed at the survivor and must be \
          unaffected"
     );
@@ -843,7 +842,7 @@ fn row_with_a_stale_stored_entity_id_is_still_collapsed_by_dedupe() {
     );
     assert_eq!(
         store.get(&pointer_id).unwrap().unwrap().superseded_by,
-        sup(&existing_id),
+        expect_superseded_by(&existing_id),
         "pointer_id's edge to the now-deleted stray row must be \
          repointed to the survivor"
     );

@@ -159,9 +159,6 @@ impl Database {
 
     /// Fetches full `SearchResult` rows for a list of chunk IDs.
     pub fn chunks_by_ids(&self, ids: &[i64]) -> Result<Vec<crate::search::SearchResult>> {
-        if ids.is_empty() {
-            return Ok(vec![]);
-        }
         let mut out = Vec::new();
         for chunk in ids.chunks(super::sql::SQLITE_MAX_BIND) {
             let ph = super::sql::placeholders(chunk.len());
