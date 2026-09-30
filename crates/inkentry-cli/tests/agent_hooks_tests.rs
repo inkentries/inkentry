@@ -57,7 +57,9 @@ impl Fixture {
     // `memory.db` appears with the first write.
     fn new() -> Self {
         let root = TempDir::new().unwrap();
-        let base = root.path().canonicalize().unwrap();
+        // Not `Path::canonicalize`: on Windows it returns a `\\?\`-prefixed
+        // path, which `git worktree add` rejects and no agent ever sends.
+        let base = inkentry_core::utils::canonicalize(root.path());
         let home = base.join("home");
         let state = base.join("state");
         let repo = base.join("repo");
@@ -542,7 +544,7 @@ fn pre_edit_finds_entries_from_inside_a_linked_worktree() {
             &worktree.to_string_lossy(),
         ],
     );
-    let worktree = worktree.canonicalize().unwrap();
+    let worktree = inkentry_core::utils::canonicalize(&worktree);
 
     let input = json!({
         "session_id": SESSION,
