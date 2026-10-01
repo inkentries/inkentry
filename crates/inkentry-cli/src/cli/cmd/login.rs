@@ -103,16 +103,9 @@ pub async fn login(args: LoginArgs) -> Result<()> {
                 interval_secs *= 2;
                 consecutive_errors = 0;
             }
-            PollOutcome::Challenge(url) => {
+            PollOutcome::Challenge => {
                 if !challenge_announced {
-                    match url {
-                        Some(u) => eprintln!(
-                            "\nAdditional verification required — complete it in your browser:\n  {u}"
-                        ),
-                        None => eprintln!(
-                            "\nAdditional verification required — complete it in your browser."
-                        ),
-                    }
+                    eprintln!("\nAdditional verification required — complete it in your browser.");
                     challenge_announced = true;
                 }
                 consecutive_errors = 0;

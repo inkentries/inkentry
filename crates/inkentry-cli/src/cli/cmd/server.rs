@@ -654,11 +654,12 @@ pub(super) fn build_daemon_args(db: &Path, port: u16, llm: &LlmSpawn) -> Vec<std
 // `INKENTRY_LLM_URL`/`INKENTRY_LLM_MODEL` through clap `env`, so anything left
 // inherited is a value this process already decided against.
 fn apply_llm_child_env(cmd: &mut std::process::Command, llm: &LlmSpawn) {
-    for (name, value) in llm.child_env() {
-        match value {
-            Some(v) => cmd.env(name, v),
-            None => cmd.env_remove(name),
-        };
+    let env = llm.child_env();
+    for (name, value) in env.set {
+        cmd.env(name, value);
+    }
+    for name in env.unset {
+        cmd.env_remove(name);
     }
 }
 

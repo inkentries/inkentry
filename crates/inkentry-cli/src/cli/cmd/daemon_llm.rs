@@ -52,14 +52,12 @@ impl LlmSpawn {
         Self::resolve_with_store(cfg, url_override, model_override, store.as_ref())
     }
 
-    // A model without an endpoint is not a configuration. `args` and `child_env`
-    // both read through here so they cannot disagree.
-    fn endpoint(&self) -> Option<(&str, Option<&str>)> {
+    fn endpoint_with_optional_model(&self) -> Option<(&str, Option<&str>)> {
         Some((self.url.as_deref()?, self.model.as_deref()))
     }
 
     pub(super) fn args(&self) -> Vec<OsString> {
-        let Some((url, model)) = self.endpoint() else {
+        let Some((url, model)) = self.endpoint_with_optional_model() else {
             return Vec::new();
         };
         let mut args: Vec<OsString> = vec!["--llm-url".into(), url.into()];
@@ -70,20 +68,34 @@ impl LlmSpawn {
         args
     }
 
-    // `None` means unset on the child. Every variable is named on every spawn:
-    // the server's `--llm-url`/`--llm-model` read these via clap `env`, so an
-    // inherited value we resolved away (e.g. an exported empty
-    // `INKENTRY_LLM_URL`) would otherwise reach the daemon.
-    pub(super) fn child_env(&self) -> Vec<(&'static str, Option<String>)> {
-        let (url, model) = match self.endpoint() {
-            Some((url, model)) => (Some(url.to_string()), model.map(str::to_string)),
+    // Every variable is named on every spawn: the server's `--llm-url`/`--llm-model`
+    // read these via clap `env`, so an inherited value we resolved away (e.g. an
+    // exported empty `INKENTRY_LLM_URL`) would otherwise reach the daemon.
+    pub(super) fn child_env(&self) -> ChildEnv {
+        let (url, model) = match self.endpoint_with_optional_model() {
+            Some((url, model)) => (Some(url), model),
             None => (None, None),
         };
-        vec![
-            (llm_key::ENV_LLM_URL, url),
-            (llm_key::ENV_LLM_MODEL, model),
-            (llm_key::ENV_LLM_KEY, self.key.clone()),
-        ]
+        let mut env = ChildEnv::default();
+        env.assign(llm_key::ENV_LLM_URL, url);
+        env.assign(llm_key::ENV_LLM_MODEL, model);
+        env.assign(llm_key::ENV_LLM_KEY, self.key.as_deref());
+        env
+    }
+}
+
+#[derive(Default)]
+pub(super) struct ChildEnv {
+    pub set: Vec<(&'static str, String)>,
+    pub unset: Vec<&'static str>,
+}
+
+impl ChildEnv {
+    fn assign(&mut self, name: &'static str, value: Option<&str>) {
+        match value {
+            Some(v) => self.set.push((name, v.to_string())),
+            None => self.unset.push(name),
+        }
     }
 }
 
@@ -116,18 +128,14 @@ mod tests {
 
     fn env_entry(spawn: &LlmSpawn, name: &str) -> Option<String> {
         let env = spawn.child_env();
-        let found = env.iter().find(|(n, _)| *n == name);
-        assert!(
-            found.is_some(),
-            "{name} must be named on every spawn, or the child inherits it: {:?}",
-            env.iter().map(|(n, _)| *n).collect::<Vec<_>>()
-        );
+        let set: Vec<_> = env.set.iter().filter(|(n, _)| *n == name).collect();
+        let unset = env.unset.iter().filter(|n| **n == name).count();
         assert_eq!(
-            env.iter().filter(|(n, _)| *n == name).count(),
+            set.len() + unset,
             1,
-            "{name} must be named exactly once"
+            "{name} must be named exactly once, or the child inherits it"
         );
-        found.unwrap().1.clone()
+        set.first().map(|(_, v)| v.clone())
     }
 
     #[test]

@@ -26,12 +26,26 @@ pub(crate) fn open_project_db(
     Ok((db_path, database))
 }
 
-// Version 0 predates `user_version` stamping, so there is no number to print.
-pub(crate) fn replaced_schema(found: i32) -> String {
-    if found == 0 {
-        "an older, unstamped schema".to_string()
-    } else {
-        format!("schema version {found}")
+pub(crate) enum SchemaLabel {
+    Unstamped,
+    Version(i32),
+}
+
+impl SchemaLabel {
+    pub(crate) fn of(found: i32) -> Self {
+        match found {
+            0 => Self::Unstamped,
+            n => Self::Version(n),
+        }
+    }
+}
+
+impl std::fmt::Display for SchemaLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unstamped => f.write_str("an older, unstamped schema"),
+            Self::Version(n) => write!(f, "schema version {n}"),
+        }
     }
 }
 
@@ -45,7 +59,7 @@ pub(crate) fn announce_index_rebuild(db: &Database) {
         "notice: this index was written by {} and cannot be read by this build, so it was \
          rebuilt empty (recorded usage history was kept). Run `inkentry index .` to \
          repopulate it.",
-        replaced_schema(found)
+        SchemaLabel::of(found)
     );
 }
 

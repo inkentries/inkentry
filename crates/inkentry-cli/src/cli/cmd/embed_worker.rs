@@ -68,10 +68,8 @@ pub(super) enum WorkerLiveness {
     NotRunning,
 }
 
-// A pid can be recycled by an unrelated process after a crash, so liveness alone
-// must not read as a running embed.
-fn classify_worker_pid(alive: bool, looks_like_worker: bool) -> WorkerLiveness {
-    if alive && looks_like_worker {
+fn worker_liveness_from(pid_alive: bool, command_matches_index_run: bool) -> WorkerLiveness {
+    if pid_alive && command_matches_index_run {
         WorkerLiveness::Alive
     } else {
         WorkerLiveness::NotRunning
@@ -156,7 +154,7 @@ pub(super) fn worker_liveness(db_path: &Path) -> WorkerLiveness {
     else {
         return WorkerLiveness::NotRunning;
     };
-    match classify_worker_pid(pid_is_alive(pid), process_looks_like_index_run(pid)) {
+    match worker_liveness_from(pid_is_alive(pid), process_looks_like_index_run(pid)) {
         WorkerLiveness::Alive => WorkerLiveness::Alive,
         WorkerLiveness::NotRunning => {
             let _ = std::fs::remove_file(&pid_path);
@@ -206,21 +204,27 @@ mod tests {
 
     #[test]
     fn alive_and_matching_command_is_a_live_worker() {
-        assert_eq!(classify_worker_pid(true, true), WorkerLiveness::Alive);
+        assert_eq!(worker_liveness_from(true, true), WorkerLiveness::Alive);
     }
 
     #[test]
     fn dead_pid_is_not_running() {
-        assert_eq!(classify_worker_pid(false, true), WorkerLiveness::NotRunning);
         assert_eq!(
-            classify_worker_pid(false, false),
+            worker_liveness_from(false, true),
+            WorkerLiveness::NotRunning
+        );
+        assert_eq!(
+            worker_liveness_from(false, false),
             WorkerLiveness::NotRunning
         );
     }
 
     #[test]
     fn foreign_pid_is_never_reported_as_a_live_worker() {
-        assert_eq!(classify_worker_pid(true, false), WorkerLiveness::NotRunning);
+        assert_eq!(
+            worker_liveness_from(true, false),
+            WorkerLiveness::NotRunning
+        );
     }
 
     #[test]

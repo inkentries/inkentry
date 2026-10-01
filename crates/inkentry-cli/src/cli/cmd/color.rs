@@ -23,27 +23,35 @@ pub(crate) fn set_color_choice(choice: ColorChoice) {
     let _ = CHOICE.set(choice);
 }
 
-// Pure so it is testable without a tty or process env. `NO_COLOR` counts only
-// when non-empty (no-color.org).
+pub(crate) struct NoColorEnv {
+    is_set: bool,
+}
+
+impl NoColorEnv {
+    pub(crate) fn from_var(value: Option<&str>) -> Self {
+        Self {
+            is_set: value.is_some_and(|v| !v.is_empty()),
+        }
+    }
+}
+
+// Pure so it is testable without a tty or process env.
 pub(crate) fn resolve_color(
     choice: ColorChoice,
-    no_color_env: Option<&str>,
+    no_color_env: NoColorEnv,
     stdout_is_terminal: bool,
 ) -> bool {
     match choice {
         ColorChoice::Always => true,
         ColorChoice::Never => false,
-        ColorChoice::Auto => {
-            let no_color = no_color_env.is_some_and(|v| !v.is_empty());
-            !no_color && stdout_is_terminal
-        }
+        ColorChoice::Auto => !no_color_env.is_set && stdout_is_terminal,
     }
 }
 
 pub(crate) fn color_enabled() -> bool {
     resolve_color(
         CHOICE.get().copied().unwrap_or_default(),
-        std::env::var("NO_COLOR").ok().as_deref(),
+        NoColorEnv::from_var(std::env::var("NO_COLOR").ok().as_deref()),
         std::io::stdout().is_terminal(),
     )
 }
@@ -67,31 +75,55 @@ mod tests {
 
     #[test]
     fn auto_is_off_when_stdout_is_not_a_terminal() {
-        assert!(!resolve_color(ColorChoice::Auto, None, false));
+        assert!(!resolve_color(
+            ColorChoice::Auto,
+            NoColorEnv::from_var(None),
+            false
+        ));
     }
 
     #[test]
     fn auto_is_on_when_stdout_is_a_terminal_and_no_color_unset() {
-        assert!(resolve_color(ColorChoice::Auto, None, true));
+        assert!(resolve_color(
+            ColorChoice::Auto,
+            NoColorEnv::from_var(None),
+            true
+        ));
     }
 
     #[test]
     fn no_color_wins_even_on_a_terminal() {
-        assert!(!resolve_color(ColorChoice::Auto, Some("1"), true));
+        assert!(!resolve_color(
+            ColorChoice::Auto,
+            NoColorEnv::from_var(Some("1")),
+            true
+        ));
     }
 
     #[test]
     fn empty_no_color_does_not_disable_color() {
-        assert!(resolve_color(ColorChoice::Auto, Some(""), true));
+        assert!(resolve_color(
+            ColorChoice::Auto,
+            NoColorEnv::from_var(Some("")),
+            true
+        ));
     }
 
     #[test]
     fn explicit_always_overrides_no_color_and_non_tty() {
-        assert!(resolve_color(ColorChoice::Always, Some("1"), false));
+        assert!(resolve_color(
+            ColorChoice::Always,
+            NoColorEnv::from_var(Some("1")),
+            false
+        ));
     }
 
     #[test]
     fn explicit_never_overrides_a_terminal() {
-        assert!(!resolve_color(ColorChoice::Never, None, true));
+        assert!(!resolve_color(
+            ColorChoice::Never,
+            NoColorEnv::from_var(None),
+            true
+        ));
     }
 }

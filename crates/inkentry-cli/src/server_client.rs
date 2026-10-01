@@ -278,7 +278,7 @@ impl ServerInferenceClient {
             &workos_url,
             &client_id,
             &refresh_token,
-            auth_api::org_id_for_refresh(&org_id),
+            auth_api::OrgScope::of_session(&org_id),
         )
         .await
         .map_err(|e| {
