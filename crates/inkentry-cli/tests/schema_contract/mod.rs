@@ -1,6 +1,3 @@
-// Also compiled standalone as its own integration target, hence the dead-code allow.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

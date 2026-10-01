@@ -71,6 +71,17 @@ pub fn inkentry_bin_in(home: &Path) -> Command {
     cmd
 }
 
+// Step 3a (`server.port`) needs a live inkentry-server pid, which a wiremock stand-in cannot be,
+// so the mock is reached through the fixed-port fallback (3b) instead.
+pub fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
+    std::fs::create_dir_all(state_dir).expect("create state dir");
+    url.rsplit(':')
+        .next()
+        .expect("uri has a port")
+        .trim_end_matches('/')
+        .to_string()
+}
+
 pub const FIXTURE_DIR: &str = "tests/fixtures/simple-project";
 
 pub const FIXTURE_PROJECT_ID: &str = "test-org/test-project";
@@ -203,18 +214,7 @@ pub fn index_project_dir(project_dir: &Path) -> (TempDir, PathBuf, PathBuf) {
 
         let server = MockServer::start().await;
 
-        Mock::given(method("GET"))
-            .and(path("/v1/health"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "status": "ok",
-                "version": "test",
-                // LLM routing keys on `llm.complete` alone; a legacy capability must not stand in for it.
-                "capabilities": [
-                    "memory", "index.embed", "search.semantic", "plan", "llm.complete"
-                ],
-            })))
-            .mount(&server)
-            .await;
+        mount_health(&server).await;
 
         Mock::given(method("POST"))
             .and(path("/v1/embeddings"))

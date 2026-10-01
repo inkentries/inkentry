@@ -149,6 +149,50 @@ fn test_languages_output() {
         .stdout(predicate::str::contains("javascript"));
 }
 
+// `mode` is not a project-config key and, under `local_first`, an explicit `server_url` never
+// serves inference; the env var is the only way to opt in.
+fn cloud_first(mut cmd: assert_cmd::Command, project_dir: &std::path::Path) -> assert_cmd::Command {
+    cmd.current_dir(project_dir)
+        .env("INKENTRY_MODE", "cloud_first");
+    cmd
+}
+
+fn index_offline_then_status_json(
+    dir: &std::path::Path,
+    project_dir: &std::path::Path,
+    api_base_url: &str,
+) -> serde_json::Value {
+    let config_path = dir.join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "db_path = {:?}\napi_base_url = {api_base_url:?}\nllm_model = \"test\"\n",
+            dir.join("index.db")
+        ),
+    )
+    .unwrap();
+
+    inkentry_bin()
+        .env("INKENTRY_NO_SERVER", "1")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("index")
+        .arg(project_dir)
+        .assert()
+        .success();
+
+    let output = inkentry_bin()
+        .env("INKENTRY_NO_SERVER", "1")
+        .current_dir(project_dir)
+        .arg("--config")
+        .arg(&config_path)
+        .args(["status", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "status --format json failed");
+    serde_json::from_slice(&output.stdout).expect("output must be valid JSON")
+}
+
 #[test]
 fn test_status_empty_project() {
     let temp = tempdir().unwrap();
@@ -230,24 +274,16 @@ async fn test_index_and_status() {
     // `server_url`/`project_id` are read only from the project `.inkentry/config.toml` or env, not `--config`.
     write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
-    // A bare `server_url` under `local_first` never routes embedding/search to it, so opt into
-    // `cloud_first` on every command to reach the mock.
-    const CLOUD_FIRST: (&str, &str) = ("INKENTRY_MODE", "cloud_first");
-
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
-        .arg("--config")
+    let mut cmd = cloud_first(inkentry_bin(), &project_dir);
+    cmd.arg("--config")
         .arg(&config_path)
         .arg("index")
         .arg(&project_dir)
         .assert()
         .success();
 
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
-        .arg("--config")
+    let mut cmd = cloud_first(inkentry_bin(), &project_dir);
+    cmd.arg("--config")
         .arg(&config_path)
         .arg("status")
         .assert()
@@ -257,10 +293,8 @@ async fn test_index_and_status() {
         .stdout(predicate::str::contains("Files:      1"))
         .stdout(predicate::str::contains("Chunks:     1"));
 
-    let mut cmd = inkentry_bin();
-    cmd.current_dir(&project_dir)
-        .env(CLOUD_FIRST.0, CLOUD_FIRST.1)
-        .arg("--config")
+    let mut cmd = cloud_first(inkentry_bin(), &project_dir);
+    cmd.arg("--config")
         .arg(&config_path)
         .arg("search")
         .arg("hello")
@@ -323,11 +357,7 @@ async fn test_index_encodes_project_id_with_slashes_as_single_segment() {
         // `server_url` loads only from the project config or env, never the global config.
         write_project_server_config(&project_dir, &mock_server.uri(), project_id);
 
-        // Needs an explicit `server_url` to serve embedding; `local_first` refuses that routing and
-        // the project config has no `mode` key, so force `cloud_first` via env.
-        inkentry_bin()
-            .current_dir(&project_dir)
-            .env("INKENTRY_MODE", "cloud_first")
+        cloud_first(inkentry_bin(), &project_dir)
             .arg("--config")
             .arg(&config_path)
             .arg("index")
@@ -633,41 +663,7 @@ async fn test_status_json_stable_schema() {
     )
     .unwrap();
 
-    let db_path = temp.path().join("index.db");
-    let config_path = temp.path().join("config.toml");
-    fs::write(
-        &config_path,
-        format!(
-            "db_path = {:?}\napi_base_url = {:?}\nllm_model = \"test\"\n",
-            db_path,
-            mock_server.uri()
-        ),
-    )
-    .unwrap();
-
-    inkentry_bin()
-        .env("INKENTRY_NO_SERVER", "1") // ensure offline even if a local server is running
-        .arg("--config")
-        .arg(&config_path)
-        .arg("index")
-        .arg(&project_dir)
-        .assert()
-        .success();
-
-    let output = inkentry_bin()
-        .env("INKENTRY_NO_SERVER", "1")
-        .current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("status")
-        .arg("--format")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    assert!(output.status.success(), "status --format json failed");
-    let body: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("output must be valid JSON");
+    let body = index_offline_then_status_json(temp.path(), &project_dir, &mock_server.uri());
 
     assert!(
         body["version"].is_string(),
@@ -870,40 +866,7 @@ fn test_status_json_offline_tier() {
     fs::create_dir(&project_dir).unwrap();
     fs::write(project_dir.join("lib.rs"), "pub fn answer() -> i32 { 42 }").unwrap();
 
-    let config_path = temp.path().join("config.toml");
-    let db_path = temp.path().join("index.db");
-    fs::write(
-        &config_path,
-        format!(
-            "db_path = {:?}\napi_base_url = \"http://127.0.0.1:1234\"\nllm_model = \"test\"\n",
-            db_path
-        ),
-    )
-    .unwrap();
-
-    let mut cmd = inkentry_bin();
-    cmd.env("INKENTRY_NO_SERVER", "1") // ensure offline even if a local server is running
-        .arg("--config")
-        .arg(&config_path)
-        .arg("index")
-        .arg(&project_dir)
-        .assert()
-        .success();
-
-    let output = inkentry_bin()
-        .env("INKENTRY_NO_SERVER", "1")
-        .current_dir(&project_dir)
-        .arg("--config")
-        .arg(&config_path)
-        .arg("status")
-        .arg("--format")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    let body: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    let body = index_offline_then_status_json(temp.path(), &project_dir, "http://127.0.0.1:1234");
     assert_eq!(body["tier"], "offline");
     assert!(body["server_url"].is_null());
     assert!(body["capabilities"].is_null());
@@ -2214,11 +2177,7 @@ async fn test_search_auto_partial_coverage_emits_warmup_notice_on_stderr() {
         &project_dir,
     );
 
-    // Needs an explicit `server_url` to serve embedding; `local_first` refuses that routing,
-    // so force `cloud_first` via env, which outranks both config files.
-    inkentry_bin_in(home.path())
-        .env("INKENTRY_MODE", "cloud_first")
-        .current_dir(&project_dir)
+    cloud_first(inkentry_bin_in(home.path()), &project_dir)
         .arg("--config")
         .arg(&config_path)
         .arg("index")
