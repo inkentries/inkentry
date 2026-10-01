@@ -77,7 +77,7 @@ pub enum Command {
     Harvest(HarvestArgs),
     /// Import a portable dump into this project (see docs/dump-format.md)
     Import(ImportArgs),
-    /// Manage git hooks (post-commit auto-index and harvest)
+    /// Manage git hooks (post-commit auto-index and harvest), and handle coding-agent hook events
     Hooks(HooksArgs),
     /// Manage and inspect cross-project links
     Links(LinksArgs),

@@ -132,6 +132,19 @@ impl CallerDeclaration {
         Self::from_getter(|k| std::env::var(k).ok())
     }
 
+    /// The declaration `inkentry hooks agent` forces on itself whatever the
+    /// environment says: a hook-triggered agent call under `tool`, grouped by
+    /// `session_id` (hashed exactly like `INKENTRY_SESSION_REF`).
+    pub fn agent_hook(tool: &str, session_id: Option<&str>) -> Self {
+        Self {
+            trigger: Trigger::Hook,
+            actor: ActorKind::Agent,
+            session_ref: session_id.map(hash_session_ref),
+            tool: Some(tool.to_string()),
+            model: None,
+        }
+    }
+
     // Like `from_env`, but against an injected variable source, so a test can
     // assert the parsing rules without mutating the real process environment.
     fn from_getter(get: impl Fn(&str) -> Option<String>) -> Self {
@@ -223,6 +236,19 @@ mod tests {
         let a = hash_session_ref("same-session");
         let b = hash_session_ref("same-session");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn an_agent_hook_declaration_ignores_the_environment_and_hashes_the_session() {
+        let d = CallerDeclaration::agent_hook("claude-code", Some("abc-123"));
+        assert_eq!(d.trigger, Trigger::Hook);
+        assert_eq!(d.actor, ActorKind::Agent);
+        assert_eq!(d.tool.as_deref(), Some("claude-code"));
+        assert_eq!(d.session_ref, Some(hash_session_ref("abc-123")));
+        assert_eq!(
+            CallerDeclaration::agent_hook("claude-code", None).session_ref,
+            None
+        );
     }
 
     #[test]

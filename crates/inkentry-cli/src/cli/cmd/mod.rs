@@ -1,3 +1,4 @@
+pub(crate) mod agent_hooks;
 pub mod auth;
 pub mod auth_api;
 pub(crate) mod color;

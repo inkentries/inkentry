@@ -29,6 +29,15 @@ async fn main() -> Result<()> {
     ));
 
     let cli = Cli::parse_or_exit();
+    // Before the log layer and config load: a hook prints nothing but its one
+    // JSON object, whatever the environment or config says.
+    if let Command::Hooks(cli::HooksArgs {
+        command: cli::cmd::hooks::HooksCommand::Agent(agent),
+    }) = &cli.command
+    {
+        cli::cmd::agent_hooks::run(agent.event, cli.config.as_deref()).await;
+        return Ok(());
+    }
     cli::cmd::set_color_choice(cli.color);
     // Capability probes print notices without seeing the command's flags.
     notice::set_quiet(matches!(&cli.command, Command::Search(a) if a.quiet));
