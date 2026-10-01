@@ -34,7 +34,7 @@ jobs:
       # tool itself. install-action fetches a prebuilt binary instead of
       # compiling one, which is both faster and needs no cache to stay fast.
       - name: Install cargo-audit
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-audit
 
@@ -59,7 +59,7 @@ jobs:
       # workspace, so a prebuilt binary from install-action replaces both the
       # cache and the from-source `cargo install`.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-deny
 
