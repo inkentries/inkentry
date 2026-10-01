@@ -20,8 +20,8 @@ struct ServerNote {
     kind: String,
     title: String,
     body: String,
-    tags: String, // raw CSV as stored in server.db
-    linked_files: String,
+    tags: Vec<String>,
+    linked_files: Vec<String>,
     created_at: i64,
     status: String,
     superseded_by: Option<i64>,
@@ -30,14 +30,6 @@ struct ServerNote {
 impl ServerNote {
     fn entity_id(&self) -> String {
         entity_id(&self.kind, &self.title, &self.body)
-    }
-
-    fn tags_vec(&self) -> Vec<String> {
-        split_csv(&self.tags)
-    }
-
-    fn files_vec(&self) -> Vec<String> {
-        split_csv(&self.linked_files)
     }
 
     fn is_archived(&self) -> bool {
@@ -66,7 +58,7 @@ struct MergedNote {
     linked_files: Vec<String>,
     created_at: i64,
     status: String,
-    rows: usize,
+    source_rows: usize,
 }
 
 impl MergedNote {
@@ -76,11 +68,11 @@ impl MergedNote {
             kind: c.kind.clone(),
             title: c.title.clone(),
             body: c.body.clone(),
-            tags: c.tags_vec(),
-            linked_files: c.files_vec(),
+            tags: c.tags.clone(),
+            linked_files: c.linked_files.clone(),
             created_at: c.created_at,
             status: c.status.clone(),
-            rows: 1,
+            source_rows: 1,
         }
     }
 
@@ -88,21 +80,21 @@ impl MergedNote {
     // union, an archive on any row sticks, and the earliest `created_at` wins so
     // supersede chains import in order.
     fn absorb(&mut self, c: &ServerNote) {
-        for t in c.tags_vec() {
-            if !self.tags.contains(&t) {
-                self.tags.push(t);
+        for t in &c.tags {
+            if !self.tags.contains(t) {
+                self.tags.push(t.clone());
             }
         }
-        for f in c.files_vec() {
-            if !self.linked_files.contains(&f) {
-                self.linked_files.push(f);
+        for f in &c.linked_files {
+            if !self.linked_files.contains(f) {
+                self.linked_files.push(f.clone());
             }
         }
         if c.is_archived() {
             self.status = "archived".to_string();
         }
         self.created_at = self.created_at.min(c.created_at);
-        self.rows += 1;
+        self.source_rows += 1;
     }
 }
 
@@ -321,8 +313,8 @@ async fn reconcile_project(
     // Oldest first so supersede chains import in order.
     to_import.sort_by_key(|n| n.created_at);
 
-    summary.already_present = present.iter().map(|m| m.rows).sum();
-    summary.collapsed_duplicates = to_import.iter().map(|m| m.rows - 1).sum();
+    summary.already_present = present.iter().map(|m| m.source_rows).sum();
+    summary.collapsed_duplicates = to_import.iter().map(|m| m.source_rows - 1).sum();
 
     if args.dry_run {
         summary.would_import = to_import.len();
@@ -446,8 +438,8 @@ fn read_server_notes(conn: &Connection, project_id: i64) -> Result<Vec<ServerNot
                 kind: row.get(1)?,
                 title: row.get(2)?,
                 body: row.get(3)?,
-                tags: row.get(4)?,
-                linked_files: row.get(5)?,
+                tags: split_csv(&row.get::<_, String>(4)?),
+                linked_files: split_csv(&row.get::<_, String>(5)?),
                 created_at: row.get(6)?,
                 status: row.get(7)?,
                 superseded_by: row.get(8)?,
@@ -1526,8 +1518,8 @@ mod init_import_tests {
             kind: "decision".to_string(),
             title: "shared key".to_string(),
             body: "body text".to_string(),
-            tags: "alpha,beta".to_string(),
-            linked_files: "a.rs,b.rs".to_string(),
+            tags: vec!["alpha".to_string(), "beta".to_string()],
+            linked_files: vec!["a.rs".to_string(), "b.rs".to_string()],
             created_at: created_at + 86_400,
             status: "archived".to_string(),
             superseded_by: None,
