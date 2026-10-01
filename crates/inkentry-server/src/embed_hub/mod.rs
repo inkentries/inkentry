@@ -402,16 +402,21 @@ fn load_llama_from_model_dir(
     )
 }
 
-// Unset or blank means `auto`. An unparseable value is a hard error rather
-// than a silent default — a typo'd INKENTRY_EMBED_DEVICE=vulkan quietly
+fn env_trimmed(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+// An unparseable value is a hard error rather than a silent default: a typo
 // running on some other device would be worse than failing loudly.
 #[cfg(feature = "embed-llama")]
 fn embed_device_request() -> Result<DeviceRequest> {
-    match std::env::var(EMBED_DEVICE_ENV) {
-        Ok(v) if !v.trim().is_empty() => v
+    match env_trimmed(EMBED_DEVICE_ENV) {
+        Some(v) => v
             .parse()
             .with_context(|| format!("parsing {EMBED_DEVICE_ENV}")),
-        _ => Ok(DeviceRequest::Auto),
+        None => Ok(DeviceRequest::Auto),
     }
 }
 
@@ -421,12 +426,8 @@ fn model_cache_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not determine local data directory"))
 }
 
-// Trims surrounding whitespace; unset or blank falls back to DEFAULT_GGUF_REPO.
 fn prequantized_gguf_repo() -> String {
-    match std::env::var(GGUF_REPO_ENV) {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => DEFAULT_GGUF_REPO.to_string(),
-    }
+    env_trimmed(GGUF_REPO_ENV).unwrap_or_else(|| DEFAULT_GGUF_REPO.to_string())
 }
 
 #[cfg(test)]
