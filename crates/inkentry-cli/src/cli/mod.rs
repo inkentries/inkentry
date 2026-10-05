@@ -71,7 +71,7 @@ pub enum Command {
     Autoclean,
     /// Project memory: store and query decisions, context, and requirements
     Memory(MemoryArgs),
-    /// State metrics computed from memory.db and git history (ADR-098)
+    /// State metrics computed from memory.db and git history
     Metrics(MetricsArgs),
     /// Capture memory from git history and session logs (backfill + continuous)
     Harvest(HarvestArgs),

@@ -17,9 +17,9 @@ pub struct MetricsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum MetricsCommand {
-    /// Compute a deterministic state-metrics snapshot for this project (ADR-098)
+    /// Compute a deterministic state-metrics snapshot for this project
     Snapshot(MetricsSnapshotArgs),
-    /// Empty the local event log (ADR-098 D5). Nothing else in `memory.db` is
+    /// Empty the local event log. Nothing else in `memory.db` is
     /// touched: entries, tags, linked files and edges all survive.
     Clear,
 }

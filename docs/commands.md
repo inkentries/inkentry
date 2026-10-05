@@ -348,8 +348,8 @@ inkentry search <query> [options]
 | `--only-text` | false | Full-text over the in-scope corpora, no embedding, no server needed |
 | `--as-of <date>` | — | Memory-only: only entries valid at this date (point-in-time) |
 | `--expand-graph` | false | Memory-only: also surface each memory result's 1-hop `relates_to` neighbours |
-| `--tag <tag>` | — | Memory-only: restrict to this exact tag, normalised the same way a write is (ADR-101) |
-| `--file <path>` | — | Memory-only: restrict to this exact linked repository-relative path (ADR-101) |
+| `--tag <tag>` | — | Memory-only: restrict to this exact tag, normalised the same way a write is |
+| `--file <path>` | — | Memory-only: restrict to this exact linked repository-relative path |
 | `-d, --db <path>` | auto | Override database path |
 | `--no-stale-check` | false | Suppress the stale-index warning |
 | `--local-only` | false | Skip the cross-project dependency pass (linked projects) |
@@ -714,8 +714,8 @@ inkentry context [options]
 | `-l, --limit <n>` | per-section | Max entries per section (handoff=3, question=10, decision=10, requirement=10); mutually exclusive with `--budget` |
 | `--budget <n>` (alias `--max-tokens`) | unlimited | Cap total output to this many tokens; mutually exclusive with `--limit` |
 | `--path <path>` | — | Only show entries whose linked files contain this substring |
-| `--tag <tag>` | — | Only show entries carrying this exact tag, normalised the same way a write is (ADR-101) |
-| `--file <path>` | — | Only show entries linking this exact repository-relative path (ADR-101); unlike `--path`, an exact match |
+| `--tag <tag>` | — | Only show entries carrying this exact tag, normalised the same way a write is |
+| `--file <path>` | — | Only show entries linking this exact repository-relative path; unlike `--path`, an exact match |
 | `--format text\|json` | text | Output format |
 | `--no-conventions` | false | Skip the conventions section |
 | `--local-only` | false | Skip cross-project dep pass; query only the primary project's memory |
@@ -1165,7 +1165,7 @@ inkentry logout [--org <slug|org-id>]
 
 | Flag | Notes |
 |------|-------|
-| `--org <target>` | Clear only that organization's cached session, leaving every other cached org intact (ADR-074 D4). |
+| `--org <target>` | Clear only that organization's cached session, leaving every other cached org intact. |
 
 If any server keys are still stored, a bare logout prints how many and names the
 command that removes them.
