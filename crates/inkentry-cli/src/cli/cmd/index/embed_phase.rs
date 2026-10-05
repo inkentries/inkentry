@@ -239,7 +239,6 @@ fn persistent_failure_hint(server_url: &str, hint: StopHint) -> String {
     }
 }
 
-// Returns instead of erroring so callers report progress so far via `Ok(embedded)`.
 fn report_embed_failure(
     bar: &ProgressBar,
     embedded: u64,
@@ -260,6 +259,12 @@ fn report_embed_failure(
     eprintln!("{}", persistent_failure_hint(server_url, hint));
 }
 
+#[derive(Debug, PartialEq)]
+pub(super) enum EmbedOutcome {
+    Complete,
+    Stopped,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PendingEmbedding {
     pub(super) chunk_id: i64,
@@ -275,7 +280,7 @@ pub(super) async fn run_embed_phase(
     project_root: &std::path::Path,
     batch_size: usize,
     mp: &MultiProgress,
-) -> Result<u64> {
+) -> Result<EmbedOutcome> {
     run_embed_phase_with_backoff(
         chunk_ids_and_texts,
         db,
@@ -300,7 +305,7 @@ async fn run_embed_phase_with_backoff(
     batch_size: usize,
     mp: &MultiProgress,
     connect_failure_backoffs: &[Duration],
-) -> Result<u64> {
+) -> Result<EmbedOutcome> {
     let (server_url, server_key) = match tier {
         // Rotated up front so a stale cloud session is not met with a 401 whose
         // hint says to log in again.
@@ -308,7 +313,7 @@ async fn run_embed_phase_with_backoff(
             url.clone(),
             crate::cli::cmd::auth_api::ensure_fresh_server_key(cfg, url).await?,
         ),
-        Tier::Offline(_) => return Ok(0),
+        Tier::Offline(_) => return Ok(EmbedOutcome::Complete),
     };
     // Bails on a model mismatch; stamps a fresh DB.
     db.ensure_embedding_model(inkentry_core::embeddings::MODEL_ID)?;
@@ -413,7 +418,7 @@ async fn run_embed_phase_with_backoff(
         let mut escalated_calibration_once = false;
         let mut connect_failures = 0usize;
         let mut saturation_retries = 0usize;
-        let bytes = 'retry: loop {
+        let vectors = 'retry: loop {
             let batch_tokens: u64 = chunk_ids_and_texts[cursor..cursor + this_batch_size]
                 .iter()
                 .map(|p| p.token_count.max(1) as u64)
@@ -453,9 +458,9 @@ async fn run_embed_phase_with_backoff(
             .await;
 
             match outcome {
-                Ok(bytes) => {
+                Ok(vectors) => {
                     rate.update(started.elapsed(), batch_tokens);
-                    break 'retry bytes;
+                    break 'retry vectors;
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) if this_batch_size == 1 => {
                     if !escalated_calibration_once && rate.per_token().is_none() {
@@ -466,7 +471,7 @@ async fn run_embed_phase_with_backoff(
                         );
                         continue 'retry;
                     }
-                    // Return the count, not `Err`: an `Err` would unwind before `stats()` and discard progress.
+                    // Stopped, not `Err`: an `Err` would unwind before `stats()` and discard progress.
                     report_embed_failure(
                         &bar,
                         embedded,
@@ -475,7 +480,7 @@ async fn run_embed_phase_with_backoff(
                         e,
                         StopHint::RequestBudget,
                     );
-                    return Ok(embedded);
+                    return Ok(EmbedOutcome::Stopped);
                 }
                 Err(EmbedBatchError::BudgetExceeded(e)) => {
                     let shrunk = (this_batch_size / 2).max(1);
@@ -489,7 +494,7 @@ async fn run_embed_phase_with_backoff(
                             e,
                             StopHint::RequestBudget,
                         );
-                        return Ok(embedded);
+                        return Ok(EmbedOutcome::Stopped);
                     }
                     tracing::warn!(
                         "index/embed batch of {this_batch_size} chunks exceeded the server's \
@@ -512,7 +517,7 @@ async fn run_embed_phase_with_backoff(
                             e,
                             StopHint::RequestBudget,
                         );
-                        return Ok(embedded);
+                        return Ok(EmbedOutcome::Stopped);
                     }
                     let backoff = connect_failure_backoffs[connect_failures];
                     connect_failures += 1;
@@ -539,7 +544,7 @@ async fn run_embed_phase_with_backoff(
                             ),
                             StopHint::RequestBudget,
                         );
-                        return Ok(embedded);
+                        return Ok(EmbedOutcome::Stopped);
                     }
                     saturation_retries += 1;
                     tracing::info!(
@@ -559,7 +564,7 @@ async fn run_embed_phase_with_backoff(
                         e,
                         StopHint::EmbedderDeviceLost,
                     );
-                    return Ok(embedded);
+                    return Ok(EmbedOutcome::Stopped);
                 }
                 Err(EmbedBatchError::Other(e)) => {
                     report_embed_failure(
@@ -570,26 +575,17 @@ async fn run_embed_phase_with_backoff(
                         e,
                         StopHint::RequestBudget,
                     );
-                    return Ok(embedded);
+                    return Ok(EmbedOutcome::Stopped);
                 }
             }
         };
 
-        let dim = inkentry_core::embeddings::EMBEDDING_DIM;
-        let stride = dim * 4;
         let batch = &chunk_ids_and_texts[cursor..cursor + this_batch_size];
 
         // One transaction per batch: a kill mid-batch rolls it back and
         // `chunks_missing_embeddings` re-queues it whole.
-        let embeddings: Vec<(i64, Vec<f32>)> = batch
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let vector =
-                    inkentry_core::embeddings::blob_to_vec(&bytes[i * stride..(i + 1) * stride]);
-                (p.chunk_id, vector)
-            })
-            .collect();
+        let embeddings: Vec<(i64, Vec<f32>)> =
+            batch.iter().map(|p| p.chunk_id).zip(vectors).collect();
         db.insert_embeddings(&embeddings)?;
         super::crash_test_hook::pause_at("after_embed_batch", &batch_num.to_string());
 
@@ -619,7 +615,7 @@ async fn run_embed_phase_with_backoff(
     }
 
     bar.finish_with_message(format!("{embedded} chunks embedded"));
-    Ok(embedded)
+    Ok(EmbedOutcome::Complete)
 }
 
 enum EmbedBatchError {
@@ -651,7 +647,6 @@ fn parse_retry_after(resp: &reqwest::Response) -> Duration {
         .unwrap_or(DEFAULT_SATURATION_RETRY)
 }
 
-// Returns little-endian f32 vectors, one per chunk in request order.
 async fn embed_one_batch(
     client: &reqwest::Client,
     url: &str,
@@ -659,7 +654,7 @@ async fn embed_one_batch(
     body: EmbedRequest,
     batch_len: usize,
     timeout: Duration,
-) -> Result<Vec<u8>, EmbedBatchError> {
+) -> Result<Vec<Vec<f32>>, EmbedBatchError> {
     let mut req = client.post(url).timeout(timeout).json(&body);
     if let Some(k) = server_key {
         req = req.bearer_auth(k);
@@ -746,7 +741,10 @@ async fn embed_one_batch(
             bytes.len(),
         )));
     }
-    Ok(bytes.to_vec())
+    Ok(bytes
+        .chunks_exact(stride)
+        .map(inkentry_core::embeddings::blob_to_vec)
+        .collect())
 }
 
 #[cfg(test)]
@@ -1653,7 +1651,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -1665,10 +1663,7 @@ mod tests {
         .await
         .expect("a failing batch must NOT return Err; it stops gracefully");
 
-        assert_eq!(
-            embedded, 5,
-            "the two successful calibration batches (1 + 4 chunks) must be reported as embedded"
-        );
+        assert_eq!(outcome, EmbedOutcome::Stopped);
         assert_eq!(
             db.stats().unwrap().embedding_count,
             5,
@@ -1700,7 +1695,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -1712,7 +1707,7 @@ mod tests {
         .await
         .expect("all-success run");
 
-        assert_eq!(embedded, 50);
+        assert_eq!(outcome, EmbedOutcome::Complete);
         assert_eq!(db.stats().unwrap().embedding_count, 50);
     }
 
@@ -1742,7 +1737,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -1754,8 +1749,12 @@ mod tests {
         .await
         .expect("a chunker-config mismatch must not fail the embed phase");
 
-        assert_eq!(embedded, 5, "incremental embedding still proceeds normally");
-        assert_eq!(db.stats().unwrap().embedding_count, 5);
+        assert_eq!(outcome, EmbedOutcome::Complete);
+        assert_eq!(
+            db.stats().unwrap().embedding_count,
+            5,
+            "incremental embedding still proceeds normally"
+        );
         assert_eq!(
             db.chunker_config().unwrap().as_deref(),
             Some("max_chunk_tokens=2048")
@@ -1791,7 +1790,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -1803,11 +1802,12 @@ mod tests {
         .await
         .expect("a transient 429 must not abort the run");
 
+        assert_eq!(outcome, EmbedOutcome::Complete);
         assert_eq!(
-            embedded, 10,
+            db.stats().unwrap().embedding_count,
+            10,
             "every chunk must still get embedded once the admission queue's 429s clear"
         );
-        assert_eq!(db.stats().unwrap().embedding_count, 10);
     }
 
     #[tokio::test]
@@ -1833,7 +1833,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -1845,8 +1845,10 @@ mod tests {
         .await
         .expect("an always-saturated server must not return Err; it stops gracefully");
 
+        assert_eq!(outcome, EmbedOutcome::Stopped);
         assert_eq!(
-            embedded, 0,
+            db.stats().unwrap().embedding_count,
+            0,
             "a permanently-saturated queue must give up after MAX_SATURATION_RETRIES, not hang \
              forever"
         );
@@ -1876,7 +1878,7 @@ mod tests {
             let tier = server_tier(mock.uri());
             let mp = MultiProgress::new();
 
-            let embedded = run_embed_phase(
+            let outcome = run_embed_phase(
                 chunk_ids_and_texts,
                 &db,
                 &cfg,
@@ -1888,7 +1890,8 @@ mod tests {
             .await
             .unwrap_or_else(|e| panic!("n={n} must succeed: {e:#}"));
 
-            assert_eq!(embedded, n as u64, "n={n}");
+            assert_eq!(outcome, EmbedOutcome::Complete);
+            assert_eq!(db.stats().unwrap().embedding_count, n as i64, "n={n}");
         }
     }
 
@@ -1906,7 +1909,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             Vec::new(),
             &db,
             &cfg,
@@ -1918,7 +1921,8 @@ mod tests {
         .await
         .expect("an empty queue must succeed trivially");
 
-        assert_eq!(embedded, 0);
+        assert_eq!(outcome, EmbedOutcome::Complete);
+        assert_eq!(db.stats().unwrap().embedding_count, 0);
     }
 
     #[tokio::test]
@@ -1950,7 +1954,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -1962,11 +1966,12 @@ mod tests {
         .await
         .expect("a single 408 on calibration batch 1 must be retried, not fatal");
 
+        assert_eq!(outcome, EmbedOutcome::Complete);
         assert_eq!(
-            embedded, 3,
+            db.stats().unwrap().embedding_count,
+            3,
             "all chunks must be embedded once the retried calibration request succeeds"
         );
-        assert_eq!(db.stats().unwrap().embedding_count, 3);
     }
 
     #[tokio::test]
@@ -1992,7 +1997,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -2002,10 +2007,14 @@ mod tests {
             &mp,
         )
         .await
-        .expect("must return Ok(embedded), never Err, even after exhausting the retry");
+        .expect("must return Ok, never Err, even after exhausting the retry");
 
-        assert_eq!(embedded, 0, "nothing embedded when both attempts 408");
-        assert_eq!(db.stats().unwrap().embedding_count, 0);
+        assert_eq!(outcome, EmbedOutcome::Stopped);
+        assert_eq!(
+            db.stats().unwrap().embedding_count,
+            0,
+            "nothing embedded when both attempts 408"
+        );
     }
 
     #[tokio::test]
@@ -2057,7 +2066,7 @@ mod tests {
         let tier = server_tier(mock.uri());
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -2069,12 +2078,13 @@ mod tests {
         .await
         .expect("steady-state 408s must shrink and retry, not abort");
 
+        assert_eq!(outcome, EmbedOutcome::Complete);
         assert_eq!(
-            embedded, 20,
+            db.stats().unwrap().embedding_count,
+            20,
             "every chunk must eventually be embedded once the batch size shrinks below \
              the mock's 4-chunk cliff"
         );
-        assert_eq!(db.stats().unwrap().embedding_count, 20);
     }
 
     #[tokio::test]
@@ -2134,7 +2144,7 @@ mod tests {
         let tier = server_tier_with_limits(mock.uri(), Some(limits));
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase(
+        let outcome = run_embed_phase(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -2146,12 +2156,13 @@ mod tests {
         .await
         .expect("batches must stay within the server-advertised max_batch_chunks");
 
+        assert_eq!(outcome, EmbedOutcome::Complete);
         assert_eq!(
-            embedded, 30,
+            db.stats().unwrap().embedding_count,
+            30,
             "every chunk must embed successfully — a 413 here would mean the client sent \
              a batch larger than the server-advertised max_batch_chunks"
         );
-        assert_eq!(db.stats().unwrap().embedding_count, 30);
     }
 
     // Real time with a millisecond backoff schedule: paused-time auto-advance races the OS
@@ -2200,7 +2211,7 @@ mod tests {
         let tier = server_tier(format!("http://{addr}"));
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase_with_backoff(
+        let outcome = run_embed_phase_with_backoff(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -2213,11 +2224,12 @@ mod tests {
         .await
         .expect("connect failures must be retried, not fatal, once the server starts listening");
 
+        assert_eq!(outcome, EmbedOutcome::Complete);
         assert_eq!(
-            embedded, 6,
+            db.stats().unwrap().embedding_count,
+            6,
             "every chunk embeds once the connect failures stop"
         );
-        assert_eq!(db.stats().unwrap().embedding_count, 6);
     }
 
     #[tokio::test]
@@ -2240,7 +2252,7 @@ mod tests {
         let tier = server_tier(format!("http://{addr}"));
         let mp = MultiProgress::new();
 
-        let embedded = run_embed_phase_with_backoff(
+        let outcome = run_embed_phase_with_backoff(
             chunk_ids_and_texts,
             &db,
             &cfg,
@@ -2251,13 +2263,14 @@ mod tests {
             &FAST_CONNECT_FAILURE_BACKOFFS,
         )
         .await
-        .expect("must return Ok(embedded), never Err or hang, once retries are exhausted");
+        .expect("must return Ok, never Err or hang, once retries are exhausted");
 
+        assert_eq!(outcome, EmbedOutcome::Stopped);
         assert_eq!(
-            embedded, 0,
+            db.stats().unwrap().embedding_count,
+            0,
             "nothing embeds when the server is never reachable"
         );
-        assert_eq!(db.stats().unwrap().embedding_count, 0);
     }
 
     #[tokio::test]
@@ -2289,7 +2302,7 @@ mod tests {
                 token_count: 3,
             })
             .collect();
-        let embedded1 = run_embed_phase(
+        let outcome1 = run_embed_phase(
             queue1,
             &db,
             &cfg,
@@ -2300,11 +2313,12 @@ mod tests {
         )
         .await
         .expect("run 1 stops gracefully, not Err");
+        assert_eq!(outcome1, EmbedOutcome::Stopped);
         assert_eq!(
-            embedded1, 5,
+            db.stats().unwrap().embedding_count,
+            5,
             "the 1+4 calibration batches commit; the 500'd batch commits nothing"
         );
-        assert_eq!(db.stats().unwrap().embedding_count, 5);
 
         let missing = db.chunks_missing_embeddings().unwrap();
         assert_eq!(
@@ -2329,7 +2343,7 @@ mod tests {
             .respond_with(OkEmbedResponder)
             .mount(&mock2)
             .await;
-        let embedded2 = run_embed_phase(
+        let outcome2 = run_embed_phase(
             queue2,
             &db,
             &cfg,
@@ -2340,10 +2354,7 @@ mod tests {
         )
         .await
         .expect("run 2 backfills the remainder");
-        assert_eq!(
-            embedded2, 1,
-            "only the one missing chunk is embedded on the re-run"
-        );
+        assert_eq!(outcome2, EmbedOutcome::Complete);
         assert_eq!(
             db.stats().unwrap().embedding_count,
             6,
