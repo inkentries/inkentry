@@ -11,9 +11,9 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [1.2.0] — 2026-10-05
 
-**Upgrading: run `inkentry index --force` once in each indexed project.** Code
-is now chunked differently (see Changed), and an index built by an earlier
-release warns until it is re-chunked. `--force` re-embeds, but embedding now
+**Upgrading: optionally run `inkentry index --force` once in each indexed
+project.** Code is now chunked differently (see Changed), and an index built by
+an earlier release warns until it is re-chunked. `--force` re-embeds, but embedding now
 covers roughly a third to a half of what it did, so it takes a fraction of
 the time the first index took. Until then the old index keeps working: it
 migrates in place on first open, the full-text search improvements apply at

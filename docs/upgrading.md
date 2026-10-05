@@ -2,13 +2,15 @@
 
 ## 1.1.x to 1.2.0
 
-**Run `inkentry index --force` once in each indexed project.** Code is chunked
-differently in 1.2.0, and until an index is re-chunked, `inkentry index` warns
-that it mixes chunk granularities. `--force` re-embeds, but embedding now covers
-roughly a third to a half of what it did, so it takes a fraction of the time the
-first index took.
+**Optional: run `inkentry index --force` once in each indexed project.** Nothing
+stops working if you don't: the old index keeps serving searches. Code is chunked
+differently in 1.2.0, so files you have not changed keep their old chunks, and
+until a project is re-chunked `inkentry index` warns that it mixes chunk
+granularities. `--force` re-chunks everything and re-embeds, but embedding now
+covers roughly a third to a half of what it did, so it takes a fraction of the
+time the first index took.
 
-Nothing else is required. Both stores migrate in place the first time 1.2.0
+Nothing else is required either. Both stores migrate in place the first time 1.2.0
 opens them, and no memory entry is rewritten or re-embedded:
 
 - `index.db` moves from schema version 17 to 20. Existing vectors are kept, the
