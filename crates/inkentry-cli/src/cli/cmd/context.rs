@@ -3,6 +3,7 @@ use clap::Args;
 use std::path::PathBuf;
 
 use super::color::cprintln;
+use super::events::{self, EventArgs};
 use super::memory::cross_project::collect_dep_cross_cutting;
 use super::memory::print_note_summary;
 use crate::storage::memory::Note;
@@ -342,18 +343,18 @@ pub async fn context(args: ContextArgs, cfg: Config) -> Result<()> {
             }
         }
     }
-    super::events::record(
-        &cfg,
-        &mem_path,
-        None,
-        "context",
-        None,
-        Some(memory_results),
-        &returned_ids,
-        Some(tokens_out),
+    events::record(EventArgs {
+        cfg: &cfg,
+        mem_path: &mem_path,
+        backend_override: None,
+        command: "context",
+        code_results: None,
+        memory_results: Some(memory_results),
+        returned_ids: &returned_ids,
+        tokens_out: Some(tokens_out),
         started,
-        true,
-    );
+        ok: true,
+    });
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 
 use super::super::color::cprintln;
+use super::super::events::{self, EventArgs};
 use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     capability,
@@ -514,18 +515,18 @@ async fn memory_harvest_git(
         llm_skipped,
         dedup_skipped
     );
-    super::super::events::record(
+    events::record(EventArgs {
         cfg,
         mem_path,
         backend_override,
-        "harvest",
-        None,
-        Some(stored as i64),
-        &stored_entity_ids,
-        None,
+        command: "harvest",
+        code_results: None,
+        memory_results: Some(stored as i64),
+        returned_ids: &stored_entity_ids,
+        tokens_out: None,
         started,
-        true,
-    );
+        ok: true,
+    });
     Ok(())
 }
 
@@ -883,18 +884,18 @@ async fn memory_harvest_failures(
     println!(
         "\nStored {stored} antipattern(s). Skipped {secret_skipped} with a possible secret, {dedup_skipped} near-duplicate."
     );
-    super::super::events::record(
+    events::record(EventArgs {
         cfg,
         mem_path,
         backend_override,
-        "harvest",
-        None,
-        Some(stored as i64),
-        &stored_entity_ids,
-        None,
+        command: "harvest",
+        code_results: None,
+        memory_results: Some(stored as i64),
+        returned_ids: &stored_entity_ids,
+        tokens_out: None,
         started,
-        true,
-    );
+        ok: true,
+    });
     Ok(())
 }
 

@@ -16,23 +16,35 @@ fn is_local_store(cfg: &Config, backend_override: Option<&str>) -> bool {
     !(cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some())
 }
 
+pub(crate) struct EventArgs<'a> {
+    pub cfg: &'a Config,
+    pub mem_path: &'a Path,
+    pub backend_override: Option<&'a str>,
+    pub command: &'a str,
+    pub code_results: Option<i64>,
+    pub memory_results: Option<i64>,
+    // Entity ids only, never titles, paths or query text.
+    pub returned_ids: &'a [String],
+    pub tokens_out: Option<i64>,
+    pub started: Instant,
+    pub ok: bool,
+}
+
 // Never creates `memory.db`: a read-only command must not leave a schema-less
-// stray file behind. `returned_ids` are entity ids only, never titles, paths or
-// query text.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn record(
-    cfg: &Config,
-    mem_path: &Path,
-    backend_override: Option<&str>,
-    command: &str,
-    code_results: Option<i64>,
-    memory_results: Option<i64>,
-    returned_ids: &[String],
-    tokens_out: Option<i64>,
-    started: Instant,
-    ok: bool,
-) {
-    record_with_outcome(
+// stray file behind.
+pub(crate) fn record(args: EventArgs<'_>) {
+    record_with_outcome(args, None);
+}
+
+// What a `memory add` did about its neighbours: the mode in force, and how the
+// write ended when it was blocked or carried a resolution.
+pub(crate) struct ReconcileOutcome {
+    pub mode: ReconcileMode,
+    pub resolution: Option<ResolutionKind>,
+}
+
+fn record_with_outcome(args: EventArgs<'_>, outcome: Option<ReconcileOutcome>) {
+    let EventArgs {
         cfg,
         mem_path,
         backend_override,
@@ -43,31 +55,7 @@ pub(crate) fn record(
         tokens_out,
         started,
         ok,
-        None,
-    );
-}
-
-// What a `memory add` did about its neighbours: the mode in force, and how the
-// write ended when it was blocked or carried a resolution.
-pub(crate) struct ReconcileOutcome {
-    pub mode: ReconcileMode,
-    pub resolution: Option<ResolutionKind>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_with_outcome(
-    cfg: &Config,
-    mem_path: &Path,
-    backend_override: Option<&str>,
-    command: &str,
-    code_results: Option<i64>,
-    memory_results: Option<i64>,
-    returned_ids: &[String],
-    tokens_out: Option<i64>,
-    started: Instant,
-    ok: bool,
-    outcome: Option<ReconcileOutcome>,
-) {
+    } = args;
     if !mem_path.exists() || !is_local_store(cfg, backend_override) {
         return;
     }
@@ -93,31 +81,8 @@ fn record_with_outcome(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn record_memory_add(
-    cfg: &Config,
-    mem_path: &Path,
-    backend_override: Option<&str>,
-    memory_results: Option<i64>,
-    returned_ids: &[String],
-    tokens_out: Option<i64>,
-    started: Instant,
-    ok: bool,
-    outcome: ReconcileOutcome,
-) {
-    record_with_outcome(
-        cfg,
-        mem_path,
-        backend_override,
-        "memory.add",
-        None,
-        memory_results,
-        returned_ids,
-        tokens_out,
-        started,
-        ok,
-        Some(outcome),
-    );
+pub(crate) fn record_memory_add(args: EventArgs<'_>, outcome: ReconcileOutcome) {
+    record_with_outcome(args, Some(outcome));
 }
 
 #[cfg(test)]

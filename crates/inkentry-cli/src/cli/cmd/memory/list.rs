@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::super::events::{self, EventArgs};
 use super::MemoryListArgs;
 use super::{parse_as_of, print_note_summary};
 use crate::{
@@ -133,18 +134,18 @@ fn record_list_event(
     ok: bool,
 ) {
     let returned_ids: Vec<String> = notes.iter().map(|n| n.entity_id.clone()).collect();
-    super::super::events::record(
+    events::record(EventArgs {
         cfg,
         mem_path,
         backend_override,
-        "memory.list",
-        None,
-        Some(returned_ids.len() as i64),
-        &returned_ids,
-        None,
+        command: "memory.list",
+        code_results: None,
+        memory_results: Some(returned_ids.len() as i64),
+        returned_ids: &returned_ids,
+        tokens_out: None,
         started,
         ok,
-    );
+    });
 }
 
 fn print_notes(notes: &[crate::storage::memory::Note], format: &str) -> Result<()> {

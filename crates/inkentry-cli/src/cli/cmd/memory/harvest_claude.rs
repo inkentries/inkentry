@@ -4,6 +4,7 @@ use std::io::BufRead as _;
 use anyhow::{Context, Result};
 
 use super::super::color::cprintln;
+use super::super::events::{self, EventArgs};
 use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
@@ -434,18 +435,18 @@ pub(super) async fn harvest_claude_code(
         "\nHarvested {stored} entries from {} sessions. Skipped {} near-duplicate.",
         total, dedup_skipped
     );
-    super::super::events::record(
+    events::record(EventArgs {
         cfg,
         mem_path,
         backend_override,
-        "harvest",
-        None,
-        Some(stored as i64),
-        &stored_entity_ids,
-        None,
+        command: "harvest",
+        code_results: None,
+        memory_results: Some(stored as i64),
+        returned_ids: &stored_entity_ids,
+        tokens_out: None,
         started,
-        true,
-    );
+        ok: true,
+    });
     Ok(())
 }
 
