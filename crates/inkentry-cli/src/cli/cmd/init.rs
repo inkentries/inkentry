@@ -29,208 +29,268 @@ use crate::{
 
 use super::memory::reconcile::GitNotesImport;
 
+use std::path::{Path, PathBuf};
+
+struct ProjectPaths {
+    git_root: Option<PathBuf>,
+    root: PathBuf,
+    inkentry_dir: PathBuf,
+    db: PathBuf,
+    config: PathBuf,
+}
+
+struct InitSummary {
+    slug: String,
+    wrote_slug: bool,
+    file_count: i64,
+    chunk_count: i64,
+    hook_status: String,
+    memory_line: Option<String>,
+    server_line: Option<String>,
+    notes_lines: Vec<String>,
+}
+
 pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
+    let project = resolve_project()?;
+
+    write_inkentry_gitignore(&project.inkentry_dir);
+
+    let (slug, wrote_slug) = resolve_slug(args.name.as_deref(), &project);
+
+    if project.db.exists() {
+        println!(
+            "Note: inkentry is already initialised for '{}' (DB exists at {}).",
+            slug,
+            project.db.display()
+        );
+        println!("Re-running init is safe — it will update the registry and optionally re-index.");
+    }
+
+    register_project(&project);
+
+    let hook_status = hook_status(args.hook);
+
+    // Runs before the index step: the detached embed would otherwise probe a
+    // server this command has not started yet and ship a zero-embedding index.
+    let server_line = start_or_probe_server(&cfg).await;
+
+    run_index(&args, &project, &cfg).await?;
+    let (file_count, chunk_count) = if args.no_index && !project.db.exists() {
+        (0, 0)
+    } else {
+        index_counts(&project.db)
+    };
+
+    let (notes_lines, memory_line) = import_notes(&project).await;
+
+    print_summary(
+        &project,
+        &InitSummary {
+            slug,
+            wrote_slug,
+            file_count,
+            chunk_count,
+            hook_status,
+            memory_line,
+            server_line,
+            notes_lines,
+        },
+    );
+
+    Ok(())
+}
+
+fn resolve_project() -> Result<ProjectPaths> {
     let cwd = std::env::current_dir()?;
     let git_root = find_git_root(&cwd);
 
-    let project_root = match &git_root {
+    let root = match &git_root {
         Some(root) => root.clone(),
         None => {
             eprintln!(
                 "Warning: not inside a git repository. Using current directory as project root."
             );
-            cwd.clone()
+            cwd
         }
     };
 
-    let inkentry_dir = project_root.join(".inkentry");
-    let db_path = inkentry_dir.join("index.db");
-    let config_path = inkentry_dir.join("config.toml");
+    let inkentry_dir = root.join(".inkentry");
+    Ok(ProjectPaths {
+        git_root,
+        db: inkentry_dir.join("index.db"),
+        config: inkentry_dir.join("config.toml"),
+        inkentry_dir,
+        root,
+    })
+}
 
-    write_inkentry_gitignore(&inkentry_dir);
-
-    // Never overwrites an existing project_id: no retroactive rename.
-    let desired_slug = args
-        .name
-        .clone()
-        .unwrap_or_else(|| inkentry_core::config::derive_project_id(&project_root));
-    let (project_slug, wrote_slug) =
-        match inkentry_core::config::write_project_slug(&config_path, &desired_slug) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("Warning: could not write project slug to config: {e}");
-                (desired_slug.clone(), false)
-            }
-        };
-
-    let already_exists = db_path.exists();
-    if already_exists {
-        println!(
-            "Note: inkentry is already initialised for '{}' (DB exists at {}).",
-            project_slug,
-            db_path.display()
-        );
-        println!("Re-running init is safe — it will update the registry and optionally re-index.");
+// Never overwrites an existing project_id: no retroactive rename.
+fn resolve_slug(name: Option<&str>, project: &ProjectPaths) -> (String, bool) {
+    let desired = name
+        .map(str::to_owned)
+        .unwrap_or_else(|| inkentry_core::config::derive_project_id(&project.root));
+    match inkentry_core::config::write_project_slug(&project.config, &desired) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Warning: could not write project slug to config: {e}");
+            (desired, false)
+        }
     }
+}
 
-    let root_canonical = inkentry_core::utils::canonicalize(project_root.as_ref());
+fn register_project(project: &ProjectPaths) {
+    let root_canonical = inkentry_core::utils::canonicalize(project.root.as_ref());
 
     if let Ok(reg) = Registry::open() {
-        let db_canonical = if db_path.exists() {
-            inkentry_core::utils::canonicalize(db_path.as_ref())
+        let db_canonical = if project.db.exists() {
+            inkentry_core::utils::canonicalize(project.db.as_ref())
         } else {
-            db_path.clone()
+            project.db.clone()
         };
         if let Err(e) = reg.register(&root_canonical, &db_canonical) {
             eprintln!("Warning: registry update failed: {e}");
         }
     }
+}
 
-    let hook_status = if args.hook {
+fn hook_status(install: bool) -> String {
+    if install {
         match install_hook_for_init() {
             Ok(msg) => msg,
             Err(e) => format!("failed: {e}"),
         }
     } else {
         "not installed  (run `inkentry hooks install` to add)".to_string()
-    };
+    }
+}
 
-    // Non-interactive (CI / hook) only probes, never auto-spawns.
-    //
-    // Runs before the index step: the detached embed would otherwise probe a
-    // server this command has not started yet and ship a zero-embedding index.
-    let server_line: Option<String> = {
-        use std::io::IsTerminal;
-        if std::io::stdin().is_terminal() {
-            match super::server::ensure_server_running(DEFAULT_SERVER_PORT, &cfg).await {
-                Ok((port, true)) => Some(format!(
-                    "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
-                )),
-                Ok((port, false)) => Some(format!("http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m")),
-                Err(e) => {
-                    tracing::debug!("server auto-start skipped: {e}");
-                    None
-                }
+// Non-interactive (CI / hook) only probes, never auto-spawns.
+async fn start_or_probe_server(cfg: &Config) -> Option<String> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        match super::server::ensure_server_running(DEFAULT_SERVER_PORT, cfg).await {
+            Ok((port, true)) => Some(format!(
+                "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"
+            )),
+            Ok((port, false)) => Some(format!("http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m")),
+            Err(e) => {
+                tracing::debug!("server auto-start skipped: {e}");
+                None
             }
-        } else {
-            let tier = capability::get_tier(&cfg).await;
-            match tier {
-                capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
-                capability::Tier::Offline(_) => {
-                    Some("[server not running - semantic search skipped]".to_string())
-                }
-            }
-        }
-    };
-
-    let (file_count, chunk_count) = if args.no_index {
-        println!("Skipping index (--no-index). Run `inkentry index .` when ready.");
-        if db_path.exists() {
-            match Database::open(&db_path) {
-                Ok(db) => match db.stats() {
-                    Ok(stats) => (stats.file_count, stats.chunk_count),
-                    Err(_) => (0, 0),
-                },
-                Err(_) => (0, 0),
-            }
-        } else {
-            (0, 0)
         }
     } else {
-        let index_args = super::index::IndexArgs {
-            path: project_root.clone(),
-            db: None,
-            batch_size: 32,
-            force: false,
-            recount: false,
-            no_summaries: false,
-            background_phases: false,
-            embed_phases: false,
-            detach: false,
-            // The embed pass is long: hand it to the background worker so init
-            // returns after parsing.
-            detach_embed: true,
-            // `InitArgs` carries no `--config` to forward, so the detached
-            // embed child uses the default config.
-            config_path: None,
-        };
-        super::index::index(index_args, cfg.clone()).await?;
+        match capability::get_tier(cfg).await {
+            capability::Tier::Server { url, .. } => Some(format!("{url}  \x1b[32m✓\x1b[0m")),
+            capability::Tier::Offline(_) => {
+                Some("[server not running - semantic search skipped]".to_string())
+            }
+        }
+    }
+}
 
-        match Database::open(&db_path) {
-            Ok(db) => match db.stats() {
-                Ok(stats) => (stats.file_count, stats.chunk_count),
-                Err(_) => (0, 0),
-            },
+fn index_counts(db_path: &Path) -> (i64, i64) {
+    match Database::open(db_path) {
+        Ok(db) => match db.stats() {
+            Ok(stats) => (stats.file_count, stats.chunk_count),
             Err(_) => (0, 0),
-        }
+        },
+        Err(_) => (0, 0),
+    }
+}
+
+async fn run_index(args: &InitArgs, project: &ProjectPaths, cfg: &Config) -> Result<()> {
+    if args.no_index {
+        println!("Skipping index (--no-index). Run `inkentry index .` when ready.");
+        return Ok(());
+    }
+
+    let index_args = super::index::IndexArgs {
+        path: project.root.clone(),
+        db: None,
+        batch_size: 32,
+        force: false,
+        recount: false,
+        no_summaries: false,
+        background_phases: false,
+        embed_phases: false,
+        detach: false,
+        // The embed pass is long: hand it to the background worker so init
+        // returns after parsing.
+        detach_embed: true,
+        // `InitArgs` carries no `--config`, so the detached embed child uses the default config.
+        config_path: None,
+    };
+    super::index::index(index_args, cfg.clone()).await
+}
+
+// Order is load-bearing: on a fresh clone the import must run after the
+// refspec is configured and a fetch has populated the tracking ref, or one
+// `init` imports nothing.
+async fn import_notes(project: &ProjectPaths) -> (Vec<String>, Option<String>) {
+    let Some(git_root) = project.git_root.as_ref() else {
+        return (Vec::new(), None);
     };
 
-    // Order is load-bearing: on a fresh clone the import must run after the
-    // refspec is configured and a fetch has populated the tracking ref, or one
-    // `init` imports nothing.
-    let notes_lines = if git_root.is_some() {
-        configure_notes_refspec(&project_root).await
-    } else {
-        Vec::new()
-    };
+    let notes_lines = configure_notes_refspec(&project.root).await;
 
     // Non-fatal throughout: a failure here (offline included) must not sink init.
-    let memory_line: Option<String> = if let Some(git_root) = git_root.as_ref() {
-        let mem_path = inkentry_dir.join("memory.db");
-        fetch_notes_best_effort(&project_root).await;
-        // Merge the tracking ref first so teammates' entries import too.
-        crate::storage::merge_tracking_notes(Some(git_root)).await;
+    let mem_path = project.inkentry_dir.join("memory.db");
+    fetch_notes_best_effort(&project.root).await;
+    // Merge the tracking ref first so teammates' entries import too.
+    crate::storage::merge_tracking_notes(Some(git_root)).await;
+    let memory_line =
         match super::memory::reconcile::import_git_notes_into_memory(git_root, &mem_path).await {
             Ok(outcome) => git_notes_import_line(&outcome),
             Err(e) => {
                 tracing::warn!("git-notes memory import skipped (non-fatal): {e}");
                 None
             }
-        }
-    } else {
-        None
-    };
+        };
+    (notes_lines, memory_line)
+}
 
+fn print_summary(project: &ProjectPaths, summary: &InitSummary) {
     println!();
-    println!("inkentry initialised for {}", project_slug);
+    println!("inkentry initialised for {}", summary.slug);
     println!();
-    println!("  Index:   {} files, {} chunks", file_count, chunk_count);
-    println!("  DB:      {}", db_path.display());
-    if wrote_slug {
+    println!(
+        "  Index:   {} files, {} chunks",
+        summary.file_count, summary.chunk_count
+    );
+    println!("  DB:      {}", project.db.display());
+    if summary.wrote_slug {
         println!(
             "  Project: {}  (written to {})",
-            project_slug,
-            config_path.display()
+            summary.slug,
+            project.config.display()
         );
     } else {
         println!(
             "  Project: {}  (from {})",
-            project_slug,
-            config_path.display()
+            summary.slug,
+            project.config.display()
         );
     }
-    if wrote_slug {
+    if summary.wrote_slug {
         println!(
             "           wrote .inkentry/config.toml — commit it so your project slug \
              travels with the repo"
         );
     }
-    println!("  Hook:    {}", hook_status);
-    if let Some(line) = memory_line {
+    println!("  Hook:    {}", summary.hook_status);
+    if let Some(line) = &summary.memory_line {
         println!("  Memory:  {line}");
     }
-    if let Some(line) = server_line {
+    if let Some(line) = &summary.server_line {
         cprintln!("  Server:  {line}");
     }
-    for line in &notes_lines {
+    for line in &summary.notes_lines {
         println!("  {line}");
     }
     println!();
     println!("Next steps:");
     println!("  inkentry search \"your query\"");
     println!("  inkentry context");
-
-    Ok(())
 }
 
 // Skipped edges are always reported: a graph thinner than the one on the ref
