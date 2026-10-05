@@ -122,8 +122,6 @@ pub fn detect_doc_language(path: &std::path::Path) -> Option<&'static str> {
     None
 }
 
-/// Return true if the file appears to be binary (contains null bytes in the
-/// first 512 bytes). Used to skip compiled or binary assets.
 pub fn is_binary_file(path: &std::path::Path) -> bool {
     use std::io::Read;
     if let Ok(mut f) = std::fs::File::open(path) {
