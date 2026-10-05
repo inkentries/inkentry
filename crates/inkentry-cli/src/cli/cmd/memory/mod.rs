@@ -149,10 +149,10 @@ pub struct MemoryAddArgs {
     #[arg(long)]
     pub reconcile: bool,
 
-    /// Anchor this entry to a commit immediately, instead of
-    /// recording a pending anchor for the post-commit hook to claim later.
-    /// The commit does not have to exist on disk under `git show` for this
-    /// process's working tree only — it must resolve with `git rev-parse`.
+    /// Anchor this entry to a commit immediately, instead of recording a
+    /// pending anchor for the post-commit hook to claim later. Takes a sha or
+    /// any ref that resolves to a commit in this repository (HEAD, a branch);
+    /// the commit need not be an ancestor of HEAD.
     #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
 
