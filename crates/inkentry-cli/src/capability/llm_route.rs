@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::config::Config;
-use crate::server_client::ServerInferenceClient;
+use crate::server_client::{Explicitness, ServerInferenceClient};
 
 use super::llm_message::NoLlmReason;
 use super::probe::{get_inference_tier, get_tier};
@@ -30,12 +30,12 @@ impl LlmRoute {
         }
     }
 
-    // from_config infers explicit-remote from inference_url being unset, which the Remote route
-    // sets; using it would point remote failures at the local daemon's log.
     pub fn client(&self) -> Option<ServerInferenceClient> {
         match self {
-            LlmRoute::Local(cfg) => ServerInferenceClient::from_config(cfg),
-            LlmRoute::Remote(cfg) => ServerInferenceClient::from_config_explicit_remote(cfg),
+            LlmRoute::Local(cfg) => ServerInferenceClient::from_config(cfg, Explicitness::Inferred),
+            LlmRoute::Remote(cfg) => {
+                ServerInferenceClient::from_config(cfg, Explicitness::ExplicitRemote)
+            }
             LlmRoute::Unavailable(_) => None,
         }
     }

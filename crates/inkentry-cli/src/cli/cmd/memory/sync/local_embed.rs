@@ -9,7 +9,7 @@ use crate::{
     capability,
     config::{Config, SyncMode},
     embeddings::vec_to_blob,
-    server_client::ServerInferenceClient,
+    server_client::{Explicitness, ServerInferenceClient},
     storage::{MemoryStore, SyncRow},
 };
 
@@ -89,7 +89,7 @@ async fn resolve_local_embedder(
     // An auto-discovered loopback server leaves `server_url` unset; bridge it
     // into an effective config, as `memory reindex` does.
     let eff_cfg = tier.effective_config(cfg, project_root);
-    ServerInferenceClient::from_config(&eff_cfg)
+    ServerInferenceClient::from_config(&eff_cfg, Explicitness::Inferred)
 }
 
 pub(super) async fn repair_local_embeddings(

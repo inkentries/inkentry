@@ -195,7 +195,11 @@ fn a_failed_loopback_probe_leaves_no_embedder_rather_than_the_team_server() {
         "a configured team server_url must never become the embed target"
     );
     assert!(
-        crate::server_client::ServerInferenceClient::from_config(&eff).is_none(),
+        crate::server_client::ServerInferenceClient::from_config(
+            &eff,
+            crate::server_client::Explicitness::Inferred
+        )
+        .is_none(),
         "no loopback embedder must mean no embedder, not the team server"
     );
 }

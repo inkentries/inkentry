@@ -9,7 +9,7 @@ use crate::{
     capability,
     capability::inkentry_state_dir,
     config::Config,
-    server_client::ServerInferenceClient,
+    server_client::{Explicitness, ServerInferenceClient},
     storage::{MemoryStore, NoteId, entity_id, note_entity_id},
 };
 
@@ -338,7 +338,7 @@ async fn reconcile_project(
         return Ok(());
     }
 
-    let embed_client = ServerInferenceClient::from_config(cfg);
+    let embed_client = ServerInferenceClient::from_config(cfg, Explicitness::Inferred);
 
     // Embedded up front so the transaction is not held open across server calls.
     let mut embeddings: Vec<Option<Vec<u8>>> = Vec::with_capacity(to_import.len());
