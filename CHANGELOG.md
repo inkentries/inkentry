@@ -9,6 +9,8 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-05
+
 **Upgrading: run `inkentry index --force` once in each indexed project.** Code
 is now chunked differently (see Changed), and an index built by an earlier
 release warns until it is re-chunked. `--force` re-embeds, but embedding now
