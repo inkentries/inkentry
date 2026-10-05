@@ -26,9 +26,8 @@ pub(crate) fn inkentry_state_dir() -> anyhow::Result<std::path::PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 
-fn read_server_port_file() -> Option<u16> {
-    let path = inkentry_state_dir().ok()?.join("server.port");
-    let content = std::fs::read_to_string(&path).ok()?;
+fn read_server_port_file(state_dir: &std::path::Path) -> Option<u16> {
+    let content = std::fs::read_to_string(state_dir.join("server.port")).ok()?;
     content.trim().parse::<u16>().ok()
 }
 
@@ -226,49 +225,56 @@ fn discovery_fallback_port() -> Option<u16> {
     }
 }
 
-// Never consults `cfg.server_url`. Probe failures are `Tier::Offline`, not
-// errors: no local server is the normal case. Once a port is recorded it
-// decides the answer: a responder failing the identity checks must not fall
-// through to the default port, where whatever holds the recorded port
-// usually answers too and nothing is verified.
+// Never consults `cfg.server_url`.
 async fn probe_loopback() -> Tier {
-    if let Some(port) = read_server_port_file() {
-        let loopback_url = format!("http://127.0.0.1:{port}");
-        tracing::debug!(
-            "loopback auto-discovery: found server.port={port}, probing {loopback_url}"
-        );
-        // Plaintext http on loopback, so no custom CA applies.
-        let (tier, reported_instance_id) =
-            probe_url_reporting_instance_id(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true, None)
-                .await
-                .unwrap_or((Tier::Offline(OfflineReason::NoLocalServer), None));
+    match inkentry_state_dir()
+        .ok()
+        .and_then(|dir| read_server_port_file(&dir))
+    {
+        Some(port) => probe_recorded_server(port).await,
+        None => probe_default_port().await,
+    }
+}
 
-        // Announced rather than logged: the user started a local server and
-        // this run is not using it, which a dropped `tracing` line hides.
-        let refused = match tier {
-            // Keeps its own reason and advice: that daemon answered.
-            Tier::Offline(OfflineReason::LocalServerUnusable) => return tier,
-            Tier::Offline(_) => format!(
-                "the local server recorded in {} did not answer on 127.0.0.1:{port}",
+// A responder failing the identity checks must not fall through to the default
+// port, where whatever holds the recorded port usually answers too and nothing
+// is verified.
+async fn probe_recorded_server(port: u16) -> Tier {
+    let loopback_url = format!("http://127.0.0.1:{port}");
+    tracing::debug!("loopback auto-discovery: found server.port={port}, probing {loopback_url}");
+    // Plaintext http on loopback, so no custom CA applies.
+    let (tier, reported_instance_id) =
+        probe_url_reporting_instance_id(&loopback_url, LOOPBACK_PROBE_TIMEOUT, true, None)
+            .await
+            .unwrap_or((Tier::Offline(OfflineReason::NoLocalServer), None));
+
+    // Announced rather than logged: the user started a local server and
+    // this run is not using it, which a dropped `tracing` line hides.
+    let refused = match tier {
+        // Keeps its own reason and advice: that daemon answered.
+        Tier::Offline(OfflineReason::LocalServerUnusable) => return tier,
+        Tier::Offline(_) => format!(
+            "the local server recorded in {} did not answer on 127.0.0.1:{port}",
+            state_dir_for_message()
+        ),
+        Tier::Server { .. } => match untrusted_responder(reported_instance_id.as_deref()) {
+            Some(why) => format!(
+                "the process answering 127.0.0.1:{port} is not the server recorded in \
+                 {}: {why}. Nothing was sent to it",
                 state_dir_for_message()
             ),
-            Tier::Server { .. } => match untrusted_responder(reported_instance_id.as_deref()) {
-                Some(why) => format!(
-                    "the process answering 127.0.0.1:{port} is not the server recorded in \
-                     {}: {why}. Nothing was sent to it",
-                    state_dir_for_message()
-                ),
-                None => return tier,
-            },
-        };
+            None => return tier,
+        },
+    };
 
-        crate::notice::enotice!(
-            "warning: {refused}. Embeddings are offline for this run: run \
-             `inkentry server stop`, then `inkentry server start`."
-        );
-        return Tier::Offline(OfflineReason::RecordedServerUnreachable);
-    }
+    crate::notice::enotice!(
+        "warning: {refused}. Embeddings are offline for this run: run \
+         `inkentry server stop`, then `inkentry server start`."
+    );
+    Tier::Offline(OfflineReason::RecordedServerUnreachable)
+}
 
+async fn probe_default_port() -> Tier {
     let Some(port) = discovery_fallback_port() else {
         tracing::debug!("loopback auto-discovery: fallback disabled: offline mode");
         return Tier::Offline(OfflineReason::NoLocalServer);
@@ -766,7 +772,8 @@ mod tests {
 
     #[test]
     fn read_server_port_file_returns_none_when_absent() {
-        let _ = read_server_port_file(); // must not panic
+        let dir = tempfile::TempDir::new().expect("temp state dir");
+        assert_eq!(read_server_port_file(dir.path()), None);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use inkentry_core::search::tokens::estimate_tokens;
 
 use super::summaries::{SUPPRESSED_SUMMARY, UNREFINABLE_SUMMARY};
 use crate::config::Config;
-use crate::server_client::ServerInferenceClient;
+use crate::server_client::{Explicitness, ServerInferenceClient};
 use crate::storage::Database;
 
 pub(super) async fn run_tier3_selection(cfg: &Config, db: &Database) -> Result<usize> {
@@ -15,7 +15,7 @@ pub(super) async fn run_tier3_selection(cfg: &Config, db: &Database) -> Result<u
     if candidates.is_empty() {
         return Ok(0);
     }
-    let Some(client) = ServerInferenceClient::from_config(cfg) else {
+    let Some(client) = ServerInferenceClient::from_config(cfg, Explicitness::Inferred) else {
         return Ok(0);
     };
 

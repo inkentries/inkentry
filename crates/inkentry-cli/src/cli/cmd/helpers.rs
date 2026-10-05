@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use crate::{
     config::{Config, require_project_db},
     embeddings::vec_to_blob,
-    server_client::ServerInferenceClient,
+    server_client::{Explicitness, ServerInferenceClient},
     storage::Database,
 };
 
@@ -64,7 +64,7 @@ pub(crate) fn announce_index_rebuild(db: &Database) {
 }
 
 pub(crate) fn require_server_client(cfg: &Config, feature: &str) -> Result<ServerInferenceClient> {
-    ServerInferenceClient::from_config(cfg).ok_or_else(|| {
+    ServerInferenceClient::from_config(cfg, Explicitness::Inferred).ok_or_else(|| {
         anyhow::anyhow!(crate::capability::inference_server_required_message(
             feature
         ))

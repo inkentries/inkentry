@@ -7,7 +7,7 @@ use crate::{
     capability,
     config::{Config, SyncMode},
     indexer::secrets::contains_secret,
-    server_client::ServerInferenceClient,
+    server_client::{Explicitness, ServerInferenceClient},
     storage::{
         AddOutcome, Candidate, CandidateBand, CarriedEdge, GitNotesBackend, MemoryBackend,
         MemoryStore, NoteInput, NoteRecord, Resolution, RewriteRefStatus, append_state_update,
@@ -612,7 +612,7 @@ fn resolution_kind(args: &MemoryAddArgs) -> Option<ResolutionKind> {
 async fn embed_with_budget(cfg: &Config, doc: &str) -> Result<Vec<u8>, String> {
     use crate::embeddings::vec_to_blob;
 
-    let Some(client) = ServerInferenceClient::from_config(cfg) else {
+    let Some(client) = ServerInferenceClient::from_config(cfg, Explicitness::Inferred) else {
         return Err("no embedder was reachable".to_string());
     };
     let sp = super::super::ui::spinner("Embedding…");
@@ -798,7 +798,7 @@ fn html_unescape(s: &str) -> String {
 // `None` lets callers store the entry without a vector rather than fail.
 async fn try_embed_via_server(cfg: &Config, text: &str) -> Option<Vec<u8>> {
     use crate::embeddings::vec_to_blob;
-    let Some(client) = ServerInferenceClient::from_config(cfg) else {
+    let Some(client) = ServerInferenceClient::from_config(cfg, Explicitness::Inferred) else {
         tracing::warn!(
             "No server_url configured — memory entry stored without embedding vector; \
              semantic search will not surface it."

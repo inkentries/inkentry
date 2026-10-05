@@ -8,7 +8,7 @@ use crate::{
     config::Config,
     embeddings::vec_to_blob,
     indexer::secrets::contains_secret,
-    server_client::{LlmMessage, ServerInferenceClient, harvest_requires_server},
+    server_client::{Explicitness, LlmMessage, ServerInferenceClient, harvest_requires_server},
     storage::{NoteInput, open_memory_backend},
 };
 
@@ -158,8 +158,8 @@ pub(super) async fn harvest_clients(
     cfg: &Config,
     mem_path: &std::path::Path,
 ) -> Result<(ServerInferenceClient, ServerInferenceClient)> {
-    let embed_server =
-        ServerInferenceClient::from_config(cfg).ok_or_else(harvest_requires_server)?;
+    let embed_server = ServerInferenceClient::from_config(cfg, Explicitness::Inferred)
+        .ok_or_else(harvest_requires_server)?;
     let project_root = mem_path.parent().unwrap_or(mem_path);
     let route = capability::resolve_llm_route(cfg, project_root).await;
     let Some(llm_server) = route.client() else {

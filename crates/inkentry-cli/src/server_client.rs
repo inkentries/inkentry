@@ -105,19 +105,29 @@ struct RefreshState {
     store: Arc<dyn SecretStore>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Explicitness {
+    Inferred,
+    ExplicitRemote,
+}
+
 impl ServerInferenceClient {
     // An auto-discovered loopback server sets `inference_url` while leaving
     // `server_url` unset, so inference reaches it though memory stays local. The
     // bearer is per-origin: a self-hosted server never gets a cloud session token.
-    pub fn from_config(cfg: &Config) -> Option<Self> {
+    pub fn from_config(cfg: &Config, explicitness: Explicitness) -> Option<Self> {
         let store: Arc<dyn SecretStore> = Arc::from(
             inkentry_core::config::default_secret_store().expect("resolving the secret store"),
         );
-        Self::from_config_with_arc_store(cfg, store)
+        Self::from_config_with_arc_store(cfg, explicitness, store)
     }
 
     // One store backs bearer resolution, the cloud session and the refresh write-back.
-    fn from_config_with_arc_store(cfg: &Config, store: Arc<dyn SecretStore>) -> Option<Self> {
+    fn from_config_with_arc_store(
+        cfg: &Config,
+        explicitness: Explicitness,
+        store: Arc<dyn SecretStore>,
+    ) -> Option<Self> {
         let base_url = cfg
             .resolve_inference_url()?
             .trim_end_matches('/')
@@ -128,24 +138,24 @@ impl ServerInferenceClient {
         let session = cfg
             .cloud_session_with_store(store.as_ref())
             .expect("resolving the cached cloud session");
-        Some(Self::build(cfg, base_url, bearer, session, store))
-    }
-
-    // `from_config` infers "explicit remote" from the inference target being unset,
-    // which fails once LLM routing points that target at `server_url`.
-    pub fn from_config_explicit_remote(cfg: &Config) -> Option<Self> {
-        let mut client = Self::from_config(cfg)?;
-        client.is_explicit_remote = true;
-        Some(client)
+        Some(Self::build(
+            cfg,
+            explicitness,
+            base_url,
+            bearer,
+            session,
+            store,
+        ))
     }
 
     #[cfg(test)]
     fn from_config_with_store(cfg: &Config, store: Arc<dyn SecretStore>) -> Option<Self> {
-        Self::from_config_with_arc_store(cfg, store)
+        Self::from_config_with_arc_store(cfg, Explicitness::Inferred, store)
     }
 
     fn build(
         cfg: &Config,
+        explicitness: Explicitness,
         base_url: String,
         bearer: Option<String>,
         session: Option<AuthTokens>,
@@ -184,10 +194,11 @@ impl ServerInferenceClient {
             client,
             base_url,
             project_id,
-            // Mirrors `resolve_inference_url`'s fallback: `base_url` came from
+            // Inferred mirrors `resolve_inference_url`'s fallback: `base_url` came from
             // `server_url` iff `inference_url` was unset. Under `local_first` both
             // are set and `server_url` is only a sync replica.
-            is_explicit_remote: cfg.inference_url.is_none() && cfg.server_url.is_some(),
+            is_explicit_remote: explicitness == Explicitness::ExplicitRemote
+                || (cfg.inference_url.is_none() && cfg.server_url.is_some()),
             auth: Mutex::new(BearerState { bearer, refresh }),
         }
     }
@@ -214,16 +225,6 @@ impl ServerInferenceClient {
                 }),
             }),
         }
-    }
-
-    #[cfg(test)]
-    fn from_config_explicit_remote_with_store(
-        cfg: &Config,
-        store: Arc<dyn SecretStore>,
-    ) -> Option<Self> {
-        let mut client = Self::from_config_with_store(cfg, store)?;
-        client.is_explicit_remote = true;
-        Some(client)
     }
 
     #[cfg(test)]
@@ -1140,9 +1141,13 @@ mod tests {
             "the plain constructor derives the flag and cannot see through this shape"
         );
         assert!(
-            ServerInferenceClient::from_config_explicit_remote_with_store(&cfg, store)
-                .expect("client builds")
-                .is_explicit_remote,
+            ServerInferenceClient::from_config_with_arc_store(
+                &cfg,
+                Explicitness::ExplicitRemote,
+                store
+            )
+            .expect("client builds")
+            .is_explicit_remote,
             "the remote LLM branch must carry the flag rather than re-derive it"
         );
     }
