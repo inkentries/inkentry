@@ -18,6 +18,10 @@ pub struct InitArgs {
     /// when a `project_id` is already set in config.
     #[arg(long)]
     pub name: Option<String>,
+
+    // Filled in by `main` from the global `--config`; forwarded to the detached embed child.
+    #[arg(skip)]
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 use crate::{
@@ -204,8 +208,13 @@ async fn run_index(args: &InitArgs, project: &ProjectPaths, cfg: &Config) -> Res
         return Ok(());
     }
 
-    let index_args = super::index::IndexArgs {
-        path: project.root.clone(),
+    let index_args = index_args_for(args, project.root.clone());
+    super::index::index(index_args, cfg.clone()).await
+}
+
+fn index_args_for(args: &InitArgs, root: PathBuf) -> super::index::IndexArgs {
+    super::index::IndexArgs {
+        path: root,
         db: None,
         batch_size: 32,
         force: false,
@@ -217,10 +226,8 @@ async fn run_index(args: &InitArgs, project: &ProjectPaths, cfg: &Config) -> Res
         // The embed pass is long: hand it to the background worker so init
         // returns after parsing.
         detach_embed: true,
-        // `InitArgs` carries no `--config`, so the detached embed child uses the default config.
-        config_path: None,
-    };
-    super::index::index(index_args, cfg.clone()).await
+        config_path: args.config_path.clone(),
+    }
 }
 
 // Order is load-bearing: on a fresh clone the import must run after the
@@ -575,6 +582,32 @@ mod git_notes_import_line_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn init_args(config_path: Option<PathBuf>) -> InitArgs {
+        InitArgs {
+            hook: false,
+            no_index: false,
+            name: None,
+            config_path,
+        }
+    }
+
+    #[test]
+    fn init_forwards_the_global_config_to_the_detached_embed_child() {
+        let args = init_args(Some(PathBuf::from("/tmp/custom-config.toml")));
+        let index_args = index_args_for(&args, PathBuf::from("/proj"));
+        assert!(index_args.detach_embed);
+        assert_eq!(
+            index_args.config_path.as_deref(),
+            Some(Path::new("/tmp/custom-config.toml"))
+        );
+    }
+
+    #[test]
+    fn init_without_a_global_config_forwards_none() {
+        let index_args = index_args_for(&init_args(None), PathBuf::from("/proj"));
+        assert!(index_args.config_path.is_none());
+    }
 
     #[test]
     fn gitignore_ignores_dbs_but_not_committed_files() {
