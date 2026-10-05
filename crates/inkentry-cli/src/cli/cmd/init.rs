@@ -102,7 +102,6 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     let server_line: Option<String> = {
         use std::io::IsTerminal;
         if std::io::stdin().is_terminal() {
-            // Keep on one line: `daemon_spawn_call_sites` reads call sites line by line.
             match super::server::ensure_server_running(DEFAULT_SERVER_PORT, &cfg).await {
                 Ok((port, true)) => Some(format!(
                     "http://127.0.0.1:{port}  \x1b[32m✓\x1b[0m  (auto-started)"

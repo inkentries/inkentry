@@ -258,7 +258,7 @@ impl MemoryStore {
 
         let external_values: Vec<NoteId> = group
             .iter()
-            .filter_map(|n| n.superseded_by.as_ref().and_then(&resolve))
+            .filter_map(|n| n.superseded_by.as_ref().and_then(resolve))
             .collect();
         let resolved_survivor_target = external_values.first().cloned();
         if let Some(val) = resolved_survivor_target.as_ref() {
@@ -275,7 +275,7 @@ impl MemoryStore {
         // Counts only the survivor's own value resolving to nothing;
         // losers' references are handled (uncounted) by rewrite_cross_references.
         let survivor_self_edge_dropped =
-            matches!(survivor.superseded_by.as_ref().map(&resolve), Some(None));
+            matches!(survivor.superseded_by.as_ref().map(resolve), Some(None));
         if survivor_self_edge_dropped {
             summary.supersede_self_edges_dropped += 1;
         }

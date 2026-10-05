@@ -155,48 +155,13 @@ fn single_add_writes_exactly_one_note_record() {
 }
 
 fn json_top_level_keys(line: &str) -> Vec<String> {
-    let bytes = line.as_bytes();
-    let mut keys = Vec::new();
-    let mut depth: i32 = 0;
-    let mut in_str = false;
-    let mut escaped = false;
-    let mut cur = String::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        if in_str {
-            if escaped {
-                cur.push(c);
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_str = false;
-                let mut j = i + 1;
-                while j < bytes.len() && (bytes[j] as char).is_whitespace() {
-                    j += 1;
-                }
-                if depth == 1 && j < bytes.len() && bytes[j] as char == ':' {
-                    keys.push(std::mem::take(&mut cur));
-                } else {
-                    cur.clear();
-                }
-            } else {
-                cur.push(c);
-            }
-        } else {
-            match c {
-                '"' => {
-                    in_str = true;
-                    cur.clear();
-                }
-                '{' | '[' => depth += 1,
-                '}' | ']' => depth -= 1,
-                _ => {}
-            }
-        }
-        i += 1;
-    }
+    let record: serde_json::Value = serde_json::from_str(line).expect("record parses as JSON");
+    let mut keys: Vec<String> = record
+        .as_object()
+        .expect("record is a JSON object")
+        .keys()
+        .cloned()
+        .collect();
     keys.sort();
     keys
 }

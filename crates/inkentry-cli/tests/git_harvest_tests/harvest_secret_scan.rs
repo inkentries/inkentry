@@ -1,5 +1,5 @@
 use crate::plumbing_helpers;
-use plumbing_helpers::{inkentry_bin_in, isolate_git_config};
+use plumbing_helpers::{inkentry_bin_in, isolate_git_config, loopback_discovery_port};
 
 use std::path::Path;
 use tempfile::TempDir;
@@ -222,18 +222,6 @@ fn base_cmd(home: &Path, project: &Path) -> assert_cmd::Command {
         .env_remove("INKENTRY_LLM_URL")
         .env_remove("INKENTRY_LLM_MODEL");
     cmd
-}
-
-// Points loopback discovery's fixed-port fallback at `url` via `INKENTRY_TEST_DISCOVERY_PORT`. The `server.port`
-// file is unusable: it requires a live `inkentry-server` pid and matching instance id, which a wiremock stand-in
-// cannot supply. The state dir is still redirected so nothing reaches the developer's own daemon.
-fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
-    std::fs::create_dir_all(state_dir).expect("create state dir");
-    url.rsplit(':')
-        .next()
-        .expect("uri has a port")
-        .trim_end_matches('/')
-        .to_string()
 }
 
 // Offline `inkentry index`, so the project has the `.inkentry/` directory harvest requires.

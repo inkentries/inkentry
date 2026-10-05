@@ -70,18 +70,45 @@ fn resolve_range_revs(git_range: &str, commit_count: Option<usize>) -> (Vec<Stri
     }
 }
 
+#[derive(Clone)]
+struct Commit {
+    sha: String,
+    subject: String,
+    body: String,
+}
+
+const GIT_LOG_FORMAT: &str = "--format=%H%x00%s%x00%b%x00---";
+
+fn parse_git_log(raw: &str) -> Vec<Commit> {
+    raw.split("---\n")
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|entry| {
+            let parts: Vec<&str> = entry.splitn(4, '\x00').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            Some(Commit {
+                sha: parts[0].trim().to_string(),
+                subject: parts[1].trim().to_string(),
+                body: parts[2].trim().to_string(),
+            })
+        })
+        .collect()
+}
+
 // Skips rather than aborts, unlike `memory add`: a `--branch` walk can cover
 // thousands of commits and one rotated credential must not discard the rest.
 // Warns by SHA only so the secret is never echoed into the terminal or logs.
-fn drop_commits_with_secrets(
-    commits: Vec<&(String, String, String)>,
-) -> (Vec<&(String, String, String)>, usize) {
+fn drop_commits_with_secrets(commits: Vec<&Commit>) -> (Vec<&Commit>, usize) {
     let (kept, matched): (Vec<_>, Vec<_>) = commits
         .into_iter()
-        .partition(|(_, subject, body)| !contains_secret(&format!("{subject}\n{body}")));
+        .partition(|c| !contains_secret(&format!("{}\n{}", c.subject, c.body)));
 
-    for (sha, _, _) in &matched {
-        eprintln!("  warning: skipping commit {sha} (message matches a secret pattern)");
+    for c in &matched {
+        eprintln!(
+            "  warning: skipping commit {} (message matches a secret pattern)",
+            c.sha
+        );
     }
 
     (kept, matched.len())
@@ -172,7 +199,7 @@ async fn memory_harvest_git(
 
     let mut log_args: Vec<String> = vec!["log".to_string()];
     log_args.extend(git_revs);
-    log_args.push("--format=%H%x00%s%x00%b%x00---".to_string());
+    log_args.push(GIT_LOG_FORMAT.to_string());
     log_args.push("--".to_string());
 
     let git_out = std::process::Command::new("git")
@@ -186,21 +213,7 @@ async fn memory_harvest_git(
     }
 
     let raw = String::from_utf8(git_out.stdout).context("git log output not UTF-8")?;
-    let commits: Vec<(String, String, String)> = raw
-        .split("---\n")
-        .filter(|s| !s.trim().is_empty())
-        .filter_map(|entry| {
-            let parts: Vec<&str> = entry.splitn(4, '\x00').collect();
-            if parts.len() < 3 {
-                return None;
-            }
-            Some((
-                parts[0].trim().to_string(),
-                parts[1].trim().to_string(),
-                parts[2].trim().to_string(),
-            ))
-        })
-        .collect();
+    let commits = parse_git_log(&raw);
 
     if commits.is_empty() {
         println!("No commits found in {range_label}.");
@@ -211,7 +224,7 @@ async fn memory_harvest_git(
     let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = commits
         .iter()
-        .filter(|(sha, _, _)| !known_shas.contains(sha.as_str()))
+        .filter(|c| !known_shas.contains(c.sha.as_str()))
         .collect();
 
     if new_commits.is_empty() {
@@ -221,7 +234,7 @@ async fn memory_harvest_git(
 
     let (new_commits, pre_filtered): (Vec<_>, Vec<_>) = new_commits
         .into_iter()
-        .partition(|(_, subject, _)| !is_routine_subject(subject));
+        .partition(|c| !is_routine_subject(&c.subject));
 
     if !pre_filtered.is_empty() {
         println!(
@@ -285,13 +298,9 @@ async fn memory_harvest_git(
     let context_length = cfg.llm_context_length;
     let output_budget = |n: usize| (n * 400).clamp(256, context_length / 2);
 
-    let mut work: std::collections::VecDeque<Vec<(String, String, String)>> = new_commits
+    let mut work: std::collections::VecDeque<Vec<Commit>> = new_commits
         .chunks(batch_size)
-        .map(|c| {
-            c.iter()
-                .map(|(a, b, c)| (a.clone(), b.clone(), c.clone()))
-                .collect()
-        })
+        .map(|c| c.iter().copied().cloned().collect())
         .collect();
 
     let mut batch_num = 0usize;
@@ -309,7 +318,7 @@ async fn memory_harvest_git(
 
         let commit_list = batch
             .iter()
-            .map(|(sha, subject, body)| {
+            .map(|Commit { sha, subject, body }| {
                 if body.is_empty() {
                     format!("COMMIT {sha}\n{subject}")
                 } else {
@@ -418,8 +427,8 @@ async fn memory_harvest_git(
 
             let full_sha = batch
                 .iter()
-                .find(|(s, _, _)| s.starts_with(&sha_short))
-                .map(|(s, _, _)| s.clone())
+                .find(|c| c.sha.starts_with(&sha_short))
+                .map(|c| c.sha.clone())
                 .unwrap_or(sha_short.clone());
 
             match backend.has_source_ref(&full_sha).await.map_err(backend_err) {
@@ -586,7 +595,7 @@ async fn memory_harvest_failures(
 
     let mut log_args: Vec<String> = vec!["log".to_string()];
     log_args.extend(git_revs);
-    log_args.push("--format=%H%x00%s%x00%b%x00---".to_string());
+    log_args.push(GIT_LOG_FORMAT.to_string());
     log_args.push("--".to_string());
 
     let git_out = std::process::Command::new("git")
@@ -601,25 +610,11 @@ async fn memory_harvest_failures(
     }
 
     let raw = String::from_utf8(git_out.stdout).context("git log output not UTF-8")?;
-    let all_commits: Vec<(String, String, String)> = raw
-        .split("---\n")
-        .filter(|s| !s.trim().is_empty())
-        .filter_map(|entry| {
-            let parts: Vec<&str> = entry.splitn(4, '\x00').collect();
-            if parts.len() < 3 {
-                return None;
-            }
-            Some((
-                parts[0].trim().to_string(),
-                parts[1].trim().to_string(),
-                parts[2].trim().to_string(),
-            ))
-        })
-        .collect();
+    let all_commits = parse_git_log(&raw);
 
     let failure_commits: Vec<_> = all_commits
         .iter()
-        .filter(|(_, subject, _)| is_failure_subject(subject))
+        .filter(|c| is_failure_subject(&c.subject))
         .collect();
 
     if failure_commits.is_empty() {
@@ -632,7 +627,7 @@ async fn memory_harvest_failures(
     let known_shas = backend.harvested_shas().await.map_err(backend_err)?;
     let new_commits: Vec<_> = failure_commits
         .into_iter()
-        .filter(|(sha, _, _)| !known_shas.contains(sha.as_str()))
+        .filter(|c| !known_shas.contains(c.sha.as_str()))
         .collect();
 
     if new_commits.is_empty() {
@@ -693,13 +688,9 @@ async fn memory_harvest_failures(
     let estimate_tokens = |s: &str| s.len() / 3;
     let context_length = cfg.llm_context_length;
 
-    let mut work: std::collections::VecDeque<Vec<(String, String, String)>> = new_commits
+    let mut work: std::collections::VecDeque<Vec<Commit>> = new_commits
         .chunks(batch_size)
-        .map(|c| {
-            c.iter()
-                .map(|(a, b, c)| (a.clone(), b.clone(), c.clone()))
-                .collect()
-        })
+        .map(|c| c.iter().copied().cloned().collect())
         .collect();
 
     let mut batch_num = 0usize;
@@ -709,7 +700,7 @@ async fn memory_harvest_failures(
 
         let commit_list = batch
             .iter()
-            .map(|(sha, subject, body)| {
+            .map(|Commit { sha, subject, body }| {
                 if body.is_empty() {
                     format!("COMMIT {sha}\n{subject}")
                 } else {
@@ -805,8 +796,8 @@ async fn memory_harvest_failures(
 
             let full_sha = batch
                 .iter()
-                .find(|(s, _, _)| s.starts_with(&sha_short))
-                .map(|(s, _, _)| s.clone())
+                .find(|c| c.sha.starts_with(&sha_short))
+                .map(|c| c.sha.clone())
                 .unwrap_or(sha_short.clone());
 
             match backend.has_source_ref(&full_sha).await.map_err(backend_err) {

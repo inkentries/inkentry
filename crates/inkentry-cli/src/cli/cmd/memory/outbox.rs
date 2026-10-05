@@ -74,39 +74,42 @@ struct RelayAckRequestWire {
     applied_pull_remote_ids: Vec<String>,
 }
 
-fn relay_target(cfg: &Config) -> Option<(String, String)> {
+struct RelayTarget {
+    server_url: String,
+    project_id: String,
+}
+
+fn relay_target(cfg: &Config) -> Option<RelayTarget> {
     if cfg.resolve_mode() != inkentry_core::config::SyncMode::LocalFirst {
         return None;
     }
-    let server_url = cfg.server_url.clone()?;
-    let project_id = cfg.project_id.clone()?;
-    Some((server_url, project_id))
+    Some(RelayTarget {
+        server_url: cfg.server_url.clone()?,
+        project_id: cfg.project_id.clone()?,
+    })
 }
 
 // Best-effort: must never fail or noticeably slow the write.
 pub(super) async fn nudge_after_write(cfg: &Config, mem_path: &std::path::Path) {
-    let Some((server_url, project_id)) = relay_target(cfg) else {
+    let Some(target) = relay_target(cfg) else {
         return;
     };
 
     if std::io::stdin().is_terminal() {
-        // Keep on one line: `daemon_spawn_call_sites` matches this call lexically, line by line.
         let _ = super::super::server::ensure_server_running(DEFAULT_SERVER_PORT, cfg).await;
     }
 
     let Some(port) = super::super::server::probe_local_relay_port().await else {
         return;
     };
-    register_and_push(cfg, mem_path, &server_url, &project_id, port).await;
+    push_and_start_pull_task(cfg, mem_path, &target, port).await;
 }
 
-// An empty outbox still registers: any push starts the session's pull task,
-// so a read-only instance still receives live pulls.
-async fn register_and_push(
+// Runs even with an empty outbox: a push is what starts the session's pull task.
+async fn push_and_start_pull_task(
     cfg: &Config,
     mem_path: &std::path::Path,
-    server_url: &str,
-    project_id: &str,
+    target: &RelayTarget,
     port: u16,
 ) {
     let Ok(local) = MemoryStore::open(mem_path) else {
@@ -132,7 +135,7 @@ async fn register_and_push(
         })
         .collect();
     let since_cursor = local.max_remote_id().ok().flatten();
-    let bearer = super::super::auth_api::ensure_fresh_server_key(cfg, server_url)
+    let bearer = super::super::auth_api::ensure_fresh_server_key(cfg, &target.server_url)
         .await
         .ok()
         .flatten();
@@ -144,8 +147,8 @@ async fn register_and_push(
         return;
     };
     let body = RelayPushRequestWire {
-        server_url: server_url.to_string(),
-        project_id: project_id.to_string(),
+        server_url: target.server_url.clone(),
+        project_id: target.project_id.clone(),
         bearer,
         since_cursor,
         entries,
@@ -168,9 +171,9 @@ pub(crate) async fn poll_and_apply(
     cfg: &Config,
     mem_path: &std::path::Path,
 ) -> Option<PollOutcome> {
-    let (server_url, project_id) = relay_target(cfg)?;
+    let target = relay_target(cfg)?;
     let port = super::super::server::probe_local_relay_port().await?;
-    register_and_push(cfg, mem_path, &server_url, &project_id, port).await;
+    push_and_start_pull_task(cfg, mem_path, &target, port).await;
     let local = MemoryStore::open(mem_path).ok()?;
 
     let client = reqwest::Client::builder()
@@ -179,7 +182,10 @@ pub(crate) async fn poll_and_apply(
         .ok()?;
     let resp = client
         .get(format!("http://127.0.0.1:{port}/local/relay/poll"))
-        .query(&[("server_url", &server_url), ("project_id", &project_id)])
+        .query(&[
+            ("server_url", &target.server_url),
+            ("project_id", &target.project_id),
+        ])
         .send()
         .await
         .ok()?;
@@ -226,8 +232,8 @@ pub(crate) async fn poll_and_apply(
 
     if !acked_push_ids.is_empty() || !acked_pull_ids.is_empty() {
         let ack_body = RelayAckRequestWire {
-            server_url: server_url.clone(),
-            project_id: project_id.clone(),
+            server_url: target.server_url.clone(),
+            project_id: target.project_id.clone(),
             applied_push_external_ids: acked_push_ids,
             applied_pull_remote_ids: acked_pull_ids,
         };

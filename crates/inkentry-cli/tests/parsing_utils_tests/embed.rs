@@ -1,7 +1,7 @@
 use crate::plumbing_helpers;
 use plumbing_helpers::{
-    FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin, inkentry_bin_in, mount_health,
-    mount_index_embed,
+    FIXTURE_PROJECT_ID, IndexEmbedResponder, inkentry_bin, inkentry_bin_in,
+    loopback_discovery_port, mount_health, mount_index_embed,
 };
 
 use predicates::prelude::*;
@@ -9,18 +9,6 @@ use std::path::Path;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-// Hands the fixed-port fallback (step 3b) the mock's port via INKENTRY_TEST_DISCOVERY_PORT.
-// Step 3a (`server.port`) needs a live inkentry-server pid and matching instance id, which a
-// wiremock stand-in cannot be; the state dir is still created and redirected.
-fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
-    std::fs::create_dir_all(state_dir).expect("create state dir");
-    url.rsplit(':')
-        .next()
-        .expect("uri has a port")
-        .trim_end_matches('/')
-        .to_string()
-}
 
 // Ambient INKENTRY_* vars are scrubbed so a developer/CI shell cannot change which tier is probed.
 fn embed_loopback_cmd(
