@@ -268,21 +268,14 @@ async fn finish_embeddings(
         dry_run: false,
         format: args.format.clone(),
     };
-    // In json mode stdout is already the import summary, so the pass prints none.
-    let summary_output = if json {
-        crate::cli::cmd::memory::reindex::Summary::Suppressed
+    let stdout_owner = if json {
+        crate::cli::cmd::memory::reindex::StdoutOwner::Caller
     } else {
-        crate::cli::cmd::memory::reindex::Summary::Printed
+        crate::cli::cmd::memory::reindex::StdoutOwner::Reindex
     };
-    if crate::cli::cmd::memory::reindex::memory_reindex(
-        reindex,
-        mem_path,
-        cfg,
-        None,
-        summary_output,
-    )
-    .await
-    .is_err()
+    if crate::cli::cmd::memory::reindex::memory_reindex(reindex, mem_path, cfg, None, stdout_owner)
+        .await
+        .is_err()
     {
         report_pending(pending, json);
         return;

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use inkentry_core::storage::memory::{ReconcileMode, ResolutionKind};
+use inkentry_core::storage::memory::{Note, ReconcileMode, ResolutionKind};
 
 use super::super::events::{self, EventArgs, ReconcileOutcome};
 use super::MemoryAddArgs;
@@ -46,11 +46,10 @@ pub(super) async fn memory_add(
     // Loopback auto-discovery sets the tier without populating `cfg.server_url`;
     // the effective config routes inference there while leaving `server_url`
     // unset so the note still lands in the local `memory.db`.
-    // On the git-notes paths `mem_path` is a placeholder; the project is the git
-    // repo at CWD.
+    // On the git-notes paths the project is the git repo at CWD.
     let cwd;
-    let placeholder_path = pre_init_notes || backend_override == Some("git-notes");
-    let project_root: &std::path::Path = if placeholder_path {
+    let git_notes_primary = pre_init_notes || backend_override == Some("git-notes");
+    let project_root: &std::path::Path = if git_notes_primary {
         cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         &cwd
     } else {
@@ -61,30 +60,7 @@ pub(super) async fn memory_add(
     let tier = capability::get_inference_tier(cfg).await;
     let eff_cfg = tier.effective_config(cfg, project_root);
     let cfg = &eff_cfg;
-    let (title, body) = if let Some(url) = &args.from_url {
-        let (fetched_title, fetched_body) = fetch_url_content(url)
-            .await
-            .with_context(|| format!("fetching {url}"))?;
-        let title = args.title.clone().unwrap_or(fetched_title);
-        let body = args.body.clone().unwrap_or(fetched_body);
-        (title, body)
-    } else {
-        let title = args
-            .title
-            .clone()
-            .context("--title is required when --from-url is not provided")?;
-        let body = match args.body.clone() {
-            Some(b) => b,
-            None => {
-                let t = title.clone();
-                tokio::task::spawn_blocking(move || super::open_editor_for_body(&t))
-                    .await
-                    .context("editor task panicked")?
-                    .context("opening editor for body")?
-            }
-        };
-        (title, body)
-    };
+    let (title, body) = resolve_title_and_body(&args).await?;
 
     let tags: Vec<String> = args
         .tags
@@ -100,8 +76,8 @@ pub(super) async fn memory_add(
 
     // Resolved ahead of any write so an escaping path errors before anything is
     // stored; storage re-resolves the same paths. `files_root` is the real
-    // project root, not `project_root`, which is a placeholder pre-init.
-    let files_root = if placeholder_path {
+    // project root, not `project_root`, which is the CWD on the git-notes paths.
+    let files_root = if git_notes_primary {
         project_root.to_path_buf()
     } else {
         mem_path
@@ -155,10 +131,7 @@ pub(super) async fn memory_add(
     };
     let resolution = resolution_kind(&args);
 
-    // Only a local row can have a vector attached after the fact, so only there
-    // can the write go first; other backends take the vector as part of the add
-    // and have no local backfill.
-    let store_first = !placeholder_path
+    let local_sqlite_is_primary = !git_notes_primary
         && !(cfg.resolve_mode() == SyncMode::CloudFirst && cfg.server_url.is_some());
 
     // The local sqlite-primary store is the only backend with a searchable
@@ -171,7 +144,7 @@ pub(super) async fn memory_add(
     let mut embed_failure_reason: Option<String> = None;
     let mut duplicate_candidates: Vec<Candidate> = Vec::new();
     let mut related_candidates: Vec<Candidate> = Vec::new();
-    if store_first {
+    if local_sqlite_is_primary {
         let embed_text = format!("title: {title} | text: {body}");
         match embed_with_budget(cfg, &embed_text).await {
             Ok(blob) => pre_write_embedding = Some(blob),
@@ -192,7 +165,11 @@ pub(super) async fn memory_add(
 
     // Nothing is written. The candidate set is advice, not a lock (a
     // resolution naming an id outside it is still accepted below).
-    if store_first && reconcile_on && !duplicate_candidates.is_empty() && !has_resolution {
+    if local_sqlite_is_primary
+        && reconcile_on
+        && !duplicate_candidates.is_empty()
+        && !has_resolution
+    {
         print_blocked_candidates(&args.format, &duplicate_candidates, &related_candidates)?;
         // Best-effort, same as the success-path record below: `ok: false`
         // distinguishes a blocked write from one that wrote nothing because
@@ -220,7 +197,7 @@ pub(super) async fn memory_add(
 
     // Git notes hold no vector; the remote backend embeds as part of its own
     // request (see `add_with_reconcile`), not ahead of it.
-    let embedding = if store_first {
+    let embedding = if local_sqlite_is_primary {
         pre_write_embedding
     } else if pre_init_notes {
         None
@@ -231,72 +208,23 @@ pub(super) async fn memory_add(
 
     let valid_at = args
         .valid_at
-        .and_then(|s| super::parse_as_of(Some(&s)).ok().flatten());
+        .as_deref()
+        .and_then(|s| super::parse_as_of(Some(s)).ok().flatten());
 
-    // OLD must still be active before any write: the SQL `WHERE status = 'active'`
-    // guard on the archive UPDATE silently no-ops on a stale OLD, which would
-    // leave an orphaned new note plus a conflicting carrier record.
-    let mut backend_for_add: Option<Box<dyn MemoryBackend + Send>> = None;
-    let mut old_note_for_carrier = None;
-    if let Some(old_id) = args.supersedes.clone() {
-        let old = if pre_init_notes {
-            GitNotesBackend::with_root(project_root.to_path_buf())
-                .get(old_id.clone())
-                .await?
-        } else {
-            let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
-            let old = backend.get(old_id.clone()).await?;
-            backend_for_add = Some(backend);
-            old
-        };
-        match old {
-            Some(note) if note.status == "active" => {
-                old_note_for_carrier = Some(note);
-            }
-            _ => {
-                anyhow::bail!("No active memory entry with id {old_id} (old).");
-            }
-        }
-    }
-
-    // Checked before the write so a bad id fails cleanly with a message naming
-    // it, not a foreign-key error. The target need not be active. Skipped
-    // pre-init: there is no local graph. The carrier records the edge by the
-    // target's `entity_id`, the only name that survives an `init` renumbering
-    // ids on another machine.
-    let mut relates_to_entity_id: Option<String> = None;
-    if let Some(rel_id) = args.relates_to.as_ref()
-        && !pre_init_notes
-    {
-        let backend = match backend_for_add.take() {
-            Some(backend) => backend,
-            None => open_memory_backend(cfg, mem_path, backend_override).await?,
-        };
-        let target = backend.get(rel_id.clone()).await?;
-        backend_for_add = Some(backend);
-        let Some(target) = target else {
-            anyhow::bail!("{}", unresolvable_id_message(rel_id));
-        };
-        relates_to_entity_id = Some(note_entity_id(&target));
-    }
-
-    // Mirrors the `--relates-to` preflight above: resolved before the write,
-    // by the target's `entity_id` for the same carrier reason.
-    let mut contradicts_entity_id: Option<String> = None;
-    if let Some(con_id) = args.contradicts.as_ref()
-        && !pre_init_notes
-    {
-        let backend = match backend_for_add.take() {
-            Some(backend) => backend,
-            None => open_memory_backend(cfg, mem_path, backend_override).await?,
-        };
-        let target = backend.get(con_id.clone()).await?;
-        backend_for_add = Some(backend);
-        let Some(target) = target else {
-            anyhow::bail!("{}", unresolvable_id_message(con_id));
-        };
-        contradicts_entity_id = Some(note_entity_id(&target));
-    }
+    let LinkTargets {
+        backend: mut backend_for_add,
+        superseded: old_note_for_carrier,
+        relates_to_entity_id,
+        contradicts_entity_id,
+    } = resolve_link_targets(
+        &args,
+        cfg,
+        mem_path,
+        backend_override,
+        pre_init_notes,
+        project_root,
+    )
+    .await?;
 
     // Pre-init there is no primary store; the carrier is the sole writer, so the
     // id is minted the way the backends do. Held past the write so the
@@ -327,7 +255,7 @@ pub(super) async fn memory_add(
         // point. Sent only when the server advertises `memory.reconcile`;
         // against an older server this is `false` and the write goes through
         // exactly as it always has, including the legacy stored:true 409.
-        let added = if store_first {
+        let added = if local_sqlite_is_primary {
             backend.add(note_input).await?
         } else {
             let remote_reconcile = reconcile_on
@@ -484,7 +412,7 @@ pub(super) async fn memory_add(
     // (`embed_failure_reason`) is what `memory reindex` and sync's repair
     // already look for.
     let pending_embedding = embed_failure_reason;
-    if store_first {
+    if local_sqlite_is_primary {
         // Closed now that the write is durable.
         drop(primary_backend);
 
@@ -500,66 +428,28 @@ pub(super) async fn memory_add(
         }
     }
 
-    let format = crate::utils::effective_format(&args.format);
-    match format {
-        // stdout is only the object; the human lead line and rewrite-ref note
-        // would corrupt it.
-        "json" | "jsonl" => {
-            let mut obj = serde_json::json!({
-                "id": &id,
-                "entity_id": entity_id,
-                "kind": args.kind,
-                "title": title,
-                "created": created,
-            });
-            if !file_link_states.is_empty() {
-                obj["linked_files"] = file_link_states
-                    .iter()
-                    .map(|(path, state)| serde_json::json!({"path": path, "state": state}))
-                    .collect();
-            }
-            // Additive fields, present whenever the pre-write reconciliation
-            // found something — empty (and so omitted) on the paths that
-            // don't compute candidates at all (git notes, pre-init).
-            if !duplicate_candidates.is_empty() {
-                obj["candidates"] = serde_json::to_value(&duplicate_candidates)?;
-            }
-            if !related_candidates.is_empty() {
-                obj["related"] = serde_json::to_value(&related_candidates)?;
-            }
-            if format == "jsonl" {
-                println!("{}", serde_json::to_string(&obj)?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(&obj)?);
-            }
-        }
-        _ => {
-            let handle = crate::storage::entity_id_handle(&entity_id);
-            if created {
-                println!("Stored [{kind}] #{handle}: {title}", kind = args.kind);
-            } else {
-                println!(
-                    "Already recorded as [{kind}] #{handle}: {title}",
-                    kind = args.kind
-                );
-            }
-            println!("entity_id:  {entity_id}");
-            println!("id:         {id}");
-            if let Some(line) = notes_rewrite_note {
-                println!("{line}");
-            }
-        }
-    }
+    print_added(
+        &args,
+        &AddReport {
+            id: &id,
+            entity_id: &entity_id,
+            title: &title,
+            created,
+            file_link_states: &file_link_states,
+            duplicate_candidates: &duplicate_candidates,
+            related_candidates: &related_candidates,
+            notes_rewrite_note,
+        },
+    )?;
     // stderr so stdout is unchanged; `eprintln!` because `tracing` is invisible
     // without `RUST_LOG`.
     if let Some(reason) = pending_embedding {
         eprintln!("{}", pending_embedding_warning(&reason));
     }
 
-    // Not just `pre_init_notes`: with `--backend git-notes`, `mem_path` is still
-    // a placeholder, and nudging would make `MemoryStore::open` create a phantom
+    // `MemoryStore::open` on the git-notes paths would create a phantom
     // `memory.db` for a project that opted out of one.
-    if !placeholder_path {
+    if !git_notes_primary {
         super::outbox::nudge_after_write(cfg, mem_path).await;
     }
 
@@ -584,6 +474,183 @@ pub(super) async fn memory_add(
                 resolution,
             },
         );
+    }
+    Ok(())
+}
+
+struct LinkTargets {
+    backend: Option<Box<dyn MemoryBackend + Send>>,
+    superseded: Option<Note>,
+    relates_to_entity_id: Option<String>,
+    contradicts_entity_id: Option<String>,
+}
+
+// Every target is checked before the write so a bad id fails cleanly with a
+// message naming it, not a foreign-key error.
+async fn resolve_link_targets(
+    args: &MemoryAddArgs,
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    backend_override: Option<&str>,
+    pre_init_notes: bool,
+    project_root: &std::path::Path,
+) -> Result<LinkTargets> {
+    let mut backend_for_add: Option<Box<dyn MemoryBackend + Send>> = None;
+    let mut old_note_for_carrier = None;
+    // OLD must still be active before any write: the SQL `WHERE status = 'active'`
+    // guard on the archive UPDATE silently no-ops on a stale OLD, which would
+    // leave an orphaned new note plus a conflicting carrier record.
+    if let Some(old_id) = args.supersedes.clone() {
+        let old = if pre_init_notes {
+            GitNotesBackend::with_root(project_root.to_path_buf())
+                .get(old_id.clone())
+                .await?
+        } else {
+            let backend = open_memory_backend(cfg, mem_path, backend_override).await?;
+            let old = backend.get(old_id.clone()).await?;
+            backend_for_add = Some(backend);
+            old
+        };
+        match old {
+            Some(note) if note.status == "active" => {
+                old_note_for_carrier = Some(note);
+            }
+            _ => {
+                anyhow::bail!("No active memory entry with id {old_id} (old).");
+            }
+        }
+    }
+
+    // The target need not be active. Skipped pre-init: there is no local graph.
+    // The carrier records the edge by the target's `entity_id`, the only name
+    // that survives an `init` renumbering ids on another machine.
+    let mut relates_to_entity_id: Option<String> = None;
+    let mut contradicts_entity_id: Option<String> = None;
+    if !pre_init_notes {
+        for (target_id, entity_id) in [
+            (args.relates_to.as_ref(), &mut relates_to_entity_id),
+            (args.contradicts.as_ref(), &mut contradicts_entity_id),
+        ] {
+            let Some(target_id) = target_id else {
+                continue;
+            };
+            let backend = match backend_for_add.take() {
+                Some(backend) => backend,
+                None => open_memory_backend(cfg, mem_path, backend_override).await?,
+            };
+            let target = backend.get(target_id.clone()).await?;
+            backend_for_add = Some(backend);
+            let Some(target) = target else {
+                anyhow::bail!("{}", unresolvable_id_message(target_id));
+            };
+            *entity_id = Some(note_entity_id(&target));
+        }
+    }
+    Ok(LinkTargets {
+        backend: backend_for_add,
+        superseded: old_note_for_carrier,
+        relates_to_entity_id,
+        contradicts_entity_id,
+    })
+}
+
+async fn resolve_title_and_body(args: &MemoryAddArgs) -> Result<(String, String)> {
+    if let Some(url) = &args.from_url {
+        let (fetched_title, fetched_body) = fetch_url_content(url)
+            .await
+            .with_context(|| format!("fetching {url}"))?;
+        let title = args.title.clone().unwrap_or(fetched_title);
+        let body = args.body.clone().unwrap_or(fetched_body);
+        return Ok((title, body));
+    }
+    let title = args
+        .title
+        .clone()
+        .context("--title is required when --from-url is not provided")?;
+    let body = match args.body.clone() {
+        Some(b) => b,
+        None => {
+            let t = title.clone();
+            tokio::task::spawn_blocking(move || super::open_editor_for_body(&t))
+                .await
+                .context("editor task panicked")?
+                .context("opening editor for body")?
+        }
+    };
+    Ok((title, body))
+}
+
+struct AddReport<'a> {
+    id: &'a crate::storage::NoteId,
+    entity_id: &'a str,
+    title: &'a str,
+    created: bool,
+    file_link_states: &'a [(String, String)],
+    duplicate_candidates: &'a [Candidate],
+    related_candidates: &'a [Candidate],
+    notes_rewrite_note: Option<&'a str>,
+}
+
+fn print_added(args: &MemoryAddArgs, report: &AddReport<'_>) -> Result<()> {
+    let AddReport {
+        id,
+        entity_id,
+        title,
+        created,
+        file_link_states,
+        duplicate_candidates,
+        related_candidates,
+        notes_rewrite_note,
+    } = *report;
+    let format = crate::utils::effective_format(&args.format);
+    match format {
+        // stdout is only the object; the human lead line and rewrite-ref note
+        // would corrupt it.
+        "json" | "jsonl" => {
+            let mut obj = serde_json::json!({
+                "id": &id,
+                "entity_id": entity_id,
+                "kind": args.kind,
+                "title": title,
+                "created": created,
+            });
+            if !file_link_states.is_empty() {
+                obj["linked_files"] = file_link_states
+                    .iter()
+                    .map(|(path, state)| serde_json::json!({"path": path, "state": state}))
+                    .collect();
+            }
+            // Additive fields, present whenever the pre-write reconciliation
+            // found something — empty (and so omitted) on the paths that
+            // don't compute candidates at all (git notes, pre-init).
+            if !duplicate_candidates.is_empty() {
+                obj["candidates"] = serde_json::to_value(duplicate_candidates)?;
+            }
+            if !related_candidates.is_empty() {
+                obj["related"] = serde_json::to_value(related_candidates)?;
+            }
+            if format == "jsonl" {
+                println!("{}", serde_json::to_string(&obj)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&obj)?);
+            }
+        }
+        _ => {
+            let handle = crate::storage::entity_id_handle(entity_id);
+            if created {
+                println!("Stored [{kind}] #{handle}: {title}", kind = args.kind);
+            } else {
+                println!(
+                    "Already recorded as [{kind}] #{handle}: {title}",
+                    kind = args.kind
+                );
+            }
+            println!("entity_id:  {entity_id}");
+            println!("id:         {id}");
+            if let Some(line) = notes_rewrite_note {
+                println!("{line}");
+            }
+        }
     }
     Ok(())
 }

@@ -30,12 +30,10 @@ enum Outcome {
     Done,
 }
 
-// Suppressed when run as another command's finishing pass: printing would put a
-// second document on a stdout the caller already wrote JSON to.
 #[derive(PartialEq, Eq)]
-pub(crate) enum Summary {
-    Printed,
-    Suppressed,
+pub(crate) enum StdoutOwner {
+    Reindex,
+    Caller,
 }
 
 pub(crate) async fn memory_reindex(
@@ -43,7 +41,7 @@ pub(crate) async fn memory_reindex(
     mem_path: &std::path::Path,
     cfg: &Config,
     backend_override: Option<&str>,
-    summary_output: Summary,
+    stdout_owner: StdoutOwner,
 ) -> Result<()> {
     if backend_override == Some("git-notes") {
         anyhow::bail!(
@@ -100,11 +98,11 @@ pub(crate) async fn memory_reindex(
     // Neither path touches the embedder, so neither needs a running server.
     if args.dry_run {
         summary.would_embed = candidates.len();
-        emit_summary(&summary, json, Outcome::DryRun, &summary_output);
+        emit_summary(&summary, json, Outcome::DryRun, &stdout_owner);
         return Ok(());
     }
     if candidates.is_empty() {
-        emit_summary(&summary, json, Outcome::NothingToDo, &summary_output);
+        emit_summary(&summary, json, Outcome::NothingToDo, &stdout_owner);
         return Ok(());
     }
 
@@ -145,12 +143,12 @@ pub(crate) async fn memory_reindex(
 
     summary.embedded = embedded;
     summary.remaining = total - embedded;
-    emit_summary(&summary, json, Outcome::Done, &summary_output);
+    emit_summary(&summary, json, Outcome::Done, &stdout_owner);
     Ok(())
 }
 
-fn emit_summary(s: &ReindexSummary, json: bool, outcome: Outcome, output: &Summary) {
-    if *output == Summary::Suppressed {
+fn emit_summary(s: &ReindexSummary, json: bool, outcome: Outcome, stdout_owner: &StdoutOwner) {
+    if *stdout_owner == StdoutOwner::Caller {
         return;
     }
     if json {

@@ -337,7 +337,7 @@ async fn memory_reindex_attaches_the_vector_a_deferred_add_left_missing() {
         &mem_path,
         &cfg_for(tmp.path()),
         None,
-        super::reindex::Summary::Suppressed,
+        super::reindex::StdoutOwner::Caller,
     )
     .await
     .expect("memory reindex should succeed");
@@ -390,7 +390,7 @@ async fn an_add_time_vector_and_a_reindexed_one_are_identical() {
         &mem_path,
         &cfg_for(tmp.path()),
         None,
-        super::reindex::Summary::Suppressed,
+        super::reindex::StdoutOwner::Caller,
     )
     .await
     .expect("memory reindex should succeed");
