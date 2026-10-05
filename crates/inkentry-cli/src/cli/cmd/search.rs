@@ -63,12 +63,11 @@ pub struct SearchArgs {
     pub expand_graph: bool,
 
     /// Restrict memory results to this exact tag, normalised the same way a
-    /// write is (ADR-101 D4)
+    /// write is
     #[arg(long, value_name = "TAG")]
     pub tag: Option<String>,
 
     /// Restrict memory results to this exact repository-relative linked file
-    /// (ADR-101 D4)
     #[arg(long, value_name = "PATH")]
     pub file: Option<String>,
 

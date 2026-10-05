@@ -49,11 +49,11 @@ pub enum MemoryCommand {
     Reindex(MemoryReindexArgs),
     /// Collapse duplicate-entity_id groups already resident in local memory.db (recovery tool)
     Dedupe(MemoryDedupeArgs),
-    /// List the tag vocabulary with how many active entries carry each (ADR-101)
+    /// List the tag vocabulary with how many active entries carry each
     Tags(MemoryTagsArgs),
-    /// Anchor memory entries to a commit (ADR-099). With no ids, claims
-    /// pending entries per the D2 claim rule (same worktree, and the entry
-    /// was written from an ancestor of the commit, or the commit it amends);
+    /// Anchor memory entries to a commit. With no ids, claims
+    /// pending entries from the same worktree that were written from an
+    /// ancestor of the commit, or the commit it amends;
     /// this is what the post-commit hook calls. With ids, anchors those
     /// entries to the commit directly, skipping the claim rule. Plumbing:
     /// always exits 0 and prints nothing, so it never fails a commit.
@@ -132,24 +132,24 @@ pub struct MemoryAddArgs {
     pub relates_to: Option<NoteId>,
 
     /// ID of an existing entry this entry contradicts (creates a contradicts
-    /// edge). Resolves a duplicate-band candidate under --reconcile (ADR-100 D4).
+    /// edge). Resolves a duplicate-band candidate under --reconcile.
     #[arg(long, value_name = "ID")]
     pub contradicts: Option<NoteId>,
 
     /// ID of an existing candidate the similarity to which is incidental.
     /// Resolves a duplicate-band candidate under --reconcile without
-    /// recording anything (ADR-100 D2).
+    /// recording anything.
     #[arg(long, value_name = "ID")]
     pub distinct_from: Option<NoteId>,
 
     /// Block the write when it lands in the duplicate band of an existing
     /// entry, until resolved with --supersedes/--relates-to/--contradicts/
-    /// --distinct-from (ADR-100 D2/D2a). Off by default in 1.x; also settable
+    /// --distinct-from. Off by default in 1.x; also settable
     /// as `reconcile = "block"` under [memory] in .inkentry/config.toml.
     #[arg(long)]
     pub reconcile: bool,
 
-    /// Anchor this entry to a commit immediately (ADR-099 D4), instead of
+    /// Anchor this entry to a commit immediately, instead of
     /// recording a pending anchor for the post-commit hook to claim later.
     /// The commit does not have to exist on disk under `git show` for this
     /// process's working tree only — it must resolve with `git rev-parse`.
@@ -168,8 +168,8 @@ pub struct MemoryAnchorArgs {
     #[arg(long)]
     pub commit: String,
 
-    /// Anchor these entries to `--commit` directly, skipping the D2 claim
-    /// rule (ADR-099 D4).
+    /// Anchor these entries to `--commit` directly, skipping the automatic
+    /// claim rule.
     pub ids: Vec<NoteId>,
 }
 
@@ -204,13 +204,12 @@ pub struct MemoryListArgs {
     pub local_only: bool,
 
     /// Only entries carrying this exact tag (normalised the same way a write
-    /// is), backed by the `note_tags` index (ADR-101 D4). Requires the sqlite
-    /// backend.
+    /// is). Requires the sqlite backend.
     #[arg(long, value_name = "TAG")]
     pub tag: Option<String>,
 
-    /// Only entries linking this exact repository-relative path, backed by
-    /// the `note_files` index (ADR-101 D4). Requires the sqlite backend.
+    /// Only entries linking this exact repository-relative path.
+    /// Requires the sqlite backend.
     #[arg(long, value_name = "PATH")]
     pub file: Option<String>,
 }
@@ -284,7 +283,7 @@ pub struct MemorySyncArgs {
     /// Cloud project slug to sync into. Required when no `project_id` is
     /// configured. On first sync the server lazily creates this project from the
     /// slug; repeat syncs with the same slug reuse it. The slug is never
-    /// auto-derived from the folder or git remote (project-taxonomy).
+    /// auto-derived from the folder or git remote.
     #[arg(long)]
     pub project: Option<String>,
 }

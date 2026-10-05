@@ -57,12 +57,12 @@ pub struct ContextArgs {
     pub path: Option<String>,
 
     /// Only show entries carrying this exact tag, normalised the same way a
-    /// write is (ADR-101 D4)
+    /// write is
     #[arg(long, value_name = "TAG")]
     pub tag: Option<String>,
 
     /// Only show entries linking this exact repository-relative path
-    /// (ADR-101 D4) — an exact match, unlike `--path`'s substring match
+    /// — an exact match, unlike `--path`'s substring match
     #[arg(long, value_name = "PATH")]
     pub file: Option<String>,
 

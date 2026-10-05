@@ -6,7 +6,7 @@ use inkentry_core::config::{self, org_tokens, server_keys};
 #[derive(Args, Debug)]
 pub struct LogoutArgs {
     /// Log out of a single organization, leaving every other cached session
-    /// intact. Accepts a WorkOS org id or a slug (ADR-074 D4).
+    /// intact. Accepts a WorkOS org id or a slug.
     #[arg(long)]
     pub org: Option<String>,
 }
