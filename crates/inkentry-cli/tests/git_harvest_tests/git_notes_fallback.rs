@@ -1,7 +1,6 @@
 use crate::plumbing_helpers;
-use plumbing_helpers::inkentry_bin_in;
+use plumbing_helpers::{git, git_stdout, inkentry_bin_in, local_id_for_title, offline_bin};
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -15,47 +14,8 @@ const NO_PROJECT_NO_REPO_ERR: &str = "no inkentry project here, and not inside a
 // repo" between "here" and ". Run".
 const NO_PROJECT_ERR: &str = "no inkentry project here. Run 'inkentry init' first";
 
-fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = inkentry_bin_in(home);
-    cmd.current_dir(cwd)
-        .env("INKENTRY_NO_SERVER", "1")
-        .env_remove("INKENTRY_SERVER_URL");
-    cmd
-}
-
 fn global_memory_db(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("inkentry").join("memory.db")
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("spawn git");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-// A missing ref is a legitimate empty result, so exit status is ignored.
-fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("spawn git");
-    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 // `user.*` goes in the local config: the spawned `inkentry` does not inherit the test's `GIT_*` identity env.
@@ -85,7 +45,7 @@ fn memory_add_list_round_trips_via_git_notes_fallback() {
 
     let title = "fallback-roundtrip-abc123";
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory", "add", "--kind", "note", "--title", title, "--body", "b",
         ])
@@ -105,7 +65,7 @@ fn memory_add_list_round_trips_via_git_notes_fallback() {
         "exactly one commit (HEAD) should carry a inkentry note; got: {list:?}"
     );
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args(["memory", "list"])
         .assert()
         .success()
@@ -127,7 +87,7 @@ fn single_add_writes_exactly_one_note_record() {
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -172,7 +132,7 @@ fn pre_init_and_post_init_records_have_identical_shape() {
 
     let pre = TempDir::new().unwrap();
     init_git_repo_with_commit(pre.path());
-    bin(home.path(), pre.path())
+    offline_bin(home.path(), pre.path())
         .args([
             "memory",
             "add",
@@ -192,7 +152,7 @@ fn pre_init_and_post_init_records_have_identical_shape() {
     let post = TempDir::new().unwrap();
     init_git_repo_with_commit(post.path());
     std::fs::create_dir_all(post.path().join(".inkentry")).unwrap();
-    bin(home.path(), post.path())
+    offline_bin(home.path(), post.path())
         .args([
             "memory",
             "add",
@@ -255,29 +215,6 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-// A git-notes record's own `id` is a per-write stamp that never resolves against the store.
-fn local_id_for_title(home: &Path, repo: &Path, title: &str) -> String {
-    let out = bin(home, repo)
-        .args(["memory", "list", "--format", "jsonl", "--limit", "100"])
-        .output()
-        .expect("spawn inkentry memory list");
-    assert!(
-        out.status.success(),
-        "memory list failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    stdout
-        .lines()
-        .find_map(|line| {
-            let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            (v.get("title")?.as_str()? == title)
-                .then(|| Some(v.get("id")?.as_str()?.to_string()))
-                .flatten()
-        })
-        .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
-}
-
 // A record's `id` is a per-write stamp, not identity; `entity_id`s must still differ across a re-init.
 #[test]
 fn reinit_between_adds_yields_distinct_entity_ids() {
@@ -286,7 +223,7 @@ fn reinit_between_adds_yields_distinct_entity_ids() {
     init_git_repo_with_commit(repo.path());
 
     let add = |title: &str, body: &str| {
-        bin(home.path(), repo.path())
+        offline_bin(home.path(), repo.path())
             .args([
                 "memory", "add", "--kind", "decision", "--title", title, "--body", body,
             ])
@@ -325,7 +262,7 @@ fn entity_id_is_stable_across_stores() {
         // Advance the second store's rowid counter so the two entries cannot share a rowid.
         if seed_extra {
             for i in 0..3 {
-                bin(home.path(), repo.path())
+                offline_bin(home.path(), repo.path())
                     .args([
                         "memory",
                         "add",
@@ -340,7 +277,7 @@ fn entity_id_is_stable_across_stores() {
                     .success();
             }
         }
-        bin(home.path(), repo.path())
+        offline_bin(home.path(), repo.path())
             .args([
                 "memory",
                 "add",
@@ -372,7 +309,7 @@ fn memory_add_refuses_in_git_repo_without_any_commit() {
     // No commit means HEAD is unresolvable, so the fallback cannot attach a note.
     git(repo.path(), &["init", "-q", "-b", "main"]);
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory", "add", "--kind", "note", "--title", "t", "--body", "b",
         ])
@@ -393,7 +330,7 @@ fn memory_list_refuses_in_git_repo_without_any_commit() {
     let repo = TempDir::new().unwrap();
     git(repo.path(), &["init", "-q", "-b", "main"]);
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args(["memory", "list"])
         .assert()
         .failure()
@@ -409,7 +346,7 @@ fn local_dot_inkentry_takes_precedence_over_git_notes_fallback() {
     init_git_repo_with_commit(repo.path());
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -429,7 +366,7 @@ fn local_dot_inkentry_takes_precedence_over_git_notes_fallback() {
         "with a local .inkentry/, add must write sqlite, not fall back to git-notes"
     );
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args(["memory", "list"])
         .assert()
         .success()
@@ -445,7 +382,7 @@ fn explicit_backend_git_notes_works_pre_init_in_git_repo() {
     init_git_repo_with_commit(repo.path());
 
     let title = "explicit-git-notes-xyz";
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -481,7 +418,7 @@ fn explicit_backend_git_notes_works_pre_init_in_git_repo() {
         lines[0]
     );
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args(["memory", "list", "--backend", "git-notes"])
         .assert()
         .success()
@@ -497,7 +434,7 @@ fn secret_in_entry_is_refused_and_leaves_git_notes_untouched() {
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -516,7 +453,7 @@ fn secret_in_entry_is_refused_and_leaves_git_notes_untouched() {
         inkentry_note_lines(repo.path()).is_empty(),
         "a secret-blocked add must leave refs/notes/inkentry absent/unmodified"
     );
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -549,7 +486,7 @@ fn non_add_list_subcommands_stay_fail_closed_inside_git_repo() {
         &["memory", "supersede", "1", "2"],
     ];
     for args in invocations {
-        bin(home.path(), repo.path())
+        offline_bin(home.path(), repo.path())
             .args(args)
             .assert()
             .failure()
@@ -574,7 +511,7 @@ fn post_init_add_writes_sqlite_primary_and_git_notes_write_through() {
     init_git_repo_with_commit(repo.path());
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -606,7 +543,7 @@ fn post_init_add_writes_sqlite_primary_and_git_notes_write_through() {
         lines[0]
     );
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args(["memory", "list"])
         .assert()
         .success()
@@ -701,7 +638,7 @@ fn contended_notes_lock_fails_the_pre_init_carry_and_writes_nothing() {
         .expect("hold the notes lock across the child run");
 
     let started = Instant::now();
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -745,7 +682,7 @@ fn unusable_notes_lock_degradation_is_visible_without_rust_log() {
     std::fs::create_dir_all(notes_lock_path(repo.path()))
         .expect("plant a directory at the notes lock path");
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .env_remove("RUST_LOG")
         .args([
             "memory",
@@ -781,7 +718,7 @@ fn post_init_add_supersedes_carries_edge_for_old_entry() {
     init_git_repo_with_commit(repo.path());
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -796,10 +733,10 @@ fn post_init_add_supersedes_carries_edge_for_old_entry() {
         .success();
     let old_lines = inkentry_note_lines(repo.path());
     assert_eq!(old_lines.len(), 1, "setup: OLD's own add");
-    let old_id = local_id_for_title(home.path(), repo.path(), "old-decision");
+    let old_id = local_id_for_title(home.path(), repo.path(), None, "old-decision");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -872,7 +809,7 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
     let add = |title: &str, body: &str| {
-        bin(home.path(), repo.path())
+        offline_bin(home.path(), repo.path())
             .args([
                 "memory", "add", "--kind", "decision", "--title", title, "--body", body,
             ])
@@ -884,11 +821,11 @@ fn post_init_supersede_command_carries_edge_to_git_notes() {
 
     let seeded = inkentry_note_lines(repo.path());
     assert_eq!(seeded.len(), 2, "setup: two independent adds");
-    let old_id = local_id_for_title(home.path(), repo.path(), "old-via-supersede");
-    let new_id = local_id_for_title(home.path(), repo.path(), "new-via-supersede");
+    let old_id = local_id_for_title(home.path(), repo.path(), None, "old-via-supersede");
+    let new_id = local_id_for_title(home.path(), repo.path(), None, "new-via-supersede");
     let new_entity_id = record_field(&seeded[1], "entity_id");
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args(["memory", "supersede", &old_id, &new_id])
         .assert()
         .success()
@@ -929,7 +866,7 @@ fn pre_init_add_supersedes_carries_edge_for_old_entry() {
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -946,7 +883,7 @@ fn pre_init_add_supersedes_carries_edge_for_old_entry() {
     assert_eq!(old_lines.len(), 1, "setup: OLD's own pre-init add");
     let old_id = record_field(&old_lines[0], "id");
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -986,7 +923,7 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
     init_git_repo_with_commit(repo.path());
     std::fs::create_dir_all(repo.path().join(".inkentry")).unwrap();
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -1001,9 +938,9 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
         .success();
     let old_lines = inkentry_note_lines(repo.path());
     assert_eq!(old_lines.len(), 1, "setup: OLD's own add");
-    let old_id = local_id_for_title(home.path(), repo.path(), "old-decision");
+    let old_id = local_id_for_title(home.path(), repo.path(), None, "old-decision");
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -1026,7 +963,7 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
         "setup: OLD's original, successor A's record, OLD's state-update"
     );
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -1045,7 +982,7 @@ fn post_init_add_supersedes_rejects_already_archived_old() {
             "No active memory entry with id {old_id} (old)"
         )));
 
-    let list_output = bin(home.path(), repo.path())
+    let list_output = offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "list",
@@ -1080,7 +1017,7 @@ fn pre_init_add_supersedes_rejects_already_archived_old() {
     let repo = TempDir::new().unwrap();
     init_git_repo_with_commit(repo.path());
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -1096,7 +1033,7 @@ fn pre_init_add_supersedes_rejects_already_archived_old() {
     let old_lines = inkentry_note_lines(repo.path());
     let old_id = record_field(&old_lines[0], "id");
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",
@@ -1119,7 +1056,7 @@ fn pre_init_add_supersedes_rejects_already_archived_old() {
         "setup: OLD's original, successor A's record, OLD's state-update"
     );
 
-    bin(home.path(), repo.path())
+    offline_bin(home.path(), repo.path())
         .args([
             "memory",
             "add",

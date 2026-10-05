@@ -1,39 +1,11 @@
 use crate::plumbing_helpers;
-use plumbing_helpers::inkentry_bin_in;
+use plumbing_helpers::{git, git_stdout, inkentry_bin_in, offline_bin};
 
-use assert_cmd::Command;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 const TRACKING_REF: &str = "refs/notes/origin/inkentry";
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = git_out(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
-    std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("spawn git")
-}
-
-fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    String::from_utf8_lossy(&git_out(dir, args).stdout).into_owned()
-}
 
 // Explicit, so each test controls when a fetch happens.
 fn fetch_notes(dir: &Path) {
@@ -55,14 +27,6 @@ fn init_repo_with_commit(dir: &Path) {
     std::fs::write(dir.join("f.txt"), "x\n").unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "-q", "-m", "init"]);
-}
-
-fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = inkentry_bin_in(home);
-    cmd.current_dir(cwd)
-        .env("INKENTRY_NO_SERVER", "1")
-        .env_remove("INKENTRY_SERVER_URL");
-    cmd
 }
 
 fn write_config(dir: &Path, contents: &str) -> PathBuf {
@@ -95,7 +59,7 @@ fn run_init(dir: &Path) -> String {
 }
 
 fn memory_add(home: &Path, dir: &Path, title: &str, extra: &[&str]) {
-    let mut cmd = bin(home, dir);
+    let mut cmd = offline_bin(home, dir);
     cmd.args([
         "memory",
         "add",
@@ -116,7 +80,7 @@ fn memory_add(home: &Path, dir: &Path, title: &str, extra: &[&str]) {
 }
 
 fn memory_list(home: &Path, dir: &Path) -> Vec<serde_json::Value> {
-    let out = bin(home, dir)
+    let out = offline_bin(home, dir)
         .args([
             "memory",
             "list",
@@ -166,7 +130,7 @@ fn edge_triples(home: &Path, dir: &Path) -> Vec<(String, String, String)> {
     let mut rows: Vec<(String, String, String)> = Vec::new();
     for entry in &entries {
         let id = str_field(entry, "id");
-        let out = bin(home, dir)
+        let out = offline_bin(home, dir)
             .args(["memory", "graph", &id, "--format", "json"])
             .output()
             .expect("spawn inkentry memory graph");
@@ -283,7 +247,7 @@ fn run_import(home: &Path, dir: &Path, contents: &str) {
     let path = dir.join("project.dump");
     std::fs::write(&path, contents).unwrap();
     let cfg = empty_config(dir);
-    let out = bin(home, dir)
+    let out = offline_bin(home, dir)
         .arg("--config")
         .arg(&cfg)
         .arg("import")
@@ -483,7 +447,7 @@ fn an_edge_whose_target_is_absent_on_the_clone_is_skipped_and_reported() {
 
     // Carrier off: the target exists in A's store but never reaches the ref.
     let off = write_config(&a, "store_in_git_notes = false\n");
-    let out = bin(home_a.path(), &a)
+    let out = offline_bin(home_a.path(), &a)
         .arg("--config")
         .arg(&off)
         .args([
