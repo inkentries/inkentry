@@ -52,7 +52,7 @@ server-specific pre-v1.0 checklist is
 
 ## SAMM v2 Posture
 
-### Current State (September 2026)
+### Current State (October 2026)
 
 | Business Function  | Practice                    | Current Level | Target Level |
 | ------------------ | --------------------------- | :-----------: | :----------: |

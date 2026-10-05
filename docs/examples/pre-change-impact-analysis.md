@@ -20,7 +20,8 @@ inkentry plumbing graph-edges --symbol validate_token
 
 Edges are emitted in both directions for the named symbol, so filter on
 `target_name` for callers and `source_name` for callees. `kind` is one of
-`calls`, `imports`, `extends`, `implements`, or `mentions`.
+`calls`, `imports`, `extends` or `implements`. An index built before 1.2.0 can
+also carry `mentions` edges, which indexing no longer writes.
 
 ## Step 2: Understand each call site
 

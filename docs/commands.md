@@ -33,6 +33,9 @@ inkentry init [options]
 | `--no-index` | false | Skip the initial index run |
 | `--name <slug>` | derived | Explicit project slug. Overrides the git-derived default; use it for projects without a git remote. |
 
+The global `--config <path>` applies to `init` and is passed on to the detached
+embedding worker, so the worker runs under the config `init` itself loaded.
+
 `init` writes the project slug to `.inkentry/config.toml` but takes **no git
 action on it** — commit it yourself so the slug travels with the repo and the
 whole team shares one identity:
@@ -138,8 +141,8 @@ already in progress, starting a second one fails immediately with `index
 already running (pid N), try again once it finishes` instead of writing to
 the database alongside the first run.
 
-The index also remembers the chunker configuration (currently just the
-`MAX_CHUNK_TOKENS` cap) it was built under. If a plain `inkentry index` detects
+The index also remembers the chunker configuration (the `MAX_CHUNK_TOKENS` cap
+and a version for the chunking rules) it was built under. If a plain `inkentry index` detects
 that the running build's chunker config differs from what's recorded, it
 prints a warning and proceeds anyway rather than failing: unchanged files keep
 their old chunk boundaries until re-parsed, so the index temporarily mixes
@@ -180,6 +183,13 @@ whose path the command prints (`index-background.log`, beside the index): it
 records when the worker started, how far the embedding has got, and, if the
 worker stops before finishing, why.
 
+Not every chunk is embedded. Test files, test code inside source files (Rust
+`#[cfg(test)]` modules and `#[test]` functions), changelogs, JSON files and
+unnamed windows of code are stored and full-text searchable but get no vector;
+`inkentry status` reports them as `N chunks full-text only`, and embedding
+coverage counts only the chunks that do get one. See
+[ADR-104](adr/104-embed-a-subset-of-code-chunks.md).
+
 Add a `.inkentryignore` file (same syntax as `.gitignore`) to any directory to
 exclude files from indexing. It takes higher precedence than `.gitignore`.
 
@@ -191,7 +201,7 @@ the repo (so `.gitignore` never catches them) yet carry near-zero retrieval
 value while costing real embed and parse wall-clock. The defaults cover:
 
 - **Package lockfiles** – `package-lock.json`, `npm-shrinkwrap.json`,
-  `packages.lock.json`.
+  `packages.lock.json`, and any `*-lock.json`.
 - **Minified assets** – `*.min.js`, `*.min.css`.
 - **Vendored / generated directories** – `vendor/`, `node_modules/`,
   `third_party/`, `dist/`, `generated/`, `__generated__/`.
@@ -1448,6 +1458,45 @@ contacting the embedder. This is separate from `inkentry index`, which re-embeds
 the code index. See
 [Backfilling missing embeddings](memory.md#backfilling-missing-embeddings).
 
+### Security notes
+
+`memory` reads and writes the project's own `memory.db`, and appends to
+`refs/notes/inkentry` unless `store_in_git_notes = false`.
+
+- **Secrets are refused, not stored.** `memory add` scans the title and body for
+  known credential patterns before any write and refuses the whole command on a
+  match, so nothing reaches `memory.db` or the notes ref. The scan is best-effort,
+  and a credential in a format it does not know is stored verbatim and travels
+  with the notes once they are published.
+- **Notes are published only by an opt-in hook.** Nothing leaves the machine
+  until you install the pre-push hook or push the ref yourself; see
+  [Sharing memory across clones via git-notes](memory.md#sharing-memory-across-clones-via-git-notes).
+- **Entry text is data.** Entries from teammates, a team server or an imported
+  dump are untrusted input; an agent reading them should not treat them as
+  instructions.
+- **`--from-url` makes an outbound request.** It runs `gh api` for a GitHub
+  issue or pull request, otherwise an HTTP GET to the URL you give, so the
+  fetch leaves the machine. It also runs the opt-in web-to-Markdown script, and
+  only from the inkentry-owned path
+  ([why](memory.md#web-to-md-hook)). The fetched text is secret-scanned like
+  any other body.
+- **`memory add` embeds the entry text** through the configured inference
+  server for the reconcile candidates and the stored vector. On the default
+  loopback server that is on this machine; against a team `server_url` or the
+  hosted cloud it is not. If no embedder answers in time the write still
+  succeeds without one.
+- **`memory anchor` and `--commit` run `git`** (`rev-parse`,
+  `merge-base --is-ancestor`) in the worktree, and `inkentry index` runs
+  `git patch-id` to follow a rebase or amend. Pending anchors hold a worktree path and a
+  commit sha, stay in the local `memory.db`, and are never synced or written to
+  the notes ref; only the claimed `anchor` record is. `memory anchor` never
+  prints and always exits 0, so a failure cannot fail a commit.
+- **`memory tags`** is read-only. Tags and linked files are normalised before
+  they are written, and are bound as SQL parameters, never concatenated.
+- **Origin is free text.** `INKENTRY_TOOL` and `INKENTRY_MODEL` are stored on
+  the entry as given and travel with it in the notes ref and the portable
+  dump. They are not secret-scanned, so keep credentials out of them.
+
 ---
 
 ## inkentry metrics
@@ -1533,6 +1582,27 @@ section built from the same `events` block whenever a memory store exists.
 `memory.db` is touched — entries, tags, linked files and edges all survive.
 This is the whole of the privacy story the event log needs: there is no
 separate file to delete.
+
+### Security notes
+
+`metrics snapshot` is read-only: it reads `memory.db` and runs `git log` in the
+project, and writes only to stdout. It makes no network
+call and no LLM call.
+
+`metrics clear` is the only write, and it is destructive: it deletes every row
+of the local `events` table and cannot be undone by inkentry. Entries, tags,
+linked files and edges are not touched.
+
+The `events` table holds, per `search`, `context`, `memory add`/`supersede`/
+`list`/`show`, `harvest` and `sync` call: the command, declared trigger and
+actor, result counts, latency, a token estimate, the entity ids of what it
+returned, and `INKENTRY_SESSION_REF` as a truncated SHA-256 hash. It holds no
+query text, entry titles or bodies, and file paths. It lives only in the local
+`memory.db`, is never part of the git-notes carrier, and is never synced to a
+server. Recording is best-effort and never changes a command's output or exit
+status. `INKENTRY_TRIGGER`, `INKENTRY_ACTOR`, `INKENTRY_TOOL` and
+`INKENTRY_MODEL` are caller-declared and unverified, so treat the `by_actor`
+and `auto.*` figures as self-reported.
 
 ---
 
@@ -1643,9 +1713,9 @@ entries to the configured server **and** pull remote entries into the local
 machine; only memory does. Requires a configured `server_url`.
 
 Under the default `local_first` mode, a background reconciler already drains
-unpushed entries and pulls new ones during interactive sessions, so this
-so the day-to-day path needs no explicit call: `inkentry
-status` shows what's still pending. Reach for `inkentry sync` when you want an
+unpushed entries and pulls new ones during interactive sessions, so the
+day-to-day path needs no explicit call: `inkentry status` shows what's still
+pending. Reach for `inkentry sync` when you want an
 immediate, synchronous reconcile instead of waiting on the background drain,
 or in a non-interactive context (CI, a script, a git hook) where the
 background reconciler never auto-starts.

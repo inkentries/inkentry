@@ -9,13 +9,16 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-**Upgrading: run `inkentry index --force` once in each indexed project.** Code
-is now chunked differently (see Changed), and an index built by an earlier
-release warns until it is re-chunked. `--force` re-embeds, but embedding now
+## [1.2.0] — 2026-10-05
+
+**Upgrading: optionally run `inkentry index --force` once in each indexed
+project.** Code is now chunked differently (see Changed), and an index built by
+an earlier release warns until it is re-chunked. `--force` re-embeds, but embedding now
 covers roughly a third to a half of what it did, so it takes a fraction of
 the time the first index took. Until then the old index keeps working: it
 migrates in place on first open, the full-text search improvements apply at
 once, and no vector is discarded.
+See [Upgrading](docs/upgrading.md#11x-to-120).
 
 ### Added
 
@@ -192,6 +195,12 @@ once, and no vector is discarded.
   store and syncs to the cloud, and `inkentry index` embeds with the local
   server instead of sending chunks to the cloud. To make the cloud the store of
   record, set `mode = "cloud_first"` (or `INKENTRY_MODE=cloud_first`).
+- **`cloud_first` memory commands no longer fail with 401 minutes after
+  `inkentry login`.** Memory reads and writes now renew an expired cloud
+  session, and retry once on a 401, as `sync` already did.
+  Self-hosted server keys are unaffected.
+- **`inkentry --config <path> init` now passes the config to its background
+  embed process.** The detached worker used to fall back to the default config.
 
 ### Security
 
@@ -202,30 +211,16 @@ once, and no vector is discarded.
 
 ### Internal
 
-- **Both initial schema files are frozen at the shape 1.0 and 1.1 shipped.**
-  `memory_001_initial.sql` stays at version 11 and `index_001_initial.sql` at
-  17; a fresh store is created from its file and climbs the numbered steps to
-  the current version, the same road an existing store takes. The ladder
-  below those versions was collapsed into the files once, at the rename, and
-  is not collapsed again. Nothing observable changes: a fresh store ends at
-  the same version and shape as before.
-- **`memory.db` can migrate forward again, starting at schema version 11.**
-  `create_schema` used to refuse every stamp below the current version,
-  legacy product or not; a future version bump would have locked out every
-  1.0/1.1 store. Versions below 11 (the previous product's) are still
-  refused with the export-and-import message. No release has stamped
-  anything above 11 yet, so this changes nothing you can observe today; it
-  only stops the next schema change from being a lockout.
-- **`index.db` can migrate forward too, starting at schema version 17.**
-  `create_schema` used to send every stamp below the current version to a
-  full rebuild, discarding every embedding along with it; a future version
-  bump — even one adding a nullable column — would have forced a full
-  re-embed for everyone who upgraded. Versions at or below 16 (the previous
-  ladder's floor) still rebuild, as does any future step that genuinely
-  invalidates stored data (a different embedding space, a chunking change)
-  rather than one an in-place step can cover. No release has stamped
-  anything above 17 yet, so this changes nothing you can observe today; it
-  only stops the next schema change from forcing a full re-embed.
+- **Both initial schema files are frozen** at the shape 1.0 and 1.1 shipped
+  (`memory_001_initial.sql` at version 11, `index_001_initial.sql` at 17). A
+  fresh store is created from its file and climbs the numbered steps, the
+  road an existing store takes, and ends at the same version and shape as
+  before.
+- **`memory.db` and `index.db` migrate forward in place** from schema versions
+  11 and 17. Earlier versions are still refused (`memory.db`, with the
+  export-and-import message) or rebuilt (`index.db`), as is any `index.db`
+  step that invalidates stored data. See
+  [Stability](docs/stability.md#on-disk-formats).
 
 ## [1.1.0] — 2026-09-10
 

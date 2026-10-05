@@ -7,80 +7,50 @@ This document describes inkentry's system design for contributors and anyone int
 inkentry is a Rust CLI that:
 
 1. **Indexes** source trees using tree-sitter AST parsing
-2. **Embeds** each code chunk via an external embedding model
-3. **Stores** vectors, chunks, and graph edges in SQLite
-4. **Serves** semantic search, graph queries, and memory retrieval via CLI
+2. **Embeds** a subset of the resulting chunks through `inkentry-server`'s bundled embedder; the rest stay full-text only
+3. **Stores** chunks, vectors, a full-text index and graph edges in SQLite
+4. **Serves** search over code and memory, graph queries, and memory retrieval via CLI
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌────────────────┐
-│  Source tree │────>│   Indexer    │────>│   SQLite DB    │
-│  (.rs, .py,  │     │  tree-sitter │     │  chunks        │
-│   .ts, ...)  │     │  + chunker   │     │  embeddings    │
-└─────────────┘     └──────┬───────┘     │  graph_edges   │
-                           │             │  notes         │
-                    ┌──────▼───────┐     └───────┬────────┘
-                    │  Embedding   │             │
-                    │  Backend     │     ┌───────▼────────┐
-                    │  (LM Studio, │     │   Search /     │
-                    │   Ollama,    │     │   Graph /      │
-                    │   any OAI)   │     │   Memory       │
-                    └──────────────┘     └��──────┬────────┘
-                                                │
-                                        ┌───────▼───────��┐
-                                        │   CLI output   │
-                                        │  (text / JSON) │
-                                        └────────────��───┘
+Source tree --> Indexer (tree-sitter + chunker) --> index.db
+                    |                               chunks, full-text index,
+                    | chunk text                    embeddings, graph_edges
+                    v
+              inkentry-server (embedder)
+
+Memory entries <--> memory.db <--> refs/notes/inkentry
+
+index.db + memory.db --> Search / Graph / Memory --> CLI output (text / JSON)
 ```
 
 ## Module structure
 
+The workspace has four crates. `CLAUDE.md` carries the file-level module map
+and is kept current with the code.
+
 ```
-src/
-  main.rs              Entry point: CLI parse, sqlite-vec init, command dispatch
-  lib.rs               Library root: re-exports for tests and server binary
+crates/
+  inkentry-core/     storage, indexer, search, config, metrics, registry
+  inkentry-cli/      the `inkentry` binary: clap structs, one handler per
+                     subcommand, the server client, capability probing
+  inkentry-embed/    the F2LLM-v2-330M embedder (llama.cpp) and the
+                     EmbeddingBackend trait
+  inkentry-server/   the `inkentry-server` binary: HTTP API, embedder host,
+                     team memory store
+```
 
-  cli/
-    mod.rs             Clap structs (Cli, Command, *Args)
-    cmd/               One file per subcommand (index.rs, search.rs, etc.)
+Within `inkentry-core`:
 
-  config/
-    mod.rs             Config struct, loads from ~/.config/inkentry/config.toml
-    sync_mode.rs       SyncMode enum: offline / local_first / cloud_first mode selection
-    project_id.rs      project-id derivation from git remote / local fallback
-    paths.rs           config-dir + project/db discovery
-    persist.rs         config.toml / secret-store read-write
-    predicates.rs      URL/UUID/env predicates
-    tls.rs             custom CA trust-anchor application
-    secret_store.rs    OS keychain / file secret-store backend
-
-  backends.rs          Re-exports ActiveEmbedder / ActiveLlm (feature-gated)
-
-  embeddings/
-    mod.rs             EmbeddingBackend trait, vec_to_blob/blob_to_vec helpers
-    lmstudio.rs        LmStudioEmbedder: POST /v1/embeddings
-
-  llm/
-    mod.rs             LlmBackend trait, Message struct
-    lmstudio.rs        LmStudioLlm: POST /v1/chat/completions (SSE streaming)
-
-  indexer/
-    mod.rs             Re-exports
-    chunker.rs         Chunk / ChunkKind structs, embedding_text(), sliding_window
-    parser.rs          SourceParser (tree-sitter), detect_language, SUPPORTED_LANGUAGES
-    graph.rs           EdgeExtractor: import/call/extends edges via tree-sitter
-    secrets.rs         Regex-based credential scanner, drops matching chunks
-
-  storage/
-    mod.rs             Re-exports
-    db.rs              Database struct: open/migrate, CRUD, KNN search
-
-  search/
-    mod.rs             SearchResult struct, RRF_K rank-fusion constant
-    tokens.rs          Token-budget helpers
-
-  registry.rs          Global project registry (~/.config/inkentry/registry.db)
-
-migrations/            SQL migration files applied in order at DB open
+```
+  config/       Config, sync mode, project id, secret store, caller declaration
+  indexer/      parser, chunker, graph edges (tree-sitter + locals queries),
+                secret scanner, structural summaries, embed scope
+  storage/      index.db and memory.db access, migrations, git-notes carrier,
+                remote memory backends
+  search/       RRF constant, full-text query building, token budgets
+  metrics/      state and events metrics over memory.db and git history
+  registry.rs   global project registry (~/.config/inkentry/registry.db)
+migrations/     SQL initial schemas and numbered forward steps
 ```
 
 ## Key design decisions
@@ -116,7 +86,7 @@ Queries use an instruction prefix: `Instruct: {instruction}\nQuery: {q}`. For
 example, code search uses `Instruct: Given a code search query, retrieve the
 relevant code snippets\nQuery: {q}`.
 
-See `Chunk::embedding_text()` in `src/indexer/chunker.rs`.
+See `Chunk::embedding_text()` in `crates/inkentry-core/src/indexer/chunker.rs`.
 
 Vectors are L2-normalised and stored as sqlite-vec `INT8[896]` (chunk
 embeddings); memory-entry embeddings stay `FLOAT[896]`.
@@ -146,13 +116,16 @@ If memory ever grows to corpus scale, migrating `note_embeddings` to int8 would
 be the obvious follow-up — but until then the int8 cost (a second quantised path
 to maintain, plus a forced memory re-embed/re-harvest on migration) buys nothing.
 
-There is no dimension-upgrade path in either store, because there is
-no migration path at all. Each store declares its final shape in a single schema
-file and stamps `PRAGMA user_version` at creation; a file carrying anything else
-is never converted in place. `memory.db` refuses one and points at `inkentry
-import`; `index.db` discards and rebuilds, carrying only `usage`. A vector table
-from a store this build cannot read therefore never reaches a read path: it is
-not upgraded, it is gone with the file that held it.
+There is no dimension-upgrade path in either store. Each store has a frozen
+initial schema file and stamps `PRAGMA user_version`; a fresh store is created
+from that file and climbs the numbered migration steps to the current version,
+the same road an existing store takes. Below the version the previous
+ladder last stamped, `memory.db` refuses the file and points at `inkentry
+import`, and `index.db` discards and rebuilds, carrying only `usage`. Above it,
+both migrate forward in place, except that an `index.db` step may ask to
+rebuild instead when it invalidates stored data outright, such as a different
+embedding space. A vector table from a store this build cannot read therefore
+never reaches a read path. See [Stability](stability.md) for the contract.
 
 ### Backend abstraction
 
@@ -162,7 +135,7 @@ To add a new backend: implement the trait (in `inkentry-embed` for an embedder, 
 
 ### Secret scanning
 
-`src/indexer/secrets.rs` runs regex patterns against the full text that will be persisted and embedded for each chunk (docstring + content) before storage, and separately against each composed structural summary when it is produced (summaries don't exist yet at chunk-store time, and the composition can pull a salient literal out of the code into the summary). Chunks matching known credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped in full — including their docstring — and a warning naming only the symbol is logged; a secret-bearing summary is stored as an empty string instead.
+`crates/inkentry-core/src/indexer/secrets.rs` runs regex patterns against the full text that will be persisted and embedded for each chunk (docstring + content) before storage, and separately against each composed structural summary when it is produced (summaries don't exist yet at chunk-store time, and the composition can pull a salient literal out of the code into the summary). Chunks matching known credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped in full — including their docstring — and a warning naming only the symbol is logged; a secret-bearing summary is stored as an empty string instead.
 
 This scanner is **best-effort defense-in-depth, not a security boundary** — a finite set of regexes cannot catch every credential format. The actual boundary is that code never leaves the local machine unless a team `server_url` is explicitly configured; the scanner only reduces the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted) by accident. This boundary is enforced by `crates/inkentry-cli/tests/egress_containment.rs`, which traps every outbound connection across local-tier CLI flows and fails loudly, naming the destination, on any escape past loopback.
 
@@ -176,27 +149,34 @@ This scanner is **best-effort defense-in-depth, not a security boundary** — a 
 files on disk
   → SourceParser (tree-sitter AST → Chunk[])
   → SecretScanner (drop credential chunks)
-  → EmbeddingBackend.embed(batch of chunk texts)
-  → Database.store(chunks + embeddings)
+  → Database.store(chunks; each marked text-only or embeddable)
+  → EmbeddingBackend.embed(batch of embeddable chunk texts)
+  → Database.store(embeddings)
   → EdgeExtractor (AST → graph_edges; callees bound in-file via locals.scm → target_file)
   → Database.store(edges)
 ```
+
+Every stored chunk lands in the full-text index. Only chunks that are not
+text-only (see ADR-104) are embedded.
 
 ## Data flow: search
 
 ```
 query string
-  → EmbeddingBackend.embed(formatted query)
-  → Database.search_similar(query_vec, limit)  // sqlite-vec KNN
-  → [optional] Database.graph_neighbor_chunks() // 1-hop expansion
-  → [optional] query linked project DBs via registry
-  → merge + deduplicate by (file_path, start_line, end_line)
-  → return Vec<SearchResult>
+  → [code corpus]   vector KNN over embeddings (sqlite-vec)  ┐
+                    full-text match over chunks_fts          ┘ fused by RRF
+  → [memory corpus] vector KNN over note_embeddings, gated on relevance;
+                    full-text match over memory
+  → [optional] 1-hop graph expansion; linked project DBs via registry
+  → code and memory lists fused by RRF into one ranked list
+  → return the result envelope
 ```
+
+`--only-text` skips the embedding step and the vector lists.
 
 ## Adding a new language
 
-1. Add the `tree-sitter-{lang}` crate to `Cargo.toml`
-2. Register the language in `src/indexer/parser.rs` (`detect_language` + `SUPPORTED_LANGUAGES`)
-3. Add extraction patterns in `src/indexer/graph/edges.rs` for graph edge support
+1. Enable the grammar from `ast-grep-language`; add a standalone `tree-sitter-{lang}` crate only if it does not ship one
+2. Register the language in `crates/inkentry-core/src/indexer/parser/mod.rs` (`detect_language` + `SUPPORTED_LANGUAGES`)
+3. Add extraction patterns in `crates/inkentry-core/src/indexer/graph/edges.rs` for graph edge support, and a `locals.scm` under `graph/queries/` to bind calls within a file
 4. Add tests
