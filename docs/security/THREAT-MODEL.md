@@ -69,11 +69,15 @@ external egress.
 | Memory notes (decisions, handoffs) | Medium | High | Medium |
 | **git-notes memory (`refs/notes/inkentry`)** | **Medium–High** | Medium | Low |
 | Embedding vectors | Low | Medium | Low |
+| Local event log (`events` table in `memory.db`) | Low | Low | Low |
+| Pending anchors (`pending_anchors` table in `memory.db`) | Low | Medium | Low |
 | inkentry config (`~/.config/inkentry/config.toml`) | Medium | High | Medium |
 | Server-side memory DB (all projects) | High | High | High |
 | Bearer token / API key (server mode) | High | — | — |
 | Team-server bearer resident in a local relay session (`relay::RelayInner::bearer`) | High | Medium | Medium |
 | Team entries buffered in a local relay session (pulled but not yet applied) | Medium | Medium | Low |
+
+**Note on the local event log and pending anchors:** both are local working state in `memory.db`, never carried by `refs/notes/inkentry` and never synced to a server. An event row holds the command, its declared trigger and actor, result counts, latency, entity ids of what it returned, and a truncated SHA-256 of `INKENTRY_SESSION_REF`; it holds no query text, titles, bodies or paths. A pending anchor holds a worktree path and a commit sha. `inkentry metrics clear` empties the event log. Caller declarations (`INKENTRY_TRIGGER`/`ACTOR`/`TOOL`/`MODEL`) are unverified.
 
 **Note on git-notes confidentiality:** Notes may contain architectural decisions, credentials accidentally typed into `--body`, handoff text referencing internal systems, or other context a developer would not ordinarily commit to the repo. If the repo is pushed to a shared or public remote the notes are readable by anyone with clone access.
 
@@ -253,6 +257,8 @@ unauthenticated (no bearer required or sent).
 | Server memory accessible without auth | B | Low | High | No `--key` / `INKENTRY_SERVER_KEY` by default, so any process that can reach the port reads all notes — but `check_bind_safety` (ADR-066 §4) confines a keyless bind to loopback, so "any process that can reach the port" means any local process, which is the deliberate local posture (ADR-056), not an exposed one. A keyed non-loopback bind additionally requires TLS. |
 | Server bound to 0.0.0.0 exposes data on LAN/internet | B | Medium | High | **Enforced:** a non-loopback bind requires **both** TLS and a key: `inkentry-server` refuses to start on `0.0.0.0`/LAN/public addresses unless `--tls-cert`/`--tls-key` and `--key` / `INKENTRY_SERVER_KEY` are set (ADR-066 §4); plaintext off-host is refused with no override; loopback (`127.0.0.1`) is the default (PR #490) |
 | Indexed content contains credentials missed by scanner | A | Medium | Medium | Pattern gaps tracked in #138 |
+| `memory add --from-url` fetches a caller-supplied URL, which can be any address this machine can reach | A | Low | Low | The URL is the invoking user's own argument and is fetched once, with no allow-list. GitHub issue and pull-request URLs go through `gh api`; the opt-in web-to-Markdown script runs only from the inkentry-owned scripts directory. The fetched title and body are secret-scanned like any other entry text before storage. An agent that passes a URL it read from untrusted content to `--from-url` is the caller's risk. |
+| Event-log rows or caller declarations (`INKENTRY_SESSION_REF`, `TOOL`, `MODEL`) disclose usage or carry sensitive text | A | Low | Low | Rows hold no entry text or query text; the session reference is stored only as a truncated hash. `INKENTRY_TOOL` and `INKENTRY_MODEL` are free text stored on an entry's `origin` and travel with it in the notes ref and dumps; they are not secret-scanned. `inkentry metrics clear` deletes the event log. |
 | CLI bearer credential (`server_key`) readable as plaintext at rest (e.g. user syncs `~/.config` into a dotfiles repo or backup) | A | Medium | High | The bearer is stored in the OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), never in `config.toml`, which has no `server_key` field in either the personal or the project file. A plaintext key left in either is **not** read, not migrated, and not stripped: the file is named on stderr telling the holder to rotate the key and set the replacement with `inkentry auth set-key --server <url>`. Lifting it silently was removed in ADR-088, because doing so required the credential to exist in plaintext as a supported mode and left the exposed value un-rotated. Headless fallback is an owner-only (`0600`) `secrets.toml`; `INKENTRY_SERVER_KEY` is the CI escape hatch. The credential is never logged. |
 | LLM endpoint credential (`llm_url`) exposed in the process table, at rest, or in transit | A | Medium | High | Stored in the OS secret store via `inkentry auth set-key --llm`, never in `config.toml`; read from stdin/prompt and refused as an argument. The CLI resolves it only on the daemon-spawn path and passes it to the child in its environment: no input emits `--llm-key`/`--llm-key-file` into the spawned daemon's argv, and the endpoint URL/model travel as arguments precisely because they are not secret. `INKENTRY_LLM_KEY` is the CI/non-interactive escape hatch. Never logged at any level, and not echoed by the refusal below. When a credential resolves against a plaintext `http://` non-loopback endpoint, `inkentry-server` refuses to start rather than sending it in the clear; the check is scoped to a credential being present, so keyless LAN endpoints are unaffected. |
 | inkentry cloud session (WorkOS access + refresh token) readable as plaintext at rest | A | Medium | High | Stored in the OS secret store, keyed per organization, never in `config.toml` (ADR-074). Earlier builds wrote both tokens to an `[auth]` table in `~/.config/inkentry/config.toml` in the clear; that table is now migrated into the store and stripped from the file on first use, so an upgraded machine does not keep the plaintext copy. A refresh token is long-lived, so a `config.toml` that was backed up, synced into a dotfiles repository, or shared while an older build wrote it should be treated as exposed: `inkentry logout` then `inkentry login` mints a new session. `inkentry logout --org <target>` scopes that to one organization. Never logged. |
@@ -584,9 +590,11 @@ as a JSON line appended to `refs/notes/inkentry` on HEAD when `store_in_git_note
 A commit's note is JSON Lines: one `NoteRecord` per line (canonical inkentry
 format), possibly interleaved with foreign content (prose, other tools' lines).
 Each record contains: `id`, `kind`, `title`, `body`, `tags`, `linked_files`,
-`created_at`, `status`, `source_ref`, an optional `remote_id` (the canonical
+`created_at`, `status`, `source_ref`, an optional `origin` (actor kind plus
+free-text tool and model), an optional `remote_id` (the canonical
 cross-machine id, present only once an entry is synced to a remote server), and
-schema metadata. The `body` field is the raw user-supplied text from `--body`
+schema metadata. A claimed commit anchor adds a separate `anchor` record naming
+the entry's entity id and the commit; pending anchors stay local. The `body` field is the raw user-supplied text from `--body`
 or `$EDITOR`. Reads skip foreign lines without erroring; writes preserve every
 foreign line and every untargeted record verbatim.
 

@@ -150,6 +150,9 @@ purpose is to let relationship records name their endpoints.
 | `entity_id` | string | | Content-addressed convergence key. Carried verbatim, **never recomputed** by either side. |
 | `remote_id` | string | | |
 | `namespace` | string | | Multi-tenant stores only. Absent means the single default store. |
+| `origin_actor_kind` | string | | Who produced the entry: `human`, `agent` or `harvest`. Absent means no origin was recorded. Additive; a reader that does not know it ignores it. |
+| `origin_tool` | string | | Free text naming the calling tool. Same rules. |
+| `origin_model` | string | | Free text naming the model. Same rules. |
 
 ```json
 {"record":"entity","type":"memory_entry","ref":"e1","uuid":"0199a0f1-4d3c-7c2a-9b1e-6f0a2c5d8e33","kind":"decision","title":"Fail closed with no local project","body":"...","tags":["locked"],"linked_files":["src/config.rs"],"created_at":1786300000,"status":"superseded","source_ref":"commit:abc1234","entity_id":"9f2c..."}

@@ -733,9 +733,10 @@ inkentry login
 
 This opens a browser-based device login; on success, short-lived tokens are
 stored in your personal config and refreshed automatically, so you do not need
-to log in again until the refresh token expires. After that, `inkentry memory`
-and `inkentry sync` transparently use the cloud, the same as a self-hosted
-`server_url` above. See [`inkentry login`](commands.md#inkentry-login) and
+to log in again until the refresh token expires. After that, memory writes stay
+in the local `memory.db` and sync to the cloud in the background (`inkentry sync`
+forces a sync), the same as a self-hosted `server_url` above; set
+`mode = "cloud_first"` to make the cloud the store of record. See [`inkentry login`](commands.md#inkentry-login) and
 [`inkentry org`](commands.md#inkentry-org) for multi-org accounts, and the
 [`cloud` config reference](config-reference.md#cloud) for the full field
 description.

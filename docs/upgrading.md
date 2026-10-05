@@ -1,5 +1,45 @@
 # Upgrading
 
+## 1.1.x to 1.2.0
+
+**Run `inkentry index --force` once in each indexed project.** Code is chunked
+differently in 1.2.0, and until an index is re-chunked, `inkentry index` warns
+that it mixes chunk granularities. `--force` re-embeds, but embedding now covers
+roughly a third to a half of what it did, so it takes a fraction of the time the
+first index took.
+
+Nothing else is required. Both stores migrate in place the first time 1.2.0
+opens them, and no memory entry is rewritten or re-embedded:
+
+- `index.db` moves from schema version 17 to 20. Existing vectors are kept, the
+  full-text index is rebuilt in seconds, and your next `inkentry index`
+  re-extracts call edges without re-embedding.
+- `memory.db` moves from schema version 11 to 15: tags and linked files become
+  rows, and the local event log and pending-anchor tables are added.
+
+Downgrading after this is not supported; see
+[Downgrading, and what each store does](stability.md#downgrading-and-what-each-store-does).
+
+What is worth knowing:
+
+- **Re-install the post-commit hook** to anchor `memory add` entries to the
+  commit that carries them: run `inkentry hooks install` again. Installed hooks
+  are not rewritten on their own, and without the new line entries stay pending
+  until you anchor them by hand with `inkentry memory anchor`.
+- **Team servers:** upgrade `inkentry-server` first. `memory add --reconcile`
+  needs a server that advertises `memory.reconcile`; against an older server it
+  has no effect.
+- **`cloud = true` no longer means `cloud_first`.** Like `server_url`, it keeps
+  memory local and syncs in the background. Set `mode = "cloud_first"` to make
+  the cloud the store of record.
+- **Search results change.** Memory competes for a slot only when it clears a
+  relevance floor, the LinearRAG re-rank is gone, and full-text search stems
+  words and matches camelCase parts. `--only-text` JSON reports `distance` as
+  the raw BM25 score.
+- **Blocking on duplicates is opt-in.** A plain `memory add` behaves as before;
+  exit code `3` appears only with `--reconcile`, or `reconcile = "block"` under
+  `[memory]`.
+
 ## 1.0.x to 1.1.0
 
 Nothing to do. The index and memory stores are unchanged, and the embedding

@@ -130,9 +130,8 @@ git-notes carrier rationale.
 Configuring a team `server_url` does not, by itself, redirect reads or writes
 to the server. The `mode` config field (or the `INKENTRY_MODE` environment
 variable) controls how the CLI reconciles the local store and the server.
-`cloud = true` is the one exception: with no `mode` set explicitly it defaults
-to `cloud_first` rather than `local_first`, since opting into the hosted
-service is itself the deliberate step (see [`cloud`](config-reference.md#cloud)).
+`cloud = true` behaves the same way: with no `mode` set, it defaults to
+`local_first` (see [`cloud`](config-reference.md#cloud)).
 
 | `mode` | reads | writes | when the server is unreachable |
 |---|---|---|---|
