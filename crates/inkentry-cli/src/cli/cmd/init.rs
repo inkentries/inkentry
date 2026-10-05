@@ -74,7 +74,12 @@ pub async fn init(args: InitArgs, cfg: Config) -> Result<()> {
     // server this command has not started yet and ship a zero-embedding index.
     let server_line = start_or_probe_server(&cfg).await;
 
-    let (file_count, chunk_count) = run_index(&args, &project, &cfg).await?;
+    run_index(&args, &project, &cfg).await?;
+    let (file_count, chunk_count) = if args.no_index && !project.db.exists() {
+        (0, 0)
+    } else {
+        index_counts(&project.db)
+    };
 
     let (notes_lines, memory_line) = import_notes(&project).await;
 
@@ -193,14 +198,10 @@ fn index_counts(db_path: &Path) -> (i64, i64) {
     }
 }
 
-async fn run_index(args: &InitArgs, project: &ProjectPaths, cfg: &Config) -> Result<(i64, i64)> {
+async fn run_index(args: &InitArgs, project: &ProjectPaths, cfg: &Config) -> Result<()> {
     if args.no_index {
         println!("Skipping index (--no-index). Run `inkentry index .` when ready.");
-        return Ok(if project.db.exists() {
-            index_counts(&project.db)
-        } else {
-            (0, 0)
-        });
+        return Ok(());
     }
 
     let index_args = super::index::IndexArgs {
@@ -219,9 +220,7 @@ async fn run_index(args: &InitArgs, project: &ProjectPaths, cfg: &Config) -> Res
         // `InitArgs` carries no `--config`, so the detached embed child uses the default config.
         config_path: None,
     };
-    super::index::index(index_args, cfg.clone()).await?;
-
-    Ok(index_counts(&project.db))
+    super::index::index(index_args, cfg.clone()).await
 }
 
 // Order is load-bearing: on a fresh clone the import must run after the
