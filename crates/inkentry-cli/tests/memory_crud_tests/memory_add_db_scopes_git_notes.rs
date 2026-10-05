@@ -1,19 +1,8 @@
 use crate::plumbing_helpers;
-use plumbing_helpers::{init_git_repo, inkentry_bin_in};
+use plumbing_helpers::{git_out, init_git_repo, local_id_for_title, offline_bin};
 
-use assert_cmd::Command;
 use std::path::Path;
 use tempfile::TempDir;
-
-fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
-    std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("spawn git")
-}
 
 fn inkentry_note_lines(dir: &Path) -> Option<Vec<String>> {
     let out = git_out(dir, &["notes", "--ref=inkentry", "show", "HEAD"]);
@@ -39,14 +28,6 @@ fn record_field(line: &str, key: &str) -> String {
         .to_string()
 }
 
-fn bin(home: &Path, cwd: &Path) -> Command {
-    let mut cmd = inkentry_bin_in(home);
-    cmd.current_dir(cwd)
-        .env("INKENTRY_NO_SERVER", "1")
-        .env_remove("INKENTRY_SERVER_URL");
-    cmd
-}
-
 // A `--db` target with no git repo of its own must never fall back to the CWD repo's notes: fixture
 // seeding points `--db` at a tmpdir while inheriting the developer's checkout as CWD.
 #[test]
@@ -61,7 +42,7 @@ fn db_target_outside_any_repo_never_writes_cwd_repos_notes() {
     let db_target = tmp.path().join("db_target");
     std::fs::create_dir_all(&db_target).unwrap();
 
-    bin(home.path(), &host_repo)
+    offline_bin(home.path(), &host_repo)
         .arg("memory")
         .arg("--db")
         .arg(db_target.join("memory.db"))
@@ -95,7 +76,7 @@ fn db_target_inside_its_own_repo_writes_there_not_cwd_repo() {
     std::fs::create_dir_all(&project_repo).unwrap();
     init_git_repo(&project_repo);
 
-    bin(home.path(), &host_repo)
+    offline_bin(home.path(), &host_repo)
         .arg("memory")
         .arg("--db")
         .arg(project_repo.join("memory.db"))
@@ -122,32 +103,6 @@ fn db_target_inside_its_own_repo_writes_there_not_cwd_repo() {
     );
 }
 
-// A git-notes record's own `id` never resolves against the store.
-fn local_id_for_title(home: &Path, cwd: &Path, db_path: &Path, title: &str) -> String {
-    let out = bin(home, cwd)
-        .arg("memory")
-        .arg("--db")
-        .arg(db_path)
-        .args(["list", "--format", "jsonl", "--limit", "100"])
-        .output()
-        .expect("spawn inkentry memory list");
-    assert!(
-        out.status.success(),
-        "memory list failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    stdout
-        .lines()
-        .find_map(|line| {
-            let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            (v.get("title")?.as_str()? == title)
-                .then(|| Some(v.get("id")?.as_str()?.to_string()))
-                .flatten()
-        })
-        .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
-}
-
 #[test]
 fn supersedes_state_update_also_scoped_to_db_target_repo() {
     let tmp = TempDir::new().unwrap();
@@ -163,7 +118,7 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
     let db_path = project_repo.join("memory.db");
 
     // Both adds run from host_repo: only `--db` should decide where the carrier lands.
-    bin(home.path(), &host_repo)
+    offline_bin(home.path(), &host_repo)
         .arg("memory")
         .arg("--db")
         .arg(&db_path)
@@ -178,10 +133,10 @@ fn supersedes_state_update_also_scoped_to_db_target_repo() {
         .success();
     let old_lines = inkentry_note_lines(&project_repo).expect("first add wrote a note");
     assert_eq!(old_lines.len(), 1);
-    let old_id = local_id_for_title(home.path(), &host_repo, &db_path, "old-entry");
+    let old_id = local_id_for_title(home.path(), &host_repo, Some(&db_path), "old-entry");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
 
-    bin(home.path(), &host_repo)
+    offline_bin(home.path(), &host_repo)
         .arg("memory")
         .arg("--db")
         .arg(&db_path)
@@ -228,7 +183,7 @@ fn pre_init_add_with_no_local_project_uses_cwd_repo() {
     std::fs::create_dir_all(&repo).unwrap();
     init_git_repo(&repo);
 
-    bin(home.path(), &repo)
+    offline_bin(home.path(), &repo)
         .arg("memory")
         .arg("add")
         .arg("--kind")
@@ -254,7 +209,7 @@ fn pre_init_supersedes_reads_and_writes_cwd_repo() {
     std::fs::create_dir_all(&repo).unwrap();
     init_git_repo(&repo);
 
-    bin(home.path(), &repo)
+    offline_bin(home.path(), &repo)
         .arg("memory")
         .arg("add")
         .arg("--kind")
@@ -270,7 +225,7 @@ fn pre_init_supersedes_reads_and_writes_cwd_repo() {
     let old_id = record_field(&old_lines[0], "id");
     let old_entity_id = record_field(&old_lines[0], "entity_id");
 
-    bin(home.path(), &repo)
+    offline_bin(home.path(), &repo)
         .arg("memory")
         .arg("add")
         .arg("--kind")
@@ -317,7 +272,7 @@ fn db_target_nested_inside_cwd_repo_writes_there_not_cwd_repo() {
     std::fs::create_dir_all(&nested_repo).unwrap();
     init_git_repo(&nested_repo);
 
-    bin(home.path(), &host_repo)
+    offline_bin(home.path(), &host_repo)
         .arg("memory")
         .arg("--db")
         .arg(nested_repo.join("memory.db"))

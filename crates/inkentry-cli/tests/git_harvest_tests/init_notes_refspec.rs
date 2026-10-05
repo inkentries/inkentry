@@ -1,9 +1,8 @@
 use crate::plumbing_helpers;
-use plumbing_helpers::inkentry_bin;
+use plumbing_helpers::{git, git_out, git_stdout_trimmed, inkentry_bin};
 
 use predicates::prelude::*;
 use std::path::Path;
-use std::process::Output;
 use tempfile::tempdir;
 
 const NOTES_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
@@ -11,35 +10,6 @@ const NOTES_REFSPEC: &str = "+refs/notes/inkentry*:refs/notes/origin/inkentry*";
 // A fetch lands on a tracking ref, never the working ref: fetching straight onto `refs/notes/inkentry`
 // would force-update it and destroy local unpushed notes.
 const TRACKING_REF: &str = "refs/notes/origin/inkentry";
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = git_out(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn git_out(dir: &Path, args: &[&str]) -> Output {
-    std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("spawn git")
-}
-
-fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    String::from_utf8_lossy(&git_out(dir, args).stdout)
-        .trim()
-        .to_string()
-}
 
 // Local identity so spawned `git` (and inkentry's inner git) can commit without the runner's global config.
 fn init_repo_with_commit(dir: &Path) {
@@ -102,7 +72,7 @@ fn init_configures_notes_refspec_when_origin_present() {
 
     let stdout = run_init(&repo);
 
-    let fetch = git_stdout(&repo, &["config", "--get-all", "remote.origin.fetch"]);
+    let fetch = git_stdout_trimmed(&repo, &["config", "--get-all", "remote.origin.fetch"]);
     assert!(
         fetch.lines().any(|l| l.trim() == NOTES_REFSPEC),
         "remote.origin.fetch should contain the notes refspec, got:\n{fetch}"
@@ -192,7 +162,7 @@ fn init_configures_notes_rewrite_ref_without_an_origin_remote() {
 
     // Read with `--local` so the assertion covers what init wrote, not an ambient global value.
     assert_eq!(
-        git_stdout(
+        git_stdout_trimmed(
             tmp.path(),
             &["config", "--local", "--get-all", "notes.rewriteRef"]
         )
@@ -233,7 +203,7 @@ fn init_notes_refspec_is_idempotent() {
     run_init(&repo);
     let second = run_init(&repo);
 
-    let count = git_stdout(&repo, &["config", "--get-all", "remote.origin.fetch"])
+    let count = git_stdout_trimmed(&repo, &["config", "--get-all", "remote.origin.fetch"])
         .lines()
         .filter(|l| l.trim() == NOTES_REFSPEC)
         .count();
@@ -342,7 +312,7 @@ fn notes_round_trip_through_bare_origin() {
         .stdout(predicate::str::contains("Stored [decision]"));
 
     assert!(
-        !git_stdout(&repo, &["notes", "--ref=inkentry", "list"]).is_empty(),
+        !git_stdout_trimmed(&repo, &["notes", "--ref=inkentry", "list"]).is_empty(),
         "expected a local inkentry note after memory add"
     );
 
@@ -362,7 +332,7 @@ fn notes_round_trip_through_bare_origin() {
     git(&clone, &["config", "user.email", "clone@example.com"]);
     git(&clone, &["config", "user.name", "Clone"]);
     assert!(
-        git_stdout(&clone, &["notes", "--ref=inkentry", "list"]).is_empty(),
+        git_stdout_trimmed(&clone, &["notes", "--ref=inkentry", "list"]).is_empty(),
         "a fresh clone should not have inkentry notes before fetch"
     );
 
@@ -378,14 +348,15 @@ fn notes_round_trip_through_bare_origin() {
         "a plain fetch must populate {TRACKING_REF} via the init-configured refspec"
     );
 
-    let tracking_notes = git_stdout(&clone, &["notes", &format!("--ref={TRACKING_REF}"), "list"]);
+    let tracking_notes =
+        git_stdout_trimmed(&clone, &["notes", &format!("--ref={TRACKING_REF}"), "list"]);
     let annotated = tracking_notes
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .expect("note list line has an annotated object")
         .to_string();
-    let shown = git_stdout(
+    let shown = git_stdout_trimmed(
         &clone,
         &[
             "notes",
@@ -418,7 +389,8 @@ fn notes_round_trip_through_bare_origin() {
         String::from_utf8_lossy(&listed.stdout)
     );
     assert!(
-        git_stdout(&clone, &["notes", "--ref=inkentry", "show", &annotated]).contains(unique),
+        git_stdout_trimmed(&clone, &["notes", "--ref=inkentry", "show", &annotated])
+            .contains(unique),
         "the read-path merge should have folded the tracking ref into refs/notes/inkentry"
     );
 }
@@ -643,7 +615,7 @@ fn local_unpushed_note_survives_a_fetch_when_the_remote_has_notes() {
 
     git(&mine, &["fetch", "-q", "origin"]);
 
-    let after = git_stdout(&mine, &["notes", "--ref=inkentry", "show", "HEAD"]);
+    let after = git_stdout_trimmed(&mine, &["notes", "--ref=inkentry", "show", "HEAD"]);
     assert!(
         after.contains("mine unpushed"),
         "a plain fetch must not clobber a local unpushed note, got:\n{after}"

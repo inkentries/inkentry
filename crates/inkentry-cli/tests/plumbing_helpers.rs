@@ -71,6 +71,74 @@ pub fn inkentry_bin_in(home: &Path) -> Command {
     cmd
 }
 
+pub fn offline_bin(home: &Path, cwd: &Path) -> Command {
+    let mut cmd = inkentry_bin_in(home);
+    cmd.current_dir(cwd)
+        .env("INKENTRY_NO_SERVER", "1")
+        .env_remove("INKENTRY_SERVER_URL");
+    cmd
+}
+
+pub fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("spawn git")
+}
+
+pub fn git(dir: &Path, args: &[&str]) {
+    let out = git_out(dir, args);
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// Exit status is ignored: a missing ref is a legitimate empty result.
+pub fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    String::from_utf8_lossy(&git_out(dir, args).stdout).into_owned()
+}
+
+pub fn git_stdout_trimmed(dir: &Path, args: &[&str]) -> String {
+    git_stdout(dir, args).trim().to_string()
+}
+
+// A git-notes record's own `id` is a per-write stamp that never resolves against the store.
+pub fn local_id_for_title(home: &Path, cwd: &Path, db: Option<&Path>, title: &str) -> String {
+    let mut cmd = offline_bin(home, cwd);
+    cmd.arg("memory");
+    if let Some(db) = db {
+        cmd.arg("--db").arg(db);
+    }
+    let out = cmd
+        .args(["list", "--format", "jsonl", "--limit", "100"])
+        .output()
+        .expect("spawn inkentry memory list");
+    assert!(
+        out.status.success(),
+        "memory list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    stdout
+        .lines()
+        .find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            (v.get("title")?.as_str()? == title)
+                .then(|| Some(v.get("id")?.as_str()?.to_string()))
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("no local entry titled {title:?} in:\n{stdout}"))
+}
+
 // Step 3a (`server.port`) needs a live inkentry-server pid, which a wiremock stand-in cannot be,
 // so the mock is reached through the fixed-port fallback (3b) instead.
 pub fn loopback_discovery_port(state_dir: &Path, url: &str) -> String {
