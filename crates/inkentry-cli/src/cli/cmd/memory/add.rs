@@ -136,32 +136,17 @@ pub(super) async fn memory_add(
 
     // The local sqlite-primary store is the only backend with a searchable
     // index to reconcile against, so candidates are computed only on this
-    // path. Embedding moves ahead of the write here (ADR-096's reserved
-    // interactive lane is what keeps that bounded) so the vector that feeds
-    // the KNN half is the same one the entry is stored with — there is no
-    // separate post-write attach any more on this path.
-    let mut pre_write_embedding: Option<Vec<u8>> = None;
-    let mut embed_failure_reason: Option<String> = None;
-    let mut duplicate_candidates: Vec<Candidate> = Vec::new();
-    let mut related_candidates: Vec<Candidate> = Vec::new();
-    if local_sqlite_is_primary {
-        let embed_text = format!("title: {title} | text: {body}");
-        match embed_with_budget(cfg, &embed_text).await {
-            Ok(blob) => pre_write_embedding = Some(blob),
-            Err(reason) => embed_failure_reason = Some(reason),
-        }
-        if let Ok(store) = MemoryStore::open(mem_path) {
-            let candidates = store
-                .find_candidates(pre_write_embedding.as_deref(), &title, None)
-                .unwrap_or_default();
-            for c in candidates {
-                match c.band {
-                    CandidateBand::Duplicate => duplicate_candidates.push(c),
-                    CandidateBand::Related => related_candidates.push(c),
-                }
-            }
-        }
-    }
+    // path.
+    let PreWriteReconcile {
+        embedding: pre_write_embedding,
+        embed_failure_reason,
+        mut duplicate_candidates,
+        mut related_candidates,
+    } = if local_sqlite_is_primary {
+        embed_and_find_candidates(cfg, mem_path, &title, &body).await
+    } else {
+        PreWriteReconcile::default()
+    };
 
     // Nothing is written. The candidate set is advice, not a lock (a
     // resolution naming an id outside it is still accepted below).
@@ -415,17 +400,7 @@ pub(super) async fn memory_add(
     if local_sqlite_is_primary {
         // Closed now that the write is durable.
         drop(primary_backend);
-
-        // ADR-099 D1/D4: record where this write happened, or anchor it to a
-        // known commit immediately. Best-effort — an entry is already durably
-        // stored by this point, so a failure here only costs its anchor.
-        if let Some(commit) = args.commit.as_deref() {
-            if let Err(e) = super::anchor::anchor_now(mem_path, commit, &id).await {
-                eprintln!("warning: entry stored, but anchoring it to {commit} failed: {e:#}");
-            }
-        } else if let Err(e) = super::anchor::record_pending(mem_path, &entity_id).await {
-            tracing::debug!("recording a pending anchor for {entity_id} failed: {e:#}");
-        }
+        anchor_written_entry(args.commit.as_deref(), mem_path, &id, &entity_id).await;
     }
 
     print_added(
@@ -671,7 +646,60 @@ fn resolution_kind(args: &MemoryAddArgs) -> Option<ResolutionKind> {
     }
 }
 
-// Embeds ahead of the write, within the ADR-096 interactive budget, so the
+#[derive(Default)]
+struct PreWriteReconcile {
+    embedding: Option<Vec<u8>>,
+    embed_failure_reason: Option<String>,
+    duplicate_candidates: Vec<Candidate>,
+    related_candidates: Vec<Candidate>,
+}
+
+// The entry is embedded before the write so the vector feeding the candidate
+// KNN is the one it is stored with; no post-write attach follows.
+async fn embed_and_find_candidates(
+    cfg: &Config,
+    mem_path: &std::path::Path,
+    title: &str,
+    body: &str,
+) -> PreWriteReconcile {
+    let mut out = PreWriteReconcile::default();
+    let embed_text = format!("title: {title} | text: {body}");
+    match embed_with_budget(cfg, &embed_text).await {
+        Ok(blob) => out.embedding = Some(blob),
+        Err(reason) => out.embed_failure_reason = Some(reason),
+    }
+    if let Ok(store) = MemoryStore::open(mem_path) {
+        let candidates = store
+            .find_candidates(out.embedding.as_deref(), title, None)
+            .unwrap_or_default();
+        for c in candidates {
+            match c.band {
+                CandidateBand::Duplicate => out.duplicate_candidates.push(c),
+                CandidateBand::Related => out.related_candidates.push(c),
+            }
+        }
+    }
+    out
+}
+
+// Best-effort: the entry is already durably stored, so a failure here only
+// costs its anchor.
+async fn anchor_written_entry(
+    commit: Option<&str>,
+    mem_path: &std::path::Path,
+    id: &crate::storage::NoteId,
+    entity_id: &str,
+) {
+    if let Some(commit) = commit {
+        if let Err(e) = super::anchor::anchor_now(mem_path, commit, id).await {
+            eprintln!("warning: entry stored, but anchoring it to {commit} failed: {e:#}");
+        }
+    } else if let Err(e) = super::anchor::record_pending(mem_path, entity_id).await {
+        tracing::debug!("recording a pending anchor for {entity_id} failed: {e:#}");
+    }
+}
+
+// Embeds ahead of the write, within the interactive budget, so the
 // vector that feeds the pre-write candidate KNN is the one the entry is
 // stored with. `Err` names why there is no vector; the write still proceeds
 // without one — a write may be the only copy of a thought, and the embedder
