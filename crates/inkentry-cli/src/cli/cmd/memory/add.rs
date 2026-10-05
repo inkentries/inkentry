@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use inkentry_core::storage::memory::{ReconcileMode, ResolutionKind};
 
-use super::super::events::ReconcileOutcome;
+use super::super::events::{self, EventArgs, ReconcileOutcome};
 use super::MemoryAddArgs;
 use crate::{
     capability,
@@ -197,15 +197,19 @@ pub(super) async fn memory_add(
         // Best-effort, same as the success-path record below: `ok: false`
         // distinguishes a blocked write from one that wrote nothing because
         // it errored. `returned_ids` is empty — nothing was written to name.
-        super::super::events::record_memory_add(
-            cfg,
-            mem_path,
-            backend_override,
-            Some(duplicate_candidates.len() as i64),
-            &[],
-            None,
-            started,
-            false,
+        events::record_memory_add(
+            EventArgs {
+                cfg,
+                mem_path,
+                backend_override,
+                command: "memory.add",
+                code_results: None,
+                memory_results: Some(duplicate_candidates.len() as i64),
+                returned_ids: &[],
+                tokens_out: None,
+                started,
+                ok: false,
+            },
             ReconcileOutcome {
                 mode: reconcile_mode,
                 resolution: Some(ResolutionKind::Abandoned),
@@ -562,15 +566,19 @@ pub(super) async fn memory_add(
     if !pre_init_notes {
         let tokens_out = crate::search::tokens::estimate_tokens(&title)
             + crate::search::tokens::estimate_tokens(&body);
-        super::super::events::record_memory_add(
-            cfg,
-            mem_path,
-            backend_override,
-            Some(1),
-            std::slice::from_ref(&entity_id),
-            Some(tokens_out as i64),
-            started,
-            true,
+        events::record_memory_add(
+            EventArgs {
+                cfg,
+                mem_path,
+                backend_override,
+                command: "memory.add",
+                code_results: None,
+                memory_results: Some(1),
+                returned_ids: std::slice::from_ref(&entity_id),
+                tokens_out: Some(tokens_out as i64),
+                started,
+                ok: true,
+            },
             ReconcileOutcome {
                 mode: reconcile_mode,
                 resolution,

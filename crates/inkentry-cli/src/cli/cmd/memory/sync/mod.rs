@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 
+use super::super::events::{self, EventArgs};
 use super::MemorySyncArgs;
 use crate::{
     capability,
@@ -162,18 +163,18 @@ pub async fn memory_sync(
             edges_note
         );
     }
-    super::super::events::record(
+    events::record(EventArgs {
         cfg,
         mem_path,
-        None,
-        "sync",
-        None,
-        Some(pulled.applied as i64 + pushed.created as i64),
-        &[],
-        None,
+        backend_override: None,
+        command: "sync",
+        code_results: None,
+        memory_results: Some(pulled.applied as i64 + pushed.created as i64),
+        returned_ids: &[],
+        tokens_out: None,
         started,
-        true,
-    );
+        ok: true,
+    });
     Ok(())
 }
 

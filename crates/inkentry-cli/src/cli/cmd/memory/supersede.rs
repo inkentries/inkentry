@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::super::events::{self, EventArgs};
 use super::{MemorySupersededArgs, backend_err};
 use crate::{
     config::Config,
@@ -86,17 +87,17 @@ pub(super) async fn memory_supersede(
 
     super::outbox::nudge_after_write(cfg, mem_path).await;
 
-    super::super::events::record(
+    events::record(EventArgs {
         cfg,
         mem_path,
         backend_override,
-        "memory.supersede",
-        None,
-        Some(1),
-        std::slice::from_ref(&new_note.entity_id),
-        None,
+        command: "memory.supersede",
+        code_results: None,
+        memory_results: Some(1),
+        returned_ids: std::slice::from_ref(&new_note.entity_id),
+        tokens_out: None,
         started,
-        true,
-    );
+        ok: true,
+    });
     Ok(())
 }

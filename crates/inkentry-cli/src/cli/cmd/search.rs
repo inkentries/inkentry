@@ -80,6 +80,7 @@ pub struct SearchArgs {
 }
 
 use super::color::cprintln;
+use super::events::{self, EventArgs};
 use super::fusion::{self, UnifiedResult};
 use super::helpers::{embed_query, project_display_name, require_server_client};
 use super::ui::spinner;
@@ -306,18 +307,18 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             memory_missing,
             rebuilt_unpopulated,
         );
-        super::events::record(
-            &cfg,
-            &mem_path,
-            None,
-            "search",
-            Some(0),
-            Some(0),
-            &[],
-            Some(0),
+        events::record(EventArgs {
+            cfg: &cfg,
+            mem_path: &mem_path,
+            backend_override: None,
+            command: "search",
+            code_results: Some(0),
+            memory_results: Some(0),
+            returned_ids: &[],
+            tokens_out: Some(0),
             started,
-            result.is_ok(),
-        );
+            ok: result.is_ok(),
+        });
         return result;
     }
 
@@ -332,18 +333,18 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
 
     if let Some(budget) = args.budget {
         let tokens_out = emit_budget(&args, all, budget);
-        super::events::record(
-            &cfg,
-            &mem_path,
-            None,
-            "search",
-            Some(code_results),
-            Some(memory_results),
-            &returned_memory_ids,
-            tokens_out.as_ref().ok().map(|&t| t as i64),
+        events::record(EventArgs {
+            cfg: &cfg,
+            mem_path: &mem_path,
+            backend_override: None,
+            command: "search",
+            code_results: Some(code_results),
+            memory_results: Some(memory_results),
+            returned_ids: &returned_memory_ids,
+            tokens_out: tokens_out.as_ref().ok().map(|&t| t as i64),
             started,
-            tokens_out.is_ok(),
-        );
+            ok: tokens_out.is_ok(),
+        });
         return tokens_out.map(|_| ());
     }
 
@@ -361,18 +362,18 @@ pub async fn search(args: SearchArgs, cfg: Config) -> Result<()> {
             Ok(())
         }
     };
-    super::events::record(
-        &cfg,
-        &mem_path,
-        None,
-        "search",
-        Some(code_results),
-        Some(memory_results),
-        &returned_memory_ids,
-        Some(tokens_out),
+    events::record(EventArgs {
+        cfg: &cfg,
+        mem_path: &mem_path,
+        backend_override: None,
+        command: "search",
+        code_results: Some(code_results),
+        memory_results: Some(memory_results),
+        returned_ids: &returned_memory_ids,
+        tokens_out: Some(tokens_out),
         started,
-        result.is_ok(),
-    );
+        ok: result.is_ok(),
+    });
     result
 }
 

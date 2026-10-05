@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use super::super::color::{color_enabled, cprintln};
+use super::super::events::{self, EventArgs};
 use super::super::status::format_age;
 use super::MemoryShowArgs;
 use crate::{config::Config, storage::open_memory_backend};
@@ -91,18 +92,18 @@ pub(super) async fn memory_show(
             }
         }
     }
-    super::super::events::record(
+    events::record(EventArgs {
         cfg,
         mem_path,
         backend_override,
-        "memory.show",
-        None,
-        Some(1),
-        std::slice::from_ref(&n.entity_id),
-        None,
+        command: "memory.show",
+        code_results: None,
+        memory_results: Some(1),
+        returned_ids: std::slice::from_ref(&n.entity_id),
+        tokens_out: None,
         started,
-        true,
-    );
+        ok: true,
+    });
     Ok(())
 }
 
