@@ -56,7 +56,10 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
-        Command::Init(args) => cli::cmd::init(args, cfg).await,
+        Command::Init(mut args) => {
+            args.config_path = cli_config_path;
+            cli::cmd::init(args, cfg).await
+        }
         Command::Index(mut args) => {
             args.config_path = cli_config_path;
             cli::cmd::index(args, cfg).await
