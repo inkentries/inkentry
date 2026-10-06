@@ -14,7 +14,7 @@ use crate::storage::{
     commits_reachable_from_any_ref, is_ancestor, resolve_source_ref,
 };
 
-pub(super) async fn memory_anchor(args: MemoryAnchorArgs, mem_path: &Path) -> Result<()> {
+pub(crate) async fn memory_anchor(args: MemoryAnchorArgs, mem_path: &Path) -> Result<()> {
     // No project, or never `init`ed: nothing to do.
     if !mem_path.exists() {
         return Ok(());

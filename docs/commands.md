@@ -856,12 +856,13 @@ inkentry autoclean
 
 ## inkentry hooks
 
-Manage inkentry's git hooks.
+Manage inkentry's git hooks, and handle a coding agent's hook events.
 
 ```
 inkentry hooks install [--ci]
 inkentry hooks install --pre-push
 inkentry hooks uninstall
+inkentry hooks agent <session-start|pre-edit|post-commit|stop>
 ```
 
 `install` writes a post-commit hook that first claims this worktree's pending
@@ -909,6 +910,34 @@ Otherwise, git never clones `.git/hooks`, so installing either hook affects
 only your own clone.
 
 `uninstall` removes every hook inkentry installed, leaving any other hooks alone.
+
+### `hooks agent`
+
+`hooks agent <event>` is what an agent's hook entries call: one line per event
+in the hook configuration, with the logic in the binary. It reads the agent's
+hook input as one JSON object on stdin and writes at most one JSON object on
+stdout.
+
+**It always exits 0 and prints nothing on stderr.** Malformed input, a
+directory outside an inkentry project, a project with no memory store, a broken
+config or any other error produces no output at all. It never starts the
+inference server, embeds or uses the network, and reads only a local memory
+store.
+
+Its reads are recorded in the `events` table as `trigger = hook`,
+`actor = agent`, `tool = claude-code`, with the input's `session_id` as the
+session ref, whatever the environment says.
+
+| Event | What it does |
+|-------|--------------|
+| `session-start` | Appends the caller declaration for the agent's own commands (`explicit`, `agent`, `claude-code`, the session id) to the file named by `CLAUDE_ENV_FILE`. Prints what `inkentry context --budget 2500` renders, as `additionalContext`. |
+| `pre-edit` | Prints up to 8 active entries linked to the exact path in `tool_input.file_path`, as `additionalContext`. Once per file per session. Never emits a permission decision. |
+| `post-commit` | When `tool_input.command` ran `git commit`, does what `inkentry memory anchor --commit HEAD` does. Prints nothing. |
+| `stop` | If the session edited a file or committed, blocks the stop once with a prompt to record what was decided. Prints nothing when `stop_hook_active` is true. |
+
+Per-session state is one small file under `agent-sessions/` in the state
+directory (`INKENTRY_STATE_DIR`), named by the hashed session ref and removed
+after 7 days.
 
 ---
 

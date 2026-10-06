@@ -9,7 +9,7 @@ const SURFACE: &str = "cli";
 
 // Mirrors `storage::open_memory_backend`'s routing rather than inspecting an
 // open backend, since several call sites never open one.
-fn is_local_store(cfg: &Config, backend_override: Option<&str>) -> bool {
+pub(crate) fn is_local_store(cfg: &Config, backend_override: Option<&str>) -> bool {
     if backend_override == Some("git-notes") {
         return false;
     }
