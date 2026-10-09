@@ -172,7 +172,9 @@ indexer/
     queries.rs   — compiles the vendored locals queries once per language
     queries/     — vendored upstream locals.scm files (provenance in README.md)
   parser/
-    mod.rs       — SourceParser; detect_language; SUPPORTED_LANGUAGES
+    mod.rs       — SourceParser; detect_language; SUPPORTED_LANGUAGES; fill_gaps
+    ruby_body.rs — cuts a large Ruby class's body into runs of one kind of
+                   declaration (associations, scopes, validations, ...)
     text.rs      — plain-text / sliding-window parser
     ts_walker.rs — tree-sitter AST walker
 
@@ -575,13 +577,19 @@ above it. The walker records each suppressed container's span
 (`SuppressedScope` in `ts_walker.rs`); a stretch is cut where it crosses a
 container boundary, except that a bare header (`module Billing` above `class
 Invoice`) stays with the container it opens. The window holding a container's
-declaration (a Rails model's associations and validations, a Python model's
-fields) takes the innermost container's `name` and its own `parent_scope`,
-exactly as the container's re-windowed chunk would. Windows between its
-members and module-level windows stay unnamed: naming every `private` /
-`delegate` window after its class crowded the class's methods out of queries
-naming it. Changing which nodes become chunks, or what they are named, bumps
-`rules` in
+declaration (a Python model's fields, a Ruby class's header and includes)
+takes the innermost container's `name` and its own `parent_scope`, exactly as
+the container's re-windowed chunk would. Windows between its members and
+module-level windows stay unnamed: naming every `private` window after its
+class crowded the class's methods out of queries naming it. Inside a Ruby
+class, a gap is further cut into runs of one kind of declaration
+(`indexer/parser/ruby_body.rs`): associations, validations, scopes,
+callbacks, attributes (`enum`, `monetize`, `attribute`, …), delegations and
+constants, each named `<Class> <kind>`. A statement of no known kind extends
+the run before it, and a short run of none joins a neighbour. One window
+holding a model's whole macro block embedded as the model in general and
+ranked below full-text search for any particular declaration. Changing which
+nodes become chunks, or what they are named, bumps `rules` in
 `chunker_config_id`, which is what tells an existing index to re-chunk.
 
 ### Embedding input format

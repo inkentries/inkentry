@@ -1,3 +1,4 @@
+mod ruby_body;
 mod text;
 mod ts_walker;
 
@@ -243,8 +244,10 @@ const MIN_GAP_WORD_CHARS: usize = 16;
 // The window holding a container's declaration is named after it, with its
 // own `parent_scope`, as the container's re-windowed chunk would be. Windows
 // between its members stay unnamed: there can be dozens (`private`,
-// `delegate`, `attr_reader`), and one name on all of them crowds the
-// container's members out of any query naming it.
+// `attr_reader`), and one name on all of them crowds the container's members
+// out of any query naming it. A Ruby class's body is further cut by the kind
+// of declaration it makes (`ruby_body`), and a run of a known kind is named
+// for its class and kind wherever it sits.
 fn fill_gaps(
     source: &str,
     file_path: &str,
@@ -305,20 +308,37 @@ fn fill_gaps(
         if text.chars().filter(|c| c.is_alphanumeric()).count() < MIN_GAP_WORD_CHARS {
             continue;
         }
-        let scope = here
-            .map(|i| &scopes[i])
-            .filter(|s| (start..=end).contains(&s.decl_line));
-        for mut window in sliding_window(
-            &text,
-            file_path,
-            language,
-            scope.map(|s| s.name.as_str()),
-            None,
-            scope.and_then(|s| s.parent_scope.as_deref()),
-        ) {
-            window.start_line += start - 1;
-            window.end_line += start - 1;
-            gaps.push(window);
+        let container = here.map(|i| &scopes[i]);
+        let segments = match container {
+            Some(c)
+                if language == "ruby"
+                    && lines[c.decl_line - 1].trim_start().starts_with("class ") =>
+            {
+                let decl = (start..=end).contains(&c.decl_line).then_some(c.decl_line);
+                ruby_body::runs(&lines, start, end, decl, MIN_GAP_WORD_CHARS)
+            }
+            _ => vec![(start, end, None)],
+        };
+        for (seg_start, seg_end, family) in segments {
+            let seg_text = lines[seg_start - 1..seg_end].join("\n");
+            let holds_decl = container.filter(|s| (seg_start..=seg_end).contains(&s.decl_line));
+            let name = match (container, family) {
+                (Some(s), Some(f)) => Some(format!("{} {f}", s.name)),
+                _ => holds_decl.map(|s| s.name.clone()),
+            };
+            let parent = container.and_then(|s| s.parent_scope.as_deref());
+            for mut window in sliding_window(
+                &seg_text,
+                file_path,
+                language,
+                name.as_deref(),
+                None,
+                if name.is_some() { parent } else { None },
+            ) {
+                window.start_line += seg_start - 1;
+                window.end_line += seg_start - 1;
+                gaps.push(window);
+            }
         }
     }
     if !gaps.is_empty() {

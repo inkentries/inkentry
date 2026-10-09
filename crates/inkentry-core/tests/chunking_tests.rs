@@ -18,6 +18,8 @@ mod lang_php_ruby;
 mod prop_chunker;
 #[path = "chunking_tests/prop_token_budget.rs"]
 mod prop_token_budget;
+#[path = "chunking_tests/ruby_class_body.rs"]
+mod ruby_class_body;
 #[path = "chunking_tests/rust_test_code.rs"]
 mod rust_test_code;
 #[path = "chunking_tests/unit_chunker.rs"]

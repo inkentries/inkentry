@@ -104,7 +104,7 @@ pub fn set_chunk_token_cap(tokens: usize) {
 /// under a different configuration. Bump `rules` whenever a change alters
 /// which nodes become chunks or where windows are cut.
 pub fn chunker_config_id() -> String {
-    format!("max_chunk_tokens={};rules=4", chunk_token_cap())
+    format!("max_chunk_tokens={};rules=5", chunk_token_cap())
 }
 
 /// Whether `chunks` came from the file's syntax tree, as opposed to one

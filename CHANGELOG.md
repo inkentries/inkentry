@@ -9,6 +9,14 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Ruby class-level declarations are indexed by kind.** In a Ruby class too
+  large to keep whole, associations, validations, scopes, callbacks,
+  attributes, delegations and constants are now separate chunks, named for
+  the class and kind (`Invoice associations`). Run `inkentry index --force`
+  to re-chunk an existing index.
+
 ## [1.2.0] — 2026-10-05
 
 **Upgrading: optionally run `inkentry index --force` once in each indexed
