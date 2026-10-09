@@ -66,13 +66,15 @@ Five findings decide the shape of this record:
    from directories. The probe looked at the cases where crude locality and
    the import graph both give an answer. Crude locality names a different file
    in 11% of them on inkentry, 27% on django and 30% on lago front. On lago's
-   Ruby, against the constant-path rule, it is 93%. A hand-checked sample of these disagreements found the
-   import binding right every time. Recall at that precision is the wrong
-   target, so this record does not aim to beat 32% on raw share.
+   Ruby, against the constant-path rule, it is 93%. A hand-checked sample of
+   these disagreements found the import binding right every time. Recall at
+   that precision is the wrong target, so this record does not aim to beat
+   32% on raw share.
 2. **The import graph adds 7 to 22 points of sound resolution where
-   imports are explicit.** It adds 11 points over the shipped tier on TypeScript, 22 on
-   django, 14 on graphiti and 7 on Rust. Hand-checked samples of bound and
-   external calls on each corpus were correct throughout.
+   imports are explicit.** It adds 11 points over the shipped tier on
+   TypeScript, 22 on django, 14 on graphiti and 7 on Rust. Hand-checked
+   samples of bound and external calls on each corpus were correct
+   throughout.
 3. **External bindings are the largest precision gain.** Calls bound to a
    package outside the repository are 13.5% (TypeScript), 4.5% (django) and
    18.8% (Rust) of multi-def edges. They are also 1.7% to 6.8% of
