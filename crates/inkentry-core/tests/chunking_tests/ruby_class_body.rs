@@ -291,3 +291,127 @@ fn every_class_level_line_lands_in_a_chunk() {
         );
     }
 }
+
+#[test]
+fn a_bare_class_line_keeps_its_named_declaration_window() {
+    let src = format!("class Tax\n  belongs_to :invoice\n\n{}end\n", methods("  "));
+    let chunks = SourceParser::parse(&src, "app/models/tax.rb", "ruby").unwrap();
+
+    let head = one_named(&chunks, "Tax");
+    assert!(head.content.contains("class Tax"), "{head:#?}");
+    assert_eq!(head.start_line, 1);
+}
+
+#[test]
+fn a_short_unrecognised_statement_is_kept_with_the_run_after_it() {
+    let src = format!(
+        "class Invoice < ApplicationRecord\n  has_many :fees\n\n{}  extend Foo\n  \
+         has_many :credits\n\n{}end\n",
+        methods("  "),
+        methods("  ")
+    );
+    let chunks = parse(&src);
+
+    let run = holding(&chunks, "extend Foo");
+    assert_eq!(
+        run.name.as_deref(),
+        Some("Invoice associations"),
+        "{run:#?}"
+    );
+    assert!(run.content.contains("has_many :credits"), "{run:#?}");
+}
+
+#[test]
+fn a_heredoc_s_closing_line_stays_with_its_statement() {
+    let src = model(
+        "  validates :number, format: {\n    with: /\\A\\d+\\z/, message: <<~MSG\n      \
+         must be digits\n    MSG\n  }\n  scope :late, -> { where(<<~SQL) }\n    \
+         due_at < now()\n  SQL\n",
+    );
+    let chunks = parse(&src);
+
+    assert!(
+        named(&chunks, "Invoice constants").is_empty(),
+        "{chunks:#?}"
+    );
+    let scopes = one_named(&chunks, "Invoice scopes");
+    assert!(scopes.content.trim_end().ends_with("SQL"), "{scopes:#?}");
+}
+
+#[test]
+fn only_an_assignment_to_an_upper_case_name_is_a_constant() {
+    let src = model(
+        "  scope :draft, -> { where(status: :draft) }\n  STATUSES.each do |status|\n    \
+         scope status, -> { where(status:) }\n  end\n",
+    );
+    let chunks = parse(&src);
+
+    assert!(
+        named(&chunks, "Invoice constants").is_empty(),
+        "{chunks:#?}"
+    );
+    let scopes = one_named(&chunks, "Invoice scopes");
+    assert!(scopes.content.contains("STATUSES.each"), "{scopes:#?}");
+}
+
+#[test]
+fn a_deeper_line_continues_its_statement_whatever_it_starts_with() {
+    let src = model("  has_many :fees,\n    before_add: :check_fee,\n    validate: true\n");
+    let chunks = parse(&src);
+
+    let associations = one_named(&chunks, "Invoice associations");
+    assert_eq!((associations.start_line, associations.end_line), (2, 4));
+    assert!(
+        named(&chunks, "Invoice callbacks").is_empty(),
+        "{chunks:#?}"
+    );
+    assert!(
+        named(&chunks, "Invoice validations").is_empty(),
+        "{chunks:#?}"
+    );
+}
+
+#[test]
+fn a_class_nested_in_a_class_carries_the_outer_class_as_its_parent_scope() {
+    let src = format!(
+        "class Invoice < ApplicationRecord\n  class Line < ApplicationRecord\n    \
+         belongs_to :invoice\n\n{}  end\n\n{}end\n",
+        methods("    "),
+        methods("  ")
+    );
+    let chunks = parse(&src);
+
+    let associations = one_named(&chunks, "Line associations");
+    assert_eq!(associations.parent_scope.as_deref(), Some("class Invoice"));
+}
+
+#[test]
+fn a_block_comment_above_a_statement_goes_with_it() {
+    let src = model(
+        "  has_many :fees\n=begin\nOnly invoices that can still be edited.\n=end\n  \
+         scope :draft, -> { where(status: :draft) }\n",
+    );
+    let chunks = parse(&src);
+
+    let scopes = one_named(&chunks, "Invoice scopes");
+    assert!(scopes.content.starts_with("=begin"), "{scopes:#?}");
+}
+
+#[test]
+fn declaration_runs_are_embedded_and_the_rule_change_is_stamped() {
+    let chunks = parse(&model("  belongs_to :customer\n"));
+    let associations = one_named(&chunks, "Invoice associations");
+
+    assert!(!inkentry_core::indexer::embed_scope::is_text_only_row(
+        "app/models/invoice.rb",
+        "ruby",
+        &associations.kind.to_string(),
+        associations.name.as_deref(),
+        None,
+    ));
+    assert!(
+        inkentry_core::indexer::chunker_config_id().ends_with(";rules=5"),
+        "{}",
+        inkentry_core::indexer::chunker_config_id()
+    );
+}
