@@ -24,7 +24,7 @@ fn ruby_methods(indent: &str) -> String {
 }
 
 #[test]
-fn a_rails_class_body_window_is_named_after_its_class() {
+fn a_rails_class_s_declaration_window_is_named_after_it() {
     let src = format!(
         "# An invoice issued to a customer\n# for one billing period.\n\
          class Invoice < ApplicationRecord\n  belongs_to :customer\n  has_many :fees\n  \
@@ -35,15 +35,21 @@ fn a_rails_class_body_window_is_named_after_its_class() {
     );
     let chunks = SourceParser::parse(&src, "invoice.rb", "ruby").unwrap();
 
-    let body = window_with(&chunks, "belongs_to :customer");
-    assert_eq!(body.name.as_deref(), Some("Invoice"), "{body:#?}");
-    assert_eq!(body.parent_scope, None, "{body:#?}");
-    assert!(body.content.contains("scope :ready_to_be_finalized"));
+    let head = window_with(&chunks, "class Invoice < ApplicationRecord");
+    assert_eq!(head.name.as_deref(), Some("Invoice"), "{head:#?}");
+    assert_eq!(head.parent_scope, None, "{head:#?}");
     assert!(
-        body.content.contains("An invoice issued to a customer"),
-        "the class's doc comment opens its first window: {body:#?}"
+        head.content.contains("An invoice issued to a customer"),
+        "the class's doc comment opens its first window: {head:#?}"
     );
-    assert_eq!(body.start_line, 1, "{body:#?}");
+    assert_eq!(head.start_line, 1, "{head:#?}");
+
+    // What the body declares is named for its kind as well as its class.
+    let associations = window_with(&chunks, "belongs_to :customer");
+    assert_eq!(associations.name.as_deref(), Some("Invoice associations"));
+    assert_eq!(associations.parent_scope, None, "{associations:#?}");
+    let scopes = window_with(&chunks, "scope :ready_to_be_finalized");
+    assert_eq!(scopes.name.as_deref(), Some("Invoice scopes"));
 
     let between_members = window_with(&chunks, "attr_reader :billing_period_boundaries");
     assert_eq!(between_members.name, None, "{between_members:#?}");
@@ -103,7 +109,7 @@ fn a_gap_crossing_a_container_boundary_is_cut_there() {
     let class_head = window_with(&chunks, "has_many :applied_taxes");
     assert_eq!(
         class_head.name.as_deref(),
-        Some("Invoice"),
+        Some("Invoice associations"),
         "{class_head:#?}"
     );
     assert!(!class_head.content.contains("SUPPORTED_CURRENCIES"));
@@ -137,7 +143,11 @@ fn a_top_level_gap_stays_unnamed() {
     assert_eq!(tail.name, None, "{tail:#?}");
 
     let body = window_with(&chunks, "has_many :credit_notes_applied");
-    assert_eq!(body.name.as_deref(), Some("Invoice"), "{body:#?}");
+    assert_eq!(
+        body.name.as_deref(),
+        Some("Invoice associations"),
+        "{body:#?}"
+    );
 }
 
 #[test]

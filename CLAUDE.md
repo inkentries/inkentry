@@ -580,7 +580,13 @@ fields) takes the innermost container's `name` and its own `parent_scope`,
 exactly as the container's re-windowed chunk would. Windows between its
 members and module-level windows stay unnamed: naming every `private` /
 `delegate` window after its class crowded the class's methods out of queries
-naming it. Changing which nodes become chunks, or what they are named, bumps
+naming it. Inside a Ruby class, a gap is further cut into runs of one kind of
+declaration (`indexer/parser/ruby_body.rs`): associations, validations,
+scopes, callbacks, attributes (`enum`, `monetize`, `attribute`, …),
+delegations and constants, each named `<Class> <kind>`; a statement of no
+known kind extends the run before it. One window holding a model's whole
+macro block embedded as the model in general and ranked below full-text
+search for any particular declaration. Changing which nodes become chunks, or what they are named, bumps
 `rules` in
 `chunker_config_id`, which is what tells an existing index to re-chunk.
 
