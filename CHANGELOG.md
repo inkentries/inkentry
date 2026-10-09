@@ -11,19 +11,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **A large Rails model's associations, scopes and validations are found
-  individually.** The class-level declarations of a Ruby class too large to
-  keep whole used to be windowed together, two thousand characters at a time,
-  so a search for one scope or association competed with every other
-  declaration in its window, and hybrid search ranked those windows below
-  full-text search alone. They are now cut into runs of one kind, each named
-  for its class and what it declares (`Invoice associations`, `Invoice
-  scopes`, `Invoice validations`, `Invoice callbacks`, `Invoice attributes`,
-  `Invoice delegations`, `Invoice constants`). On a set of 150 queries for
-  single declarations in Lago's models, default-search Recall@10 rose from
-  0.26 to 0.41; the general Lago set is unchanged, and embedding work grows
-  by under 2%. An existing index warns that it was chunked under older rules
-  until it is re-indexed with `inkentry index --force`.
+- **Ruby class-level declarations are indexed by kind.** In a Ruby class too
+  large to keep whole, associations, validations, scopes, callbacks,
+  attributes, delegations and constants are now separate chunks, named for
+  the class and kind (`Invoice associations`). Run `inkentry index --force`
+  to re-chunk an existing index.
 
 ## [1.2.0] — 2026-10-05
 
