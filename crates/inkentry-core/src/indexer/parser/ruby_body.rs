@@ -111,42 +111,29 @@ pub(super) fn runs(
     absorb_short_runs(runs, lines, decl_line, min_word_chars)
 }
 
-// A run of no known kind too short to stand alone (`private`, `extend Foo`)
-// joins the run after it, or the one before when it is last, so no line is
-// lost. The run holding the class's own declaration always stands alone.
+// Only the first run can be of no known kind: a later statement of no known
+// kind extends the run before it. When that first run is too short to stand
+// alone (`private`, `extend Foo`) and does not hold the class's declaration,
+// it joins the run after it, so no line is lost.
 fn absorb_short_runs(
-    runs: Vec<Run>,
+    mut runs: Vec<Run>,
     lines: &[&str],
     decl_line: Option<usize>,
     min_word_chars: usize,
 ) -> Vec<Run> {
-    let short = |&(first, last, kind): &Run| {
-        kind.is_none()
-            && !decl_line.is_some_and(|d| (first..=last).contains(&d))
-            && lines[first - 1..last]
-                .iter()
-                .flat_map(|l| l.chars())
-                .filter(|c| c.is_alphanumeric())
-                .count()
-                < min_word_chars
-    };
-    let mut out: Vec<Run> = Vec::new();
-    let mut carried: Option<Run> = None;
-    for run in runs {
-        if short(&run) {
-            carried = Some(carried.map_or(run, |c| (c.0, run.1, None)));
-            continue;
-        }
-        let first = carried.take().map_or(run.0, |c| c.0);
-        out.push((first, run.1, run.2));
-    }
-    if let Some(tail) = carried {
-        match out.last_mut() {
-            Some(last) => last.1 = tail.1,
-            None => out.push(tail),
+    if let [(first, last, None), next, ..] = runs.as_mut_slice() {
+        let holds_decl = decl_line.is_some_and(|d| (*first..=*last).contains(&d));
+        let word_chars = lines[*first - 1..*last]
+            .iter()
+            .flat_map(|l| l.chars())
+            .filter(|c| c.is_alphanumeric())
+            .count();
+        if !holds_decl && word_chars < min_word_chars {
+            next.0 = *first;
+            runs.remove(0);
         }
     }
-    out
+    runs
 }
 
 #[cfg(test)]
@@ -167,11 +154,20 @@ mod tests {
     }
 
     #[test]
-    fn a_short_unknown_run_at_the_end_joins_the_run_before_it() {
-        let lines = ["  has_many :fees", "  private"];
+    fn a_short_leading_run_joins_the_run_after_it() {
+        let lines = ["  private", "  has_many :fees"];
         assert_eq!(
             runs(&lines, 1, 2, None, 16),
             vec![(1, 2, Some("associations"))]
+        );
+    }
+
+    #[test]
+    fn a_short_leading_run_holding_the_declaration_stands_alone() {
+        let lines = ["class Tax", "  belongs_to :invoice"];
+        assert_eq!(
+            runs(&lines, 1, 2, Some(1), 16),
+            vec![(1, 1, None), (2, 2, Some("associations"))]
         );
     }
 }
