@@ -378,7 +378,7 @@ jobs:
           "ARCHIVE=${ARCHIVE}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: inkentry-${{ github.ref_name }}-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
@@ -519,7 +519,7 @@ jobs:
           done
 
       - name: Upload deb artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: inkentry-${{ github.ref_name }}-amd64-deb
           path: inkentry_${{ env.DEB_VERSION }}_amd64.deb
