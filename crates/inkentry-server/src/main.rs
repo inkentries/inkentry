@@ -9,6 +9,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use inkentry_server::auth::ApiKeyAuth;
 use inkentry_server::client_ip::TrustedProxies;
 use inkentry_server::db::ServerDb;
+use inkentry_server::llm_backend::LlmBackend;
 use inkentry_server::rate_limiter::RateLimiter;
 use inkentry_server::relay::{RelayPolicy, RelayRegistry};
 use inkentry_server::{
@@ -305,8 +306,7 @@ async fn run(budget: ThreadBudget) -> Result<()> {
         }
     };
 
-    let llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>> = if let Some(base_url) = args.llm_url
-    {
+    let llm: Option<Arc<dyn LlmBackend>> = if let Some(base_url) = args.llm_url {
         let model = if args.llm_model.is_empty() {
             "default".to_string()
         } else {

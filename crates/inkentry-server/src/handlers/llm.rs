@@ -125,10 +125,10 @@ pub async fn llm_complete(
         )
     })?;
 
-    let messages: Vec<inkentry_core::llm::Message> = body
+    let messages: Vec<crate::llm_backend::Message> = body
         .messages
         .iter()
-        .map(|m| inkentry_core::llm::Message {
+        .map(|m| crate::llm_backend::Message {
             role: m.role.clone(),
             content: m.content.clone(),
         })

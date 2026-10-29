@@ -4,6 +4,7 @@ pub mod db;
 #[cfg(feature = "embed-llama")]
 pub mod embed_hub;
 pub mod handlers;
+pub mod llm_backend;
 pub mod rate_limiter;
 pub mod relay;
 pub mod relay_handlers;
@@ -482,7 +483,7 @@ pub struct AppState {
     /// without reading the server's log.
     pub embed_threads: usize,
     /// Optional LLM backend for `/llm/complete`.
-    pub llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>>,
+    pub llm: Option<Arc<dyn crate::llm_backend::LlmBackend>>,
     /// Server-side hard ceiling for `max_tokens` on `/llm/complete`.
     /// Client-supplied values are clamped down to this. Default: 8192.
     pub max_tokens_ceiling: usize,

@@ -78,12 +78,12 @@ pub struct ServerLlm {
 }
 
 #[async_trait::async_trait]
-impl inkentry_core::llm::LlmBackend for ServerLlm {
+impl inkentry_server::llm_backend::LlmBackend for ServerLlm {
     async fn generate(
         &self,
-        messages: &[inkentry_core::llm::Message],
+        messages: &[inkentry_server::llm_backend::Message],
         max_tokens: usize,
-        tx: tokio::sync::mpsc::Sender<inkentry_core::llm::Token>,
+        tx: tokio::sync::mpsc::Sender<inkentry_server::llm_backend::Token>,
         json_schema: Option<serde_json::Value>,
     ) -> anyhow::Result<()> {
         use futures_util::StreamExt;
@@ -226,7 +226,7 @@ impl inkentry_core::llm::LlmBackend for ServerLlm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use inkentry_core::llm::LlmBackend;
+    use inkentry_server::llm_backend::LlmBackend;
     use std::io::Write as _;
 
     fn write_key_file(dir: &tempfile::TempDir, name: &str, contents: &str) -> std::path::PathBuf {
@@ -375,7 +375,7 @@ mod tests {
         };
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
         llm.generate(
-            &[inkentry_core::llm::Message {
+            &[inkentry_server::llm_backend::Message {
                 role: "user".to_string(),
                 content: "hi".to_string(),
             }],
@@ -443,7 +443,7 @@ mod tests {
             out
         });
         llm.generate(
-            &[inkentry_core::llm::Message {
+            &[inkentry_server::llm_backend::Message {
                 role: "user".to_string(),
                 content: "hi".to_string(),
             }],

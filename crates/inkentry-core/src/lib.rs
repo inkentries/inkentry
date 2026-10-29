@@ -4,7 +4,6 @@ pub mod dump;
 pub mod embeddings;
 pub mod error;
 pub mod indexer;
-pub mod llm;
 pub mod metrics;
 pub mod reachability;
 pub mod registry;

@@ -64,7 +64,7 @@ This is a Cargo workspace with four crates:
 Cargo.toml                    — workspace root; [workspace.dependencies] for shared versions
 
 crates/
-  inkentry-core/               — library: storage, indexer, embeddings, LLM, search, config, registry
+  inkentry-core/               — library: storage, indexer, embeddings, search, config, registry
   inkentry-cli/                — `inkentry` binary; depends on inkentry-core
   inkentry-embed/              — library: F2LLM-v2-330M embedder (llama.cpp); owns the
                                  EmbeddingBackend trait. A leaf crate — inkentry-core
@@ -121,9 +121,6 @@ conventions/
 
 embeddings/
   mod.rs         — EmbeddingBackend trait, vec_to_blob/blob_to_vec helpers
-
-llm/
-  mod.rs         — LlmBackend trait, Message struct, Token type
 
 metrics/
   mod.rs         — ADR-098 snapshot facade: Header/Snapshot types, build_snapshot
@@ -304,10 +301,9 @@ capability/      — Tier 0/1 capability detection (server reachable probe, cach
   llm_message.rs:  no_llm_message: the user-facing text over (NoLlmReason x LlmFeature),
                    used by harvest, the only LLM-backed feature
 server_client.rs:  ServerInferenceClient, the single HTTP client for inkentry-server's
-                   inference endpoints, plus ServerLlmAdapter, a thin LlmBackend trait
-                   adapter over an Arc of it (embedding is issued directly via embed_text,
-                   with no adapter). Embedding and LLM can resolve to different base URLs,
-                   so a caller needing both builds two clients
+                   inference endpoints; callers use its methods directly, with no trait
+                   adapter. Embedding and LLM can resolve to different base URLs, so a
+                   caller needing both builds two clients
 
 cli/
   mod.rs         — clap structs (Cli, Command, *Args)
@@ -452,6 +448,8 @@ repair.rs          — background fill-in for memory rows stored without a vecto
                      is never failed for want of an embedder; the row is stored text-only
                      and this pass embeds it later. Driven by signals (embedder ready, a
                      vectorless row stored), never a timer; runs on the Bulk lane
+llm_backend.rs     — LlmBackend trait, Message struct, Token type: the seam between the
+                     /llm/complete handler and ServerLlm (or a test double)
 server_llm.rs      — ServerLlm: the external chat-completions HTTP shim behind `--llm-url`,
                      plus resolve_llm_key (--llm-key / --llm-key-file / INKENTRY_LLM_KEY) and
                      check_llm_transport, which refuses to start when a credential would
@@ -515,11 +513,12 @@ adapter on the CLI side, and no `ServerLlmAdapter`, `ServerEmbedAdapter`,
 blocklist `capability/llm_message.rs` asserts no user-facing message leaks.
 The one `LlmBackend` implementation is `ServerLlm`, server-side.
 
-`LlmBackend` is defined in `inkentry-core` (`llm/mod.rs`); `EmbeddingBackend` is
-defined in `inkentry-embed` (`backend.rs`) and re-exported by
-`inkentry-core::embeddings` at its historical path. Neither crate ships an LLM
-implementation. The embedding *engine* lives in the `inkentry-embed` crate
-(`LlamaEmbedder`, local-path load only); inkentry-server's `embed_hub` module
+`EmbeddingBackend` is defined in `inkentry-embed` (`backend.rs`) and re-exported
+by `inkentry-core::embeddings` at its historical path. `LlmBackend` is defined in
+inkentry-server (`llm_backend.rs`), alongside its one implementation. Neither
+inkentry-core nor inkentry-embed ships an LLM implementation. The embedding
+*engine* lives in the `inkentry-embed` crate (`LlamaEmbedder`, local-path load
+only); inkentry-server's `embed_hub` module
 owns the Hugging Face Hub download path that resolves the (pre-quantized)
 model artifacts before handing them to it. There is no external embedder
 backend: embedding always runs through the bundled native engine. The LLM
