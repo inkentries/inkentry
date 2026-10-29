@@ -217,7 +217,7 @@ This is a Cargo workspace with four crates:
 
 | Crate | Path | Purpose |
 |---|---|---|
-| `inkentry-core` | `crates/inkentry-core` | Library — storage, indexer, embeddings, LLM, search, config, registry |
+| `inkentry-core` | `crates/inkentry-core` | Library — storage, indexer, embeddings, search, config, registry |
 | `inkentry-cli` | `crates/inkentry-cli` | `inkentry` binary — CLI commands; depends on `inkentry-core` |
 | `inkentry-embed` | `crates/inkentry-embed` | Library — F2LLM-v2-330M embedder (llama.cpp); owns the `EmbeddingBackend` trait. A leaf crate: `inkentry-core` depends on it |
 | `inkentry-server` | `crates/inkentry-server` | `inkentry-server` binary + lib — shared memory server; depends on `inkentry-core` + `inkentry-embed` |

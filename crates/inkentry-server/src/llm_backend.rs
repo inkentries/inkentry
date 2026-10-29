@@ -8,21 +8,6 @@ pub struct Message {
     pub content: String,
 }
 
-impl Message {
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".into(),
-            content: content.into(),
-        }
-    }
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".into(),
-            content: content.into(),
-        }
-    }
-}
-
 #[async_trait::async_trait]
 pub trait LlmBackend: Send + Sync {
     /// `json_schema`, if given, constrains output to that JSON schema (passed as

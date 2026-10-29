@@ -207,8 +207,8 @@ fn generation_timeout() -> Duration {
 // generation call itself, so a hung/slow backend can't hold the task (and
 // the SSE connection it feeds) open forever.
 async fn llm_generate_with_timeout(
-    llm: Arc<dyn inkentry_core::llm::LlmBackend>,
-    messages: Vec<inkentry_core::llm::Message>,
+    llm: Arc<dyn crate::llm_backend::LlmBackend>,
+    messages: Vec<crate::llm_backend::Message>,
     max_tokens: usize,
     tx: mpsc::Sender<String>,
     json_schema: Option<serde_json::Value>,

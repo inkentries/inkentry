@@ -253,12 +253,12 @@ pub(super) async fn post_embed(app: axum::Router) -> http::Response<Body> {
 struct NoopLlm;
 
 #[async_trait::async_trait]
-impl inkentry_core::llm::LlmBackend for NoopLlm {
+impl crate::llm_backend::LlmBackend for NoopLlm {
     async fn generate(
         &self,
-        _messages: &[inkentry_core::llm::Message],
+        _messages: &[crate::llm_backend::Message],
         _max_tokens: usize,
-        _tx: tokio::sync::mpsc::Sender<inkentry_core::llm::Token>,
+        _tx: tokio::sync::mpsc::Sender<crate::llm_backend::Token>,
         _json_schema: Option<serde_json::Value>,
     ) -> anyhow::Result<()> {
         Ok(())
@@ -438,7 +438,7 @@ pub(super) async fn get_status_and_json(app: axum::Router, uri: &str) -> (http::
 // and the shared DB handle (so tests can hold its lock externally to
 // simulate a slow synchronous handler).
 pub(super) async fn spawn_test_server(
-    llm: Option<Arc<dyn inkentry_core::llm::LlmBackend>>,
+    llm: Option<Arc<dyn crate::llm_backend::LlmBackend>>,
     request_timeout: std::time::Duration,
 ) -> (String, Arc<tokio::sync::Mutex<ServerDb>>) {
     register_sqlite_vec();

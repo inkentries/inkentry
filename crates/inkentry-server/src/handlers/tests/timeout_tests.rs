@@ -59,12 +59,12 @@ struct HangingLlm {
 }
 
 #[async_trait::async_trait]
-impl inkentry_core::llm::LlmBackend for HangingLlm {
+impl crate::llm_backend::LlmBackend for HangingLlm {
     async fn generate(
         &self,
-        _messages: &[inkentry_core::llm::Message],
+        _messages: &[crate::llm_backend::Message],
         _max_tokens: usize,
-        _tx: tokio::sync::mpsc::Sender<inkentry_core::llm::Token>,
+        _tx: tokio::sync::mpsc::Sender<crate::llm_backend::Token>,
         _json_schema: Option<serde_json::Value>,
     ) -> anyhow::Result<()> {
         self.entered
@@ -99,7 +99,7 @@ async fn llm_complete_cuts_off_hanging_llm_backend() {
     let router_timeout = generation_budget * 20;
 
     let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let llm: Arc<dyn inkentry_core::llm::LlmBackend> = Arc::new(HangingLlm {
+    let llm: Arc<dyn crate::llm_backend::LlmBackend> = Arc::new(HangingLlm {
         entered: entered.clone(),
     });
     let (base, _db) = spawn_test_server(Some(llm), router_timeout).await;
