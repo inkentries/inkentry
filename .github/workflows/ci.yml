@@ -71,7 +71,7 @@ jobs:
       # required a manual version-prefix bump to reset once it got poisoned;
       # see the `test` job below for that history).
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Disk usage (after cache restore)
         run: df -h
@@ -196,7 +196,7 @@ jobs:
       # vs `--no-default-features`), which otherwise share the same OS/rustc
       # host and would collide on the action's automatic job-based key.
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.test-flags }}
 
@@ -260,7 +260,7 @@ jobs:
         run: rustup component add clippy
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # Windows/macOS only: the Check & Lint job already runs this on Linux,
       # but a Linux-only pass can't see #[cfg(windows)] or #[cfg(unix)]-gated
@@ -303,7 +303,7 @@ jobs:
           rustup component add clippy
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Keyed apart from the default ubuntu legs: this cache carries the
           # ggml/vulkan C++ objects, which never refingerprint on features.
@@ -428,7 +428,7 @@ jobs:
           rustup default stable
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Generate OpenAPI spec
         run: cargo run -p inkentry-server -- --print-openapi > /tmp/openapi-generated.json
