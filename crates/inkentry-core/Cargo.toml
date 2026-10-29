@@ -66,9 +66,12 @@ sha2 = "0.11"
 hex = "0.4"
 ignore = "0.4"
 
-docx-rs = { version = "0.4", optional = true }
-calamine = { version = "0.36", features = ["dates"], optional = true }
-lopdf = { version = "0.45", optional = true }
+# Pinned to an unreleased commit: docx-rs 0.4.22, the latest release, requires
+# zip ^8.6, and RUSTSEC-2026-0367/0368/0369 are fixed only in zip 9. Return to a
+# crates.io version once one depends on zip 9.
+docx-rs = { git = "https://github.com/bokuweb/docx-rs.git", rev = "ad7fede6a7f3b61a097c28d0c39dd04626e44701", optional = true }
+calamine = { version = "0.37", features = ["dates"], optional = true }
+lopdf = { version = "0.46", optional = true }
 
 [dev-dependencies]
 proptest = "1"
