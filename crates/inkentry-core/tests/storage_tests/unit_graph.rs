@@ -1,4 +1,4 @@
-use inkentry_core::indexer::graph::EdgeKind;
+use inkentry_core::storage::EdgeKind;
 
 #[test]
 fn parse_known_kinds() {

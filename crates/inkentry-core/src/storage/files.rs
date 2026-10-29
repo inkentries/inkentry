@@ -80,7 +80,7 @@ impl Database {
             .map_err(Into::into)
     }
 
-    /// [`crate::indexer::chunker::chunked_by_tree`] for a file's stored chunks.
+    /// `inkentry_index::chunker::chunked_by_tree` for a file's stored chunks.
     pub fn file_chunked_by_tree(&self, path: &str) -> Result<bool> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM chunks c JOIN files f ON f.id = c.file_id \

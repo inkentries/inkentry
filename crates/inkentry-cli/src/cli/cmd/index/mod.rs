@@ -100,7 +100,7 @@ pub async fn index(args: IndexArgs, cfg: Config) -> Result<()> {
 async fn run_index(args: IndexArgs, cfg: Config) -> Result<()> {
     cfg.validate()?;
 
-    crate::indexer::secrets::init();
+    inkentry_core::secrets::init();
 
     let project_root = worktree::resolve_main_worktree_root(&args.path);
 

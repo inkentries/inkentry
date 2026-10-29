@@ -73,9 +73,10 @@ acceleration and the `render` group" in [server-setup.md](server-setup.md).
 
 ## Build
 
-This is a Cargo workspace with four crates: `inkentry-core` (library),
-`inkentry-cli` (`inkentry` binary), `inkentry-embed` (embedding engine
-library), and `inkentry-server` (`inkentry-server` binary).
+This is a Cargo workspace with five crates: `inkentry-core` (library),
+`inkentry-index` (code indexer library), `inkentry-cli` (`inkentry` binary),
+`inkentry-embed` (embedding engine library), and `inkentry-server`
+(`inkentry-server` binary).
 Build them all together:
 
 ```bash
@@ -159,11 +160,11 @@ engine. You only name these directly when building `inkentry-embed` itself.
 cargo build --release -p inkentry-cli --no-default-features
 ```
 
-### inkentry-core features
+### inkentry-index features
 
 | Feature | Default | Description |
 |---|---|---|
-| `rich-formats` | no | The parsers themselves. Off in the library's own defaults; `inkentry-cli` turns it on through its default feature, so a standalone `inkentry-server` build does not pull `lopdf`, `docx-rs` or `calamine` in. |
+| `rich-formats` | no | The parsers themselves. Off in the library's own defaults; `inkentry-cli` turns it on through its default feature. `inkentry-server` does not depend on `inkentry-index`, so no build of the server compiles the tree-sitter grammars or `lopdf`, `docx-rs` and `calamine`, including a workspace build with `--features rich-formats`. |
 
 ## Running tests
 
@@ -183,8 +184,9 @@ cargo audit
 ## Notes
 
 - The `sqlite-vec` extension is bundled at compile time — no system SQLite extension needed.
-- Tree-sitter grammars are compiled as part of the build. If you bump the `tree-sitter` core
-  version, check that all `tree-sitter-*` grammar crates are compatible (see `Cargo.toml`).
+- Tree-sitter grammars are compiled as part of the `inkentry-index` build. If you bump the
+  `tree-sitter` core version, check that all `tree-sitter-*` grammar crates are compatible
+  (see `crates/inkentry-index/Cargo.toml`).
 - Release builds enable LTO and `codegen-units = 1` for a smaller, faster binary.
   Expect a longer compile on first release build.
 - Shared dependency versions are declared in the workspace root `Cargo.toml` under

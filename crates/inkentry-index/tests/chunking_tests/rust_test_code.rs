@@ -1,7 +1,7 @@
 // Rust keeps unit tests in the file they test, so a path cannot tell them
 // apart; the attributes can. Chunks inside them are marked and not embedded.
 
-use inkentry_core::indexer::{Chunk, SourceParser};
+use inkentry_index::{Chunk, SourceParser};
 
 fn named<'a>(chunks: &'a [Chunk], name: &str) -> &'a Chunk {
     chunks

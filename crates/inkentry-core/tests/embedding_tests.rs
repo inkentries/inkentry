@@ -3,5 +3,7 @@
 
 #[path = "embedding_tests/prop_embeddings.rs"]
 mod prop_embeddings;
+#[path = "embedding_tests/prop_token_budget.rs"]
+mod prop_token_budget;
 #[path = "embedding_tests/unit_embeddings.rs"]
 mod unit_embeddings;

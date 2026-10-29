@@ -25,12 +25,14 @@ index.db + memory.db --> Search / Graph / Memory --> CLI output (text / JSON)
 
 ## Module structure
 
-The workspace has four crates. `CLAUDE.md` carries the file-level module map
+The workspace has five crates. `CLAUDE.md` carries the file-level module map
 and is kept current with the code.
 
 ```
 crates/
-  inkentry-core/     storage, indexer, search, config, metrics, registry
+  inkentry-core/     storage, search, config, metrics, registry, secret scanner
+  inkentry-index/    the code indexer: parser, chunker, graph edges, structural
+                     summaries, document readers. The server does not depend on it
   inkentry-cli/      the `inkentry` binary: clap structs, one handler per
                      subcommand, the server client, capability probing
   inkentry-embed/    the F2LLM-v2-330M embedder (llama.cpp) and the
@@ -43,14 +45,24 @@ Within `inkentry-core`:
 
 ```
   config/       Config, sync mode, project id, secret store, caller declaration
-  indexer/      parser, chunker, graph edges (tree-sitter + locals queries),
-                secret scanner, structural summaries, embed scope
   storage/      index.db and memory.db access, migrations, git-notes carrier,
-                remote memory backends
+                remote memory backends; graph edge rows, embed scope
+  secrets.rs    secret scanner, shared by indexing and memory writes
   search/       RRF constant, full-text query building, token budgets
   metrics/      state and events metrics over memory.db and git history
   registry.rs   global project registry (~/.config/inkentry/registry.db)
 migrations/     SQL initial schemas and numbered forward steps
+```
+
+Within `inkentry-index`:
+
+```
+  parser/       language detection, tree-sitter and text parsing
+  chunker.rs    Chunk, the sliding-window fallback
+  graph/        graph edges (tree-sitter + locals queries)
+  summariser.rs structural summaries
+  docparser.rs  DOCX and spreadsheet readers (rich-formats)
+  pdf.rs        PDF reader (rich-formats)
 ```
 
 ## Key design decisions
@@ -86,7 +98,7 @@ Queries use an instruction prefix: `Instruct: {instruction}\nQuery: {q}`. For
 example, code search uses `Instruct: Given a code search query, retrieve the
 relevant code snippets\nQuery: {q}`.
 
-See `Chunk::embedding_text()` in `crates/inkentry-core/src/indexer/chunker.rs`.
+See `Chunk::embedding_text()` in `crates/inkentry-index/src/chunker.rs`.
 
 Vectors are L2-normalised and stored as sqlite-vec `INT8[896]` (chunk
 embeddings); memory-entry embeddings stay `FLOAT[896]`.
@@ -135,7 +147,7 @@ To add a new backend: implement the trait (in `inkentry-embed` for an embedder, 
 
 ### Secret scanning
 
-`crates/inkentry-core/src/indexer/secrets.rs` runs regex patterns against the full text that will be persisted and embedded for each chunk (docstring + content) before storage, and separately against each composed structural summary when it is produced (summaries don't exist yet at chunk-store time, and the composition can pull a salient literal out of the code into the summary). Chunks matching known credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped in full — including their docstring — and a warning naming only the symbol is logged; a secret-bearing summary is stored as an empty string instead.
+`crates/inkentry-core/src/secrets.rs` runs regex patterns against the full text that will be persisted and embedded for each chunk (docstring + content) before storage, and separately against each composed structural summary when it is produced (summaries don't exist yet at chunk-store time, and the composition can pull a salient literal out of the code into the summary). Chunks matching known credential patterns (AWS keys, PEM headers, GitHub PATs, etc.) are silently dropped in full — including their docstring — and a warning naming only the symbol is logged; a secret-bearing summary is stored as an empty string instead.
 
 This scanner is **best-effort defense-in-depth, not a security boundary** — a finite set of regexes cannot catch every credential format. The actual boundary is that code never leaves the local machine unless a team `server_url` is explicitly configured; the scanner only reduces the chance of a credential being embedded/stored (and, on that explicit-server path, transmitted) by accident. This boundary is enforced by `crates/inkentry-cli/tests/egress_containment.rs`, which traps every outbound connection across local-tier CLI flows and fails loudly, naming the destination, on any escape past loopback.
 
@@ -177,6 +189,6 @@ query string
 ## Adding a new language
 
 1. Enable the grammar from `ast-grep-language`; add a standalone `tree-sitter-{lang}` crate only if it does not ship one
-2. Register the language in `crates/inkentry-core/src/indexer/parser/mod.rs` (`detect_language` + `SUPPORTED_LANGUAGES`)
-3. Add extraction patterns in `crates/inkentry-core/src/indexer/graph/edges.rs` for graph edge support, and a `locals.scm` under `graph/queries/` to bind calls within a file
+2. Register the language in `crates/inkentry-index/src/parser/mod.rs` (`detect_language` + `SUPPORTED_LANGUAGES`)
+3. Add extraction patterns in `crates/inkentry-index/src/graph/edges.rs` for graph edge support, and a `locals.scm` under `graph/queries/` to bind calls within a file
 4. Add tests

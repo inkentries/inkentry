@@ -15,7 +15,7 @@ fn a_language_without_a_locals_query_still_extracts_unresolved_edges() {
 fn a_file_over_the_parse_cap_gets_no_resolution_and_still_extracts_edges() {
     let mut src = String::from("fn helper() {}\nfn go() { helper(); }\n");
     let filler = "// padding line to push the file over the parse cap\n";
-    while src.len() <= crate::indexer::parser::MAX_PARSE_BYTES {
+    while src.len() <= crate::parser::MAX_PARSE_BYTES {
         src.push_str(filler);
     }
     let edges = calls(&src, "src/big.rs", "rust");
@@ -60,7 +60,7 @@ class A {
 
 #[test]
 fn a_file_is_chunked_by_its_tree_unless_every_chunk_is_a_whole_file_window() {
-    use crate::indexer::{SourceParser, chunker::chunked_by_tree};
+    use crate::{SourceParser, chunker::chunked_by_tree};
 
     let treed = SourceParser::parse("def run():\n    return 1\n", "a.py", "python").unwrap();
     assert!(chunked_by_tree(&treed));

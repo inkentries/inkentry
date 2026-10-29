@@ -3087,6 +3087,7 @@ dependencies = [
  "ignore",
  "indicatif",
  "inkentry-core",
+ "inkentry-index",
  "inkentry-server",
  "percent-encoding",
  "predicates",
@@ -3113,20 +3114,15 @@ name = "inkentry-core"
 version = "1.2.0"
 dependencies = [
  "anyhow",
- "ast-grep-language",
  "async-trait",
  "blake3",
- "calamine",
  "chrono",
  "dirs 7.0.0",
- "docx-rs",
  "dunce",
  "gix",
  "hex",
- "ignore",
  "inkentry-embed",
  "keyring",
- "lopdf",
  "percent-encoding",
  "proptest",
  "regex",
@@ -3143,9 +3139,6 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "tree-sitter",
- "tree-sitter-proto",
- "tree-sitter-sequel",
  "unicode-normalization",
  "uuid",
  "wiremock",
@@ -3165,6 +3158,30 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "inkentry-index"
+version = "1.2.0"
+dependencies = [
+ "anyhow",
+ "ast-grep-language",
+ "calamine",
+ "docx-rs",
+ "ignore",
+ "inkentry-core",
+ "lopdf",
+ "proptest",
+ "regex",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-proto",
+ "tree-sitter-sequel",
 ]
 
 [[package]]

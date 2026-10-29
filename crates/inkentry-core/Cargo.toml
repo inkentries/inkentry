@@ -2,13 +2,12 @@
 name = "inkentry-core"
 version = "1.2.0"
 edition = "2024"
-description = "Core library for inkentry — storage, indexer, search, embeddings"
+description = "Core library for inkentry — storage, search, embeddings"
 license = "MIT"
 repository = "https://github.com/inkentries/inkentry"
 
 [features]
 default = []
-rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
 # Exposes in-memory test doubles (e.g. `config::secret_store::MemoryStore`) to
 # downstream crates' tests without pulling them into release builds.
 test-support = []
@@ -46,32 +45,12 @@ gix = { version = "0.88.0", default-features = false, features = [
     "status",
 ] }
 
-tree-sitter = "0.26"
-# Grammar source for the 27 built-in languages (bash, c, cpp, c#, css, dart,
-# elixir, go, haskell, hcl, html, java, js, json, kotlin, lua, md, nix, php,
-# python, ruby, rust, scala, solidity, swift, tsx, typescript, yaml). One crate
-# to bump instead of 13 hand-pinned grammars; kept ABI-aligned to the same
-# tree-sitter 0.26 runtime by the ast-grep team. See ts_walker::ts_language.
-ast-grep-language = "0.45"
-# In-process structural search fallback (replaces the external `ast-grep` binary).
-# proto + sql grammars are not shipped by ast-grep-language — kept standalone.
-tree-sitter-proto = "0.6"
-tree-sitter-sequel = "0.3"
-
 uuid = { workspace = true }
 unicode-normalization = { workspace = true }
 regex = { version = "1", default-features = false, features = ["std"] }
 blake3 = "1"
 sha2 = "0.11"
 hex = "0.4"
-ignore = "0.4"
-
-# Pinned to an unreleased commit: docx-rs 0.4.22, the latest release, requires
-# zip ^8.6, and RUSTSEC-2026-0367/0368/0369 are fixed only in zip 9. Return to a
-# crates.io version once one depends on zip 9.
-docx-rs = { git = "https://github.com/bokuweb/docx-rs.git", rev = "ad7fede6a7f3b61a097c28d0c39dd04626e44701", optional = true }
-calamine = { version = "0.37", features = ["dates"], optional = true }
-lopdf = { version = "0.46", optional = true }
 
 [dev-dependencies]
 proptest = "1"

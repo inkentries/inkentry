@@ -627,7 +627,7 @@ fn an_index_written_by_1_1_0_migrates_in_place_to_the_current_schema() {
                 let language: Option<String> = r.get(1)?;
                 let name: Option<String> = r.get(3)?;
                 let metadata: Option<String> = r.get(5)?;
-                let expected = inkentry_core::indexer::embed_scope::is_text_only_row(
+                let expected = inkentry_core::storage::embed_scope::is_text_only_row(
                     &path,
                     language.as_deref().unwrap_or(""),
                     &r.get::<_, String>(2)?,

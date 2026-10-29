@@ -1,7 +1,7 @@
 use super::super::chunker::{Chunk, ChunkKind, chunk_token_cap, sliding_window};
 use crate::error::IndexError;
-use crate::search::tokens::estimate_tokens;
 use anyhow::Result;
+use inkentry_core::search::tokens::estimate_tokens;
 
 pub(super) fn ts_language(name: &str) -> Result<tree_sitter::Language> {
     use ast_grep_language::{LanguageExt, SupportLang};

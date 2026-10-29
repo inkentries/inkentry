@@ -21,7 +21,7 @@ use super::ui::print_chunks_text;
 use crate::config::Config;
 
 pub fn languages() -> Result<()> {
-    let langs = crate::indexer::parser::SUPPORTED_LANGUAGES;
+    let langs = inkentry_index::parser::SUPPORTED_LANGUAGES;
     println!("Supported languages:");
     for lang in langs {
         println!("  {lang}");
@@ -54,7 +54,7 @@ pub fn chunks(args: ChunksArgs, cfg: Config) -> Result<()> {
 }
 
 fn index_filter_explanation(cfg: &Config, path: &str) -> Option<String> {
-    use inkentry_core::indexer::filter::{Decision, IndexFilter, generated_marker};
+    use inkentry_index::filter::{Decision, IndexFilter, generated_marker};
 
     let filter = IndexFilter::build(
         &cfg.index.exclude,

@@ -93,7 +93,7 @@ reporting route, and response SLA).
 
 | Control                          | Where                      | CI gate?           |
 | -------------------------------- | -------------------------- | ------------------ |
-| Secret scanning before indexing  | `crates/inkentry-core/src/indexer/secrets.rs` | No (runtime) |
+| Secret scanning before indexing  | `crates/inkentry-core/src/secrets.rs` | No (runtime) |
 | Dependency advisory scan         | `cargo audit`              | Yes — blocks merge |
 | Dependency license/source policy | `cargo deny`               | Yes — blocks merge |
 | Static analysis                  | `cargo clippy -D warnings` | Yes — blocks merge |

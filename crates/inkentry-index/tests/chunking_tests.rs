@@ -1,6 +1,5 @@
-// One chunking/tokenization test binary, not several: groups the chunker,
-// language-support, and token-budget test files to cut per-binary link
-// overhead.
+// One chunking test binary, not several: groups the chunker and
+// language-support test files to cut per-binary link overhead.
 
 #[path = "chunking_tests/adversarial_chunker.rs"]
 mod adversarial_chunker;
@@ -16,8 +15,6 @@ mod lang_js_ts_function_bindings;
 mod lang_php_ruby;
 #[path = "chunking_tests/prop_chunker.rs"]
 mod prop_chunker;
-#[path = "chunking_tests/prop_token_budget.rs"]
-mod prop_token_budget;
 #[path = "chunking_tests/ruby_class_body.rs"]
 mod ruby_class_body;
 #[path = "chunking_tests/rust_test_code.rs"]

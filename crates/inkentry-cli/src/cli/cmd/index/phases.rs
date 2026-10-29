@@ -211,7 +211,7 @@ pub(super) fn run_pre_embed_phases(args: &IndexArgs, db: &Database) -> Result<()
     eprintln!("Computing graph rank\u{2026}");
     let edges = db.graph_edges_all()?;
     if !edges.is_empty() {
-        let pr_scores = crate::indexer::pagerank::compute_pagerank(&edges, 20, 0.85);
+        let pr_scores = inkentry_index::pagerank::compute_pagerank(&edges, 20, 0.85);
         let named_chunks = db.chunks_with_names()?;
         let updates: Vec<(i64, f32)> = named_chunks
             .into_iter()

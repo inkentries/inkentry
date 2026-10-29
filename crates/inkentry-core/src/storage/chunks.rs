@@ -44,7 +44,7 @@ impl Database {
             .conn
             .prepare_cached("SELECT path, language FROM files WHERE id = ?1")?
             .query_row([file_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        let text_only = crate::indexer::embed_scope::is_text_only_row(
+        let text_only = super::embed_scope::is_text_only_row(
             &path,
             language.as_deref().unwrap_or(""),
             node_type,
@@ -729,7 +729,7 @@ mod tests {
     // insertion order.
     #[test]
     fn callees_for_symbol_are_ordered_deterministically() {
-        use crate::indexer::graph::{Edge, EdgeKind};
+        use crate::storage::{Edge, EdgeKind};
         let db = open_db();
         db.upsert_file("a.rs", Some("rust"), "h", 0).unwrap();
         // Inserted in a deliberately unsorted order.

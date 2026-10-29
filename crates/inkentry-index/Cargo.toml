@@ -1,0 +1,50 @@
+[package]
+name = "inkentry-index"
+version = "1.2.0"
+edition = "2024"
+description = "Code indexer for inkentry — parsers, chunker, graph edges, structural summaries"
+license = "MIT"
+repository = "https://github.com/inkentries/inkentry"
+
+[lib]
+name = "inkentry_index"
+path = "src/lib.rs"
+
+[features]
+default = []
+# The PDF, DOCX and spreadsheet readers. Off in the library's own defaults;
+# `inkentry-cli` turns it on through its default feature.
+rich-formats = ["dep:lopdf", "dep:docx-rs", "dep:calamine"]
+
+[dependencies]
+inkentry-core = { path = "../inkentry-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+regex = { version = "1", default-features = false, features = ["std"] }
+ignore = "0.4"
+
+tree-sitter = "0.26"
+# Grammar source for the 27 built-in languages (bash, c, cpp, c#, css, dart,
+# elixir, go, haskell, hcl, html, java, js, json, kotlin, lua, md, nix, php,
+# python, ruby, rust, scala, solidity, swift, tsx, typescript, yaml). One crate
+# to bump instead of 13 hand-pinned grammars; kept ABI-aligned to the same
+# tree-sitter 0.26 runtime by the ast-grep team. See ts_walker::ts_language.
+ast-grep-language = "0.45"
+# proto + sql grammars are not shipped by ast-grep-language — kept standalone.
+tree-sitter-proto = "0.6"
+tree-sitter-sequel = "0.3"
+
+# Pinned to an unreleased commit: docx-rs 0.4.22, the latest release, requires
+# zip ^8.6, and RUSTSEC-2026-0367/0368/0369 are fixed only in zip 9. Return to a
+# crates.io version once one depends on zip 9.
+docx-rs = { git = "https://github.com/bokuweb/docx-rs.git", rev = "ad7fede6a7f3b61a097c28d0c39dd04626e44701", optional = true }
+calamine = { version = "0.37", features = ["dates"], optional = true }
+lopdf = { version = "0.46", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+tempfile = { workspace = true }
+serial_test = { workspace = true }

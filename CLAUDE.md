@@ -58,14 +58,17 @@ You search with inkentry, then reason over the results yourself.
 
 ## Workspace Structure
 
-This is a Cargo workspace with four crates:
+This is a Cargo workspace with five crates:
 
 ```
 Cargo.toml                    — workspace root; [workspace.dependencies] for shared versions
 
 crates/
-  inkentry-core/               — library: storage, indexer, embeddings, search, config, registry
-  inkentry-cli/                — `inkentry` binary; depends on inkentry-core
+  inkentry-core/               — library: storage, embeddings, search, config, registry
+  inkentry-index/              — library: the code indexer (parsers, tree-sitter grammars,
+                                 chunker, graph edges, document readers); depends on
+                                 inkentry-core. inkentry-server does not depend on it
+  inkentry-cli/                — `inkentry` binary; depends on inkentry-core + inkentry-index
   inkentry-embed/              — library: F2LLM-v2-330M embedder (llama.cpp); owns the
                                  EmbeddingBackend trait. A leaf crate — inkentry-core
                                  depends on it, not the other way round
@@ -105,6 +108,8 @@ utils/
   mod.rs         — strip_ansi(), misc helpers
   dates.rs       — date parsing helpers
 registry.rs      — global project registry (~/.config/inkentry/registry.db)
+secrets.rs       — contains_secret(): regex scanner, drops credential chunks and refuses
+                   secret-bearing memory input
 reachability.rs  — remembers that a connect to an origin just failed, so the several
                    subsystems one command points at the same absent server do not each
                    spend a full connect timeout rediscovering it. This is what makes a
@@ -138,51 +143,17 @@ metrics/
                    automation rates, per-command call counts, latency/token
                    medians, `use.reconcile_outcomes`
 
-indexer/
-  mod.rs         — re-exports Chunk, ChunkKind, SourceParser
-  chunker.rs     — Chunk / ChunkKind structs; sliding_window fallback
-  docparser.rs   — document-level parsing helpers
-  embed_scope.rs — is_text_only_row: which chunks skip embedding and stay
-                   full-text only (tests, in-file Rust test code, changelogs,
-                   JSON, unnamed code windows; ADR-104)
-  pagerank.rs    — PageRank over the code graph
-  pdf.rs         — PDF text extraction
-  secrets.rs     — contains_secret(): regex scanner, drops credential chunks
-  summariser.rs  — deterministic structural chunk summaries (no model, no key, no network)
-  graph/
-    mod.rs       — EdgeExtractor: walks the tree, resolves and dedups edges
-    edges.rs     — per-language import/call/extends edge helpers
-    builtins.rs  — built-in symbol skip-list
-    locals.rs    — intra-file binding of a call's callee (same-file definition,
-                   shadowing parameter/local, import alias) → target_file
-    aliases.rs   — the imported name behind a renaming import, per grammar
-    initialisers.rs — whether a binding's initialiser is a function, lambda
-                   or class expression (what lets a file-level binding claim
-                   its file)
-    visibility.rs — where a callable is reachable by its bare name (file,
-                   enclosing function, or same type body with an implicit
-                   receiver)
-    receivers.rs — which receivers a file can place: its type's own,
-                   unrebound self-reference, or a qualifier naming one of its
-                   file-scope types or its own module; and the type a call or
-                   method is in
-    queries.rs   — compiles the vendored locals queries once per language
-    queries/     — vendored upstream locals.scm files (provenance in README.md)
-  parser/
-    mod.rs       — SourceParser; detect_language; SUPPORTED_LANGUAGES; fill_gaps
-    ruby_body.rs — cuts a large Ruby class's body into runs of one kind of
-                   declaration (associations, scopes, validations, ...)
-    text.rs      — plain-text / sliding-window parser
-    ts_walker.rs — tree-sitter AST walker
-
 storage/
   mod.rs         — re-exports Database
-  db.rs          — Database struct; open/migrate; connection setup
+  db.rs          — Database struct; open/migrate; connection setup; SUMMARY_SCHEME
   files.rs       — file record CRUD (insert, lookup, delete)
   chunks.rs      — chunk CRUD (insert, fetch, delete by file)
   conventions.rs — conventions table CRUD (no dependency on conventions/)
   search.rs      — KNN search queries against sqlite-vec
-  graph.rs       — graph_edges CRUD
+  graph.rs       — graph_edges CRUD; Edge / EdgeKind, the rows edge extraction writes
+  embed_scope.rs — is_text_only_row: which chunks skip embedding and stay
+                   full-text only (tests, in-file Rust test code, changelogs,
+                   JSON, unnamed code windows; ADR-104)
   specs.rs       — spec record CRUD
   stats.rs       — aggregate statistics queries
   note_record.rs — NoteRecord struct (memory entry)
@@ -278,6 +249,46 @@ migrations/  (crates/inkentry-core/migrations/)
   memory_015.sql — step 15: nullable `events.reconcile`/`events.resolution`
                            columns (what `memory add` did about its neighbours);
                            pure additions, no data pass
+```
+
+### inkentry-index (`crates/inkentry-index/src/`)
+
+```
+lib.rs         — crate root; re-exports Chunk, ChunkKind, SourceParser
+error.rs       — IndexError enum
+chunker.rs     — Chunk / ChunkKind structs; sliding_window fallback
+docparser.rs   — document-level parsing helpers
+filter.rs      — index-time file filter: generated, vendored, minified and
+                 machine-data files, plus the `[index]` config excludes
+mmr.rs         — maximal-marginal-relevance selection for title-less chunks (tier 3)
+pagerank.rs    — PageRank over the code graph
+pdf.rs         — PDF text extraction
+summariser.rs  — deterministic structural chunk summaries (no model, no key, no network)
+graph/
+  mod.rs       — EdgeExtractor: walks the tree, resolves and dedups edges
+  edges.rs     — per-language import/call/extends edge helpers
+  builtins.rs  — built-in symbol skip-list
+  locals.rs    — intra-file binding of a call's callee (same-file definition,
+                 shadowing parameter/local, import alias) → target_file
+  aliases.rs   — the imported name behind a renaming import, per grammar
+  initialisers.rs — whether a binding's initialiser is a function, lambda
+                 or class expression (what lets a file-level binding claim
+                 its file)
+  visibility.rs — where a callable is reachable by its bare name (file,
+                 enclosing function, or same type body with an implicit
+                 receiver)
+  receivers.rs — which receivers a file can place: its type's own,
+                 unrebound self-reference, or a qualifier naming one of its
+                 file-scope types or its own module; and the type a call or
+                 method is in
+  queries.rs   — compiles the vendored locals queries once per language
+  queries/     — vendored upstream locals.scm files (provenance in README.md)
+parser/
+  mod.rs       — SourceParser; detect_language; SUPPORTED_LANGUAGES; fill_gaps
+  ruby_body.rs — cuts a large Ruby class's body into runs of one kind of
+                 declaration (associations, scopes, validations, ...)
+  text.rs      — plain-text / sliding-window parser
+  ts_walker.rs — tree-sitter AST walker
 ```
 
 ### inkentry-cli (`crates/inkentry-cli/src/`)
@@ -571,7 +582,7 @@ function (`export const Picker = (props) => …`, `memo(…)`, `forwardRef(…)`
 a named function chunk. Code outside every matched node (module-level
 statements, the body of a container too large to keep whole) is windowed as
 `verbatim` chunks rather than dropped (`fill_gaps` in
-`indexer/parser/mod.rs`); a chunk's docstring counts as covering the lines
+`inkentry-index`'s `parser/mod.rs`); a chunk's docstring counts as covering the lines
 above it. The walker records each suppressed container's span
 (`SuppressedScope` in `ts_walker.rs`); a stretch is cut where it crosses a
 container boundary, except that a bare header (`module Billing` above `class
@@ -582,7 +593,7 @@ the container's re-windowed chunk would. Windows between its members and
 module-level windows stay unnamed: naming every `private` window after its
 class crowded the class's methods out of queries naming it. Inside a Ruby
 class, a gap is further cut into runs of one kind of declaration
-(`indexer/parser/ruby_body.rs`): associations, validations, scopes,
+(`crates/inkentry-index/src/parser/ruby_body.rs`): associations, validations, scopes,
 callbacks, attributes (`enum`, `monetize`, `attribute`, …), delegations and
 constants, each named `<Class> <kind>`. A statement of no known kind extends
 the run before it, and a short run of none joins a neighbour. One window
@@ -599,7 +610,7 @@ F2LLM-v2-330M (Qwen3 decoder, 896-dim) uses:
   - Memory/QA: `Instruct: Given a question, retrieve passages that answer the question\nQuery: {q}`
 
 Document format is produced by `Chunk::embedding_text()` in
-`crates/inkentry-core/src/indexer/chunker.rs`. Query prefixes are applied by
+`crates/inkentry-index/src/chunker.rs`. Query prefixes are applied by
 `handlers.rs` (server-side code search), `embed_query_vec()` in `helpers.rs`
 (the CLI-side memory/QA embed), and `embed_cmd.rs` (plumbing embed --query).
 Unified `search` embeds the one query under **both** prefixes — the code prefix
@@ -647,7 +658,7 @@ Each file is hashed with blake3. On re-index, unchanged files are skipped.
 Changed files: delete old chunks + embeddings, reparse, re-embed.
 
 ### What gets embedded
-Not every chunk gets a vector. `indexer::embed_scope::is_text_only_row` leaves
+Not every chunk gets a vector. `storage::embed_scope::is_text_only_row` leaves
 test files, changelogs, JSON and unnamed windows of code to the full-text
 index alone, and so does test code the syntax marks inside a source file (Rust
 `#[cfg(test)]`/`#[test]`: the walker records those spans, and a chunk inside one
@@ -669,7 +680,7 @@ these commands to query only the primary project's memory. See
 `docs/memory.md#cross-project-visibility`.
 
 ### Secret scanning
-`crates/inkentry-core/src/indexer/secrets.rs` runs before each chunk is stored, scanning the full
+`crates/inkentry-core/src/secrets.rs` runs before each chunk is stored, scanning the full
 text that will be persisted and embedded (docstring + content; each composed structural summary is scanned
 separately when generated, since summaries don't exist yet at store time and the
 composition can lift a salient literal out of the code). Chunks matching known
@@ -695,10 +706,11 @@ Jupyter notebooks (`notebook`, `.ipynb`).
 That is the set every build parses; `notebook` is in it and not behind a
 feature, being a custom JSON parser rather than a tree-sitter grammar or a
 binary-document reader. `SUPPORTED_LANGUAGES`
-(`crates/inkentry-core/src/indexer/parser/mod.rs`) is `cfg`-gated, so the
+(`crates/inkentry-index/src/parser/mod.rs`) is `cfg`-gated, so the
 `rich-formats` feature adds `docx`, `spreadsheet` and `pdf` to it, and
 `inkentry languages` prints whichever set the running binary was built with.
-`rich-formats` is a default feature of `inkentry-cli`, so release binaries and
+`rich-formats` is a default feature of `inkentry-cli`, forwarded to
+`inkentry-index`, so release binaries and
 a plain `cargo build` both list all three; only a `--no-default-features`
 build leaves them out.
 
@@ -777,6 +789,7 @@ cargo test
 
 # Tests for a specific crate
 cargo test -p inkentry-core
+cargo test -p inkentry-index
 cargo test -p inkentry-cli
 cargo test -p inkentry-server
 
@@ -788,9 +801,9 @@ cargo audit
 
 ## Dependency Notes
 
-- Tree-sitter grammars come from **`ast-grep-language`** (a single crate,
-  ABI-aligned to the `tree-sitter` core). Bump that one crate instead of many
-  `tree-sitter-*` deps. `proto` and `sql` are the only exceptions —
+- Tree-sitter grammars are dependencies of `inkentry-index` only, and come from
+  **`ast-grep-language`** (a single crate, ABI-aligned to the `tree-sitter`
+  core). Bump that one crate instead of many `tree-sitter-*` deps. `proto` and `sql` are the only exceptions —
   ast-grep-language doesn't ship them, so they stay on the standalone
   `tree-sitter-proto` / `tree-sitter-sequel` crates. If you bump the
   `tree-sitter` core, check that `ast-grep-language` (and the two standalone
@@ -800,9 +813,11 @@ cargo audit
 - `sqlite-vec` is loaded at runtime via `sqlite3_auto_extension` (see
   `crates/inkentry-cli/src/main.rs` and `crates/inkentry-server/src/main.rs`).
   The extension binary is bundled by the crate — no system install needed.
-- `regex` is used only by `crates/inkentry-core/src/indexer/secrets.rs`. Patterns
-  are compiled once via `OnceLock` at the start of `inkentry index`.
-- `ignore` respects `.gitignore`, `.ignore`, and global gitignore rules during
+- `regex` backs the secret scanner (`crates/inkentry-core/src/secrets.rs`), the
+  convention rules and `inkentry-index`'s generated-file marker. The scanner's
+  patterns are compiled once via `OnceLock` at the start of `inkentry index`.
+- `ignore` (`inkentry-cli`'s file walk and `inkentry-index`'s file filter)
+  respects `.gitignore`, `.ignore`, and global gitignore rules during
   file traversal. Sensitive file patterns (`.env*`, `*.pem`, etc.) are
   excluded unconditionally via `OverrideBuilder`.
 - Shared dependency versions are declared in the workspace root `Cargo.toml`

@@ -2,9 +2,10 @@
 // the expected semantic chunks, and `EdgeExtractor::extract` produces the
 // expected import/call/inheritance edges.
 
-use inkentry_core::indexer::graph::{EdgeExtractor, EdgeKind};
-use inkentry_core::indexer::parser::detect_language;
-use inkentry_core::indexer::{ChunkKind, SourceParser};
+use inkentry_core::storage::{Edge, EdgeKind};
+use inkentry_index::graph::EdgeExtractor;
+use inkentry_index::parser::detect_language;
+use inkentry_index::{ChunkKind, SourceParser};
 use std::path::Path;
 
 const CSHARP_SRC: &str = r#"using System;
@@ -96,7 +97,7 @@ extension Service {
 func topLevel() -> Int { return 42 }
 "#;
 
-fn names_of(chunks: &[inkentry_core::indexer::Chunk], kind: ChunkKind) -> Vec<String> {
+fn names_of(chunks: &[inkentry_index::Chunk], kind: ChunkKind) -> Vec<String> {
     let want = kind.to_string();
     chunks
         .iter()
@@ -105,7 +106,7 @@ fn names_of(chunks: &[inkentry_core::indexer::Chunk], kind: ChunkKind) -> Vec<St
         .collect()
 }
 
-fn has_edge(edges: &[inkentry_core::indexer::graph::Edge], target: &str, kind: EdgeKind) -> bool {
+fn has_edge(edges: &[Edge], target: &str, kind: EdgeKind) -> bool {
     edges
         .iter()
         .any(|e| e.target_name == target && e.kind == kind)

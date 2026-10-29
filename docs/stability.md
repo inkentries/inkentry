@@ -31,8 +31,8 @@ Stating this first, because it is the part most often assumed:
   log levels. Diagnostics on stderr from any command, including the diagnostics
   that accompany a plumbing exit 2, are advisory text and not a parseable
   interface. The *exit code* is the interface.
-- **Internal crate APIs.** `inkentry-core`, `inkentry-cli`, `inkentry-embed`, and
-  `inkentry-server` are workspace members, not published to crates.io. Any Rust
+- **Internal crate APIs.** `inkentry-core`, `inkentry-index`, `inkentry-cli`,
+  `inkentry-embed`, and `inkentry-server` are workspace members, not published to crates.io. Any Rust
   item they expose, `pub` or not, may change in any release. Depending on them
   as a git dependency is unsupported.
 - **The `/local/` HTTP routes.** `inkentry-server` registers `/local/relay/push`,

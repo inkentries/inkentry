@@ -9,7 +9,7 @@ mod server_client;
 use cli::cmd::plumbing::PlumbingCommand;
 use cli::{Cli, Command};
 use inkentry_core::{
-    config, conventions, dump, embeddings, error, indexer, registry, search, storage, utils,
+    config, conventions, dump, embeddings, error, registry, search, secrets, storage, utils,
 };
 
 #[tokio::main]

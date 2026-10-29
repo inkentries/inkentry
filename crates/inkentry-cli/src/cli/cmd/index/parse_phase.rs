@@ -8,14 +8,11 @@ use super::super::ui::{is_tty, progress_style, short_path};
 use super::IndexArgs;
 use super::embed_phase::PendingEmbedding;
 use super::graph_pass;
+use crate::{search::tokens::estimate_tokens, storage::Database};
 #[cfg(feature = "rich-formats")]
-use crate::indexer::docparser::parse_doc;
-use crate::{
-    indexer::parser::{
-        SourceParser, detect_doc_language, detect_language, detect_text_language, is_binary_file,
-    },
-    search::tokens::estimate_tokens,
-    storage::Database,
+use inkentry_index::docparser::parse_doc;
+use inkentry_index::parser::{
+    SourceParser, detect_doc_language, detect_language, detect_text_language, is_binary_file,
 };
 
 // Checked via metadata before any read, so a huge or compression-bomb file can't OOM the indexer.
@@ -70,7 +67,7 @@ pub(super) fn run_parse_phase(
     mp: &MultiProgress,
     cfg: &crate::config::Config,
 ) -> Result<ParseResult> {
-    let filter = inkentry_core::indexer::filter::IndexFilter::build(
+    let filter = inkentry_index::filter::IndexFilter::build(
         &cfg.index.exclude,
         cfg.index.use_default_excludes,
         cfg.index.detect_generated,
@@ -144,7 +141,7 @@ pub(super) fn run_parse_phase(
 
     // --force re-chunked every file; refresh the stamp or the chunker drift warning never clears.
     if args.force {
-        db.stamp_chunker_config(&inkentry_core::indexer::chunker_config_id())?;
+        db.stamp_chunker_config(&inkentry_index::chunker_config_id())?;
     }
 
     Ok(ParseResult { indexed, removed })
@@ -217,9 +214,9 @@ const ALWAYS_EXCLUDED_SENSITIVE_PATTERNS: &[&str] = &[
 
 fn collect_files(
     root: &std::path::Path,
-    filter: &inkentry_core::indexer::filter::IndexFilter,
+    filter: &inkentry_index::filter::IndexFilter,
 ) -> Result<(Vec<ignore::DirEntry>, u64)> {
-    use inkentry_core::indexer::filter::Decision;
+    use inkentry_index::filter::Decision;
 
     let mut walk = WalkBuilder::new(root);
     walk.standard_filters(true);
@@ -282,7 +279,7 @@ fn collect_files(
             Decision::Keep => {}
         }
         if filter.detect_generated()
-            && let Some(marker) = inkentry_core::indexer::filter::generated_marker(p)
+            && let Some(marker) = inkentry_index::filter::generated_marker(p)
         {
             tracing::debug!(
                 "index filter: excluding {} (generated marker: {})",
@@ -360,7 +357,7 @@ fn process_pdf_file(
     {
         return Ok(true);
     }
-    match crate::indexer::pdf::extract_pdf_text(path) {
+    match inkentry_index::pdf::extract_pdf_text(path) {
         Ok(pages) => {
             let file_id = db.upsert_file(path_str, Some("pdf"), &hash, stat_mtime(path))?;
             db.delete_embeddings_for_file(file_id)?;
@@ -377,13 +374,13 @@ fn process_pdf_file(
 }
 
 #[cfg(feature = "rich-formats")]
-fn pages_to_chunks(pages: Vec<(u32, String)>, path_str: &str) -> Vec<crate::indexer::Chunk> {
+fn pages_to_chunks(pages: Vec<(u32, String)>, path_str: &str) -> Vec<inkentry_index::Chunk> {
     pages
         .into_iter()
-        .map(|(page_num, text)| crate::indexer::Chunk {
+        .map(|(page_num, text)| inkentry_index::Chunk {
             file_path: path_str.to_string(),
             language: "pdf".to_string(),
-            kind: crate::indexer::ChunkKind::Section,
+            kind: inkentry_index::ChunkKind::Section,
             name: Some(format!("page {page_num}")),
             start_line: page_num as usize,
             end_line: page_num as usize,
@@ -464,12 +461,12 @@ fn process_text_file(
     Ok(())
 }
 
-pub(super) fn holds_secret(chunk: &crate::indexer::Chunk) -> bool {
-    crate::indexer::secrets::contains_secret(&chunk.embedding_text())
+pub(super) fn holds_secret(chunk: &inkentry_index::Chunk) -> bool {
+    inkentry_core::secrets::contains_secret(&chunk.embedding_text())
 }
 
 fn store_chunks(
-    chunks: &[crate::indexer::Chunk],
+    chunks: &[inkentry_index::Chunk],
     path_str: &str,
     file_id: i64,
     db: &Database,
@@ -486,7 +483,7 @@ fn store_chunks(
         let mut metadata =
             serde_json::json!({ "docstring": chunk.docstring, "parent_scope": chunk.parent_scope });
         if chunk.in_test_code {
-            metadata[inkentry_core::indexer::embed_scope::IN_TEST_CODE_KEY] = true.into();
+            metadata[inkentry_core::storage::embed_scope::IN_TEST_CODE_KEY] = true.into();
         }
         let tc = estimate_tokens(&chunk.content);
         db.insert_chunk(
@@ -574,7 +571,7 @@ mod tests {
 
     #[test]
     fn reconstruct_embedding_text_matches_chunk_embedding_text() {
-        use crate::indexer::{Chunk, ChunkKind};
+        use inkentry_index::{Chunk, ChunkKind};
 
         let cases = [
             (Some("do_thing"), Some("Does the thing.")),
@@ -614,7 +611,7 @@ mod tests {
 
     #[test]
     fn reconstruct_embedding_text_matches_chunk_embedding_text_with_summary() {
-        use crate::indexer::{Chunk, ChunkKind};
+        use inkentry_index::{Chunk, ChunkKind};
 
         let cases = [
             (
@@ -736,7 +733,7 @@ mod tests {
 
         let mp = MultiProgress::new();
         let cfg = crate::config::Config::default();
-        let current = inkentry_core::indexer::chunker_config_id();
+        let current = inkentry_index::chunker_config_id();
 
         let args = default_args(dir.path().to_path_buf());
         run_parse_phase(dir.path(), &db, &args, &mp, &cfg).expect("normal parse phase");
@@ -770,7 +767,7 @@ mod tests {
 
     #[test]
     fn missing_embedding_texts_returns_only_unembedded_chunks_from_db() {
-        use crate::indexer::{Chunk, ChunkKind};
+        use inkentry_index::{Chunk, ChunkKind};
 
         let db = open_db();
         let file_id = db
@@ -1101,7 +1098,7 @@ mod tests {
         assert!(!is_file_too_large(file.path(), "boundary.bin"));
     }
 
-    use inkentry_core::indexer::filter::IndexFilter;
+    use inkentry_index::filter::IndexFilter;
 
     fn collected_names(files: &[ignore::DirEntry]) -> Vec<String> {
         files

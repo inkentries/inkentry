@@ -3,7 +3,7 @@
 ## Current state
 
 Tests live under `crates/*/tests/` (integration-style, one binary per file)
-plus `#[cfg(test)]` blocks colocated with the code they cover across all four
+plus `#[cfg(test)]` blocks colocated with the code they cover across all five
 crates. The suite spans unit logic, real-SQLite integration, in-process
 server-handler tests, CLI end-to-end tests, property-based tests, an upgrade
 corpus of artifacts written by real released binaries, and a scheduled fuzzing
@@ -57,13 +57,15 @@ under test in `src/`. Broad categories, not an exhaustive file list (a file
 inventory is the kind of thing that goes stale the next time a test file is
 added or renamed):
 
-- **`crates/inkentry-core/tests/`**: chunker, embeddings, graph-edge, and
-  summariser unit logic; adversarial/coverage-gap hardening for the chunker
-  (`adversarial_chunker.rs`); real-SQLite integration tests against
-  `Database` (CRUD, KNN search, graph edges, conventions, LIKE-metacharacter
-  escaping); git-notes integration tests; a worktree-resolution integration
-  test over a real `git worktree`; language-parsing coverage; property-based
-  tests (`prop_*.rs`, using `proptest`).
+- **`crates/inkentry-core/tests/`**: embeddings and token-budget unit logic;
+  real-SQLite integration tests against `Database` (CRUD, KNN search, graph
+  edges, conventions, LIKE-metacharacter escaping); git-notes integration
+  tests; a worktree-resolution integration test over a real `git worktree`;
+  property-based tests (`prop_*.rs`, using `proptest`).
+- **`crates/inkentry-index/tests/`**: chunker and graph-edge unit
+  logic; adversarial/coverage-gap hardening for the chunker
+  (`adversarial_chunker.rs`); language-parsing coverage; property-based
+  chunker tests.
 - **`crates/inkentry-cli/tests/`**: CLI end-to-end tests that invoke the
   compiled `inkentry` binary via `assert_cmd`; plumbing-subcommand tests
   (`cat_chunks`, `graph_edges`, `knn`, `ls_files`, `parse_file`, `hash_file`)

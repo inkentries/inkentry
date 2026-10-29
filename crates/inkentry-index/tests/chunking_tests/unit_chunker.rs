@@ -1,10 +1,10 @@
 // Unit tests for the chunker module (no I/O, no SQLite).
 
-use inkentry_core::indexer::chunker::MAX_CHUNK_TOKENS;
-use inkentry_core::indexer::{Chunk, ChunkKind, SourceParser};
 use inkentry_core::search::tokens::estimate_tokens;
+use inkentry_index::chunker::MAX_CHUNK_TOKENS;
+use inkentry_index::{Chunk, ChunkKind, SourceParser};
 
-use inkentry_core::indexer::sliding_window;
+use inkentry_index::sliding_window;
 
 // One line of `chars` visible characters (no trailing newline).
 fn line_of(chars: usize) -> String {

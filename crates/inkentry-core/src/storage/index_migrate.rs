@@ -100,7 +100,7 @@ fn mark_text_only_chunks(conn: &Connection) -> Result<()> {
             let language: Option<String> = r.get(2)?;
             let name: Option<String> = r.get(4)?;
             let metadata: Option<String> = r.get(5)?;
-            let text_only = crate::indexer::embed_scope::is_text_only_row(
+            let text_only = super::embed_scope::is_text_only_row(
                 &r.get::<_, String>(1)?,
                 language.as_deref().unwrap_or(""),
                 &r.get::<_, String>(3)?,

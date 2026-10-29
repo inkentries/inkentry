@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod db;
+pub mod embed_scope;
 pub mod entity_id;
 pub mod git_notes;
 pub mod memory;
@@ -24,7 +25,7 @@ pub use backend::{
 };
 pub(crate) use chunks::chunk_subwords;
 pub use conventions::{ConventionRow, RawChunkRow, has_doc_prefix};
-pub use db::{Database, GRAPH_EDGES_REEXTRACT};
+pub use db::{Database, GRAPH_EDGES_REEXTRACT, SUMMARY_SCHEME};
 pub use entity_id::{
     ENTITY_ID_HANDLE_LEN, ENTITY_ID_MIN_PREFIX_LEN, entity_id, entity_id_handle,
     is_entity_id_lookup, note_entity_id,
@@ -37,7 +38,7 @@ pub use git_notes::{
     append_to_git_notes, commit_patch_id, commits_reachable_from_any_ref, ensure_notes_rewrite_ref,
     is_ancestor, lock_notes, merge_tracking_notes, publish_notes, resolve_source_ref,
 };
-pub use graph::GraphEdge;
+pub use graph::{Edge, EdgeKind, GraphEdge};
 pub use memory::{
     Candidate, CandidateBand, CandidateHit, CarriedEdgeImport, DedupeSummary, FileState,
     MAX_CANDIDATES_PER_BAND, MEMORY_DUPLICATE_DISTANCE, MEMORY_MAX_QA_DISTANCE, MemoryEdge,
