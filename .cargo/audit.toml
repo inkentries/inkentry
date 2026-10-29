@@ -1,5 +1,7 @@
 [advisories]
-# No advisory is ignored. `cargo audit` still prints paste's informational
-# `unmaintained` warning (RUSTSEC-2024-0436, reached only through the dev-only
-# tokenizers dependency); a warning does not fail the audit.
+# No advisory is ignored. `cargo audit` still prints informational
+# `unmaintained` warnings for paste (RUSTSEC-2024-0436, reached only through the
+# dev-only tokenizers dependency) and for zvariant, zvariant_derive and
+# zbus_names (RUSTSEC-2026-0370/0371/0372, see deny.toml); a warning does not
+# fail the audit.
 ignore = []
