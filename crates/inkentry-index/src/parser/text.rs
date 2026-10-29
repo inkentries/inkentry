@@ -1,5 +1,5 @@
 use super::super::chunker::{Chunk, ChunkKind, chunk_token_cap, sliding_window};
-use crate::search::tokens::estimate_tokens;
+use inkentry_core::search::tokens::estimate_tokens;
 
 // Parse a `.ipynb` notebook into per-cell chunks.
 //

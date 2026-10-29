@@ -2,7 +2,7 @@
 // is named after it: without a name, a Rails model's associations and
 // validations would be findable only by their body text.
 
-use inkentry_core::indexer::{Chunk, SourceParser};
+use inkentry_index::{Chunk, SourceParser};
 
 fn window_with<'a>(chunks: &'a [Chunk], needle: &str) -> &'a Chunk {
     chunks

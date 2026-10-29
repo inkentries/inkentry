@@ -319,7 +319,7 @@ async fn run_embed_phase_with_backoff(
     db.ensure_embedding_model(inkentry_core::embeddings::MODEL_ID)?;
     // Warn, not bail: same-model drift is not corruption, but unchanged files keep old chunk
     // boundaries and only `--force` fixes that.
-    let current_chunker_config = inkentry_core::indexer::chunker_config_id();
+    let current_chunker_config = inkentry_index::chunker_config_id();
     if let Some(recorded) = db.ensure_chunker_config(&current_chunker_config)? {
         eprintln!(
             "Warning: this index was built with chunker config '{recorded}', but the \

@@ -53,7 +53,7 @@ pub struct Chunk {
     /// Composed structural summary, set after indexing rather than during
     /// parsing. Deterministic and offline — see [`summariser`].
     ///
-    /// [`summariser`]: crate::indexer::summariser
+    /// [`summariser`]: crate::summariser
     pub summary: Option<String>,
     /// Inside test code the file's own syntax marks as such (a Rust
     /// `#[cfg(test)]` module or `#[test]` function), which a path alone cannot
@@ -139,7 +139,7 @@ pub fn chunked_by_tree<'a>(chunks: impl IntoIterator<Item = &'a Chunk>) -> bool 
 /// count on some corpora. The goal is bounding otherwise-unbounded windows to
 /// roughly the budget, not byte-exact enforcement.
 ///
-/// [`estimate_tokens`]: crate::search::tokens::estimate_tokens
+/// [`estimate_tokens`]: inkentry_core::search::tokens::estimate_tokens
 pub fn sliding_window(
     source: &str,
     file_path: &str,

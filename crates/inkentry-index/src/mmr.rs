@@ -9,14 +9,14 @@
 //! OOMs on CPU. Only the pure, embedder-free selection and unit-splitting live
 //! here; the embed + write pass wires them to the queue.
 
-use crate::indexer::chunker::ChunkKind;
+use crate::chunker::ChunkKind;
 
 /// MMR relevance/diversity trade-off. Fixed and documented (not a config
 /// surface): higher favours relevance to the centroid, lower favours diversity
 /// among picks. Recorded as part of [`SUMMARY_SCHEME`], so a change to it is a
 /// scheme change that invalidates stored tier-3 vectors.
 ///
-/// [`SUMMARY_SCHEME`]: crate::indexer::summariser::SUMMARY_SCHEME
+/// [`SUMMARY_SCHEME`]: inkentry_core::storage::SUMMARY_SCHEME
 pub const MMR_LAMBDA: f32 = 0.5;
 
 /// Upper bound on units extracted from one chunk, and on the characters of one

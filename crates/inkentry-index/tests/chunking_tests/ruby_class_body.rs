@@ -3,7 +3,7 @@
 // a model's associations, validations and scopes embed as the model in general
 // and match no particular question about it.
 
-use inkentry_core::indexer::{Chunk, SourceParser};
+use inkentry_index::{Chunk, SourceParser};
 
 fn methods(indent: &str) -> String {
     (0..40)
@@ -402,7 +402,7 @@ fn declaration_runs_are_embedded_and_the_rule_change_is_stamped() {
     let chunks = parse(&model("  belongs_to :customer\n"));
     let associations = one_named(&chunks, "Invoice associations");
 
-    assert!(!inkentry_core::indexer::embed_scope::is_text_only_row(
+    assert!(!inkentry_core::storage::embed_scope::is_text_only_row(
         "app/models/invoice.rb",
         "ruby",
         &associations.kind.to_string(),
@@ -410,8 +410,8 @@ fn declaration_runs_are_embedded_and_the_rule_change_is_stamped() {
         None,
     ));
     assert!(
-        inkentry_core::indexer::chunker_config_id().ends_with(";rules=5"),
+        inkentry_index::chunker_config_id().ends_with(";rules=5"),
         "{}",
-        inkentry_core::indexer::chunker_config_id()
+        inkentry_index::chunker_config_id()
     );
 }

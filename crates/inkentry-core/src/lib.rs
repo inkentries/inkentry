@@ -3,11 +3,11 @@ pub mod conventions;
 pub mod dump;
 pub mod embeddings;
 pub mod error;
-pub mod indexer;
 pub mod metrics;
 pub mod reachability;
 pub mod registry;
 pub mod search;
+pub mod secrets;
 pub mod storage;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

@@ -4,7 +4,7 @@
 // filesystem (macOS/Windows).
 //
 // A secret folded into a composed structural summary is covered at the unit
-// level in `inkentry_core::indexer::summariser`.
+// level in `inkentry_index::summariser`.
 
 use crate::plumbing_helpers;
 use plumbing_helpers::{index_project_dir, inkentry_cmd};

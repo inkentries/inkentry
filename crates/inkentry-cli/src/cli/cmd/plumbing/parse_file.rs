@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use super::PlumbingParseFileArgs;
-use crate::indexer::parser::{SourceParser, detect_language, detect_text_language};
+use inkentry_index::parser::{SourceParser, detect_language, detect_text_language};
 
 #[derive(Serialize)]
 struct ParsedChunk {

@@ -58,7 +58,7 @@ in-scope — see [`docs/security/THREAT-MODEL.md`](docs/security/THREAT-MODEL.md
 
 - Secret scanning runs before any chunk (docstring + content) is stored in the
   index, and again on each chunk summary when it is composed
-  (`crates/inkentry-core/src/indexer/secrets.rs`). This is best-effort
+  (`crates/inkentry-core/src/secrets.rs`). This is best-effort
   defense-in-depth, not a security boundary — the boundary is that code never
   leaves the local machine unless a team `server_url` is explicitly configured
 - `.env*`, `*.pem`, `*.key`, and similar sensitive file patterns are excluded

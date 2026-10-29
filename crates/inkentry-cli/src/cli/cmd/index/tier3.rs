@@ -1,9 +1,9 @@
 use anyhow::Result;
 
-use inkentry_core::indexer::chunker::ChunkKind;
-use inkentry_core::indexer::mmr::{self, MMR_LAMBDA};
-use inkentry_core::indexer::summariser::SUMMARY_TOKEN_CAP;
 use inkentry_core::search::tokens::estimate_tokens;
+use inkentry_index::chunker::ChunkKind;
+use inkentry_index::mmr::{self, MMR_LAMBDA};
+use inkentry_index::summariser::SUMMARY_TOKEN_CAP;
 
 use super::summaries::{SUPPRESSED_SUMMARY, UNREFINABLE_SUMMARY};
 use crate::config::Config;
@@ -39,7 +39,7 @@ pub(super) async fn run_tier3_selection(cfg: &Config, db: &Database) -> Result<u
         let order = mmr::mmr_rank(&unit_vectors, &centroid, MMR_LAMBDA);
         let summary = select_prefix(&units, &order, SUMMARY_TOKEN_CAP);
 
-        if summary.is_empty() || inkentry_core::indexer::secrets::contains_secret(&summary) {
+        if summary.is_empty() || inkentry_core::secrets::contains_secret(&summary) {
             if !summary.is_empty() {
                 tracing::warn!(
                     "suppressing tier-3 summary for chunk {id} (possible secret detected)"

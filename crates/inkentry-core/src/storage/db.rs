@@ -63,6 +63,13 @@ const _: () = assert!(
 // repopulated since", not "was rebuilt once".
 const REBUILT_FROM_KEY: &str = "rebuilt_from_version";
 
+/// Provenance tag for the embedding-input composition scheme, stamped into a
+/// DB's `index_meta` alongside `embedding_model` and `chunker_config`. Bump
+/// this whenever a change to the composed `summary:` text (including the
+/// tier-3 MMR `λ`, folded into this one scheme) invalidates stored vectors.
+/// The text is composed by `inkentry_index::summariser::compose_structural_summary`.
+pub const SUMMARY_SCHEME: &str = "structural_v1";
+
 /// [`Database::pass_owed`] key for "every file's graph edges must be
 /// re-extracted", set by a migration step that changes what edge extraction
 /// stores. Re-extraction touches `graph_edges` only: no chunking, no
@@ -344,7 +351,7 @@ impl Database {
         self.conn
             .execute(
                 "INSERT INTO index_meta (key, value) VALUES ('summary_scheme', ?1)",
-                rusqlite::params![crate::indexer::summariser::SUMMARY_SCHEME],
+                rusqlite::params![SUMMARY_SCHEME],
             )
             .context("stamping the summary scheme")?;
         Ok(())
@@ -389,7 +396,7 @@ impl Database {
     }
 
     /// Read the recorded embedding-input composition scheme
-    /// (`summariser::SUMMARY_SCHEME`), or `None` if never stamped.
+    /// ([`SUMMARY_SCHEME`]), or `None` if never stamped.
     pub fn summary_scheme(&self) -> Result<Option<String>> {
         self.conn
             .query_row(
@@ -597,6 +604,7 @@ impl Database {
 mod tests {
     use super::{
         CURRENT_SCHEMA_VERSION, Database, INITIAL_SCHEMA_VERSION, IndexMigrationKind, Result,
+        SUMMARY_SCHEME,
     };
     use rusqlite::Connection;
     use std::sync::OnceLock;
@@ -1407,7 +1415,7 @@ mod tests {
         let db = Database::open(std::path::Path::new(":memory:")).expect("open fresh");
         assert_eq!(
             db.summary_scheme().unwrap().as_deref(),
-            Some(crate::indexer::summariser::SUMMARY_SCHEME)
+            Some(SUMMARY_SCHEME)
         );
         assert_eq!(db.refresh_pending_count().unwrap(), 0);
     }

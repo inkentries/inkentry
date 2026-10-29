@@ -59,7 +59,7 @@ fn default_true() -> bool {
 
 /// The `[index]` config table: controls the built-in index-time file filter
 /// that skips generated/vendored/minified/machine-data files (see
-/// [`crate::indexer::filter`]). Distinct from the unconditional sensitive-file
+/// `inkentry_index::filter`). Distinct from the unconditional sensitive-file
 /// exclusion (`.env`, keys), which is not configurable here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {

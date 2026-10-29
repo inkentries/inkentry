@@ -3,7 +3,7 @@
 // chunk, or a file that also holds an interface or type loses those lines
 // from the index entirely.
 
-use inkentry_core::indexer::{Chunk, SourceParser};
+use inkentry_index::{Chunk, SourceParser};
 
 fn names(chunks: &[Chunk]) -> Vec<(&str, String)> {
     chunks

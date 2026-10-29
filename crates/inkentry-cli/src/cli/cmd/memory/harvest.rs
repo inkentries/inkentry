@@ -7,7 +7,7 @@ use crate::{
     capability,
     config::Config,
     embeddings::vec_to_blob,
-    indexer::secrets::contains_secret,
+    secrets::contains_secret,
     server_client::{Explicitness, LlmMessage, ServerInferenceClient, harvest_requires_server},
     storage::{NoteInput, open_memory_backend},
 };

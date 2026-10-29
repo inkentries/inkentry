@@ -213,12 +213,13 @@ the first five minutes to running a shared memory server for a team.
 
 ## Repository structure
 
-This is a Cargo workspace with four crates:
+This is a Cargo workspace with five crates:
 
 | Crate | Path | Purpose |
 |---|---|---|
-| `inkentry-core` | `crates/inkentry-core` | Library — storage, indexer, embeddings, search, config, registry |
-| `inkentry-cli` | `crates/inkentry-cli` | `inkentry` binary — CLI commands; depends on `inkentry-core` |
+| `inkentry-core` | `crates/inkentry-core` | Library — storage, embeddings, search, config, registry |
+| `inkentry-index` | `crates/inkentry-index` | Library — the code indexer: parsers, tree-sitter grammars, chunker, graph edges, document readers; depends on `inkentry-core` |
+| `inkentry-cli` | `crates/inkentry-cli` | `inkentry` binary — CLI commands; depends on `inkentry-core` + `inkentry-index` |
 | `inkentry-embed` | `crates/inkentry-embed` | Library — F2LLM-v2-330M embedder (llama.cpp); owns the `EmbeddingBackend` trait. A leaf crate: `inkentry-core` depends on it |
 | `inkentry-server` | `crates/inkentry-server` | `inkentry-server` binary + lib — shared memory server; depends on `inkentry-core` + `inkentry-embed` |
 

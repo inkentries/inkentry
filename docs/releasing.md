@@ -117,7 +117,7 @@ script has no code path that can create a GitHub release, push to the
 Run it before tagging; a failure here is cheaper to fix than one discovered
 after a tag is already pushed.
 
-### 1. Bump the version in the four crate manifests
+### 1. Bump the version in the five crate manifests
 
 **The root `Cargo.toml` has no version to bump.** It is a virtual workspace
 manifest — `[workspace]`, `members`, `[workspace.dependencies]` — with no
@@ -125,17 +125,18 @@ manifest — `[workspace]`, `members`, `[workspace.dependencies]` — with no
 crates to inherit from. Editing it changes nothing, and a tag pushed on that
 basis ships binaries still reporting the previous version.
 
-The version lives in each crate's own manifest, and all four move together:
+The version lives in each crate's own manifest, and all five move together:
 
 - `crates/inkentry-cli/Cargo.toml`
 - `crates/inkentry-core/Cargo.toml`
 - `crates/inkentry-embed/Cargo.toml`
+- `crates/inkentry-index/Cargo.toml`
 - `crates/inkentry-server/Cargo.toml`
 
 ```toml
 [package]
 name = "inkentry-cli"
-version = "1.0.0"   # <-- update this, in all four manifests
+version = "1.0.0"   # <-- update this, in all five manifests
 ```
 
 Then regenerate `Cargo.lock` with cargo — never hand-edit it. The workspace
@@ -145,7 +146,7 @@ members are path dependencies, so their recorded versions have to move too:
 INKENTRY_SECRET_STORE=file cargo update --workspace --offline
 ```
 
-That should touch exactly the four `inkentry-*` entries and nothing else.
+That should touch exactly the five `inkentry-*` entries and nothing else.
 
 Promote the changelog next: move the accumulated `## [Unreleased]` notes in
 `CHANGELOG.md` into a new `## [<version>] — <date>` section, leaving

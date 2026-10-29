@@ -1,18 +1,6 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum IndexError {
-    #[error("unsupported language: {0}")]
-    UnsupportedLanguage(String),
-
-    #[error("parse error in {path}:{line}")]
-    ParseError { path: String, line: usize },
-
-    #[error("database error: {0}")]
-    Database(#[from] rusqlite::Error),
-}
-
-#[derive(Error, Debug)]
 pub enum SearchError {
     #[error("index is empty — run `inkentry index <path>` first")]
     EmptyIndex,

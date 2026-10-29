@@ -20,7 +20,7 @@ categories = ["command-line-utilities", "development-tools", "text-processing"]
 # published binary. `--no-default-features` builds the CLI without the PDF,
 # DOCX and spreadsheet readers (lopdf, docx-rs, calamine).
 default = ["rich-formats"]
-rich-formats = ["inkentry-core/rich-formats"]
+rich-formats = ["inkentry-index/rich-formats"]
 
 [[bin]]
 name = "inkentry"
@@ -28,6 +28,7 @@ path = "src/main.rs"
 
 [dependencies]
 inkentry-core = { path = "../inkentry-core" }
+inkentry-index = { path = "../inkentry-index" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

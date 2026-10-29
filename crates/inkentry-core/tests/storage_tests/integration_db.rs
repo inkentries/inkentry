@@ -5,7 +5,7 @@
 // is process-global.
 
 use crate::common;
-use inkentry_core::indexer::graph::{Edge, EdgeKind};
+use inkentry_core::storage::{Edge, EdgeKind};
 use serial_test::serial;
 
 fn zero_vec(dim: usize) -> Vec<f32> {

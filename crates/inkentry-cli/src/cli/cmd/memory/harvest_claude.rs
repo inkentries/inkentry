@@ -9,7 +9,7 @@ use super::{MemoryHarvestArgs, backend_err};
 use crate::{
     config::Config,
     embeddings::vec_to_blob,
-    indexer::secrets::contains_secret,
+    secrets::contains_secret,
     server_client::LlmMessage,
     storage::{NoteInput, open_memory_backend},
 };

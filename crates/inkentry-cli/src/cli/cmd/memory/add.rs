@@ -6,7 +6,7 @@ use super::MemoryAddArgs;
 use crate::{
     capability,
     config::{Config, SyncMode},
-    indexer::secrets::contains_secret,
+    secrets::contains_secret,
     server_client::{Explicitness, ServerInferenceClient},
     storage::{
         AddOutcome, Candidate, CandidateBand, CarriedEdge, GitNotesBackend, MemoryBackend,

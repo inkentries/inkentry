@@ -2,7 +2,7 @@
 // statements, and the body of a container too large to keep whole, whose own
 // chunk is suppressed in favour of its members.
 
-use inkentry_core::indexer::{Chunk, SourceParser};
+use inkentry_index::{Chunk, SourceParser};
 
 fn covers(chunks: &[Chunk], needle: &str) -> bool {
     chunks.iter().any(|c| c.content.contains(needle))

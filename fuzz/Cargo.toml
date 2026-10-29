@@ -20,6 +20,9 @@ serde_json = "1"
 [dependencies.inkentry-core]
 path = "../crates/inkentry-core"
 
+[dependencies.inkentry-index]
+path = "../crates/inkentry-index"
+
 # Disable LTO for faster fuzzer builds.
 [profile.release]
 lto = false

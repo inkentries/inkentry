@@ -27,58 +27,8 @@ mod tests;
 mod visibility;
 
 use anyhow::Result;
+use inkentry_core::storage::{Edge, EdgeKind};
 use std::collections::HashSet;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum EdgeKind {
-    Imports,
-    Calls,
-    Extends,
-    Implements,
-    /// No longer written. Kept so the rows an older index still holds parse
-    /// as themselves rather than as an unknown kind.
-    Mentions,
-}
-
-impl std::fmt::Display for EdgeKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Imports => write!(f, "imports"),
-            Self::Calls => write!(f, "calls"),
-            Self::Extends => write!(f, "extends"),
-            Self::Implements => write!(f, "implements"),
-            Self::Mentions => write!(f, "mentions"),
-        }
-    }
-}
-
-impl EdgeKind {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "calls" => Self::Calls,
-            "extends" => Self::Extends,
-            "implements" => Self::Implements,
-            "mentions" => Self::Mentions,
-            _ => Self::Imports,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Edge {
-    pub source_file: String,
-    /// Enclosing function/class name at the point of the edge, if known.
-    pub source_name: Option<String>,
-    /// Imported module path, called function, or base class name.
-    pub target_name: String,
-    pub kind: EdgeKind,
-    /// 1-based source line where the relationship appears.
-    pub line: usize,
-    /// The file defining the callee this edge resolved to; `None` when
-    /// unresolved, which consumers treat as "any definition named
-    /// `target_name`".
-    pub target_file: Option<String>,
-}
 
 // An edge a language helper found at one node, before resolution.
 pub(super) struct Candidate<'t> {

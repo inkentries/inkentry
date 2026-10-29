@@ -1,5 +1,5 @@
-use inkentry_core::indexer::chunker::{MAX_CHUNK_TOKENS, sliding_window};
 use inkentry_core::search::tokens::estimate_tokens;
+use inkentry_index::chunker::{MAX_CHUNK_TOKENS, sliding_window};
 use proptest::prelude::*;
 
 proptest! {

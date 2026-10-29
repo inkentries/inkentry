@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/inkentry-core",
+    "crates/inkentry-index",
     "crates/inkentry-cli",
     "crates/inkentry-embed",
     "crates/inkentry-server",

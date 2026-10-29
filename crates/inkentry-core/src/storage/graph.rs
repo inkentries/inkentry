@@ -2,6 +2,58 @@ use anyhow::Result;
 
 use super::Database;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EdgeKind {
+    Imports,
+    Calls,
+    Extends,
+    Implements,
+    /// No longer written. Kept so the rows an older index still holds parse
+    /// as themselves rather than as an unknown kind.
+    Mentions,
+}
+
+impl std::fmt::Display for EdgeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Imports => write!(f, "imports"),
+            Self::Calls => write!(f, "calls"),
+            Self::Extends => write!(f, "extends"),
+            Self::Implements => write!(f, "implements"),
+            Self::Mentions => write!(f, "mentions"),
+        }
+    }
+}
+
+impl EdgeKind {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "calls" => Self::Calls,
+            "extends" => Self::Extends,
+            "implements" => Self::Implements,
+            "mentions" => Self::Mentions,
+            _ => Self::Imports,
+        }
+    }
+}
+
+/// A graph edge as written to `graph_edges` by [`Database::replace_edges`].
+#[derive(Debug, Clone)]
+pub struct Edge {
+    pub source_file: String,
+    /// Enclosing function/class name at the point of the edge, if known.
+    pub source_name: Option<String>,
+    /// Imported module path, called function, or base class name.
+    pub target_name: String,
+    pub kind: EdgeKind,
+    /// 1-based source line where the relationship appears.
+    pub line: usize,
+    /// The file defining the callee this edge resolved to; `None` when
+    /// unresolved, which consumers treat as "any definition named
+    /// `target_name`".
+    pub target_file: Option<String>,
+}
+
 /// A graph edge as returned by query methods.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GraphEdge {
@@ -24,7 +76,7 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphEdge> {
         source_file: row.get(0)?,
         source_name: row.get(1)?,
         target_name: row.get(2)?,
-        kind: crate::indexer::graph::EdgeKind::parse(&kind).to_string(),
+        kind: EdgeKind::parse(&kind).to_string(),
         line: row.get::<_, i64>(4)? as usize,
         target_file: row.get(5)?,
     })
@@ -33,11 +85,7 @@ fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphEdge> {
 impl Database {
     /// Insert a batch of edges for one file. Existing rows for that file are
     /// removed first (called during re-index).
-    pub fn replace_edges(
-        &self,
-        file_path: &str,
-        edges: &[crate::indexer::graph::Edge],
-    ) -> Result<()> {
+    pub fn replace_edges(&self, file_path: &str, edges: &[Edge]) -> Result<()> {
         self.conn.execute(
             "DELETE FROM graph_edges WHERE source_file = ?1",
             rusqlite::params![file_path],
@@ -156,7 +204,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::super::Database;
-    use crate::indexer::graph::{Edge, EdgeKind};
+    use super::{Edge, EdgeKind};
     use std::sync::OnceLock;
 
     // Registers the sqlite-vec extension exactly once per test process.
@@ -203,11 +251,11 @@ mod tests {
         let callee_id = insert_named_chunk(db, file_id, "callee");
         db.replace_edges(
             "src/lib.rs",
-            &[crate::indexer::graph::Edge {
+            &[Edge {
                 source_file: "src/lib.rs".to_string(),
                 source_name: Some("caller".to_string()),
                 target_name: "callee".to_string(),
-                kind: crate::indexer::graph::EdgeKind::Calls,
+                kind: EdgeKind::Calls,
                 line: 2,
                 target_file: None,
             }],

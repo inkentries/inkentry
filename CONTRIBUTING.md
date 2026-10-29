@@ -9,7 +9,7 @@ all kinds are welcome: bug reports, docs fixes, features, and performance work.
 ```bash
 git clone https://github.com/inkentries/inkentry.git
 cd inkentry
-cargo build            # builds all four workspace crates
+cargo build            # builds all five workspace crates
 cargo test             # runs the full test suite
 ```
 

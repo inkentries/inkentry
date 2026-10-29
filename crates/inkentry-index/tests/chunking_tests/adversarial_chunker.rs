@@ -5,9 +5,9 @@
 // multiple oversized sections, and the worst documented estimate/real-token
 // bias.
 
-use inkentry_core::indexer::chunker::{MAX_CHUNK_TOKENS, sliding_window};
-use inkentry_core::indexer::{Chunk, ChunkKind, SourceParser};
 use inkentry_core::search::tokens::estimate_tokens;
+use inkentry_index::chunker::{MAX_CHUNK_TOKENS, sliding_window};
+use inkentry_index::{Chunk, ChunkKind, SourceParser};
 
 // A Rust function whose body is `body_lines` short statements tagged with
 // `marker`, long enough in aggregate to exceed `MAX_CHUNK_TOKENS`, preceded

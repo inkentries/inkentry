@@ -6,19 +6,14 @@
 //! parse, with no model, key or network involved. The composition is
 //! **byte-identical** for the same chunk and edges on every run: an
 //! interrupted re-embed must not produce a different vector for the same
-//! input.
+//! input. A change to the composed text bumps [`SUMMARY_SCHEME`].
 //!
-//! [`Chunk::embedding_text`]: crate::indexer::Chunk::embedding_text
+//! [`SUMMARY_SCHEME`]: inkentry_core::storage::SUMMARY_SCHEME
+//! [`Chunk::embedding_text`]: crate::Chunk::embedding_text
 
 use std::collections::HashSet;
 
-use crate::search::tokens::estimate_tokens;
-
-/// Provenance tag for the embedding-input composition scheme, stamped into a
-/// DB's `index_meta` alongside `embedding_model` and `chunker_config`. Bump
-/// this whenever a change to the composed `summary:` text (including the
-/// tier-3 MMR `λ`, folded into this one scheme) invalidates stored vectors.
-pub const SUMMARY_SCHEME: &str = "structural_v1";
+use inkentry_core::search::tokens::estimate_tokens;
 
 /// Hard cap on the composed `summary:` slot, in estimated tokens — the same
 /// order of magnitude as the one-sentence LLM summary it replaces, never
@@ -345,7 +340,7 @@ mod tests {
             "the salient literal must reach the composed summary: {summary:?}"
         );
         assert!(
-            crate::indexer::secrets::contains_secret(&summary),
+            inkentry_core::secrets::contains_secret(&summary),
             "the composed summary must be catchable by the secret scanner: {summary:?}"
         );
     }

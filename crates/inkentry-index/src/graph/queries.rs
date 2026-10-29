@@ -51,7 +51,7 @@ const LANGUAGES: &[(&str, &[&str])] = &[
 ];
 
 fn compile(language: &str, parts: &[&str]) -> Result<tree_sitter::Query, String> {
-    let grammar = crate::indexer::parser::ts_language_pub(language).map_err(|e| e.to_string())?;
+    let grammar = crate::parser::ts_language_pub(language).map_err(|e| e.to_string())?;
     let mut query =
         tree_sitter::Query::new(&grammar, &parts.join("\n")).map_err(|e| e.to_string())?;
     // Resolution walks scopes from the callee node itself, so the per-token

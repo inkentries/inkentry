@@ -1,9 +1,7 @@
 use anyhow::Result;
 
-use crate::{
-    indexer::{Chunk, chunker::chunked_by_tree, graph::EdgeExtractor},
-    storage::{Database, GRAPH_EDGES_REEXTRACT},
-};
+use crate::storage::{Database, GRAPH_EDGES_REEXTRACT};
+use inkentry_index::{Chunk, chunker::chunked_by_tree, graph::EdgeExtractor};
 
 // Call targets resolve only when the chunker cut the file by its tree, so
 // resolution follows the chunker's own sliding-window fallback.
@@ -208,7 +206,7 @@ mod tests {
 
     #[test]
     fn the_first_index_reads_the_tree_outcome_off_the_chunks_it_will_store() {
-        use inkentry_core::indexer::{Chunk, ChunkKind};
+        use inkentry_index::{Chunk, ChunkKind};
         let chunk = |kind, name: Option<&str>, content: &str| Chunk {
             file_path: "a.py".into(),
             language: "python".into(),
@@ -324,11 +322,11 @@ mod tests {
                 .edges_for_file(file)
                 .unwrap()
                 .into_iter()
-                .map(|e| inkentry_core::indexer::graph::Edge {
+                .map(|e| inkentry_core::storage::Edge {
                     source_file: e.source_file,
                     source_name: e.source_name,
                     target_name: e.target_name,
-                    kind: inkentry_core::indexer::graph::EdgeKind::parse(&e.kind),
+                    kind: inkentry_core::storage::EdgeKind::parse(&e.kind),
                     line: e.line,
                     target_file: None,
                 })
@@ -337,7 +335,7 @@ mod tests {
                 let mut shadowed = unresolved[0].clone();
                 shadowed.target_name = "parse".to_owned();
                 shadowed.source_name = Some("go".to_owned());
-                shadowed.kind = inkentry_core::indexer::graph::EdgeKind::Calls;
+                shadowed.kind = inkentry_core::storage::EdgeKind::Calls;
                 unresolved.push(shadowed);
             }
             db.replace_edges(file, &unresolved).unwrap();

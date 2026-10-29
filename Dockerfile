@@ -65,12 +65,15 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/inkentry-core/Cargo.toml   crates/inkentry-core/Cargo.toml
 COPY crates/inkentry-cli/Cargo.toml    crates/inkentry-cli/Cargo.toml
 COPY crates/inkentry-embed/Cargo.toml  crates/inkentry-embed/Cargo.toml
+COPY crates/inkentry-index/Cargo.toml  crates/inkentry-index/Cargo.toml
 COPY crates/inkentry-server/Cargo.toml crates/inkentry-server/Cargo.toml
 RUN mkdir -p crates/inkentry-core/src crates/inkentry-cli/src \
-             crates/inkentry-embed/src crates/inkentry-server/src \
+             crates/inkentry-embed/src crates/inkentry-index/src \
+             crates/inkentry-server/src \
              crates/inkentry-embed/examples && \
     : > crates/inkentry-core/src/lib.rs && \
     : > crates/inkentry-embed/src/lib.rs && \
+    : > crates/inkentry-index/src/lib.rs && \
     : > crates/inkentry-server/src/lib.rs && \
     echo 'fn main(){}' > crates/inkentry-cli/src/main.rs && \
     echo 'fn main(){}' > crates/inkentry-server/src/main.rs && \
