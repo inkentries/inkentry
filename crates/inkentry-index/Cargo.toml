@@ -42,7 +42,7 @@ tree-sitter-sequel = "0.3"
 # crates.io version once one depends on zip 9.
 docx-rs = { git = "https://github.com/bokuweb/docx-rs.git", rev = "ad7fede6a7f3b61a097c28d0c39dd04626e44701", optional = true }
 calamine = { version = "0.37", features = ["dates"], optional = true }
-lopdf = { version = "0.46", optional = true }
+lopdf = { version = "0.47", optional = true }
 
 [dev-dependencies]
 proptest = "1"
