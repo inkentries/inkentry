@@ -24,7 +24,7 @@ reqwest     = { version = "0.12", default-features = false, features = ["json", 
 # In-process HTTPS for inkentry-server (ADR-066). `tls-rustls-no-provider` avoids
 # rustls' default aws-lc-rs provider (needs cmake/C/NASM); ring is installed at
 # startup instead — already the resolved provider via reqwest/hf-hub.
-axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.9", default-features = false, features = ["tls-rustls-no-provider"] }
 # Named directly (not just pulled in transitively via reqwest/axum-server) so
 # inkentry-cli can match on `rustls::Error`/`CertificateError` variants when
 # classifying a probe failure. default-features off keeps aws-lc-rs out of the
