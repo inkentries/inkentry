@@ -47,6 +47,10 @@ name = "embed_bench"
 # it engineless and fails.
 required-features = ["llama"]
 
+[[example]]
+name = "embed_throughput"
+required-features = ["llama"]
+
 [dev-dependencies]
 # The golden-vector gate (tests/golden_vectors.rs) needs a runtime to await the
 # async embed and serde_json to read its committed reference; the
