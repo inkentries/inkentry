@@ -16,6 +16,9 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   attributes, delegations and constants are now separate chunks, named for
   the class and kind (`Invoice associations`). Run `inkentry index --force`
   to re-chunk an existing index.
+- **Faster embedding on macOS.** The Metal embedder decodes several chunks per
+  forward pass, so indexing embeds about a fifth faster. Vectors are
+  unchanged; nothing to re-index.
 
 ## [1.2.0] — 2026-10-05
 
