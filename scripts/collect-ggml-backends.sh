@@ -9,7 +9,8 @@
 #     runtime; a module whose driver is absent fails to load and is skipped
 #
 # The libs and modules land in llama-cpp-sys-2's cargo OUT_DIR, which carries a
-# build hash. More than one such dir can exist (feature unification across
+# build hash: build/llama-cpp-sys-2-<hash>/out, or under cargo's build-dir
+# layout v2 (Rust 1.100) build/llama-cpp-sys-2/<hash>/out. More than one such dir can exist (feature unification across
 # builds); the one holding a `backends/` dir belongs to the dynamic-backends
 # build, and the newest wins.
 #
@@ -22,8 +23,9 @@ profile_dir="${1:?usage: collect-ggml-backends.sh <cargo-target-profile-dir> <de
 dest="${2:?usage: collect-ggml-backends.sh <cargo-target-profile-dir> <dest-dir>}"
 
 backends_dir="$(
-  find "${profile_dir}/build" -maxdepth 3 -type d \
-    -path '*/llama-cpp-sys-2-*/out/backends' -print0 2>/dev/null \
+  find "${profile_dir}/build" -maxdepth 4 -type d \
+    \( -path '*/llama-cpp-sys-2-*/out/backends' \
+       -o -path '*/llama-cpp-sys-2/*/out/backends' \) -print0 2>/dev/null \
     | xargs -0 -r ls -td 2>/dev/null | head -1
 )"
 if [ -z "${backends_dir}" ]; then
