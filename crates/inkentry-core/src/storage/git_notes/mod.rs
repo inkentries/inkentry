@@ -1242,10 +1242,7 @@ fn record_in_window(record: &NoteRecord, include_archived: bool, as_of: Option<i
         }
         return true;
     }
-    if !include_archived && record.status == "archived" {
-        return false;
-    }
-    true
+    include_archived || record.status != "archived"
 }
 
 // Permissively parses the inkentry records from one note blob (JSON Lines
