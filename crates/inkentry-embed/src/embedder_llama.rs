@@ -21,8 +21,8 @@ use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::{LlamaContextParams, LlamaPoolingType};
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::token::LlamaToken;
 use tokio::sync::oneshot;
 
@@ -514,15 +514,19 @@ fn run_job(
     }
 
     // Tokenize everything upfront so malformed input fails before any decode.
-    let eos = model.token_eos();
+    let vocab = model.vocab();
+    let eos = vocab.eos();
     let mut token_lists: Vec<Vec<LlamaToken>> = Vec::with_capacity(total);
     for text in texts {
-        // llama.cpp tokenizes through a C string, which cannot carry interior
-        // NUL bytes; such input surfaces as a Tokenization error rather than
-        // silently embedding different text.
-        let mut toks = model
-            .str_to_token(text, AddBos::Never)
-            .map_err(|e| EmbedError::Tokenization(e.to_string()))?;
+        // llama.cpp's tokenizer stops at an interior NUL byte, so such input is
+        // refused rather than silently embedding a truncated text.
+        if let Some(pos) = text.bytes().position(|b| b == 0) {
+            return Err(EmbedError::Tokenization(format!(
+                "input contains a NUL byte at offset {pos}"
+            ))
+            .into());
+        }
+        let mut toks = vocab.tokenize(text.as_bytes(), false, true);
         // Mirror the HF post-processor exactly: EOS appended first, then the
         // cap applied — a truncated chunk loses its EOS on both engines alike.
         toks.push(eos);

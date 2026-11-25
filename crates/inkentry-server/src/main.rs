@@ -589,9 +589,17 @@ fn resolve_embed_thread_budget() -> ThreadBudget {
 // (inkentry_server::interactive_capacity_for_available_memory) is pure so the
 // threshold is unit-tested without touching the machine.
 fn resolve_interactive_capacity() -> usize {
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    let available = sys.available_memory();
+    // A host whose memory cannot be read gets the small-machine capacity.
+    let available = match sysinfo::System::new() {
+        Ok(mut sys) => {
+            sys.refresh_memory();
+            sys.available_memory()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read available memory; using the low interactive capacity");
+            0
+        }
+    };
     let capacity = inkentry_server::interactive_capacity_for_available_memory(available);
     tracing::info!(
         available_mib = available / (1024 * 1024),
