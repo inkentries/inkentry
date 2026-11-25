@@ -16,6 +16,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   attributes, delegations and constants are now separate chunks, named for
   the class and kind (`Invoice associations`). Run `inkentry index --force`
   to re-chunk an existing index.
+- **Code search ranks full-text and semantic matches together by score.**
+  Hybrid code results combine both scores instead of only their rank
+  positions, and the top results no longer change with `--limit`. Queries
+  that name an identifier (`parse_config`, `parseConfig`, `Foo::new`) lean on
+  full-text matches. Nothing to re-index.
 
 ## [1.2.0] — 2026-10-05
 

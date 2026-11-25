@@ -7,14 +7,35 @@ use super::Database;
 // recall at ten.
 const FTS_COLUMN_WEIGHTS: (f64, f64, f64, f64, f64) = (6.0, 2.0, 2.0, 2.0, 1.0);
 
+// Candidates each list contributes to hybrid fusion, whatever the caller's
+// limit, so the top results do not depend on how many were asked for.
+const HYBRID_POOL: usize = 250;
+
+// Weight of the vector score in hybrid fusion; full-text gets the rest. A query
+// naming an identifier leans on full-text, where the exact symbol matches.
+const DENSE_WEIGHT: f64 = 0.6;
+const DENSE_WEIGHT_FOR_IDENTIFIER_QUERY: f64 = 0.4;
+
+const GRAPH_RANK_ALPHA: f32 = 0.15;
+
 impl Database {
     /// K-nearest-neighbour search using sqlite-vec. The raw float query vector
     /// is int8-quantised to match the `embeddings` table's `int8[896]` column.
-    /// Returns results ordered by ascending distance (closest first).
+    /// Returns results ordered by ascending vector distance (closest first);
+    /// the reported `distance` blends in the chunk's `graph_rank`.
     pub fn search_similar(
         &self,
         query: &[f32],
         limit: usize,
+    ) -> Result<Vec<crate::search::SearchResult>> {
+        self.knn(query, limit, GRAPH_RANK_ALPHA)
+    }
+
+    fn knn(
+        &self,
+        query: &[f32],
+        limit: usize,
+        graph_rank_alpha: f32,
     ) -> Result<Vec<crate::search::SearchResult>> {
         let query_blob = crate::embeddings::vec_to_int8_blob(query);
         let limit = limit.min(1_000);
@@ -42,15 +63,13 @@ impl Database {
              ORDER BY k.distance, f.path, c.start_line, c.end_line, k.chunk_id"
         );
 
-        const GRAPH_RANK_ALPHA: f32 = 0.15;
-
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params![&query_blob], |row| {
             // int8 L2 distance is ~127× the f32 distance; rescale to keep the
             // graph-rank blend (and downstream `1 - distance`) on the old scale.
             let raw_distance: f32 = row.get::<_, f32>(1)? / crate::embeddings::INT8_SCALE;
             let graph_rank: f32 = row.get(10)?;
-            let blended = raw_distance * (1.0 - GRAPH_RANK_ALPHA) - graph_rank * GRAPH_RANK_ALPHA;
+            let blended = raw_distance * (1.0 - graph_rank_alpha) - graph_rank * graph_rank_alpha;
             Ok(crate::search::SearchResult {
                 chunk_id: row.get(0)?,
                 distance: blended,
@@ -128,9 +147,17 @@ impl Database {
             .map_err(Into::into)
     }
 
-    /// Hybrid search: fuses FTS5 BM25 ranking with vector KNN via Reciprocal Rank Fusion.
+    /// Hybrid search: fuses FTS5 BM25 with vector KNN by a weighted sum of
+    /// normalised scores.
     ///
-    /// RRF score: `Σ 1 / (k + rank_i)` where `k` is the shared [`crate::search::RRF_K`].
+    /// Each list contributes its top [`HYBRID_POOL`] candidates. BM25 is divided
+    /// by the best BM25 in its list; cosine similarity is min-max scaled over
+    /// its list. A chunk is scored `w · vector + (1 - w) · text`, with 0 for a
+    /// list it is absent from, and `w` lower for a query that names an
+    /// identifier ([`crate::search::lexical::names_identifier`]). Unlike rank
+    /// fusion this keeps how far apart two candidates are, which is what lets
+    /// a deeper pool help instead of diluting the top. `distance` is
+    /// `1 - score`, so lower is better.
     pub fn search_hybrid(
         &self,
         query: &str,
@@ -139,32 +166,51 @@ impl Database {
     ) -> Result<Vec<crate::search::SearchResult>> {
         use std::collections::HashMap;
 
-        let candidates = (limit * 3).max(20);
-        let vec_results = self.search_similar(embedding, candidates)?;
-        let text_results = self.search_text(query, candidates).unwrap_or_default();
+        let pool = HYBRID_POOL.max(limit);
+        let vec_results = self.knn(embedding, pool, 0.0)?;
+        let text_results = self.search_text(query, pool).unwrap_or_default();
 
-        const K: f64 = crate::search::RRF_K;
+        let dense_weight = if crate::search::lexical::names_identifier(query) {
+            DENSE_WEIGHT_FOR_IDENTIFIER_QUERY
+        } else {
+            DENSE_WEIGHT
+        };
+
+        // Unit vectors: cosine = 1 - L2² / 2.
+        let cosines: Vec<f64> = vec_results
+            .iter()
+            .map(|r| 1.0 - f64::from(r.distance).powi(2) / 2.0)
+            .collect();
+        let dense_norm = min_max(&cosines);
+        // FTS5's bm25() is negative, more negative for a better match.
+        let best_bm25 = text_results
+            .iter()
+            .map(|r| -f64::from(r.distance))
+            .fold(0.0_f64, f64::max);
 
         let mut scores: HashMap<i64, f64> = HashMap::new();
         let mut by_id: HashMap<i64, crate::search::SearchResult> = HashMap::new();
 
-        for (rank, result) in vec_results.into_iter().enumerate() {
-            let rrf = 1.0 / (K + (rank + 1) as f64);
-            *scores.entry(result.chunk_id).or_insert(0.0) += rrf;
+        for (result, cosine) in vec_results.into_iter().zip(cosines) {
+            *scores.entry(result.chunk_id).or_insert(0.0) += dense_weight * dense_norm(cosine);
             by_id.entry(result.chunk_id).or_insert(result);
         }
 
-        for (rank, result) in text_results.into_iter().enumerate() {
-            let rrf = 1.0 / (K + (rank + 1) as f64);
-            *scores.entry(result.chunk_id).or_insert(0.0) += rrf;
+        for result in text_results {
+            let text = if best_bm25 > 0.0 {
+                -f64::from(result.distance) / best_bm25
+            } else {
+                0.0
+            };
+            *scores.entry(result.chunk_id).or_insert(0.0) += (1.0 - dense_weight) * text;
             by_id.entry(result.chunk_id).or_insert(result);
         }
 
         // `scores` is a HashMap, whose iteration order is reseeded per instance,
-        // and RRF ties are the norm (disjoint lists put vector rank i and text
-        // rank i at identical scores), so a sort on score alone would leave
-        // order to that reseeding. Tie-break on corpus position, not rowid, so
-        // two machines indexing the same tree agree.
+        // and exact score ties are common (identical chunks, or chunks that
+        // reach only one list at its best score), so a sort on score alone
+        // would leave order to that reseeding. Tie-break on corpus position,
+        // not rowid, so two machines indexing the same tree agree.
         let mut ranked: Vec<(i64, f64)> = scores.into_iter().collect();
         ranked.sort_by(|a, b| {
             b.1.total_cmp(&a.1)
@@ -174,9 +220,9 @@ impl Database {
 
         let results = ranked
             .into_iter()
-            .filter_map(|(id, rrf_score)| {
+            .filter_map(|(id, score)| {
                 by_id.remove(&id).map(|mut r| {
-                    r.distance = (1.0 / rrf_score) as f32;
+                    r.distance = (1.0 - score) as f32;
                     r
                 })
             })
@@ -184,6 +230,14 @@ impl Database {
 
         Ok(results)
     }
+}
+
+// Scales `values` onto [0, 1]. When they are all equal, each is the best of
+// its list and scales to 1.
+fn min_max(values: &[f64]) -> impl Fn(f64) -> f64 + use<> {
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    move |v| if hi > lo { (v - lo) / (hi - lo) } else { 1.0 }
 }
 
 // Not the bare chunk_id: that rowid is assigned by indexing order and can
@@ -272,24 +326,76 @@ mod tests {
     }
 
     #[test]
-    fn search_hybrid_breaks_rrf_ties_on_end_line_before_rowid() {
+    fn search_hybrid_breaks_score_ties_on_end_line_before_rowid() {
         let db = open_db();
-        let text_only = seed_span(&db, "src/h.rs", 1, 20, "fn hybridspanterm() {}");
-        let vec_only = seed_span(&db, "src/h.rs", 1, 5, "fn other() { alpha beta gamma; }");
-        db.insert_embedding(vec_only, &unit_vec(1.0))
-            .expect("embed");
+        let outer = seed_span(&db, "src/h.rs", 1, 20, "fn hybridspanterm() {}");
+        let inner = seed_span(&db, "src/h.rs", 1, 5, "fn hybridspanterm() {}");
 
-        // Each is rank 1 in exactly one list, so the RRF scores are identical
-        // and the tie-break alone orders them.
+        // Identical content and no vectors: identical scores, so the
+        // tie-break alone orders them.
         let hits = db
             .search_hybrid("hybridspanterm", &unit_vec(1.0), 10)
             .expect("hybrid ok");
+        assert_eq!(hits[0].distance, hits[1].distance);
         let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
         assert_eq!(
             ids,
-            vec![vec_only, text_only],
-            "an RRF tie over one start line must order by end_line, not by rowid"
+            vec![inner, outer],
+            "a score tie over one start line must order by end_line, not by rowid"
         );
+    }
+
+    // Chunk `semantic` is the best vector match and absent from full text;
+    // `lexical` is the best full-text match and has no vector. The query's
+    // shape decides which list leads.
+    #[test]
+    fn search_hybrid_leans_on_full_text_for_an_identifier_query() {
+        let db = open_db();
+        let semantic = seed_chunk_in(&db, "src/semantic.rs", "fn other() { alpha beta; }");
+        db.insert_embedding(semantic, &unit_vec(1.0))
+            .expect("embed");
+        let lexical = seed_chunk_in(&db, "src/lexical.rs", "fn zebra_term() {}");
+
+        let first =
+            |q: &str| db.search_hybrid(q, &unit_vec(1.0), 10).expect("hybrid ok")[0].chunk_id;
+        assert_eq!(first("zebra term"), semantic);
+        assert_eq!(first("zebra_term"), lexical);
+    }
+
+    // `both` is the weakest match in each list, ranked behind 30 chunks that
+    // reach only one list. A candidate pool sized from the limit leaves it out
+    // at a small limit and lets it in at a large one, where rank fusion would
+    // put it first for appearing twice.
+    #[test]
+    fn search_hybrid_top_results_do_not_depend_on_the_limit() {
+        let db = open_db();
+        for i in 0..30_u16 {
+            seed_chunk_in(
+                &db,
+                &format!("src/t{i:02}.rs"),
+                "fn f() { limitterm(); limitterm(); }",
+            );
+            let id = seed_chunk_in(&db, &format!("src/v{i:02}.rs"), "fn f() { alpha; }");
+            db.insert_embedding(id, &unit_vec(1.0 - f32::from(i) * 0.002))
+                .expect("embed");
+        }
+        let both = seed_chunk_in(
+            &db,
+            "src/both.rs",
+            "fn f() { limitterm(); pad pad pad pad pad pad pad pad pad pad }",
+        );
+        db.insert_embedding(both, &unit_vec(0.8)).expect("embed");
+
+        let ids = |limit| -> Vec<i64> {
+            db.search_hybrid("limitterm", &unit_vec(1.0), limit)
+                .expect("hybrid ok")
+                .iter()
+                .map(|h| h.chunk_id)
+                .collect()
+        };
+        let wide = ids(40);
+        assert_eq!(ids(5), wide[..5]);
+        assert_eq!(ids(10), wide[..10]);
     }
 
     // Two chunks with byte-identical content score identical BM25, so only the
@@ -311,16 +417,15 @@ mod tests {
         );
     }
 
-    // A vector-only hit and a text-only hit land at the same rank in their
-    // respective lists, so RRF scores them identically — the pervasive tie in
+    // Byte-identical text-only chunks score identically, the pervasive tie in
     // hybrid search.
     #[test]
-    fn search_hybrid_breaks_rrf_ties_by_source_position() {
+    fn search_hybrid_breaks_score_ties_by_source_position() {
         let db = open_db();
 
         // Text-only: matches the FTS query, never embedded.
-        for path in ["src/t1.rs", "src/t2.rs", "src/t3.rs"] {
-            seed_chunk_in(&db, path, "fn f() { rrftieterm(); }");
+        for path in ["src/t3.rs", "src/t1.rs", "src/t2.rs"] {
+            seed_chunk_in(&db, path, "fn f() { scoretieterm(); }");
         }
         // Vector-only: embedded at increasing distance, no query term in content.
         for (path, w) in [("src/v1.rs", 1.0), ("src/v2.rs", 0.98), ("src/v3.rs", 0.95)] {
@@ -330,11 +435,11 @@ mod tests {
 
         let query_vec = unit_vec(1.0);
         let expected = vec![
-            "src/t1.rs",
             "src/v1.rs",
+            "src/t1.rs",
             "src/t2.rs",
-            "src/v2.rs",
             "src/t3.rs",
+            "src/v2.rs",
             "src/v3.rs",
         ];
 
@@ -342,7 +447,7 @@ mod tests {
         // hash seed, so a lingering seed-dependent order shows up as flakiness.
         for i in 0..40 {
             let hits = db
-                .search_hybrid("rrftieterm", &query_vec, 10)
+                .search_hybrid("scoretieterm", &query_vec, 10)
                 .expect("hybrid ok");
             let paths: Vec<&str> = hits.iter().map(|h| h.file_path.as_str()).collect();
             assert_eq!(
@@ -375,8 +480,8 @@ mod tests {
     // an exact prefix of the real embed queue order (never-embedded band
     // first, then graph_rank DESC, mtime DESC, id), with one drained chunk
     // flagged embed_pending = 1 to add the re-embed band. The vector list then
-    // holds only that prefix while the text list holds every match, so chunks
-    // reachable through exactly one list collide on identical RRF scores.
+    // holds only that prefix while the text list holds every match, so the
+    // identical not-yet-embedded chunks collide on identical scores.
     #[test]
     fn search_hybrid_is_byte_identical_on_a_partially_embedded_index() {
         let db = open_db();
@@ -455,29 +560,20 @@ mod tests {
         );
 
         let query_vec = unit_vec(1.0);
-        // `search_hybrid`'s own candidate budget for limit 10.
-        let candidates = 30;
-        let vec_list = db.search_similar(&query_vec, candidates).expect("knn ok");
-        let text_list = db.search_text("warmupterm", candidates).expect("fts ok");
 
-        // Guard against a decorative test: recompute the RRF scores the way
-        // `search_hybrid` does and require an exact collision. Without one,
-        // every score is distinct and the tie-break is never consulted, so the
-        // test would pass with or without the fix.
-        let mut rrf: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
-        for list in [&vec_list, &text_list] {
-            for (rank, r) in list.iter().enumerate() {
-                *rrf.entry(r.chunk_id).or_insert(0.0) +=
-                    1.0 / (crate::search::RRF_K + (rank + 1) as f64);
-            }
-        }
-        let mut score_bits: Vec<u64> = rrf.values().map(|v| v.to_bits()).collect();
+        // Guard against a decorative test: require an exact score collision.
+        // Without one the tie-break is never consulted, so the test would pass
+        // with or without it.
+        let fused = db
+            .search_hybrid("warmupterm", &query_vec, 10)
+            .expect("hybrid ok");
+        let mut score_bits: Vec<u32> = fused.iter().map(|h| h.distance.to_bits()).collect();
         let distinct_before = score_bits.len();
         score_bits.sort_unstable();
         score_bits.dedup();
         assert!(
             score_bits.len() < distinct_before,
-            "fixture must produce at least one exact RRF tie, else the tie-break is untested"
+            "fixture must produce at least one exact score tie, else the tie-break is untested"
         );
 
         // 64 calls: `RandomState` reseeds per instance, so an unbroken tie is
