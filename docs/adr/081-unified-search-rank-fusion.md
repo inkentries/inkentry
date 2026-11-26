@@ -24,6 +24,11 @@ the UUIDv7 identity fixed by [ADR-078](078-uuidv7-memory-entry-identity.md).
 > distance in the memory embedding space, never to a code distance. ADR-083 also
 > **corrects point 5 of *Partial-index semantics*** below, on measurement.
 
+> **Amended 2026-11-26** (see *Amendment (2026-11-26)* at the end). Fusion
+> *inside* the code corpus is a weighted sum of normalised scores, not RRF.
+> `RRF_K` governs memory's hybrid fusion and the cross-corpus code+memory
+> fusion only. The cross-corpus decision of this record is unchanged.
+
 ## Context
 
 The product thesis for `search` is one result that answers both halves of a
@@ -76,12 +81,12 @@ Consequently:
    critical path of the merge, so the incomparable distances are never
    compared. This is the property that makes the decision correct by
    construction rather than by measurement.
-2. **One fusion constant governs the whole system.** 60 is *already* the
-   within-corpus RRF constant in both `storage/search.rs` and
-   `storage/memory/search.rs` (`const K = 60.0` in each). The two local
-   constants and the new cross-corpus one should be hoisted to a single shared
-   `RRF_K`, so the invariant "one number to reason about, one to tune" is
-   enforced in code, not just prose.
+2. **One rank-fusion constant.** Memory's hybrid fusion
+   (`storage/memory/search.rs`) and the cross-corpus fusion share a single
+   `RRF_K = 60` (`search/mod.rs`), so every rank fusion in the system has one
+   number to reason about and one to tune. The code corpus's own hybrid fusion
+   is not a rank fusion; it combines normalised scores (see *Amendment
+   (2026-11-26)*).
 3. **Every result is typed.** The fused list is heterogeneous, so each result
    carries a `code`/`memory` discriminator and its fusion metadata (see
    *Result typing*).
@@ -128,6 +133,10 @@ benchmark can tune `k`; it cannot rescue a raw-score merge across two prefixes.
    introduced (`w · 1 / (k + rank)`) — which v1 does not ship. Recording this
    stops a future maintainer from "tuning cross-corpus k" to fix an
    interleave-ratio problem that only a weight can fix.
+
+   > **Amended 2026-11-26.** The within-corpus effect of `k` described here
+   > applies to memory's hybrid fusion only. The code corpus fuses its FTS and
+   > vector lists by normalised score, which has no `k`.
 
 ### The 1:1 interleave — accepted for v1 — SUPERSEDED by ADR-083
 
@@ -293,8 +302,10 @@ count), kept distinct from coverage.
 
 ## Consequences
 
-- **One tunable number** for the whole ranking system, hoisted to a shared
-  `RRF_K`. (ADR-083 adds a second constant, `MEMORY_MAX_QA_DISTANCE`, but not to
+- **One rank-fusion constant**, a shared `RRF_K`, for memory's hybrid fusion
+  and the cross-corpus merge. The code corpus's hybrid fusion has its own
+  weights and pool size (see *Amendment (2026-11-26)*); they act inside the
+  code corpus and never enter the cross-corpus merge. (ADR-083 adds a second constant, `MEMORY_MAX_QA_DISTANCE`, but not to
   the ranking: it governs *admission* to the memory corpus, is compared only
   within the memory embedding space, and never enters the merge.)
 - **Determinism.** The fused order is a total, stable order — `fused_score`
@@ -316,3 +327,60 @@ sign-off of this ADR and ADR-082, and (b) a shared retrieval-benchmark baseline
 deferred, and shared with the summaries/re-embed work behind ADR-080. Rank
 fusion is the right shape regardless of that baseline; the baseline confirms
 whether `k = 60` is good and is tunable after the fact.
+
+## Amendment (2026-11-26): the code corpus fuses by normalised score
+
+Inside the code corpus, `Database::search_hybrid` (`storage/search.rs`) fuses
+its FTS5 and vector lists by a convex combination of normalised scores instead
+of reciprocal rank fusion:
+
+- **Pool.** Each list contributes its top 250 candidates (`HYBRID_POOL`), or
+  `--limit` if larger, so the top results do not depend on the limit.
+- **Text score.** `−bm25 / best(−bm25)` over the full-text list, so the best
+  full-text match scores 1.
+- **Dense score.** Cosine similarity, `1 − L2² / 2` on the unit vectors, min-max
+  scaled onto [0, 1] over the vector list.
+- **Combined score.** `w · dense + (1 − w) · text`, with 0 for a list a chunk is
+  absent from. `w = 0.6` (`DENSE_WEIGHT`), or `0.4`
+  (`DENSE_WEIGHT_FOR_IDENTIFIER_QUERY`) when the query names an identifier
+  (`search::lexical::names_identifier`: a `::` path, a `snake_case` join, a
+  `camelCase` hump, or a `receiver.method(args)` call), where the exact symbol
+  match lives on the full-text side.
+- **Reported distance.** `distance = 1 − score`. Ties on score break by source
+  position (path, then lines), not rowid, so two machines indexing the same
+  tree agree.
+- **Chunks awaiting a vector.** A chunk the embed queue will embed but has not
+  reached yet (`chunks.text_only = 0`, no row in `embeddings`) takes a dense
+  score of 0.5 (`AWAITING_VECTOR_DENSE_SCORE`). Without it, every such chunk is
+  capped at the full-text share and ranks below every vector hit while an index
+  warms up. A text-only chunk ([ADR-104](104-embed-a-subset-of-code-chunks.md))
+  never gets a vector and keeps a dense score of 0.
+
+**Why a score fusion here when this record rejects normalisation.** The
+rejection of option (b) is about the *cross-corpus* merge, where the two lists
+come from different instruction prefixes over disjoint corpora. Inside the code
+corpus both lists score the same chunks for the same query under the same code
+prefix, so after normalising, their magnitudes are comparable. Rank fusion
+discards how far apart two candidates are; keeping that distance is what lets
+a deeper pool help instead of diluting the top.
+
+**Evidence.** 375 known-item queries per repository, measured through the CLI:
+
+| repository | R@10 RRF → score fusion | MRR RRF → score fusion |
+|---|---|---|
+| Lago | 0.851 → 0.861 | 0.645 → 0.678 |
+| inkentry | 0.805 → 0.837 | 0.591 → 0.628 |
+
+The 95% bootstrap confidence interval on the MRR change excludes 0 on both
+repositories. Raising the pool alone under RRF with `k = 60` made no
+difference, so the gain comes from the fusion rule, not the pool. During
+warm-up, the 0.5 dense score for chunks awaiting a vector beats RRF at every
+embedding-coverage level measured and is identical at 100% coverage. Giving
+text-only chunks the same dense score lowered MRR by 0.075 on Lago and 0.127 on
+inkentry, which is why they keep 0.
+
+**What stays.** Memory's hybrid fusion and the cross-corpus code+memory fusion
+use `RRF_K = 60` (`search/mod.rs`). The cross-corpus merge still reads only
+corpus rank, never a code `distance`, so the code corpus's change of fusion
+rule does not reach it: the code list arrives in a different order, and is
+fused with memory exactly as *Decision* describes.
