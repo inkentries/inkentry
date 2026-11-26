@@ -78,3 +78,14 @@ opt-level     = 3
 # step after build); macOS and Windows release artifacts, and any local
 # `cargo build --release`, shipped full symbol tables. This applies uniformly.
 strip         = true
+
+# llama-cpp-sys-2 0.1.161 plus one llama.cpp change: a pooled-embedding context
+# builds no LM head and reserves no logits buffer. Upstream computes the
+# vocab-wide head for every token in embeddings mode and nothing reads it; it
+# was ~38% of the embedder's FLOPs and most of each context's compute buffer.
+# Vectors are bit-identical. The fork's branch is the 0.1.161 tag with
+# llama.cpp vendored in place of its submodule (the crate's own subset, so no
+# llama.cpp history is cloned) and the patch on top. Drop this section once a
+# llama-cpp-sys-2 release carries the change, bumping the pinned pair above.
+[patch.crates-io]
+llama-cpp-sys-2 = { git = "https://github.com/inkentries/llama-cpp-rs", rev = "fb3f281b6a78a1163ee71ada1ce0db4691d08b7c" }
