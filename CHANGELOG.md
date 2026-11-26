@@ -16,6 +16,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   attributes, delegations and constants are now separate chunks, named for
   the class and kind (`Invoice associations`). Run `inkentry index --force`
   to re-chunk an existing index.
+- **Faster embedding, less memory.** The embedder no longer computes
+  llama.cpp's unused vocabulary output for every token, so indexing embeds
+  about 1.5× faster on Metal and 1.6× faster on CPU, and the server's peak
+  memory while embedding is less than half what it was. Vectors are
+  unchanged; nothing to re-index.
 - **Code search ranks full-text and semantic matches together by score.**
   Hybrid code results combine both scores instead of only their rank
   positions, and the top results no longer change with `--limit`. Queries
