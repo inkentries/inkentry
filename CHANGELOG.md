@@ -22,7 +22,7 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   memory while embedding is less than half what it was. Vectors are
   unchanged; nothing to re-index.
 - **Faster embedding on macOS.** The Metal embedder decodes several chunks per
-  forward pass, so indexing embeds about a fifth faster. Vectors are
+  forward pass, so indexing embeds about a quarter faster. Vectors are
   unchanged; nothing to re-index.
 - **Code search ranks full-text and semantic matches together by score.**
   Hybrid code results combine both scores instead of only their rank
