@@ -82,6 +82,10 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus 6; reached via keyring → secret-service, which still pins zbus 5" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus 6; reached via keyring → secret-service, which still pins zbus 5" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus 6; reached via keyring → secret-service, which still pins zbus 5" },
+    # chrono is unmaintained and has no patched release. Besides our own direct
+    # use, calamine and lopdf depend on it, so it stays in the tree until they
+    # move to `jiff` or `time`.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, no patched release; also a dependency of calamine and lopdf" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -240,7 +244,8 @@ unknown-git = "warn"
 # if not specified. If it is specified but empty, no registries are allowed.
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
-allow-git = []
+# The llama-cpp-sys-2 fork carried by `[patch.crates-io]` in Cargo.toml.
+allow-git = ["https://github.com/inkentries/llama-cpp-rs"]
 
 [sources.allow-org]
 # github.com organizations to allow git sources for

@@ -24,7 +24,7 @@ reqwest     = { version = "0.12", default-features = false, features = ["json", 
 # In-process HTTPS for inkentry-server (ADR-066). `tls-rustls-no-provider` avoids
 # rustls' default aws-lc-rs provider (needs cmake/C/NASM); ring is installed at
 # startup instead — already the resolved provider via reqwest/hf-hub.
-axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.9", default-features = false, features = ["tls-rustls-no-provider"] }
 # Named directly (not just pulled in transitively via reqwest/axum-server) so
 # inkentry-cli can match on `rustls::Error`/`CertificateError` variants when
 # classifying a probe failure. default-features off keeps aws-lc-rs out of the
@@ -58,8 +58,8 @@ tokenizers  = "0.23"
 # serves the CPU path instead (all shipped CPU benchmarks were measured on
 # it). `common` stays on: it builds libllama-common, one of the core libs the
 # dynamic-backends binary hard-links.
-llama-cpp-2 = { version = "=0.1.157", default-features = false, features = ["common"] }
-llama-cpp-sys-2 = "=0.1.157"
+llama-cpp-2 = { version = "=0.1.161", default-features = false, features = ["common"] }
+llama-cpp-sys-2 = "=0.1.161"
 # OS keychain for the CLI bearer credential (macOS Keychain, Linux Secret
 # Service via zbus, Windows Credential Manager). `v1` is keyring 4's
 # compatibility shim: same Entry::new/get_password/set_password/
@@ -78,3 +78,14 @@ opt-level     = 3
 # step after build); macOS and Windows release artifacts, and any local
 # `cargo build --release`, shipped full symbol tables. This applies uniformly.
 strip         = true
+
+# llama-cpp-sys-2 0.1.161 plus one llama.cpp change: a pooled-embedding context
+# builds no LM head and reserves no logits buffer. Upstream computes the
+# vocab-wide head for every token in embeddings mode and nothing reads it; it
+# was ~38% of the embedder's FLOPs and most of each context's compute buffer.
+# Vectors are bit-identical. The fork's branch is the 0.1.161 tag with
+# llama.cpp vendored in place of its submodule (the crate's own subset, so no
+# llama.cpp history is cloned) and the patch on top. Drop this section once a
+# llama-cpp-sys-2 release carries the change, bumping the pinned pair above.
+[patch.crates-io]
+llama-cpp-sys-2 = { git = "https://github.com/inkentries/llama-cpp-rs", rev = "fb3f281b6a78a1163ee71ada1ce0db4691d08b7c" }

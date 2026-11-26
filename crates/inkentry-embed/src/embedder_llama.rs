@@ -21,8 +21,8 @@ use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::context::params::{LlamaContextParams, LlamaPoolingType};
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::token::LlamaToken;
 use tokio::sync::oneshot;
 
@@ -38,6 +38,40 @@ use crate::vector::l2_normalise;
 // machine that cannot allocate a context this size is refused at load rather
 // than stepped down to a smaller one (see `ensure_embed_context_fits`).
 const EMBED_UBATCH: u32 = 8192;
+
+// How many chunks one `llama_decode` carries on Metal, and their token budget.
+// One chunk per decode left the GPU idle between ~200-token passes; packing
+// several (distinct seq ids, unified KV so each keeps the full `EMBED_UBATCH`
+// cap) keeps it saturated. Above ~2048 tokens a pack stops getting faster and
+// starts touching more of the reserved compute buffer.
+const METAL_PACK_SEQS: u32 = 64;
+const METAL_PACK_TOKENS: usize = 2048;
+
+// How a worker groups chunks into forward passes. Only Metal packs: on the CPU
+// backend packing gained nothing measurable and moved vectors (min cosine
+// 0.9994 against one-chunk decodes, past the golden-vector floor), and Vulkan
+// has not been measured, so both keep one chunk per decode and a context
+// configured exactly as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Packing {
+    max_seqs: u32,
+    max_tokens: usize,
+}
+
+impl Packing {
+    fn for_device(device: &str, token_cap: usize) -> Self {
+        match device {
+            "metal" => Self {
+                max_seqs: METAL_PACK_SEQS,
+                max_tokens: METAL_PACK_TOKENS.min(token_cap),
+            },
+            _ => Self {
+                max_seqs: 1,
+                max_tokens: token_cap,
+            },
+        }
+    }
+}
 
 /// Default bulk-lane worker count for a direct caller with no admission
 /// capacities of its own (e.g. the `embed_bench` example). The server passes
@@ -179,16 +213,19 @@ fn first_gpu_backend() -> Option<&'static str> {
         })
 }
 
-fn context_params(ubatch: u32, n_threads: i32) -> LlamaContextParams {
+fn context_params(ubatch: u32, n_threads: i32, packing: Packing) -> LlamaContextParams {
     // Pooling is set explicitly rather than trusting the GGUF's baked
     // `pooling_type` metadata: with last-token pooling the identity of the
-    // pooled token is the entire vector-space contract. `n_seq_max(1)`: one
-    // chunk is decoded per forward pass, the KV cache cleared between chunks.
+    // pooled token is the entire vector-space contract. A unified KV cache
+    // lets every packed sequence use the whole context; split per sequence,
+    // llama.cpp would give each only `n_ctx / n_seq_max` and truncate long
+    // chunks at a different token boundary.
     LlamaContextParams::default()
         .with_n_ctx(NonZeroU32::new(ubatch))
         .with_n_batch(ubatch)
         .with_n_ubatch(ubatch)
-        .with_n_seq_max(1)
+        .with_n_seq_max(packing.max_seqs)
+        .with_kv_unified(packing.max_seqs > 1)
         .with_embeddings(true)
         .with_pooling_type(LlamaPoolingType::Last)
         .with_n_threads(n_threads)
@@ -241,6 +278,7 @@ impl WorkerPool {
         model: Arc<LlamaModel>,
         token_cap: usize,
         n_threads: i32,
+        packing: Packing,
         bulk_size: usize,
         interactive_size: usize,
     ) -> Self {
@@ -257,6 +295,7 @@ impl WorkerPool {
             &model,
             token_cap,
             n_threads,
+            packing,
             interactive_size,
             EmbedLane::Interactive,
             &mut handles,
@@ -265,6 +304,7 @@ impl WorkerPool {
             &model,
             token_cap,
             n_threads,
+            packing,
             bulk_size,
             EmbedLane::Bulk,
             &mut handles,
@@ -280,6 +320,7 @@ impl WorkerPool {
         model: &Arc<LlamaModel>,
         token_cap: usize,
         n_threads: i32,
+        packing: Packing,
         size: usize,
         lane: EmbedLane,
         handles: &mut Vec<std::thread::JoinHandle<()>>,
@@ -299,7 +340,15 @@ impl WorkerPool {
             let handle = std::thread::Builder::new()
                 .name(format!("llama-embed-{tag}-{i}"))
                 .spawn(move || {
-                    worker_loop(model, token_cap, n_threads, &rx, &worker_flag, idle_timeout)
+                    worker_loop(
+                        model,
+                        token_cap,
+                        n_threads,
+                        packing,
+                        &rx,
+                        &worker_flag,
+                        idle_timeout,
+                    )
                 })
                 .expect("spawning a llama embed worker thread");
             senders.push(tx);
@@ -404,6 +453,7 @@ fn worker_loop(
     model: Arc<LlamaModel>,
     token_cap: usize,
     n_threads: i32,
+    packing: Packing,
     rx: &mpsc::Receiver<Job>,
     busy: &AtomicBool,
     idle_timeout: Option<Duration>,
@@ -430,6 +480,8 @@ fn worker_loop(
     let model_ref: &LlamaModel = &model;
     let mut ctx: Option<LlamaContext<'_>> = None;
     let mut batch = LlamaBatch::new(token_cap, 1);
+    // `run_job` packs at most `max_tokens` per decode, but a lone chunk may
+    // use the whole `token_cap`, so the batch stays sized to the cap.
 
     loop {
         busy.store(false, Ordering::Release);
@@ -453,7 +505,7 @@ fn worker_loop(
         busy.store(true, Ordering::Release);
 
         if ctx.is_none() {
-            match model_ref.new_context(backend, context_params(ubatch, n_threads)) {
+            match model_ref.new_context(backend, context_params(ubatch, n_threads, packing)) {
                 Ok(c) => ctx = Some(c),
                 Err(e) => {
                     let _ = job.reply.send(Err(EmbedError::Inference(format!(
@@ -470,6 +522,7 @@ fn worker_loop(
             &mut batch,
             model_ref,
             token_cap,
+            packing,
             &job.texts,
             &job.cancel,
         );
@@ -492,14 +545,16 @@ fn is_cancelled(result: &EmbedResult) -> bool {
     )
 }
 
-// Embed every chunk through one reused context, one chunk per `llama_decode`
-// with the KV cache cleared between chunks. `cancel` is checked before each
-// chunk; on cancel the KV cache is cleared so the context is clean for reuse.
+// Embed every chunk through one reused context, as many consecutive chunks per
+// `llama_decode` as `packing` allows (each its own sequence), with the KV cache
+// cleared between decodes. `cancel` is checked before each decode; on cancel
+// the KV cache is cleared so the context is clean for reuse.
 fn run_job(
     ctx: &mut LlamaContext,
     batch: &mut LlamaBatch,
     model: &LlamaModel,
     token_cap: usize,
+    packing: Packing,
     texts: &[String],
     cancel: &AtomicBool,
 ) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -514,15 +569,19 @@ fn run_job(
     }
 
     // Tokenize everything upfront so malformed input fails before any decode.
-    let eos = model.token_eos();
+    let vocab = model.vocab();
+    let eos = vocab.eos();
     let mut token_lists: Vec<Vec<LlamaToken>> = Vec::with_capacity(total);
     for text in texts {
-        // llama.cpp tokenizes through a C string, which cannot carry interior
-        // NUL bytes; such input surfaces as a Tokenization error rather than
-        // silently embedding different text.
-        let mut toks = model
-            .str_to_token(text, AddBos::Never)
-            .map_err(|e| EmbedError::Tokenization(e.to_string()))?;
+        // llama.cpp's tokenizer stops at an interior NUL byte, so such input is
+        // refused rather than silently embedding a truncated text.
+        if let Some(pos) = text.bytes().position(|b| b == 0) {
+            return Err(EmbedError::Tokenization(format!(
+                "input contains a NUL byte at offset {pos}"
+            ))
+            .into());
+        }
+        let mut toks = vocab.tokenize(text.as_bytes(), false, true);
         // Mirror the HF post-processor exactly: EOS appended first, then the
         // cap applied — a truncated chunk loses its EOS on both engines alike.
         toks.push(eos);
@@ -538,39 +597,63 @@ fn run_job(
     }
 
     let mut out = Vec::with_capacity(total);
-    for (i, toks) in token_lists.iter().enumerate() {
+    let mut next = 0;
+    while next < total {
         if cancel.load(Ordering::Relaxed) {
-            tracing::info!("embed batch cancelled after {i}/{total} chunks");
-            // Leave the reused context clean for the next job.
+            tracing::info!("embed batch cancelled after {next}/{total} chunks");
             ctx.clear_kv_cache();
             return Err(EmbedError::Cancelled {
-                completed: i,
+                completed: next,
                 total,
             }
             .into());
         }
+        let pack = pack_end(&token_lists, next, packing);
         batch.clear();
-        // `true` marks the tokens output-bearing, avoiding llama.cpp's
-        // per-decode WARN when it has to override an unmarked batch itself
-        // (thousands of lines per index); the pooled read is unchanged either way.
-        batch
-            .add_sequence(toks, 0, true)
-            .map_err(|e| EmbedError::Inference(format!("batching chunk {i}: {e}")))?;
+        for (seq, toks) in (0..).zip(&token_lists[next..pack]) {
+            // `true` marks the tokens output-bearing, avoiding llama.cpp's
+            // per-decode WARN when it has to override an unmarked batch itself
+            // (thousands of lines per index); the pooled read is unchanged.
+            batch.add_sequence(toks, seq, true).map_err(|e| {
+                EmbedError::Inference(format!("batching chunk {}: {e}", next + seq as usize))
+            })?;
+        }
         ctx.clear_kv_cache();
         ctx.decode(batch)
             .map_err(|e| EmbedError::Inference(format!("llama decode: {e}")))?;
-        let mut v = ctx
-            .embeddings_seq_ith(0)
-            .map_err(|e| EmbedError::Inference(format!("reading pooled embedding: {e}")))?
-            .to_vec();
-        l2_normalise(&mut v);
-        anyhow::ensure!(
-            v.iter().all(|x| x.is_finite()),
-            "non-finite embedding value from llama engine"
-        );
-        out.push(v);
+        for seq in (0..).take(pack - next) {
+            let mut v = ctx
+                .embeddings_seq_ith(seq)
+                .map_err(|e| EmbedError::Inference(format!("reading pooled embedding: {e}")))?
+                .to_vec();
+            l2_normalise(&mut v);
+            anyhow::ensure!(
+                v.iter().all(|x| x.is_finite()),
+                "non-finite embedding value from llama engine"
+            );
+            out.push(v);
+        }
+        next = pack;
     }
     Ok(out)
+}
+
+// End (exclusive) of the pack starting at `start`: as many consecutive chunks
+// as fit the packing's token and sequence limits. Always at least one, so a
+// chunk longer than the token budget is decoded on its own.
+fn pack_end<T>(token_lists: &[Vec<T>], start: usize, packing: Packing) -> usize {
+    let max_seqs = packing.max_seqs as usize;
+    let mut end = start;
+    let mut used = 0;
+    while end < token_lists.len() && end - start < max_seqs {
+        let len = token_lists[end].len();
+        if end > start && used + len > packing.max_tokens {
+            break;
+        }
+        used += len;
+        end += 1;
+    }
+    end
 }
 
 pub struct LlamaEmbedder {
@@ -654,7 +737,8 @@ impl LlamaEmbedder {
         }))
         .unwrap_or(i32::MAX);
 
-        let token_cap = ensure_embed_context_fits(&model, backend, n_threads)?;
+        let packing = Packing::for_device(device_name, EMBED_UBATCH as usize);
+        let token_cap = ensure_embed_context_fits(&model, backend, n_threads, packing)?;
 
         tracing::info!(
             "F2LLM-v2-330M ready (dim={dim}, Q8_0, engine=llama, device={device_name}); \
@@ -666,6 +750,7 @@ impl LlamaEmbedder {
             Arc::new(model),
             token_cap as usize,
             n_threads,
+            packing,
             bulk_capacity,
             interactive_capacity,
         );
@@ -695,8 +780,9 @@ fn ensure_embed_context_fits(
     model: &LlamaModel,
     backend: &LlamaBackend,
     n_threads: i32,
+    packing: Packing,
 ) -> Result<u32> {
-    match model.new_context(backend, context_params(EMBED_UBATCH, n_threads)) {
+    match model.new_context(backend, context_params(EMBED_UBATCH, n_threads, packing)) {
         Ok(_ctx) => Ok(EMBED_UBATCH),
         Err(e) => Err(anyhow::anyhow!(
             "this hardware cannot run the inkentry embedder: a llama context at ubatch \
@@ -734,14 +820,15 @@ impl crate::EmbeddingBackend for LlamaEmbedder {
     /// The request is handed to a pool worker on `lane` that owns a
     /// persistent context: each chunk is tokenized with llama.cpp's own
     /// tokenizer (byte-identical to the HF tokenizer for this model, verified
-    /// including the appended EOS), truncated to the token cap, then decoded one
-    /// chunk per forward pass with last-token pooling and the KV cache cleared
-    /// between chunks; the pooled vector is L2-normalised. The context is
+    /// including the appended EOS), truncated to the token cap, then decoded with
+    /// last-token pooling and the KV cache cleared between forward passes (one
+    /// chunk per pass, or several packed as separate sequences on Metal); the
+    /// pooled vector is L2-normalised. The context is
     /// *reused* across calls, so a serial index does not rebuild (and rewarm) a
     /// Metal context per request, which would starve GPU utilisation.
     ///
-    /// `cancel` is checked before starting and between chunks, bounding waste to
-    /// one chunk's forward pass, and `completed`/`total` count chunks. There is
+    /// `cancel` is checked before starting and between forward passes, bounding
+    /// waste to one pass, and `completed`/`total` count chunks. There is
     /// no interior mutex: workers are independent, and the interactive lane's
     /// contexts are separate from the bulk lane's, so a bulk index batch never
     /// blocks a concurrent interactive embed.
@@ -874,6 +961,48 @@ mod tests {
             EmbedLane::Interactive
         );
         assert_eq!(effective_lane(EmbedLane::Bulk, 3, 4), EmbedLane::Bulk);
+    }
+
+    fn lists(lens: &[usize]) -> Vec<Vec<u8>> {
+        lens.iter().map(|&n| vec![0; n]).collect()
+    }
+
+    const METAL: Packing = Packing {
+        max_seqs: 3,
+        max_tokens: 100,
+    };
+
+    #[test]
+    fn pack_end_takes_consecutive_chunks_up_to_the_token_budget() {
+        let l = lists(&[40, 40, 40, 10]);
+        assert_eq!(pack_end(&l, 0, METAL), 2);
+        assert_eq!(pack_end(&l, 2, METAL), 4);
+    }
+
+    #[test]
+    fn pack_end_stops_at_the_sequence_limit() {
+        let l = lists(&[1, 1, 1, 1, 1]);
+        assert_eq!(pack_end(&l, 0, METAL), 3);
+        assert_eq!(pack_end(&l, 3, METAL), 5);
+    }
+
+    #[test]
+    fn pack_end_decodes_a_chunk_over_the_budget_alone() {
+        let l = lists(&[10, 500, 10]);
+        assert_eq!(pack_end(&l, 0, METAL), 1);
+        assert_eq!(pack_end(&l, 1, METAL), 2);
+    }
+
+    #[test]
+    fn only_metal_packs_and_everything_else_decodes_one_chunk_at_a_time() {
+        let metal = Packing::for_device("metal", 8192);
+        assert_eq!(metal.max_seqs, METAL_PACK_SEQS);
+        assert_eq!(metal.max_tokens, METAL_PACK_TOKENS);
+        for device in ["cpu", "vulkan", "gpu"] {
+            let p = Packing::for_device(device, 8192);
+            assert_eq!(p.max_seqs, 1, "{device}");
+            assert_eq!(pack_end(&lists(&[1, 1, 1]), 0, p), 1, "{device}");
+        }
     }
 
     #[test]

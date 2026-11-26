@@ -176,7 +176,7 @@ text-only (see ADR-104) are embedded.
 ```
 query string
   → [code corpus]   vector KNN over embeddings (sqlite-vec)  ┐
-                    full-text match over chunks_fts          ┘ fused by RRF
+                    full-text match over chunks_fts          ┘ fused by score
   → [memory corpus] vector KNN over note_embeddings, gated on relevance;
                     full-text match over memory
   → [optional] 1-hop graph expansion; linked project DBs via registry

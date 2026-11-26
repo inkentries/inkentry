@@ -201,7 +201,7 @@ jobs:
           key: ${{ matrix.test-flags }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-nextest
 
@@ -322,6 +322,13 @@ jobs:
       - name: Drop dangling library links from the restored cache
         run: |
           if [ -d target ]; then find target -xtype l -delete; fi
+
+      # Under cargo's build-dir layout v2 (Rust 1.100), llama-cpp-sys-2's build
+      # script takes `<profile>/build` for the target dir and hard-links its
+      # shared libs into `<profile>/build/deps`, which nothing creates; the
+      # link then panics NotFound.
+      - name: Create the dir llama-cpp-sys-2 links its libs into
+        run: mkdir -p target/debug/build/deps
 
       - name: Clippy (llama-vulkan)
         # --all-targets so the embed_bench example (llama-gated) is linted under

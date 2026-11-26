@@ -215,7 +215,9 @@ build_in_floor_container() {
       # configure (no Makefile) sends every later run straight into
       # "gmake: Makefile: No such file or directory". Remove such dirs; a
       # healthy one is kept and reused.
-      for d in target/'"${TARGET}"'/release/build/llama-cpp-sys-2-*/out/build; do
+      # Both cargo build-dir layouts: build/<pkg>-<hash>/ and build/<pkg>/<hash>/.
+      for d in target/'"${TARGET}"'/release/build/llama-cpp-sys-2-*/out/build \
+               target/'"${TARGET}"'/release/build/llama-cpp-sys-2/*/out/build; do
         if [ -d "$d" ] && [ ! -f "$d/Makefile" ]; then
           rm -rf "$(dirname "$(dirname "$d")")"
         fi
@@ -226,10 +228,13 @@ build_in_floor_container() {
       # exists guard in the sys build script follows them, sees nothing, and
       # the re-link panics on AlreadyExists. The script recreates all of
       # these whenever it runs; packaging reads from out/backends, never here.
-      for d in "" deps/ examples/; do
+      for d in "" deps/ examples/ build/ build/deps/ build/examples/; do
         rm -f target/'"${TARGET}"'/release/${d}libggml*.so* \
               target/'"${TARGET}"'/release/${d}libllama*.so*
       done
+      # Under the cargo 1.100 build-dir layout v2 the sys build script links its
+      # libs into release/build/deps, which nothing else creates.
+      mkdir -p target/'"${TARGET}"'/release/build/deps
       # Single-quoted: $ORIGIN must reach the linker literally (release.yml
       # sets the same rpath so the shipped binary finds its llama libs beside
       # itself, or in ../lib/inkentry for the .deb split layout).

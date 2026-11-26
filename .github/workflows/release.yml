@@ -212,6 +212,20 @@ jobs:
         run: |
           if [ -d target ]; then find target -xtype l -delete; fi
 
+      # Under cargo's build-dir layout v2 (Rust 1.100), llama-cpp-sys-2's build
+      # script takes `<profile>/build` for the target dir and hard-links its
+      # shared libs into `<profile>/build/deps`, which nothing creates; the
+      # link then panics NotFound.
+      - name: Create the dir llama-cpp-sys-2 links its libs into
+        if: matrix.llama
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            mkdir -p "${CARGO_TARGET_DIR}/release/build/deps"
+          else
+            mkdir -p "target/${{ matrix.target }}/release/build/deps"
+          fi
+
       - name: Build release binaries
         if: runner.os != 'Windows'
         shell: bash
@@ -223,7 +237,9 @@ jobs:
           # later run at "gmake: Makefile: No such file or directory".
           # (Linux legs only: the Makefile marker is generator-specific.)
           if [ "${{ runner.os }}" = "Linux" ]; then
-            for d in target/${{ matrix.target }}/release/build/llama-cpp-sys-2-*/out/build; do
+            # Both cargo build-dir layouts: build/<pkg>-<hash>/ and build/<pkg>/<hash>/.
+            for d in target/${{ matrix.target }}/release/build/llama-cpp-sys-2-*/out/build \
+                     target/${{ matrix.target }}/release/build/llama-cpp-sys-2/*/out/build; do
               if [ -d "$d" ] && [ ! -f "$d/Makefile" ]; then
                 rm -rf "$(dirname "$(dirname "$d")")"
               fi
@@ -234,7 +250,7 @@ jobs:
             # and the sys build script's re-link panics on AlreadyExists.
             # It recreates all of these whenever it runs; packaging reads
             # from out/backends, never from here.
-            for d in "" deps/ examples/; do
+            for d in "" deps/ examples/ build/ build/deps/ build/examples/; do
               rm -f target/${{ matrix.target }}/release/${d}libggml*.so* \
                     target/${{ matrix.target }}/release/${d}libllama*.so*
             done
