@@ -72,6 +72,38 @@ pub fn identifier_subwords(text: &str) -> String {
     out
 }
 
+/// Whether `query` names a code identifier: a word holding `::`, a lowercase
+/// `snake_case` join, a `camelCase` hump, or a `receiver.method(args)` call.
+pub fn names_identifier(query: &str) -> bool {
+    query.split_whitespace().any(|token| {
+        let token = token.trim_matches(|c: char| matches!(c, '`' | '\'' | '"' | '(' | ')' | ','));
+        let chars: Vec<char> = token.chars().collect();
+        let lower_or_digit = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+        token.contains("::")
+            || chars
+                .windows(3)
+                .any(|w| lower_or_digit(w[0]) && w[1] == '_' && lower_or_digit(w[2]))
+            || chars
+                .windows(2)
+                .any(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase())
+            || is_method_call(&chars)
+    })
+}
+
+// `word.word(`, anywhere in the token.
+fn is_method_call(chars: &[char]) -> bool {
+    let word = |c: &char| c.is_alphanumeric() || *c == '_';
+    chars.iter().enumerate().any(|(i, c)| {
+        *c == '.'
+            && i > 0
+            && word(&chars[i - 1])
+            && chars[i + 1..]
+                .iter()
+                .position(|c| !word(c))
+                .is_some_and(|end| end > 0 && chars[i + 1 + end] == '(')
+    })
+}
+
 /// Build the FTS5 `MATCH` expression for a code search: each word of the query
 /// lowercased, plus the parts of any compound identifier, minus stopwords,
 /// deduplicated, each quoted as a literal and OR-ed so the query is scored as
@@ -184,6 +216,35 @@ mod tests {
             code_fts_query("say\"hi\0there"),
             "\"say\" OR \"hi\" OR \"there\""
         );
+    }
+
+    #[test]
+    fn identifier_shaped_queries_are_recognised() {
+        for q in [
+            "compute_base_date semiannual edge case",
+            "where is parseConfig called",
+            "LinearRag search",
+            "Foo::new",
+            "`self.embed_text(` call sites",
+            "invoice.finalize(true)",
+            "gin_trgm_ops",
+        ] {
+            assert!(names_identifier(q), "{q:?} names an identifier");
+        }
+    }
+
+    #[test]
+    fn plain_language_queries_are_not_identifier_shaped() {
+        for q in [
+            "how does billing prorate a mid-cycle upgrade",
+            "Invoice totals",
+            "HTTP retry backoff",
+            "CONSTANT_NAME",
+            "end of sentence. Then more",
+            "",
+        ] {
+            assert!(!names_identifier(q), "{q:?} is plain language");
+        }
     }
 
     #[test]
