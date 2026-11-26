@@ -78,6 +78,7 @@ RUN mkdir -p crates/inkentry-core/src crates/inkentry-cli/src \
     echo 'fn main(){}' > crates/inkentry-cli/src/main.rs && \
     echo 'fn main(){}' > crates/inkentry-server/src/main.rs && \
     echo 'fn main(){}' > crates/inkentry-embed/examples/embed_bench.rs && \
+    echo 'fn main(){}' > crates/inkentry-embed/examples/embed_throughput.rs && \
     cargo build --release --bin inkentry-server && \
     rm -rf crates/*/src crates/inkentry-embed/examples
 
