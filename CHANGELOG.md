@@ -21,6 +21,11 @@ inkentry uses [Semantic Versioning](https://semver.org/).
   about 1.5× faster on Metal and 1.6× faster on CPU, and the server's peak
   memory while embedding is less than half what it was. Vectors are
   unchanged; nothing to re-index.
+- **Code search ranks full-text and semantic matches together by score.**
+  Hybrid code results combine both scores instead of only their rank
+  positions, and the top results no longer change with `--limit`. Queries
+  that name an identifier (`parse_config`, `parseConfig`, `Foo::new`) lean on
+  full-text matches. Nothing to re-index.
 
 ## [1.2.0] — 2026-10-05
 

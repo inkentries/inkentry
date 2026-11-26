@@ -3,18 +3,18 @@ pub mod tokens;
 
 use serde::{Deserialize, Serialize};
 
-/// The single reciprocal-rank-fusion constant for the whole retrieval system.
+/// The reciprocal-rank-fusion constant.
 ///
-/// Both within-corpus hybrid fusions (code `storage::search::search_hybrid`,
-/// memory `storage::memory::search::search_hybrid`) and the cross-corpus fusion
-/// that interleaves code and memory into one ranked list read this one value, so
-/// the system has exactly one fusion constant to reason about and, later, to
-/// tune. 60 is the original-paper default (Cormack, Clarke & Büttcher, 2009).
+/// Memory's hybrid fusion (`storage::memory::search::search_hybrid`) and the
+/// cross-corpus fusion that interleaves code and memory into one ranked list
+/// read this one value. 60 is the original-paper default (Cormack, Clarke &
+/// Büttcher, 2009). Code's hybrid fusion (`storage::search::search_hybrid`)
+/// combines normalised scores instead, since its two lists score the same
+/// chunks and their magnitudes are comparable after normalising.
 ///
-/// For code, where the FTS and vector lists overlap, `k` materially shapes the
-/// fused order. Memory's `search_hybrid` ranks a single, relevance-gated
-/// vector list, so `k` there only spaces out RRF scores rather than resolving
-/// an overlap. Across the two disjoint corpora with equal weights `k` is an
+/// Memory's `search_hybrid` ranks a single, relevance-gated vector list, so
+/// `k` there only spaces out RRF scores rather than resolving an overlap.
+/// Across the two disjoint corpora with equal weights `k` is an
 /// additive constant that cancels from every pairwise comparison, so the
 /// cross-corpus merge degenerates to a pure rank interleave; it would regain a
 /// cross-corpus effect only under a per-corpus weight, which v1 does not ship.

@@ -399,8 +399,9 @@ run that finds nothing still says whether the index was only partly embedded.
 Pass both to skip the probe and stay quiet.
 
 `--only-code` and `--only-memory` are mutually exclusive. Semantic ranking over
-the code corpus fuses vector nearest-neighbour search with full-text search by
-reciprocal rank fusion.
+the code corpus combines vector nearest-neighbour search with full-text search
+by score, weighting full-text matches more heavily when the query names an
+identifier (`parse_config`, `parseConfig`, `Foo::new`).
 `--only-text` needs no embedding model or server; it still runs over the
 full-text index, so it needs `inkentry init` first like every `search`.
 

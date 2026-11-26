@@ -705,7 +705,7 @@ pub(crate) fn search_all_dbs_hybrid(
         }
     }
 
-    // `search_hybrid` reports the inverse RRF score, hence ascending. The dedupe
+    // `search_hybrid` reports `1 - score`, hence ascending. The dedupe
     // keeps the first row per (path, start, end), so the tie-break decides which
     // project's copy survives; sort order alone let a shared chunk flip owner.
     all.sort_by(|a, b| {

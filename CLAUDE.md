@@ -218,9 +218,10 @@ storage/
     tests.rs       — #[cfg(test)] tests for URL encoding and search wire format
 
 search/
-  mod.rs         — SearchResult struct; RRF_K, the one reciprocal-rank-fusion
-                   constant shared by both within-corpus hybrid fusions and the
-                   cross-corpus code+memory fusion (ADR-081)
+  mod.rs         — SearchResult struct; RRF_K, the reciprocal-rank-fusion
+                   constant shared by memory's hybrid fusion and the
+                   cross-corpus code+memory fusion (ADR-081). Code's hybrid
+                   fusion combines normalised scores (storage/search.rs)
   lexical.rs     — identifier splitting (camelCase/snake_case) and the code
                    FTS5 query builder, shared by indexing and search (ADR-103)
   tokens.rs      — token-budget helpers
