@@ -16,6 +16,12 @@ const HYBRID_POOL: usize = 250;
 const DENSE_WEIGHT: f64 = 0.6;
 const DENSE_WEIGHT_FOR_IDENTIFIER_QUERY: f64 = 0.4;
 
+// Stand-in vector score for a chunk the embed queue has not reached yet. With
+// none it would be capped at the full-text share and rank below every vector
+// hit while an index warms up. Text-only chunks (ADR-104) never get a vector
+// and keep that cap: lifting them as well lowered MRR.
+const AWAITING_VECTOR_DENSE_SCORE: f64 = 0.5;
+
 const GRAPH_RANK_ALPHA: f32 = 0.15;
 
 impl Database {
@@ -153,7 +159,8 @@ impl Database {
     /// Each list contributes its top [`HYBRID_POOL`] candidates. BM25 is divided
     /// by the best BM25 in its list; cosine similarity is min-max scaled over
     /// its list. A chunk is scored `w · vector + (1 - w) · text`, with 0 for a
-    /// list it is absent from, and `w` lower for a query that names an
+    /// list it is absent from, except that a chunk still waiting for its vector
+    /// takes a middling vector score instead; `w` is lower for a query that names an
     /// identifier ([`crate::search::lexical::names_identifier`]). Unlike rank
     /// fusion this keeps how far apart two candidates are, which is what lets
     /// a deeper pool help instead of diluting the top. `distance` is
@@ -196,7 +203,18 @@ impl Database {
             by_id.entry(result.chunk_id).or_insert(result);
         }
 
+        let unscored: Vec<i64> = text_results
+            .iter()
+            .map(|r| r.chunk_id)
+            .filter(|id| !scores.contains_key(id))
+            .collect();
+        let awaiting_vector = self.awaiting_vector(&unscored)?;
+
         for result in text_results {
+            if awaiting_vector.contains(&result.chunk_id) {
+                *scores.entry(result.chunk_id).or_insert(0.0) +=
+                    dense_weight * AWAITING_VECTOR_DENSE_SCORE;
+            }
             let text = if best_bm25 > 0.0 {
                 -f64::from(result.distance) / best_bm25
             } else {
@@ -229,6 +247,21 @@ impl Database {
             .collect();
 
         Ok(results)
+    }
+
+    // Of `ids`, the chunks the embed queue will give a vector but has not yet.
+    fn awaiting_vector(&self, ids: &[i64]) -> Result<std::collections::HashSet<i64>> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT c.id FROM chunks c
+             LEFT JOIN embeddings e ON e.chunk_id = c.id
+             WHERE c.id IN ({placeholders}) AND c.text_only = 0 AND e.chunk_id IS NULL"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids), |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 }
 
@@ -355,6 +388,7 @@ mod tests {
         db.insert_embedding(semantic, &unit_vec(1.0))
             .expect("embed");
         let lexical = seed_chunk_in(&db, "src/lexical.rs", "fn zebra_term() {}");
+        db.insert_embedding(lexical, &unit_vec(0.0)).expect("embed");
 
         let first =
             |q: &str| db.search_hybrid(q, &unit_vec(1.0), 10).expect("hybrid ok")[0].chunk_id;
@@ -423,8 +457,8 @@ mod tests {
     fn search_hybrid_breaks_score_ties_by_source_position() {
         let db = open_db();
 
-        // Text-only: matches the FTS query, never embedded.
-        for path in ["src/t3.rs", "src/t1.rs", "src/t2.rs"] {
+        // Text-only (ADR-104): matches the FTS query, never embedded.
+        for path in ["tests/t3.rs", "tests/t1.rs", "tests/t2.rs"] {
             seed_chunk_in(&db, path, "fn f() { scoretieterm(); }");
         }
         // Vector-only: embedded at increasing distance, no query term in content.
@@ -436,9 +470,9 @@ mod tests {
         let query_vec = unit_vec(1.0);
         let expected = vec![
             "src/v1.rs",
-            "src/t1.rs",
-            "src/t2.rs",
-            "src/t3.rs",
+            "tests/t1.rs",
+            "tests/t2.rs",
+            "tests/t3.rs",
             "src/v2.rs",
             "src/v3.rs",
         ];
@@ -474,6 +508,46 @@ mod tests {
             .expect("query")
             .collect::<rusqlite::Result<Vec<_>>>()
             .expect("collect")
+    }
+
+    #[test]
+    fn search_hybrid_keeps_a_chunk_awaiting_its_vector_above_the_text_share() {
+        let db = open_db();
+        let close = seed_span(&db, "src/close.rs", 1, 5, "fn close() { unrelated words }");
+        let far = seed_span(&db, "src/far.rs", 1, 5, "fn far() { pending lookup }");
+        let awaiting = seed_span(
+            &db,
+            "src/awaiting.rs",
+            1,
+            5,
+            "fn awaiting() { pending lookup pending lookup }",
+        );
+        let text_only = seed_span(
+            &db,
+            "tests/text_only.rs",
+            1,
+            5,
+            "fn text_only() { pending lookup pending lookup }",
+        );
+        db.insert_embeddings(&[(close, unit_vec(1.0)), (far, unit_vec(0.0))])
+            .expect("embed");
+
+        let ids: Vec<i64> = db
+            .search_hybrid("pending lookup", &unit_vec(1.0), 10)
+            .expect("hybrid ok")
+            .iter()
+            .map(|h| h.chunk_id)
+            .collect();
+
+        let at = |id: i64| ids.iter().position(|&x| x == id).expect("ranked");
+        assert!(
+            at(awaiting) < at(close),
+            "an unembedded code chunk with the best text match outranks the nearest vector: {ids:?}"
+        );
+        assert!(
+            at(close) < at(text_only),
+            "a text-only chunk stays capped at the full-text share: {ids:?}"
+        );
     }
 
     // Models a partially embedded index: an interrupted drain leaves vectors on
